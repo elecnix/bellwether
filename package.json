@@ -15,7 +15,8 @@
     "node": ">=22.18"
   },
   "bin": {
-    "bellwether": "bin/bellwether.js"
+    "bellwether": "bin/bellwether.js",
+    "bellwether-mcp": "bin/bellwether-mcp.js"
   },
   "pi": {
     "extensions": [

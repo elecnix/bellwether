@@ -1,0 +1,64 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+# Each job has timeout-minutes: 15. A passing job takes 2 minutes at most, so a hung one fails at 15 instead of at GitHub's 6-hour limit.
+jobs:
+  typecheck:
+    name: typecheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444  # v5.0.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444  # v5.0.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: tier 1 unit tests
+        run: npm run test:unit
+      - name: tier 2 integration tests
+        run: npm run test:integration
+      # Tier 3 needs a real herdr server, which the runners don't have.
+      # It runs locally; the lab refuses the live socket.
+
+  prose:
+    name: prose
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
+        with:
+          persist-credentials: false
+      - uses: errata-ai/vale-action@518a9136acc6e6668ce7c00d367051e0941e87ff  # v3.0.0
+        with:
+          version: 3.20.0
+          files: '["README.md", "AGENTS.md"]'
+          fail_on_error: true
+          # Warnings are advice. Reporting them all passes GitHub's limit on
+          # annotations, so CI reports errors only.
+          min_alert_level: error
+          filter_mode: nofilter

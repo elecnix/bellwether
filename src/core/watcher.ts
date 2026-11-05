@@ -15,6 +15,10 @@ import { spoolPath } from './paths.ts';
 import type { AgentStatus, ChildEventKind, ChildRecord, OutboxEntry, SpoolReport } from './types.ts';
 
 /** herdr's status for a pane, or the child's last known status. */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 function statusOf(pane: Record<string, unknown> | undefined, fallback: AgentStatus): AgentStatus {
   const value = pane?.['agent_status'];
   return typeof value === 'string' && ['idle', 'working', 'blocked', 'done', 'unknown'].includes(value) ? (value as AgentStatus) : fallback;
@@ -102,7 +106,12 @@ export class Watcher {
     this.outbox.save(this.parentId);
   }
 
-  /** Subscribe to the current child panes, then reconcile against a snapshot. */
+  /**
+   * Subscribe to the current child panes, then reconcile against a snapshot.
+   * A pane that has gone away must be dropped first: herdr rejects the whole
+   * subscription when one pane id no longer exists, which would silence every
+   * other child.
+   */
   private async reconcileAndSubscribe(): Promise<void> {
     if (this.stopped) return;
     const signal = this.controller?.signal;
@@ -110,13 +119,46 @@ export class Watcher {
     try {
       const record = readParent(this.parentId);
       const children = record?.children ?? [];
-      await this.ensureSubscription(children, signal);
-      await this.reconcile(children, signal);
+      const live = await this.livePanes(signal);
+      const addressable: ChildRecord[] = [];
+      for (const child of children) {
+        if (child.exitedAt) continue;
+        // A record written a moment ago may predate its pane. Leave it be.
+        if (!child.paneId || Date.now() - Date.parse(child.startedAt) < 15_000 || live.has(child.paneId)) {
+          if (child.paneId) addressable.push(child);
+          continue;
+        }
+        this.markExited(child, undefined);
+      }
+      await this.ensureSubscription(addressable, signal);
+      await this.reconcile(addressable, signal);
       this.publish();
     } catch (error) {
       this.log(`reconcile failed: ${String(error)}`);
+      this.subscribedKey = '';
       this.scheduleReconnect();
     }
+  }
+
+  /** Every pane id herdr currently knows about. */
+  private async livePanes(signal: AbortSignal): Promise<Set<string>> {
+    try {
+      const result = await this.client.request('pane.list', {}, { signal });
+      const list = isRecord(result) && Array.isArray(result['panes']) ? (result['panes'] as Record<string, unknown>[]) : [];
+      return new Set(list.map((pane) => pane['pane_id']).filter((id): id is string => typeof id === 'string'));
+    } catch {
+      // An unreachable herdr is handled by the caller's reconnect.
+      return new Set();
+    }
+  }
+
+  private markExited(child: ChildRecord, code: number | undefined): void {
+    updateChild(this.parentId, child.id, (entry) => {
+      entry.exitedAt = new Date().toISOString();
+      entry.exitCode = code;
+      entry.lastStatus = 'unknown';
+    });
+    this.offer(child, 'exited', this.describeExit(child.name, code));
   }
 
   /**
@@ -124,11 +166,7 @@ export class Watcher {
    * whenever the set of child panes changes.
    */
   private async ensureSubscription(children: ChildRecord[], signal: AbortSignal): Promise<void> {
-    const key = children
-      .filter((child) => !child.exitedAt)
-      .map((child) => `${child.paneId}:${child.harness === 'other' ? 'raw' : 'agent'}`)
-      .sort()
-      .join(',');
+    const key = paneKey(children);
     if (key === this.subscribedKey && this.subscription) return;
     this.subscription?.close();
     this.subscription = undefined;
@@ -181,12 +219,10 @@ export class Watcher {
     if (!child) return;
     if (event.event === 'pane.exited' || event.event === 'pane.closed') {
       const code = typeof event.data['exit_code'] === 'number' ? (event.data['exit_code'] as number) : undefined;
-      updateChild(this.parentId, child.id, (entry) => {
-        entry.exitedAt = new Date().toISOString();
-        entry.exitCode = code;
-        entry.lastStatus = 'unknown';
-      });
-      this.offer(child, 'exited', this.describeExit(child.name, code));
+      this.markExited(child, code);
+      // The subscription named that pane, so it has to be rebuilt without it.
+      this.subscribedKey = '';
+      void this.reconcileAndSubscribe();
       return;
     }
     if (event.event === 'pane.agent_status_changed' || event.event === 'pane_agent_status_changed') {
@@ -199,7 +235,8 @@ export class Watcher {
       return;
     }
     if (event.event === 'pane.agent_detected') {
-      await this.reconcile(record?.children ?? [], this.controller!.signal);
+      const signal = this.controller?.signal;
+      if (signal) await this.reconcile(record?.children ?? [], signal);
     }
   }
 
@@ -208,7 +245,9 @@ export class Watcher {
     if (!children.length) return;
     let panes: Record<string, unknown>[];
     try {
-      const snapshot = await this.client.snapshot(signal);
+      // session.snapshot answers {type, snapshot: {panes, tabs, workspaces, ...}}.
+      const result = await this.client.snapshot(signal);
+      const snapshot = isRecord(result['snapshot']) ? result['snapshot'] : result;
       const list = snapshot['panes'] ?? snapshot['pane_list'] ?? [];
       panes = Array.isArray(list) ? (list as Record<string, unknown>[]) : [];
     } catch (error) {
@@ -247,6 +286,15 @@ export class Watcher {
       const { state: next, event } = advance(state, { status: child.lastStatus, completionSeq: child.completionSeq, busy }, now, this.limits);
       this.states.set(child.id, next);
       if (!event) continue;
+      // A report for this turn already told the parent everything the idle
+      // event would say, so keep the one message.
+      if (event === 'idle' && child.reportPending) {
+        updateChild(this.parentId, child.id, (entry) => {
+          entry.reportPending = false;
+        });
+        this.states.set(child.id, markReported(next, now));
+        continue;
+      }
       if (event === 'idle' && child.lastReport && Date.parse(child.lastReport.at) >= Date.parse(child.statusChangedAt)) {
         this.states.set(child.id, markReported(next, now));
         continue;
@@ -389,6 +437,7 @@ export class Watcher {
     updateChild(this.parentId, child.id, (entry) => {
       entry.lastReport = { status: report.status, text: report.text, at: report.at, seq: report.seq };
       entry.lastBusyAt = report.at;
+      entry.reportPending = true;
     });
     const state = this.states.get(child.id);
     if (state) this.states.set(child.id, markReported(state, this.now()));
@@ -400,7 +449,16 @@ export class Watcher {
   private async tick(): Promise<void> {
     if (this.stopped) return;
     this.tailSpool();
-    await this.evaluate(readParent(this.parentId));
+    const record = readParent(this.parentId);
+    const children = (record?.children ?? []).filter((child) => !child.exitedAt);
+    // A new child, or one that left, changes the set of panes to watch. The
+    // tick reads only the local registry, so the steady state stays at zero
+    // herdr calls.
+    if (paneKey(children) !== this.subscribedKey) {
+      await this.reconcileAndSubscribe();
+      return;
+    }
+    await this.evaluate(record);
     if (!this.subscription) this.scheduleReconnect();
   }
 
@@ -424,4 +482,13 @@ function flatten(value: unknown): string | undefined {
 
 function trim(value: string, limit = 3000): string {
   return value.trim().slice(-limit);
+}
+
+/** The set of panes the subscription must cover, as one comparable string. */
+function paneKey(children: ChildRecord[]): string {
+  return children
+    .filter((child) => !child.exitedAt && child.paneId)
+    .map((child) => `${child.paneId}:${child.harness === 'other' ? 'raw' : 'agent'}`)
+    .sort()
+    .join(',');
 }

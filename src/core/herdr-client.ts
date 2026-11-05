@@ -351,7 +351,8 @@ export class HerdrClient {
     ).then((result) => {
       if (!isRecord(result)) return {};
       const tab = isRecord(result['tab']) ? result['tab'] : undefined;
-      const pane = isRecord(result['pane']) ? result['pane'] : undefined;
+      // herdr answers with root_pane; keep the pane alias for older servers.
+      const pane = isRecord(result['root_pane']) ? result['root_pane'] : isRecord(result['pane']) ? result['pane'] : undefined;
       return { tabId: optionalString(tab?.['tab_id']), paneId: optionalString(pane?.['pane_id']) };
     });
   }

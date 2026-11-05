@@ -42,8 +42,11 @@ jobs:
         run: npm run test:unit
       - name: tier 2 integration tests
         run: npm run test:integration
-      # Tier 3 needs a real herdr server, which the runners don't have.
-      # It runs locally; the lab refuses the live socket.
+      # Tier 3 needs a real herdr server, which the runners don't have. The lab
+      # skips itself when herdr is absent, so the runner stays green, and it
+      # exercises the real server on a workstation.
+      - name: tier 3 lab tests
+        run: npm run test:lab
 
   prose:
     name: prose

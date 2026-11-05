@@ -1,0 +1,29 @@
+{
+  "name": "bellwether",
+  "description": "Start a child coding agent in a new herdr tab and get a new turn in the parent when it reports, goes idle, blocks, stalls or exits.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Nicolas Marchildon",
+    "url": "https://github.com/elecnix"
+  },
+  "homepage": "https://github.com/elecnix/bellwether",
+  "repository": "https://github.com/elecnix/bellwether",
+  "license": "MIT",
+  "keywords": [
+    "claude-code",
+    "channel",
+    "herdr",
+    "coding-agents"
+  ],
+  "mcpServers": {
+    "bellwether": {
+      "command": "${CLAUDE_PLUGIN_ROOT}/bin/bellwether-mcp.js"
+    }
+  },
+  "channels": [
+    {
+      "server": "bellwether",
+      "displayName": "Bellwether"
+    }
+  ]
+}

@@ -1,0 +1,99 @@
+text := import("text")
+
+matches := []
+
+// Split document into sections by markdown headings.
+// Measure sentence-start repetition within each section independently.
+sections := text.re_split(`(?m)^#{1,6}\s+[^\n]+\n`, scope)
+
+for section in sections {
+    section = text.trim_space(section)
+    if section == "" {
+        continue
+    }
+
+    // Strip code blocks and HTML comments (use separate variable to preserve section for position lookup).
+    clean := text.re_replace("(?s)```.*?```", section, "")
+    clean = text.re_replace("<!--.*?-->", clean, "")
+    // Strip the markup an MDX or HTML document puts between paragraphs:
+    // MDX comments and expression lines, import and export statements, a
+    // frontmatter block, and JSX or HTML tags with their attributes. Left
+    // in place, a component tag reads as the first word of the sentence
+    // after it, so every <Callout> starts the same sentence, and a
+    // self-closing <Image /> line on its own stands as a paragraph.
+    clean = text.re_replace(`(?s)\{/\*.*?\*/\}`, clean, "")
+    clean = text.re_replace(`(?m)^[ \t]*(?:import|export)\b[^\n]*$`, clean, "")
+    clean = text.re_replace(`(?s)\A---\n.*?\n---(?:\n|\z)`, clean, "")
+    clean = text.re_replace(`(?s)</?[A-Za-z][A-Za-z0-9.:-]*(?:\s[^<>]*?)?/?>`, clean, "")
+    clean = text.re_replace(`(?m)^[ \t]*\{[^\n]*\}[ \t]*$`, clean, "")
+
+    // Filter out list items, table rows, and other non-prose lines.
+    lines := text.split(clean, "\n")
+    prose_lines := []
+    for line in lines {
+        trimmed := text.trim_space(line)
+        if text.has_prefix(trimmed, "- ") || text.has_prefix(trimmed, "* ") || text.has_prefix(trimmed, "1.") {
+            continue
+        }
+        if text.has_prefix(trimmed, "- [") {
+            continue
+        }
+        if text.has_prefix(trimmed, "|") {
+            continue
+        }
+        prose_lines = append(prose_lines, line)
+    }
+    clean = text.join(prose_lines, "\n")
+
+    // Collapse to single line for sentence splitting.
+    flat := text.re_replace(`\n{2,}`, clean, " ")
+    flat = text.re_replace(`\s+`, flat, " ")
+    flat = text.trim_space(flat)
+
+    if flat == "" {
+        continue
+    }
+
+    sentences := text.re_split(`[.!?]+\s+`, flat)
+
+    // Count first words across sentences in this section.
+    first_words := {}
+    total := 0
+    for s in sentences {
+        trimmed := text.trim_space(s)
+        if trimmed != "" {
+            words := text.re_split(`\s+`, trimmed)
+            if len(words) > 0 {
+                word := text.to_lower(words[0])
+                // Skip single-char words that naturally repeat.
+                if len(word) >= 2 {
+                    if first_words[word] == undefined {
+                        first_words[word] = 0
+                    }
+                    first_words[word] += 1
+                    total += 1
+                }
+            }
+        }
+    }
+
+    // Need at least 6 sentences in this section.
+    if total >= 6 {
+        // Flag when any starting word appears in > 30% of sentences.
+        for word, count in first_words {
+            ratio := (0.0 + count) / total
+            if ratio > 0.30 && count >= 3 {
+                start := text.index(scope, section)
+                if start < 0 {
+                    start = 0
+                }
+                end := start + len(section)
+                if end > len(scope) {
+                    end = len(scope)
+                }
+                matches = append(matches, {begin: start, end: end})
+                break
+            }
+        }
+    }
+}

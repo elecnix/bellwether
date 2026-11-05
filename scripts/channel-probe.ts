@@ -17,6 +17,10 @@
 // `--phase during` needs the scripted server started with HOLD_UNTIL naming the
 // same file as --release and HOLD_EACH=1, so each request is held until the file
 // appears and the file is then removed before the next request.
+//
+// `--burst N` sends N lines while the first turn is held open instead of one,
+// which is how the grouping claim gets measured. The default of 1 reproduces
+// the single-notification case.
 import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
@@ -51,6 +55,7 @@ const firstText = flag('text') ?? 'PROBE-A';
 const secondText = flag('text2') ?? 'PROBE-B';
 const seconds = Number.parseInt(flag('seconds') ?? '45', 10);
 const betweenMs = Number.parseInt(flag('between') ?? '3000', 10);
+const burst = Number.parseInt(flag('burst') ?? '1', 10);
 
 if (!paneId || !inbox || !logPath) throw new Error('--pane, --inbox and --log are required');
 
@@ -172,11 +177,19 @@ if (phase === 'idle') {
   const first = await waitForTurn(baseTurns, 'the first turn started and is held open');
   if (first) {
     await sleep(betweenMs);
-    send(secondText);
-    note('mid-turn', 'the second line is now queued while a turn is in flight');
+    // A burst answers the design's question about grouping: if Claude Code
+    // groups events from active work into the next turn, N lines produce one
+    // turn. The default of one line reproduces the single-notification case.
+    for (let index = 0; index < burst; index += 1) send(`${secondText} #${index + 1}`);
+    note('mid-turn', 'the second batch is queued while a turn is in flight', { burst });
     answerOne();
     const second = await waitForTurn(baseTurns + 1, 'a follow-up turn appeared after the held turn was answered');
-    if (second) answerOne();
+    if (second) {
+      // Let a grouped batch settle before answering, so a second follow-up turn
+      // has every chance to appear before the probe counts it.
+      await sleep(3000);
+      answerOne();
+    }
   }
 }
 

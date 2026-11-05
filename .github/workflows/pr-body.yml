@@ -1,0 +1,22 @@
+name: pr-body
+
+on:
+  pull_request:
+    # `edited` runs the check again after the author fixes the body.
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  pr-body:
+    runs-on: ubuntu-latest
+    steps:
+      # The prose check reads .vale.ini from the checkout.
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
+        with:
+          persist-credentials: false
+      - uses: elecnix/gh-pr-body-action@08c74dc0736abe295e90d6363abd55cf7ea63ef3  # v1.2.1
+        with:
+          prose-fail: 'true'

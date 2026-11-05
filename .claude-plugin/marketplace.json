@@ -1,0 +1,15 @@
+{
+  "name": "bellwether",
+  "owner": {
+    "name": "Nicolas Marchildon",
+    "url": "https://github.com/elecnix"
+  },
+  "plugins": [
+    {
+      "name": "bellwether",
+      "source": "./",
+      "description": "Start a child coding agent in a new herdr tab and get a new turn in the parent when it reports, goes idle, blocks, stalls or exits.",
+      "version": "0.1.0"
+    }
+  ]
+}

@@ -1,18 +1,18 @@
 # Bellwether
 
-Bellwether gives a coding agent in herdr tools to start another agent in a new herdr tab, of any kind herdr can start. When a child reports, goes idle, blocks, stalls or exits, the parent session gets a new turn that says so. The parent calls no herdr command and polls nothing.
+Bellwether gives a coding agent in herdr tools to start another agent in a new herdr tab, of any kind herdr can start. When a child reports, goes idle, blocks, stalls or exits, the parent agent gets a fresh turn that says so. One herdr subscription streams each child state change to the parent.
 
 The MVP covers Pi and Claude Code, each as a parent and as a child.
 
 ## Parts
 
-A parent session runs an adapter: a Pi extension, or a Claude Code MCP channel server. The adapter holds the Bellwether core.
+A parent session runs an adapter: a Pi extension, or a Claude Code MCP channel server. Both adapters run the same Bellwether core.
 
 - **herdr client.** Newline-delimited JSON on the herdr socket, one connection per request and one held open for the subscription. The subscription checks the `subscription_started` acknowledgement and buffers any event that arrives with it.
-- **Registry.** One JSON file per parent session, under `~/.bellwether/parents/`. Every child record carries its name, kind, pane, tab, start time, last status, last `completion_seq` and transcript path. Bellwether writes the record before it asks herdr for anything, so a crash mid-spawn still says what was asked for.
+- **Registry.** One JSON file per parent session, under `~/.bellwether/parents/`. Each child record stores its name, kind, pane, tab, start time, last status, last `completion_seq` and transcript path. Bellwether writes the record before it asks herdr for anything, so a crash mid-spawn still says what it asked herdr for.
 - **Watcher.** It subscribes to `pane.agent_status_changed` for each child pane, plus `pane.exited`, `pane.closed` and `pane.agent_detected`. On connect it subscribes first, then reads a snapshot on a second connection, then reconciles. A dropped subscription reconnects with backoff and takes a fresh snapshot, because herdr does not replay events.
 - **Classifier.** It turns herdr states into child events, with a settle time for each. It is a pure function of state, clock and observation.
-- **Outbox.** One pending entry per child, where a newer state replaces an older one. The receipt id in the entry marks it read once the id reaches the parent's model context.
+- **Outbox.** One pending entry per child, where a newer state replaces an older one. The receipt id in the entry marks it read once the parent's model context shows that id.
 
 ## Child events
 
@@ -30,26 +30,49 @@ A parent session runs an adapter: a Pi extension, or a Claude Code MCP channel s
 | -- | -- | -- |
 | `agent_spawn` | any session | starts a child in a new tab |
 | `agent_list` | any session | lists this session's children with status, age and unread events |
-| `agent_read` | any session | returns a child's last assistant message, or its screen when given `lines` |
+| `agent_read` | any session | returns a child's last assistant message, or its screen when you pass `lines` |
 | `agent_send` | any session | prompts a child, or sends keys when herdr refuses a blocked one |
-| `agent_stop` | any session | closes a child's tab, refusing a working child unless given `force` |
+| `agent_stop` | any session | closes a child's tab, refusing a working child unless you pass `force` |
 | `parent_report` | a child whose environment carries `BELLWETHER_PARENT` | sends `done`, `needs-input` or `progress` to the parent |
 
 Bellwether sends input only to panes it started for this parent.
 
 ## Install
 
+Bellwether loads in two harnesses, as a Pi package and as a Claude Code plugin.
+
+### Pi
+
 ```sh
 pi install npm:@elecnix/bellwether
 ```
 
-For Claude Code, start the session with the development channel:
+The package declares its extension under `pi.extensions`, so Pi loads it at the next session start.
 
-```sh
-claude --dangerously-load-development-channels server:bellwether
+### Claude Code
+
+Add the marketplace, then install the plugin:
+
+```text
+/plugin marketplace add elecnix/bellwether
+/plugin install bellwether@bellwether
 ```
 
-Check the plumbing with `bellwether doctor`. It reports the herdr socket, the herdr API version and every registered parent with its children.
+Channels are a research preview. A plugin outside the organization allowlist needs the development flag when the session starts:
+
+```sh
+claude --dangerously-load-development-channels plugin:bellwether@bellwether
+```
+
+The plugin runs `bin/bellwether-mcp.js` as an MCP server named `bellwether` and enables that server as a channel.
+
+### Check the install
+
+```sh
+bellwether doctor
+```
+
+It reports the herdr socket, the herdr API version, the Pi extension path, the MCP entry point and every registered parent with its children. A Pi extension path that does not resolve, or an MCP entry without its executable bit, fails the check.
 
 ## Environment
 

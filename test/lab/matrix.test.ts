@@ -40,6 +40,17 @@ async function until<T>(label: string, timeoutMs: number, read: () => Promise<T 
   }
 }
 
+/** Like until, but returns undefined at the deadline instead of throwing. */
+async function waitFor<T>(read: () => T | undefined, timeoutMs: number): Promise<T | undefined> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const value = read();
+    if (value !== undefined) return value;
+    if (Date.now() > deadline) return undefined;
+    await wait(300);
+  }
+}
+
 /** The parent's Pi transcript file under its own agent directory. */
 function findTranscript(agentDir: string, session: string): string | undefined {
   const sessions = path.join(agentDir, 'sessions');
@@ -385,8 +396,14 @@ function pairTest(title: string, parentKind: LabHarnessKind, childKind: LabHarne
       parentHarness = harness;
       const parent = await until('the parent registry', 60_000, () => listParents().find((candidate) => candidate.paneId === harness.paneId));
       // A Pi session starts at the first prompt, so prompt once herdr has the
-      // agent, then wait for the transcript that prompt creates.
-      if (parentKind === 'pi') await harness.client.agentPrompt(harness.paneId, 'You are the parent. Wait for child events.');
+      // agent. A prompt that lands before the TUI is at its box can be lost,
+      // so retry until the transcript appears.
+      if (parentKind === 'pi') {
+        for (let attempt = 0; attempt < 4; attempt += 1) {
+          await harness.client.agentPrompt(harness.paneId, 'You are the parent. Wait for child events.').catch(() => undefined);
+          if (await waitFor(() => findTranscript(harness.agentDir, parent.session), 12_000)) break;
+        }
+      }
       await until('the parent transcript', 40_000, async () => (parentKind === 'pi' ? findTranscript(harness.agentDir, parent.session) : await harness.transcript()));
 
       for (const event of cases) {

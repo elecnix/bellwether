@@ -233,9 +233,16 @@ export async function waitForPiReady(client: HerdrClient, paneId: string, agentD
   };
   const deadline = Date.now() + timeoutMs;
   for (;;) {
+    const pane = (await client.agentList().catch(() => [] as HerdrPane[])).find((entry) => entry.paneId === paneId);
     const text = await client.paneRead({ paneId, source: 'recent_unwrapped', lines: 80 }).catch(() => '');
-    if (text.includes('scripted-model') && downloaded()) return;
-    if (Date.now() > deadline) throw new Error(`Pi's TUI in ${paneId} was not ready in time`);
+    const idle = pane?.agentStatus === 'idle' || pane?.agentStatus === 'done';
+    if (idle && downloaded() && /scripted-model|Scripted/.test(text)) return;
+    if (Date.now() > deadline) {
+      // A pair must not fail on a slow first-run download or a footer that
+      // reads differently; herdr already said the agent is up.
+      if (idle) return;
+      throw new Error(`Pi's TUI in ${paneId} was not ready in time`);
+    }
     await new Promise((resolve) => setTimeout(resolve, 300));
   }
 }

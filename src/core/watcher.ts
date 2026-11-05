@@ -10,7 +10,7 @@ import fs from 'node:fs';
 import type { HerdrClient, HerdrEvent, Subscription } from './herdr-client.ts';
 import { DEFAULT_LIMITS, advance, initialState, markReported, type ClassifierState, type SettleLimits } from './classifier.ts';
 import { Outbox } from './outbox.ts';
-import { readParent, updateChild } from './registry.ts';
+import { mutateParent, readParent, updateChild } from './registry.ts';
 import { resolveTranscript, sessionValueFrom } from './transcript.ts';
 import { spoolPath } from './paths.ts';
 import type { AgentStatus, ChildEventKind, ChildRecord, OutboxEntry, SpoolReport } from './types.ts';
@@ -76,6 +76,9 @@ export class Watcher {
   start(): void {
     if (!this.stopped) return;
     this.stopped = false;
+    // Resume the child spool where the last run stopped, so a restart neither
+    // replays old reports nor drops one written while the parent was down.
+    this.spoolOffset = readParent(this.parentId)?.spoolOffset ?? 0;
     this.controller = new AbortController();
     this.ticker = setInterval(() => void this.tick(), this.tickMs);
     this.ticker.unref?.();
@@ -413,12 +416,7 @@ export class Watcher {
   }
 
   private offer(child: ChildRecord, event: ChildEventKind, text: string): void {
-    // A newer event replaces an older unread one for the same child, so the
-    // entry only becomes a fresh notification when its text actually changes.
-    const before = this.outbox.unreadFor(child.id)[0];
-    const same = before !== undefined && before.event === event && before.text === text;
-    const entry = this.outbox.offer({ childId: child.id, name: child.name, kind: child.kind, paneId: child.paneId, event, text, at: new Date().toISOString() });
-    if (!same) entry.deliveredAt = undefined;
+    this.outbox.offer({ childId: child.id, name: child.name, kind: child.kind, paneId: child.paneId, event, text, at: new Date().toISOString() });
     this.outbox.prune();
     this.outbox.save(this.parentId);
   }
@@ -441,6 +439,9 @@ export class Watcher {
     if (content.length <= this.spoolOffset) return;
     const fresh = content.slice(this.spoolOffset);
     this.spoolOffset = content.length;
+    mutateParent(this.parentId, (record) => {
+      record.spoolOffset = content.length;
+    });
     for (const line of fresh.split('\n')) {
       if (!line.trim()) continue;
       try {

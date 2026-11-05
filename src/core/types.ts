@@ -60,6 +60,8 @@ export interface ParentRecord {
   workspaceId?: string;
   depth: number;
   children: ChildRecord[];
+  /** How far into the child spool this parent has read, so a restart resumes. */
+  spoolOffset?: number;
   updatedAt: string;
 }
 

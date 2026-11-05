@@ -25,9 +25,10 @@
   },
   "scripts": {
     "typecheck": "tsgo --noEmit -p .",
-    "test": "npm run test:unit && npm run test:integration",
+    "test": "npm run test:unit && npm run test:integration && npm run test:lab",
     "test:unit": "node --test --disable-warning=ExperimentalWarning \"test/unit/**/*.test.ts\"",
     "test:integration": "node --test --test-concurrency=1 --disable-warning=ExperimentalWarning \"test/integration/**/*.test.ts\"",
+    "test:lab": "node --test --test-concurrency=1 --disable-warning=ExperimentalWarning \"test/lab/**/*.test.ts\"",
     "doctor": "node --disable-warning=ExperimentalWarning src/cli.ts doctor"
   },
   "dependencies": {

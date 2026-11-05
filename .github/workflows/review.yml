@@ -5,6 +5,9 @@ name: review
 # variable edits and never a workflow edit; the credential is one secret. The
 # action is pinned to a full commit SHA, which also pins the release binary it
 # downloads, and the run log prints the endpoint and model it used.
+#
+# A repository with no review model configured gets no review and no red check:
+# the cite job is skipped while REVIEW_MODEL_API_KEY is empty.
 
 on:
   pull_request_target:  # zizmor: ignore[dangerous-triggers]
@@ -19,11 +22,37 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  cite:
-    # pull_request_target takes this file from the default branch, so a
-    # pull request cannot change its own review. Forks are not reviewed.
+  preflight:
+    # A job-level `if` cannot read `secrets`, so this job turns the key into an
+    # output the cite job can gate on. A repository with no review model should
+    # show a skipped review, not a red one.
     if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      model_key: ${{ steps.key.outputs.present }}
+    steps:
+      - id: key
+        env:
+          REVIEW_MODEL_API_KEY: ${{ secrets.REVIEW_MODEL_API_KEY }}
+        run: |
+          if [ -n "$REVIEW_MODEL_API_KEY" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::REVIEW_MODEL_API_KEY is not set, so the Cite review is skipped."
+          fi
+
+  cite:
+    # Pull_request_target reads this file from the default branch, so the skip
+    # starts working once this change is on that branch. Both conditions hold:
+    # the secret must be set, and the pull request must come from this repo.
+    needs: preflight
+    if: >-
+      needs.preflight.outputs.model_key == 'true' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Review this pull request with Cite
         uses: elecnix/cite@e790f27116e76c26aa8b4f6c6437c5bec6c5cc30 # v0.16.0

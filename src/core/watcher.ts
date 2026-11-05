@@ -294,7 +294,10 @@ export class Watcher {
       if (child.exitedAt) continue;
       const state = this.states.get(child.id) ?? initialState(child.lastStatus, now);
       const busy = await this.childIsBusy(child, now);
-      const { state: next, event } = advance(state, { status: child.lastStatus, completionSeq: child.completionSeq, busy }, now, this.limits);
+      // A spawn can set its own stuck threshold, which is what the lab uses to
+      // reach that event in seconds rather than ten minutes.
+      const limits = child.stuckMs === undefined ? this.limits : { ...this.limits, stuckMs: child.stuckMs };
+      const { state: next, event } = advance(state, { status: child.lastStatus, completionSeq: child.completionSeq, busy }, now, limits);
       this.states.set(child.id, next);
       if (!event) continue;
       // A report for this turn already told the parent everything the idle

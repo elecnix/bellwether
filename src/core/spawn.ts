@@ -69,6 +69,7 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
     statusChangedAt: now,
     lastBusyAt: now,
     depth,
+    stuckMs: options.stuckMinutes === undefined ? undefined : Math.max(1_000, Math.round(options.stuckMinutes * 60_000)),
   };
   // 1. The record lands before herdr is asked for anything.
   upsertChild(parent.id, child);

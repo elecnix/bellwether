@@ -44,6 +44,8 @@ export interface ChildRecord {
   reportPending?: boolean;
   /** The last time the child's transcript or screen moved. */
   lastBusyAt: string;
+  /** This child's own stuck threshold, when its spawn set one. */
+  stuckMs?: number;
   /** Set once the child is gone, so its events stop. */
   exitedAt?: string;
   exitCode?: number;

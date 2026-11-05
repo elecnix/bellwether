@@ -235,7 +235,9 @@ export class Watcher {
         if (entry.lastStatus !== status) entry.statusChangedAt = new Date().toISOString();
         entry.lastStatus = status;
       });
-      await this.evaluate(record);
+      // Read the registry again rather than reusing the copy taken above,
+      // which still holds the status from before this event.
+      await this.evaluate();
       return;
     }
     if (event.event === 'pane.agent_detected') {
@@ -276,11 +278,15 @@ export class Watcher {
         });
       }
     }
-    await this.evaluate(readParent(this.parentId));
+    await this.evaluate();
   }
 
-  /** One classifier pass over every child. */
-  private async evaluate(record: { children: ChildRecord[] } | undefined): Promise<void> {
+  /**
+   * One classifier pass over every child. It reads the registry itself, so a
+   * caller can never hand it a stale copy.
+   */
+  private async evaluate(): Promise<void> {
+    const record = readParent(this.parentId);
     if (!record) return;
     const now = this.now();
     for (const child of record.children) {
@@ -481,7 +487,7 @@ export class Watcher {
       await this.reconcileAndSubscribe();
       return;
     }
-    await this.evaluate(record);
+    await this.evaluate();
     if (!this.subscription) this.scheduleReconnect();
   }
 

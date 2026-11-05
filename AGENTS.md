@@ -21,7 +21,7 @@ Prose in Markdown files runs through Vale. The rules are the `ai-tells`, `ai-tel
 - **Write the registry record before `tab.create`.** A crash mid-spawn must still leave a trace.
 - **Send input only to panes this parent started.** A parent must never type into a pane it does not own.
 - **Wake the parent through its harness.** `pi.sendMessage(..., {triggerTurn: true, deliverAs: 'followUp'})` for Pi, `notifications/claude/channel` for Claude Code. Never type into the parent's own pane.
-- **A receipt marks an event read**, not a delivery. A sent notification does not prove a turn started.
+- **A receipt marks an event read.** Sending a notification does not prove a turn started.
 
 ## Test tiers
 

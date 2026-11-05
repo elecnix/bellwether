@@ -32,6 +32,8 @@ export interface ClassifierState {
   lastBusyAt: number;
   /** Set once an event fired for the current quiet period, so it fires once. */
   firedStuckSince?: number;
+  /** Set once the blocked event fired, so the dialog is reported once. */
+  firedBlocked?: boolean;
 }
 
 export interface Observation {
@@ -59,6 +61,7 @@ export function advance(state: ClassifierState, observation: Observation, now: n
     next.status = observation.status;
     next.statusSince = now;
     next.firedStuckSince = undefined;
+    next.firedBlocked = undefined;
   }
   const becameReady = isReady(observation.status) && !isReady(state.status);
   if (observation.completionSeq !== undefined && observation.completionSeq !== state.completionSeq) {
@@ -74,10 +77,14 @@ export function advance(state: ClassifierState, observation: Observation, now: n
   if (observation.busy) {
     next.lastBusyAt = now;
     next.firedStuckSince = undefined;
+    next.firedBlocked = undefined;
   }
 
-  if (next.status === 'blocked' && now - next.statusSince >= limits.blockedMs) {
-    return { state: { ...next, statusSince: now }, event: 'blocked' };
+  // A blocked child stays blocked until someone answers it, so report the
+  // dialog once and then wait for the status to move rather than repeating it
+  // on every tick.
+  if (next.status === 'blocked' && now - next.statusSince >= limits.blockedMs && !next.firedBlocked) {
+    return { state: { ...next, firedBlocked: true }, event: 'blocked' };
   }
   if (isReady(next.status) && next.completionSeq !== undefined && next.completionSeq !== next.reportedFor && now - next.statusSince >= limits.idleMs) {
     return { state: { ...next, reportedFor: next.completionSeq }, event: 'idle' };

@@ -33,6 +33,8 @@ export interface LabHarnessOptions {
   baseAgentDir?: string;
   /** A Claude permission mode, such as "manual", for the session. */
   permissionMode?: string;
+  /** Claude permission rules to pre-approve, such as an MCP tool name. */
+  allowedTools?: string[];
   /** A first prompt, delivered with agent.prompt once the harness is ready. */
   prompt?: string;
   extraEnv?: Record<string, string>;
@@ -121,17 +123,26 @@ export async function createPiAgentDir(options: {
  * the login-method picker and the project-trust dialog, which a TUI lab
  * cannot answer through herdr's own agent API.
  */
-export async function createClaudeConfigDir(options: { lab: Lab; dir: string; cwd: string; permissionMode?: string }): Promise<string> {
+export async function createClaudeConfigDir(options: { lab: Lab; dir: string; cwd: string; permissionMode?: string; allowedTools?: string[] }): Promise<string> {
   const { lab, dir, cwd } = options;
   fs.mkdirSync(dir, { recursive: true });
   await installHerdrIntegration(lab, 'claude', dir);
   fs.writeFileSync(
     path.join(dir, '.claude.json'),
-    `${JSON.stringify({ hasCompletedOnboarding: true, projects: { [cwd]: { hasTrustDialogAccepted: true, allowedTools: [], history: [] } } }, null, 2)}\n`,
+    `${JSON.stringify({ hasCompletedOnboarding: true, hasSeenAutoDefaultNotice: true, hasResetAutoModeOptInForDefaultOffer: true, projects: { [cwd]: { hasTrustDialogAccepted: true, allowedTools: [], history: [] } } }, null, 2)}\n`,
   );
   const settings: Record<string, unknown> = { apiKeyHelper: 'echo lab', enableAllProjectMcpServers: true };
-  if (options.permissionMode) settings['permissions'] = { defaultMode: options.permissionMode };
+  const permissions: Record<string, unknown> = {};
+  if (options.permissionMode) permissions['defaultMode'] = options.permissionMode;
+  if (options.allowedTools?.length) permissions['allow'] = options.allowedTools;
+  if (Object.keys(permissions).length) settings['permissions'] = permissions;
   fs.writeFileSync(path.join(dir, 'settings.json'), `${JSON.stringify(settings, null, 2)}\n`);
+  // The Bellwether MCP server, loaded with --strict-mcp-config so no project
+  // server approval dialog stands between the lab and the child.
+  fs.writeFileSync(
+    path.join(dir, 'mcp.json'),
+    `${JSON.stringify({ mcpServers: { bellwether: { command: 'node', args: [path.join(repoRoot, 'bin', 'bellwether-mcp.js')] } } }, null, 2)}\n`,
+  );
   return dir;
 }
 
@@ -152,6 +163,12 @@ export async function waitForClaudeReady(client: HerdrClient, paneId: string, ti
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     const text = await client.paneRead({ paneId, source: 'recent_unwrapped', lines: 80 }).catch(() => '');
+    // Starting in manual mode offers to switch back to auto mode first.
+    if (/Make auto mode your default permission mode/.test(text)) {
+      await client.request('pane.send_keys', { pane_id: paneId, keys: ['down', 'enter'] }).catch(() => undefined);
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      continue;
+    }
     if (/shift\+tab to cycle|auto mode on|manual mode on|accept edits on|plan mode on/.test(text)) return;
     if (Date.now() > deadline) throw new Error(`Claude's TUI in ${paneId} was not ready in time`);
     await new Promise((resolve) => setTimeout(resolve, 300));
@@ -233,7 +250,7 @@ export async function startHarness(options: LabHarnessOptions): Promise<LabHarne
   if (options.kind === 'pi') {
     await createPiAgentDir({ lab: options.lab, dir: agentDir, scriptedUrl: options.scriptedUrl, extraExtensions: options.extraExtensions, baseAgentDir: options.baseAgentDir });
   } else {
-    await createClaudeConfigDir({ lab: options.lab, dir: agentDir, cwd, permissionMode: options.permissionMode });
+    await createClaudeConfigDir({ lab: options.lab, dir: agentDir, cwd, permissionMode: options.permissionMode, allowedTools: options.allowedTools });
   }
 
   // A lab pane inherits the ambient environment, which can still carry the
@@ -244,6 +261,9 @@ export async function startHarness(options: LabHarnessOptions): Promise<LabHarne
   else {
     env['CLAUDE_CONFIG_DIR'] = agentDir;
     env['ANTHROPIC_BASE_URL'] = options.scriptedUrl;
+    // Claude Code's background traffic (titles, topics) would otherwise take a
+    // scripted reply before the prompt's own turn.
+    env['CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC'] = '1';
   }
 
   const tab = await client.tabCreate({ workspaceId, cwd, label: options.label, env, focus: false });
@@ -256,9 +276,15 @@ export async function startHarness(options: LabHarnessOptions): Promise<LabHarne
     await waitForHarness(client, paneId, 'pi');
     await waitForPiReady(client, paneId, agentDir);
   } else {
-    // The plugin declares the bellwether channel. The development-channel flag
-    // alone leaves channels unavailable on this Claude Code build.
-    const flags = [`--plugin-dir ${repoRoot}`, options.permissionMode ? `--permission-mode ${options.permissionMode}` : ''].filter(Boolean).join(' ');
+    // --strict-mcp-config loads only this file's server, so the child reaches
+    // parent_report with no project-approval dialog. The same build reports
+    // channel notifications as unavailable, so no plugin flag can wake a
+    // Claude parent here.
+    const flags = [
+      `--mcp-config ${path.join(agentDir, 'mcp.json')}`,
+      '--strict-mcp-config',
+      options.permissionMode ? `--permission-mode ${options.permissionMode}` : '',
+    ].filter(Boolean).join(' ');
     await typeCommand(client, paneId, `claude ${flags}`);
     await waitForHarness(client, paneId, 'claude');
     await waitForClaudeReady(client, paneId);

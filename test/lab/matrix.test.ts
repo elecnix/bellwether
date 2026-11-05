@@ -120,6 +120,8 @@ interface EventCase {
   piBlocked?: boolean;
   /** A Claude permission mode that stops a tool call at a dialog. */
   claudePermissionMode?: string;
+  /** Claude permission rules to pre-approve for this cell. */
+  claudeAllowedTools?: string[];
   idleMs: number;
   blockedMs: number;
   stuckMs: number;
@@ -134,10 +136,11 @@ const cases: EventCase[] = [
     // Claude Code defers MCP tool schemas, so the child fetches the tool with
     // ToolSearch before it can call parent_report.
     claude: [
-      { tool: { name: 'ToolSearch', input: { query: 'select:mcp__plugin_bellwether_bellwether__parent_report', max_results: 5 } } },
-      { tool: { name: 'mcp__plugin_bellwether_bellwether__parent_report', input: { status: 'done', text: 'the report event reached the parent' } } },
+      { tool: { name: 'ToolSearch', input: { query: 'select:mcp__bellwether__parent_report', max_results: 5 } } },
+      { tool: { name: 'mcp__bellwether__parent_report', input: { status: 'done', text: 'the report event reached the parent' } } },
       { text: 'reported' },
     ],
+    claudeAllowedTools: ['mcp__bellwether__parent_report'],
     idleMs: 60_000,
     blockedMs: 60_000,
     stuckMs: 60_000,
@@ -159,7 +162,7 @@ const cases: EventCase[] = [
     prompt: 'Open the lab dialog and wait.',
     expect: /blocked on a dialog/,
     pi: [{ tool: { name: 'lab_block', input: {} } }, { text: 'dialog closed' }],
-    claude: [{ tool: { name: 'Bash', input: { command: 'echo lab blocked' } } }, { text: 'dialog closed' }],
+    claude: [{ tool: { name: 'Bash', input: { command: 'rm -rf ./blocked-scratch' } } }, { text: 'dialog closed' }],
     piBlocked: true,
     claudePermissionMode: 'manual',
     idleMs: 60_000,
@@ -211,6 +214,8 @@ async function startPiChild(options: { client: HerdrClient; lab: Lab; parent: Pa
   const childDir = path.join(lab.root, `pi-child-${event.event}-${Date.now()}`);
   const extensionFile = event.piBlocked ? writeBlockExtension(childDir) : undefined;
   await createPiAgentDir({ lab, dir: childDir, scriptedUrl: models.url, extraExtensions: extensionFile ? [extensionFile] : undefined, baseAgentDir });
+  // Pi's first model request is the prompt's turn, so the script starts here.
+  models.sequence(event.pi);
 
   const previousEnv = process.env['PI_CODING_AGENT_DIR'];
   process.env['PI_CODING_AGENT_DIR'] = childDir;
@@ -276,7 +281,7 @@ async function startClaudeChild(options: { lab: Lab; parent: ParentRecord; model
     bellwetherHome,
     cwd: lab.root,
     permissionMode: event.claudePermissionMode,
-    prompt: event.prompt,
+    allowedTools: event.claudeAllowedTools,
     extraEnv: {
       BELLWETHER_PARENT: parent.id,
       BELLWETHER_CHILD: childId,
@@ -291,6 +296,12 @@ async function startClaudeChild(options: { lab: Lab; parent: ParentRecord; model
     entry.tabId = handle.tabId;
     if (transcript) entry.transcript = transcript;
   });
+  // Claude makes one startup request before the prompt, so the script is set
+  // after the REPL is up and the prompt is typed directly.
+  models.sequence(event.claude);
+  await handle.client.request('pane.send_text', { pane_id: handle.paneId, text: event.prompt });
+  await wait(500);
+  await handle.client.request('pane.send_keys', { pane_id: handle.paneId, keys: ['enter'] }).catch(() => undefined);
   const child = readParent(parent.id)?.children.find((entry) => entry.id === childId);
   if (!child) throw new Error('the Claude child record vanished from the parent registry');
   return { child, close: () => handle.close() };
@@ -311,7 +322,6 @@ interface RunEventOptions {
 async function runEvent(options: RunEventOptions): Promise<void> {
   const { client, lab, parent, parentHarness, parentModels, bellwetherHome, event, childKind } = options;
   const models = await startScriptedModels();
-  models.sequence(childKind === 'pi' ? event.pi : event.claude);
   const started = childKind === 'pi'
     ? await startPiChild({ client, lab, parent, models, bellwetherHome, baseAgentDir: parentHarness.agentDir, event })
     : await startClaudeChild({ lab, parent, models, bellwetherHome, event });

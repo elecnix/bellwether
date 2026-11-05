@@ -11,6 +11,7 @@ import type { HerdrClient, HerdrEvent, Subscription } from './herdr-client.ts';
 import { DEFAULT_LIMITS, advance, initialState, markReported, type ClassifierState, type SettleLimits } from './classifier.ts';
 import { Outbox } from './outbox.ts';
 import { readParent, updateChild } from './registry.ts';
+import { resolveTranscript, sessionValueFrom } from './transcript.ts';
 import { spoolPath } from './paths.ts';
 import type { AgentStatus, ChildEventKind, ChildRecord, OutboxEntry, SpoolReport } from './types.ts';
 
@@ -304,11 +305,31 @@ export class Watcher {
     this.publish();
   }
 
+  /**
+   * The child's transcript. A spawn can finish before herdr has detected the
+   * agent, so the path is resolved lazily rather than only at spawn time.
+   */
+  private async transcriptFor(child: ChildRecord): Promise<string | undefined> {
+    if (child.transcript) return child.transcript;
+    try {
+      const result = await this.client.request('agent.get', { target: child.paneId });
+      const record = isRecord(result) && isRecord(result['agent']) ? result['agent'] : isRecord(result) ? result : undefined;
+      const path = resolveTranscript(child.harness, sessionValueFrom(record?.['agent_session']), child.cwd);
+      if (path) updateChild(this.parentId, child.id, (entry) => {
+        entry.transcript = path;
+      });
+      return path;
+    } catch {
+      return undefined;
+    }
+  }
+
   /** Whether the child moved since the last look. Transcript growth, then screen. */
   private async childIsBusy(child: ChildRecord, now: number): Promise<boolean> {
-    if (child.transcript) {
+    const transcript = await this.transcriptFor(child);
+    if (transcript) {
       try {
-        const size = fs.statSync(child.transcript).size;
+        const size = fs.statSync(transcript).size;
         const previous = this.transcriptSizes.get(child.id);
         this.transcriptSizes.set(child.id, size);
         if (previous !== undefined && size > previous) {
@@ -356,7 +377,7 @@ export class Watcher {
     }
     if (event === 'stuck') return `${child.name} has been quiet for ${this.age(Date.parse(child.lastBusyAt || child.startedAt))}. Last screen lines:\n${trim(await this.screenTail(child))}`;
     const text = child.lastReport?.text?.trim() || (await this.lastMessage(child)) || trim(await this.screenTail(child));
-    return `${child.name} went idle after ${age}:\n${text}`;
+    return `${child.name} went idle after ${age}:${text ? `\n${text}` : ' no message and no readable screen.'}`;
   }
 
   private describeExit(name: string, code: number | undefined): string {
@@ -369,9 +390,10 @@ export class Watcher {
 
   /** The child's last assistant message, read from its transcript. */
   private async lastMessage(child: ChildRecord): Promise<string | undefined> {
-    if (!child.transcript) return undefined;
+    const transcript = await this.transcriptFor(child);
+    if (!transcript) return undefined;
     try {
-      const content = fs.readFileSync(child.transcript, 'utf8');
+      const content = fs.readFileSync(transcript, 'utf8');
       const lines = content.split('\n').filter((line) => line.trim().length > 0);
       for (let index = lines.length - 1; index >= 0; index -= 1) {
         const entry: unknown = JSON.parse(lines[index] ?? 'null');

@@ -42,10 +42,13 @@ export interface SpawnResult {
 }
 
 /** The extra arguments a child harness needs to load Bellwether itself. */
-export function childArgs(kind: string, options: SpawnOptions, maxDepth: number): string[] {
+export function childArgs(kind: string, options: SpawnOptions): string[] {
   const args: string[] = [];
   if (options.model) args.push('--model', options.model);
-  if (kind === 'claude') args.push('--dangerously-load-development-channels', 'server:bellwether');
+  // Claude Code reads this flag as a list and keeps taking values until the
+  // next flag, so the two-argument form swallowed the prompt that follows it.
+  // The equals form pins the flag to one value.
+  if (kind === 'claude') args.push('--dangerously-load-development-channels=server:bellwether');
   if (options.prompt) args.push(options.prompt);
   if (options.args?.length) args.push(...options.args);
   return args;
@@ -94,7 +97,7 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
   // before its shell is at a prompt, so herdr refuses the start with
   // agent_pane_busy until the shell is ready.
   try {
-    await startWithRetry(client, { name: child.name, kind: options.kind, paneId: tab.paneId, args: childArgs(options.kind, options, maxDepth) }, signal);
+    await startWithRetry(client, { name: child.name, kind: options.kind, paneId: tab.paneId, args: childArgs(options.kind, options) }, signal);
   } catch (error) {
     await client.tabClose(tab.tabId ?? tab.paneId).catch(() => {});
     throw error;

@@ -68,9 +68,12 @@ export function advance(state: ClassifierState, observation: Observation, now: n
     next.completionSeq = observation.completionSeq;
     next.statusSince = now;
   } else if (observation.completionSeq === undefined && becameReady) {
-    // herdr 0.9.5 leaves completion_seq null for Pi, whose status comes from
-    // its integration. A turn that ends is still visible as a status change
-    // into idle or done, so count those instead.
+    // herdr reports completion_seq on AgentInfo, and the watcher reads that
+    // projection, so a reconciled child normally carries one. The field is
+    // still absent before the first reconcile finishes, and on a pane herdr
+    // has not observed working for: a turn that ends faster than screen
+    // detection catches it leaves the value unchanged. A turn that ends is
+    // also visible as a status change into idle or done, so count those.
     next.completionSeq = (state.completionSeq ?? 0) + 1;
     next.statusSince = now;
   }

@@ -5,6 +5,41 @@
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 
+/**
+ * The scripted endpoints this process started. A cell that times out abandons
+ * its finally block, so its models.stop() never runs; without this the
+ * listening socket (or a stalled response's socket) would hold the event loop
+ * open and wedge the test run forever. The listeners are unreferenced, and an
+ * exit or signal handler closes whatever is still open.
+ */
+const liveModels = new Set<http.Server>();
+let cleanupInstalled = false;
+
+function installModelsCleanup(): void {
+  if (cleanupInstalled) return;
+  cleanupInstalled = true;
+  const clean = (): void => {
+    for (const server of liveModels) {
+      server.closeAllConnections?.();
+      try {
+        server.close();
+      } catch {
+        // A server that is already closed is not an error here.
+      }
+    }
+    liveModels.clear();
+  };
+  process.once('exit', clean);
+  process.once('SIGTERM', () => {
+    clean();
+    process.exit(143);
+  });
+  process.once('SIGINT', () => {
+    clean();
+    process.exit(130);
+  });
+}
+
 export interface ScriptedReply {
   /** The assistant text the harness receives. */
   text?: string;
@@ -181,6 +216,12 @@ export async function startScriptedModels(initial: ScriptedReply = {}): Promise<
     server.once('error', reject);
     server.listen(0, '127.0.0.1', () => resolve());
   });
+  installModelsCleanup();
+  liveModels.add(server);
+  // An idle listener or a stalled response must not keep the process alive
+  // after a timed-out cell has been abandoned.
+  server.unref();
+  server.on('connection', (socket) => socket.unref());
   const address = server.address() as AddressInfo;
 
   return {
@@ -196,6 +237,7 @@ export async function startScriptedModels(initial: ScriptedReply = {}): Promise<
     release: finishStalled,
     async stop(): Promise<void> {
       finishStalled();
+      liveModels.delete(server);
       await new Promise<void>((resolve) => server.close(() => resolve()));
     },
   };

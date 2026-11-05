@@ -318,7 +318,7 @@ export class Watcher {
         this.states.set(child.id, markReported(next, now));
         continue;
       }
-      this.offer(child, event, await this.describe(child, event));
+      this.offer(child, event, await this.describe(child, event, next.lastBusyAt, now));
     }
     this.publish();
   }
@@ -356,13 +356,13 @@ export class Watcher {
         const size = fs.statSync(transcript).size;
         const previous = this.transcriptSizes.get(child.id);
         this.transcriptSizes.set(child.id, size);
-        if (previous !== undefined && size > previous) {
-          updateChild(this.parentId, child.id, (entry) => {
-            entry.lastBusyAt = new Date().toISOString();
-          });
-          return true;
-        }
-        return false;
+        // The first look only sets the baseline.
+        if (previous === undefined || size <= previous) return false;
+        if (!conversationGrowth(readRange(transcript, previous, size))) return false;
+        updateChild(this.parentId, child.id, (entry) => {
+          entry.lastBusyAt = new Date().toISOString();
+        });
+        return true;
       } catch {
         return false;
       }
@@ -392,14 +392,16 @@ export class Watcher {
   private readonly lastScreen = new Map<string, string>();
 
   /** What the parent is told about a child event. */
-  private async describe(child: ChildRecord, event: ChildEventKind): Promise<string> {
+  private async describe(child: ChildRecord, event: ChildEventKind, quietSince: number, now: number): Promise<string> {
     const age = this.age(Date.parse(child.startedAt));
     if (event === 'exited') return this.describeExit(child.name, child.exitCode);
     if (event === 'blocked') {
       const dialog = await this.client.paneRead({ paneId: child.paneId, source: 'detection', lines: 30 }).catch(() => '');
       return `${child.name} is blocked on a dialog after ${age}. The dialog:\n${trim(dialog)}\n\nAnswer it with agent_send keys, or answer the card your-attention posted.`;
     }
-    if (event === 'stuck') return `${child.name} has been quiet for ${this.age(Date.parse(child.lastBusyAt || child.startedAt))}. Last screen lines:\n${trim(await this.screenTail(child))}`;
+    // Measure the quiet period on the classifier's own clock. The registry's
+    // lastBusyAt can be written by another process that only sees file size.
+    if (event === 'stuck') return `${child.name} has been quiet for ${this.age(quietSince, now)}. Last screen lines:\n${trim(await this.screenTail(child))}`;
     const text = child.lastReport?.text?.trim() || (await this.lastMessage(child)) || trim(await this.screenTail(child));
     return `${child.name} went idle after ${age}:${text ? `\n${text}` : ' no message and no readable screen.'}`;
   }
@@ -506,8 +508,8 @@ export class Watcher {
     if (!this.subscription) this.scheduleReconnect();
   }
 
-  private age(since: number): string {
-    const seconds = Math.max(0, Math.round((this.now() - since) / 1000));
+  private age(since: number, now = this.now()): string {
+    const seconds = Math.max(0, Math.round((now - since) / 1000));
     if (seconds < 90) return `${seconds}s`;
     const minutes = Math.round(seconds / 60);
     if (minutes < 90) return `${minutes} min`;
@@ -526,6 +528,39 @@ function flatten(value: unknown): string | undefined {
 
 function trim(value: string, limit = 3000): string {
   return value.trim().slice(-limit);
+}
+
+/** Read a byte range of a file, for the part appended since the last look. */
+function readRange(file: string, from: number, to: number): string {
+  const length = to - from;
+  if (length <= 0) return '';
+  const fd = fs.openSync(file, 'r');
+  try {
+    const buffer = Buffer.alloc(length);
+    fs.readSync(fd, buffer, 0, length, from);
+    return buffer.toString('utf8');
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+/**
+ * Whether appended transcript bytes show the agent working. A session file also
+ * collects entries an extension writes, and this machine's `pi-cpu-sample`
+ * appends one every thirty seconds, so file size alone says nothing. Only an
+ * entry that is not a `custom` one counts as the conversation moving.
+ */
+function conversationGrowth(added: string): boolean {
+  for (const line of added.split('\n')) {
+    if (!line.trim()) continue;
+    try {
+      const entry = JSON.parse(line) as Record<string, unknown>;
+      if (entry['type'] !== 'custom') return true;
+    } catch {
+      // A half-written line is not evidence of work either way.
+    }
+  }
+  return false;
 }
 
 /**

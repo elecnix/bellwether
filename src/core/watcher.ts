@@ -255,19 +255,24 @@ export class Watcher {
   /** Read the live status of every child and fold it into the classifier. */
   private async reconcile(children: ChildRecord[], signal: AbortSignal): Promise<void> {
     if (!children.length) return;
-    let panes: Record<string, unknown>[];
+    let panes: Record<string, unknown>[] = [];
+    let agents: Record<string, unknown>[] = [];
     try {
-      // session.snapshot answers {type, snapshot: {panes, tabs, workspaces, ...}}.
+      // session.snapshot answers {type, snapshot: {panes, agents, tabs, ...}}.
       const result = await this.client.snapshot(signal);
       const snapshot = isRecord(result['snapshot']) ? result['snapshot'] : result;
-      const list = snapshot['panes'] ?? snapshot['pane_list'] ?? [];
-      panes = Array.isArray(list) ? (list as Record<string, unknown>[]) : [];
+      const paneList = snapshot['panes'] ?? snapshot['pane_list'];
+      panes = Array.isArray(paneList) ? (paneList as Record<string, unknown>[]) : [];
+      const agentList = snapshot['agents'];
+      agents = Array.isArray(agentList) ? (agentList as Record<string, unknown>[]) : [];
     } catch (error) {
       this.log(`snapshot failed: ${String(error)}`);
       return;
     }
+    // A pane entry is a PaneInfo, which carries no completion_seq. The agent
+    // entry beside it is an AgentInfo, which does, so the agent entry wins.
     const byId = new Map<string, Record<string, unknown>>();
-    for (const pane of panes) {
+    for (const pane of [...panes, ...agents]) {
       const paneId = pane['pane_id'];
       if (typeof paneId === 'string') byId.set(paneId, pane);
     }

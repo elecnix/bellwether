@@ -1,0 +1,39 @@
+{
+  "name": "@elecnix/bellwether",
+  "version": "0.1.0",
+  "description": "Give an agent in herdr tools to start child agents in other tabs, and a new turn when a child changes state.",
+  "license": "MIT",
+  "type": "module",
+  "repository": "github:elecnix/bellwether",
+  "keywords": [
+    "pi-package",
+    "claude-code",
+    "herdr",
+    "coding-agents"
+  ],
+  "engines": {
+    "node": ">=22.18"
+  },
+  "bin": {
+    "bellwether": "bin/bellwether.js"
+  },
+  "pi": {
+    "extensions": [
+      "./src/integrations/pi/extension.ts"
+    ]
+  },
+  "scripts": {
+    "typecheck": "tsgo --noEmit -p .",
+    "test": "npm run test:unit && npm run test:integration",
+    "test:unit": "node --test --disable-warning=ExperimentalWarning \"test/unit/**/*.test.ts\"",
+    "test:integration": "node --test --test-concurrency=1 --disable-warning=ExperimentalWarning \"test/integration/**/*.test.ts\"",
+    "doctor": "node --disable-warning=ExperimentalWarning src/cli.ts doctor"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.2"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "@typescript/native-preview": "7.0.0-dev.20260707.2"
+  }
+}

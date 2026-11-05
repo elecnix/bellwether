@@ -11,6 +11,43 @@ import { promisify } from 'node:util';
 
 const run = promisify(execFile);
 
+/**
+ * The lab servers this process started. A killed test run never reaches
+ * stop(), so an exit or signal handler kills them and removes their roots. A
+ * leaked server per killed run is what made CI hosts accumulate them.
+ */
+const liveLabs = new Map<ChildProcess, string>();
+let cleanupInstalled = false;
+
+function installLabCleanup(): void {
+  if (cleanupInstalled) return;
+  cleanupInstalled = true;
+  const clean = (): void => {
+    for (const [child, root] of liveLabs) {
+      try {
+        child.kill('SIGKILL');
+      } catch {
+        // The server is already gone.
+      }
+      try {
+        fs.rmSync(root, { recursive: true, force: true });
+      } catch {
+        // A root that cannot be removed is better left than crashing the exit.
+      }
+    }
+    liveLabs.clear();
+  };
+  process.once('exit', clean);
+  process.once('SIGTERM', () => {
+    clean();
+    process.exit(143);
+  });
+  process.once('SIGINT', () => {
+    clean();
+    process.exit(130);
+  });
+}
+
 /** The socket the operator's own herdr server owns. Nothing here may touch it. */
 export function liveSocketPath(): string {
   return path.join(os.homedir(), '.config', 'herdr', 'herdr.sock');
@@ -42,6 +79,8 @@ export interface Lab {
   readonly session: string;
   readonly socketPath: string;
   readonly pid: number | undefined;
+  /** The environment the server and its panes inherit. */
+  readonly env: NodeJS.ProcessEnv;
   /** Stop the server, confirm the process is gone, then remove the temp root. */
   stop(): Promise<void>;
 }
@@ -100,16 +139,22 @@ export async function startLab(options: LabOptions = {}): Promise<Lab> {
   const child = spawn(herdrBinary(), ['--session', session, 'server'], { env, stdio: ['ignore', 'ignore', 'pipe'] });
   await waitForSocket(socketPath, 20_000);
   if (options.keep) console.log(`lab kept: herdr --session ${session} (root ${root})`);
+  if (!options.keep) {
+    installLabCleanup();
+    liveLabs.set(child, root);
+  }
 
   return {
     root,
     session,
     socketPath,
     pid: child.pid,
+    env,
     async stop(): Promise<void> {
       await run(herdrBinary(), ['--session', session, 'server', 'stop'], { env, timeout: 15_000 }).catch(() => undefined);
       child.kill('SIGTERM');
       await waitForExit(child, 10_000);
+      liveLabs.delete(child);
       if (!options.keep) fs.rmSync(root, { recursive: true, force: true });
     },
   };

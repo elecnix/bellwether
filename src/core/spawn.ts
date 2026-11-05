@@ -28,6 +28,14 @@ export interface SpawnOptions {
   model?: string;
   args?: string[];
   focus?: boolean;
+  /** Extra environment for the child tab. Bellwether's own variables win. */
+  env?: Record<string, string>;
+  /** Milliseconds of idle before the parent hears about it. */
+  idleMs?: number;
+  /** Milliseconds of blocked before the parent hears about it. */
+  blockedMs?: number;
+  /** Milliseconds of quiet before the child counts as stuck. */
+  stuckMs?: number;
   /** Minutes of quiet before the child counts as stuck. */
   stuckMinutes?: number;
   /** The workspace to open the tab in. Defaults to the parent's own. */
@@ -72,13 +80,16 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
     statusChangedAt: now,
     lastBusyAt: now,
     depth,
-    stuckMs: options.stuckMinutes === undefined ? undefined : Math.max(1_000, Math.round(options.stuckMinutes * 60_000)),
+    idleMs: options.idleMs,
+    blockedMs: options.blockedMs,
+    stuckMs: options.stuckMs ?? (options.stuckMinutes === undefined ? undefined : Math.max(1_000, Math.round(options.stuckMinutes * 60_000))),
   };
   // 1. The record lands before herdr is asked for anything.
   upsertChild(parent.id, child);
 
   // 2. The tab carries the environment the child needs to find its parent.
   const env: Record<string, string> = {
+    ...options.env,
     BELLWETHER_PARENT: parent.id,
     BELLWETHER_CHILD: child.id,
     BELLWETHER_CHILD_NAME: child.name,

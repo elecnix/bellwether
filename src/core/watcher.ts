@@ -302,11 +302,17 @@ export class Watcher {
     const now = this.now();
     for (const child of record.children) {
       if (child.exitedAt) continue;
-      const state = this.states.get(child.id) ?? initialState(child.lastStatus, now);
+      // A child the watcher has not folded before starts from unknown, not
+      // from the status the registry already holds. Otherwise a child first
+      // seen idle looks like it never changed and never owes an idle event.
+      const state = this.states.get(child.id) ?? initialState('unknown', now);
       const busy = await this.childIsBusy(child, now);
-      // A spawn can set its own stuck threshold, which is what the lab uses to
-      // reach that event in seconds rather than ten minutes.
-      const limits = child.stuckMs === undefined ? this.limits : { ...this.limits, stuckMs: child.stuckMs };
+      // A spawn can set its own settle times, which is what the lab uses to
+      // reach each event in seconds rather than minutes.
+      const limits = { ...this.limits };
+      if (child.idleMs !== undefined) limits.idleMs = child.idleMs;
+      if (child.blockedMs !== undefined) limits.blockedMs = child.blockedMs;
+      if (child.stuckMs !== undefined) limits.stuckMs = child.stuckMs;
       const { state: next, event } = advance(state, { status: child.lastStatus, completionSeq: child.completionSeq, busy }, now, limits);
       this.states.set(child.id, next);
       if (!event) continue;

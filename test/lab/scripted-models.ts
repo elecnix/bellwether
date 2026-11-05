@@ -12,6 +12,8 @@ export interface ScriptedReply {
   tool?: { name: string; input: Record<string, unknown> };
   /** Write the headers, then hold the body until release(), as a stall does. */
   stall?: boolean;
+  /** Wait this long before answering, so a turn stays visibly working. */
+  delayMs?: number;
 }
 
 export interface RecordedModelRequest {
@@ -27,6 +29,8 @@ export interface ScriptedModels {
   readonly requests: RecordedModelRequest[];
   /** Replace the reply every later request receives. */
   reply(next: ScriptedReply): void;
+  /** Give each later request the next reply, then keep the last one. */
+  sequence(next: ScriptedReply[]): void;
   /** Let every stalled response finish. */
   release(): void;
   stop(): Promise<void>;
@@ -109,6 +113,7 @@ function openAiStream(model: string, reply: ScriptedReply): string {
 
 export async function startScriptedModels(initial: ScriptedReply = {}): Promise<ScriptedModels> {
   let current = initial;
+  const queued: ScriptedReply[] = [];
   const stalled: http.ServerResponse[] = [];
   const requests: RecordedModelRequest[] = [];
 
@@ -139,8 +144,13 @@ export async function startScriptedModels(initial: ScriptedReply = {}): Promise<
         return;
       }
 
-      const reply = current;
+      const reply = queued.length > 0 ? (queued.shift() as ScriptedReply) : current;
+      current = reply;
       const anthropic = path.startsWith('/v1/messages');
+
+      if (reply.delayMs !== undefined && reply.delayMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, reply.delayMs));
+      }
 
       if (reply.stall) {
         // Headers first, then nothing until the test releases it.
@@ -177,7 +187,11 @@ export async function startScriptedModels(initial: ScriptedReply = {}): Promise<
     url: `http://127.0.0.1:${address.port}`,
     requests,
     reply(next: ScriptedReply): void {
+      queued.length = 0;
       current = next;
+    },
+    sequence(next: ScriptedReply[]): void {
+      queued.splice(0, queued.length, ...next);
     },
     release: finishStalled,
     async stop(): Promise<void> {

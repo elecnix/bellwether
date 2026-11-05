@@ -178,6 +178,9 @@ export class Watcher {
     const subscriptions: Record<string, unknown>[] = [
       { type: 'pane.exited' },
       { type: 'pane.closed' },
+      // A tab close sends tab_closed and no pane event, so this is the only
+      // signal that a child whose tab went away is gone.
+      { type: 'tab.closed' },
       { type: 'pane.agent_detected' },
       ...children.filter((child) => !child.exitedAt).map((child) => ({ type: 'pane.agent_status_changed', pane_id: child.paneId })),
     ];
@@ -211,7 +214,8 @@ export class Watcher {
 
   private async onHerdrEvent(event: HerdrEvent): Promise<void> {
     const paneId = typeof event.data['pane_id'] === 'string' ? event.data['pane_id'] : undefined;
-    if (!paneId) {
+    const tabId = typeof event.data['tab_id'] === 'string' ? event.data['tab_id'] : undefined;
+    if (!paneId && !tabId) {
       if (event.event === 'events.lost' || event.event === 'events_lost') {
         this.log('herdr reported lost events; resubscribing');
         this.subscribedKey = '';
@@ -220,9 +224,10 @@ export class Watcher {
       return;
     }
     const record = readParent(this.parentId);
-    const child = record?.children.find((entry) => entry.paneId === paneId);
+    // A tab close names a tab and carries no pane id, so match either.
+    const child = record?.children.find((entry) => (paneId !== undefined && entry.paneId === paneId) || (tabId !== undefined && entry.tabId === tabId));
     if (!child) return;
-    if (event.event === 'pane.exited' || event.event === 'pane.closed') {
+    if (CLOSE_EVENTS.has(event.event)) {
       const code = typeof event.data['exit_code'] === 'number' ? (event.data['exit_code'] as number) : undefined;
       this.markExited(child, code);
       // The subscription named that pane, so it has to be rebuilt without it.
@@ -230,7 +235,7 @@ export class Watcher {
       void this.reconcileAndSubscribe();
       return;
     }
-    if (event.event === 'pane.agent_status_changed' || event.event === 'pane_agent_status_changed') {
+    if (STATUS_EVENTS.has(event.event)) {
       const status = statusOf(event.data, child.lastStatus);
       updateChild(this.parentId, child.id, (entry) => {
         if (entry.lastStatus !== status) entry.statusChangedAt = new Date().toISOString();
@@ -522,6 +527,15 @@ function flatten(value: unknown): string | undefined {
 function trim(value: string, limit = 3000): string {
   return value.trim().slice(-limit);
 }
+
+/**
+ * herdr names an event in a subscription request with dots and sends the frame
+ * with underscores, so both spellings are accepted here. A tab close arrives
+ * as `tab_closed` and names the tab rather than the pane.
+ */
+const CLOSE_EVENTS = new Set(['pane.exited', 'pane_exited', 'pane.closed', 'pane_closed', 'tab.closed', 'tab_closed']);
+
+const STATUS_EVENTS = new Set(['pane.agent_status_changed', 'pane_agent_status_changed']);
 
 /** How often to ask herdr for a child's session when no transcript is known. */
 const TRANSCRIPT_LOOK_INTERVAL_MS = 60_000;

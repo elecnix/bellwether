@@ -2,9 +2,9 @@
 // first, then create the tab with the Bellwether environment, then ask herdr
 // to start the harness in the tab's root pane, then watch the new pane.
 import os from 'node:os';
-import type { HerdrClient } from './herdr-client.ts';
+import { HerdrApiError, type HerdrClient } from './herdr-client.ts';
 import { newChildId } from './outbox.ts';
-import { saveParent, upsertChild } from './registry.ts';
+import { updateChild, upsertChild } from './registry.ts';
 import { resolveTranscript } from './transcript.ts';
 import type { ChildRecord, Harness, ParentRecord } from './types.ts';
 
@@ -89,15 +89,19 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
   child.workspaceId = options.workspaceId ?? parent.workspaceId;
   upsertChild(parent.id, child);
 
-  // 3. Start the harness in the tab's root pane.
+  // 3. Start the harness in the tab's root pane. A tab answers tab.create
+  // before its shell is at a prompt, so herdr refuses the start with
+  // agent_pane_busy until the shell is ready.
   try {
-    await client.agentStart({ name: child.name, kind: options.kind, paneId: tab.paneId, args: childArgs(options.kind, options, maxDepth) }, signal);
+    await startWithRetry(client, { name: child.name, kind: options.kind, paneId: tab.paneId, args: childArgs(options.kind, options, maxDepth) }, signal);
   } catch (error) {
     await client.tabClose(tab.tabId ?? tab.paneId).catch(() => {});
     throw error;
   }
 
   // 4. Resolve the transcript, then hand back the child and its herdr link.
+  // The registry is re-read rather than written from the caller's copy, which
+  // would erase the child record that upsertChild just added.
   await new Promise((resolve) => setTimeout(resolve, 750));
   try {
     const panes = await client.agentList(signal);
@@ -105,13 +109,40 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
     if (pane) {
       child.transcript = resolveTranscript(child.harness, pane.agentSessionId, child.cwd);
       child.lastStatus = pane.agentStatus;
+      updateChild(parent.id, child.id, (entry) => {
+        entry.transcript = child.transcript;
+        entry.lastStatus = child.lastStatus;
+      });
     }
-    saveParent(parent);
   } catch {
     // A missed session id only costs the transcript-based summary.
   }
 
   return { child, link: herdrLink('pane', child.paneId) };
+}
+
+/** herdr refuses a start until the new tab's shell reaches its prompt. */
+const PANE_NOT_READY = new Set(['agent_pane_busy', 'agent_pane_not_ready', 'pane_busy']);
+
+export async function startWithRetry(
+  client: HerdrClient,
+  params: { name: string; kind: string; paneId: string; args: string[]; timeoutMs?: number },
+  signal?: AbortSignal,
+  totalMs = 60_000,
+): Promise<void> {
+  const deadline = Date.now() + totalMs;
+  let delay = 400;
+  for (;;) {
+    try {
+      await client.agentStart(params, signal);
+      return;
+    } catch (error) {
+      const code = error instanceof HerdrApiError ? error.code : undefined;
+      if (!code || !PANE_NOT_READY.has(code) || Date.now() > deadline) throw error;
+      await new Promise((resolve) => setTimeout(resolve, delay));
+      delay = Math.min(delay * 2, 4_000);
+    }
+  }
 }
 
 export function herdrLink(kind: 'pane' | 'tab' | 'workspace' | 'agent', id: string): string {

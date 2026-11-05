@@ -60,8 +60,15 @@ export function advance(state: ClassifierState, observation: Observation, now: n
     next.statusSince = now;
     next.firedStuckSince = undefined;
   }
+  const becameReady = isReady(observation.status) && !isReady(state.status);
   if (observation.completionSeq !== undefined && observation.completionSeq !== state.completionSeq) {
     next.completionSeq = observation.completionSeq;
+    next.statusSince = now;
+  } else if (observation.completionSeq === undefined && becameReady) {
+    // herdr 0.9.5 leaves completion_seq null for Pi, whose status comes from
+    // its integration. A turn that ends is still visible as a status change
+    // into idle or done, so count those instead.
+    next.completionSeq = (state.completionSeq ?? 0) + 1;
     next.statusSince = now;
   }
   if (observation.busy) {
@@ -74,6 +81,10 @@ export function advance(state: ClassifierState, observation: Observation, now: n
   }
   if (isReady(next.status) && next.completionSeq !== undefined && next.completionSeq !== next.reportedFor && now - next.statusSince >= limits.idleMs) {
     return { state: { ...next, reportedFor: next.completionSeq }, event: 'idle' };
+  }
+  // A child first seen already settled still owes its parent one message.
+  if (isReady(next.status) && next.completionSeq === undefined && state.status !== next.status && now - next.statusSince >= limits.idleMs) {
+    return { state: { ...next, completionSeq: 1, reportedFor: 1 }, event: 'idle' };
   }
   if ((next.status === 'working' || next.status === 'unknown') && next.firedStuckSince !== next.lastBusyAt && now - next.lastBusyAt >= limits.stuckMs) {
     return { state: { ...next, firedStuckSince: next.lastBusyAt }, event: 'stuck' };

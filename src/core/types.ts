@@ -37,6 +37,11 @@ export interface ChildRecord {
   depth: number;
   /** The last report the child sent, and when. */
   lastReport?: { status: ReportStatus; text: string; at: string; seq: number };
+  /**
+   * Set when a report arrives and cleared when the turn it covered ends, so a
+   * child that reported does not also produce an idle event for the same turn.
+   */
+  reportPending?: boolean;
   /** The last time the child's transcript or screen moved. */
   lastBusyAt: string;
   /** Set once the child is gone, so its events stop. */
@@ -55,6 +60,8 @@ export interface ParentRecord {
   workspaceId?: string;
   depth: number;
   children: ChildRecord[];
+  /** How far into the child spool this parent has read, so a restart resumes. */
+  spoolOffset?: number;
   updatedAt: string;
 }
 

@@ -281,6 +281,20 @@ function agentStatus(value: unknown): AgentStatus | undefined {
   return typeof value === 'string' && AGENT_STATUSES.includes(value as AgentStatus) ? (value as AgentStatus) : undefined;
 }
 
+/**
+ * The text of a pane.read answer. herdr nests it: the frame is
+ * `{type: 'pane_read', read: {pane_id, source, format, text}}`.
+ */
+export function paneText(result: unknown): string {
+  if (typeof result === 'string') return result;
+  if (isRecord(result)) {
+    const read = result['read'];
+    if (isRecord(read) && typeof read['text'] === 'string') return read['text'];
+    if (typeof result['text'] === 'string') return result['text'];
+  }
+  return '';
+}
+
 /** Read the fields Bellwether needs, and nothing else, from a raw pane object. */
 export function parsePane(value: unknown): HerdrPane | undefined {
   if (!isRecord(value)) return undefined;
@@ -363,9 +377,7 @@ export class HerdrClient {
 
   async paneRead(params: { paneId: string; source: 'visible' | 'recent' | 'recent_unwrapped' | 'detection'; lines?: number }, signal?: AbortSignal): Promise<string> {
     const result = await this.request('pane.read', { pane_id: params.paneId, source: params.source, lines: params.lines ?? null, format: 'text' }, { signal, timeoutMs: 8000 });
-    if (typeof result === 'string') return result;
-    if (isRecord(result) && typeof result['text'] === 'string') return result['text'];
-    return '';
+    return paneText(result);
   }
 
   agentPrompt(target: string, text: string, signal?: AbortSignal): Promise<void> {

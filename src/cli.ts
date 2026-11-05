@@ -243,13 +243,16 @@ async function main(): Promise<number> {
   if (command === 'watch') {
     const printed = new Set<string>();
     const controller = new AbortController();
+    // Delivery has to be recorded on the watcher that produced the entry, or
+    // the next publish offers the same one again.
+    let live: Watcher | undefined;
     const emit = (entry: OutboxEntry): void => {
       console.log(`CHILD ${entry.event} ${entry.name} ${entry.paneId} unread=${entry.receipt} at=${entry.at}`);
       console.log(`  ${entry.text.split('\n').join('\n  ')}`);
       printed.add(entry.receipt);
-      watcher.markDelivered(entry.receipt);
+      live?.markDelivered(entry.receipt);
     };
-    const live = new Watcher({
+    live = new Watcher({
       client,
       parentId,
       tickMs: num(flags, 'tick-ms') ?? 5_000,
@@ -261,7 +264,7 @@ async function main(): Promise<number> {
     // The watcher's own timer is unref'd, so the watch loop holds the process open.
     const keepAlive = setInterval(() => {}, 60_000);
     process.on('SIGINT', () => {
-      live.stop();
+      live?.stop();
       clearInterval(keepAlive);
       controller.abort();
       process.exit(0);

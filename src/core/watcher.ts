@@ -52,6 +52,7 @@ export class Watcher {
   private readonly states = new Map<string, ClassifierState>();
   private readonly screenReadAt = new Map<string, number>();
   private readonly transcriptSizes = new Map<string, number>();
+  private readonly transcriptLookAt = new Map<string, number>();
 
   private controller: AbortController | undefined;
   private subscription: Subscription | undefined;
@@ -320,6 +321,12 @@ export class Watcher {
    */
   private async transcriptFor(child: ChildRecord): Promise<string | undefined> {
     if (child.transcript) return child.transcript;
+    // A child whose harness keeps no transcript would otherwise cost one
+    // herdr call per tick forever. Look again once a minute at most, because
+    // herdr can report the session a little after the spawn returns.
+    const lastLook = this.transcriptLookAt.get(child.id) ?? 0;
+    if (this.now() - lastLook < TRANSCRIPT_LOOK_INTERVAL_MS) return undefined;
+    this.transcriptLookAt.set(child.id, this.now());
     try {
       const result = await this.client.request('agent.get', { target: child.paneId });
       const record = isRecord(result) && isRecord(result['agent']) ? result['agent'] : isRecord(result) ? result : undefined;
@@ -512,6 +519,9 @@ function flatten(value: unknown): string | undefined {
 function trim(value: string, limit = 3000): string {
   return value.trim().slice(-limit);
 }
+
+/** How often to ask herdr for a child's session when no transcript is known. */
+const TRANSCRIPT_LOOK_INTERVAL_MS = 60_000;
 
 /** The set of panes the subscription must cover, as one comparable string. */
 function paneKey(children: ChildRecord[]): string {

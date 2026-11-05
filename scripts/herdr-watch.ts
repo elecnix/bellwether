@@ -39,7 +39,18 @@ function line(source: string, raw: Record<string, unknown> | undefined, extra: R
 async function pane(paneId: string): Promise<Record<string, unknown> | undefined> {
   try {
     const result = await client.request('pane.get', { pane_id: paneId });
-    return typeof result === 'object' && result !== null && 'pane' in result ? ((result as { pane: Record<string, unknown> }).pane) : undefined;
+    const raw = typeof result === 'object' && result !== null && 'pane' in result ? ((result as { pane: Record<string, unknown> }).pane) : undefined;
+    if (!raw) return undefined;
+    // agent.get carries state_change_seq where pane.get leaves it out, and it
+    // also carries the harness session path, so a probe reads both surfaces.
+    try {
+      const agentResult = await client.request('agent.get', { target: paneId });
+      const agent = typeof agentResult === 'object' && agentResult !== null && 'agent' in agentResult ? ((agentResult as { agent: Record<string, unknown> }).agent) : undefined;
+      if (agent && typeof agent === 'object') return { ...raw, ...agent, agent_from: 'agent.get' };
+    } catch {
+      // a pane with no agent answers pane.get only
+    }
+    return raw;
   } catch (error) {
     return { error: String(error) };
   }

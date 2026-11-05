@@ -39,8 +39,6 @@ Bellwether sends input only to panes it started for this parent.
 
 ## Install
 
-Bellwether loads in two harnesses, as a Pi package and as a Claude Code plugin.
-
 ### Pi
 
 ```sh
@@ -64,7 +62,9 @@ Channels are a research preview. A plugin outside the organization allowlist nee
 claude --dangerously-load-development-channels plugin:bellwether@bellwether
 ```
 
-The plugin runs `bin/bellwether-mcp.js` as an MCP server named `bellwether` and enables that server as a channel.
+The plugin runs `bin/bellwether-mcp.js` as an MCP server and enables it as a channel, and that declaration is what delivers child events. Load the server as a plain MCP server and the tools arrive, with events waiting in the outbox.
+
+The server speaks MCP over stdio, so each log line goes to stderr and stdout carries only the protocol. It exits when stdin closes, which keeps a leftover process from showing the session as listening.
 
 ### Check the install
 

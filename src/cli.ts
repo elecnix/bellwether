@@ -9,9 +9,8 @@ import { HerdrClient, resolveSocketPath } from './core/herdr-client.ts';
 import { bellwetherHome } from './core/paths.ts';
 import { emptyParent, listParents, readParent, saveParent } from './core/registry.ts';
 import { reportToParent, writeReport } from './core/report.ts';
-import { Watcher } from './core/watcher.ts';
-import { AGENT_KINDS, spawnChild, type SpawnOptions } from './core/spawn.ts';
-import { parentTools, runBellwetherTool } from './integrations/tools.ts';
+import { DaemonClient } from './daemon/client.ts';
+import { daemonIsLive, startDaemon } from './daemon/server.ts';
 import type { OutboxEntry, ReportStatus } from './core/types.ts';
 
 interface Flags {
@@ -146,6 +145,9 @@ function checkPackaging(): number {
 async function doctor(): Promise<number> {
   let failures = 0;
   console.log(`bellwether home  ${bellwetherHome()}`);
+  const daemonSocket = path.join(bellwetherHome(), 'daemon.sock');
+  const daemonLive = daemonIsLive(bellwetherHome());
+  console.log(`  ${daemonLive ? 'ok   ' : 'info '} daemon: ${daemonLive ? 'running' : 'idle, starts on demand'} (${daemonSocket})`);
   failures += checkPackaging();
   const socket = resolveSocketPath();
   if (!fs.existsSync(socket)) {
@@ -172,7 +174,8 @@ async function main(): Promise<number> {
   const { positional, flags } = parseArgs(rest);
 
   if (command === 'help' || command === '--help') {
-    console.log('Usage: bellwether <spawn|watch|list|read|send|stop|report|parents|doctor>');
+    console.log('Usage: bellwether <daemon|spawn|watch|list|read|send|stop|report|parents|doctor>');
+    console.log('  daemon [--socket PATH]                   run the local daemon in the foreground');
     console.log('  spawn  --kind KIND --name NAME [--cwd DIR] [--prompt TEXT] [--model M] [--parent ID] [--focus]');
     console.log('  watch  [--parent ID] [--tick-ms N]      one line per child event, then keeps reading');
     console.log('  list   [--parent ID]');
@@ -184,6 +187,17 @@ async function main(): Promise<number> {
   }
 
   if (command === 'doctor') return doctor();
+
+  if (command === 'daemon') {
+    const socketPath = str(flags, 'socket') ?? process.env['BELLWETHER_DAEMON_SOCKET'] ?? path.join(bellwetherHome(), 'daemon.sock');
+    const daemon = await startDaemon({ socketPath, home: bellwetherHome(), log: (message) => console.error('[bellwether-daemon]', message) });
+    console.error(`[bellwether-daemon] listening on ${socketPath} with pid ${daemon.pid}`);
+    const stop = (): void => void daemon.close().then(() => process.exit(0));
+    process.on('SIGTERM', stop);
+    process.on('SIGINT', stop);
+    await daemon.whenClosed();
+    return 0;
+  }
 
   if (command === 'parents') {
     for (const parent of listParents()) console.log(`${parent.id}\t${parent.children.length} children\t${parent.updatedAt}\t${parent.cwd}`);
@@ -203,105 +217,77 @@ async function main(): Promise<number> {
   }
 
   const { id: parentId } = parentFor(flags);
-  const client = clientFrom(flags);
-
-  if (command === 'spawn') {
-    const parent = readParent(parentId);
-    if (!parent) throw new Error(`No parent registry ${parentId}. Run bellwether list once to create it.`);
-    const kind = str(flags, 'kind') ?? 'pi';
-    if (!AGENT_KINDS.includes(kind as (typeof AGENT_KINDS)[number])) throw new Error(`Unknown kind ${kind}; expected one of ${AGENT_KINDS.join(', ')}`);
-    const name = str(flags, 'name');
-    if (!name) throw new Error('spawn needs --name');
-    const options: SpawnOptions = {
-      kind,
-      name,
-      cwd: str(flags, 'cwd'),
-      prompt: str(flags, 'prompt'),
-      model: str(flags, 'model'),
-      focus: flags['focus'] === true,
-      stuckMinutes: num(flags, 'stuck-minutes'),
-      maxDepth: num(flags, 'max-depth'),
-      args: str(flags, 'args')?.split('\u0000'),
-    };
-    const { child, link } = await spawnChild(client, parent, options);
-    console.log(`spawned ${child.name}`);
-    console.log(`  id      ${child.id}`);
-    console.log(`  pane    ${child.paneId}`);
-    console.log(`  tab     ${child.tabId ?? '-'}`);
-    console.log(`  link    ${link}`);
-    console.log(`  parent  ${parent.id}`);
-    return 0;
-  }
-
-  const watcher = new Watcher({
-    client,
-    parentId,
-    tickMs: num(flags, 'tick-ms') ?? 5_000,
-    onEntries: () => {},
-  });
+  const parent = readParent(parentId);
+  if (!parent) throw new Error(`No parent registry ${parentId}. Run bellwether list once to create it.`);
+  const daemon = await DaemonClient.connect({
+    harness: parent.harness,
+    session: parent.session,
+    cwd: parent.cwd,
+    host: parent.host,
+    paneId: parent.paneId,
+    workspaceId: parent.workspaceId,
+    depth: parent.depth,
+    herdrSocket: resolveSocketPath({ socketPath: str(flags, 'socket'), session: str(flags, 'session') }),
+  }, { log: (message) => console.error('[bellwether]', message) });
 
   if (command === 'watch') {
     const printed = new Set<string>();
-    const controller = new AbortController();
-    // Delivery has to be recorded on the watcher that produced the entry, or
-    // the next publish offers the same one again.
-    let live: Watcher | undefined;
     const emit = (entry: OutboxEntry): void => {
+      if (printed.has(entry.receipt) || entry.read) return;
+      printed.add(entry.receipt);
       console.log(`CHILD ${entry.event} ${entry.name} ${entry.paneId} unread=${entry.receipt} at=${entry.at}`);
       console.log(`  ${entry.text.split('\n').join('\n  ')}`);
-      printed.add(entry.receipt);
-      live?.markDelivered(entry.receipt);
     };
-    live = new Watcher({
-      client,
-      parentId,
-      tickMs: num(flags, 'tick-ms') ?? 5_000,
-      onEntries: (entries) => {
-        for (const entry of entries) if (!entry.deliveredAt && !printed.has(entry.receipt)) emit(entry);
-      },
-    });
-    live.start();
-    // The watcher's own timer is unref'd, so the watch loop holds the process open.
+    daemon.onEvents((entries) => entries.forEach(emit));
+    (await daemon.pending()).forEach(emit);
+    console.log(`READY watch parent=${parentId} home=${bellwetherHome()}`);
     const keepAlive = setInterval(() => {}, 60_000);
     process.on('SIGINT', () => {
-      live?.stop();
       clearInterval(keepAlive);
-      controller.abort();
-      process.exit(0);
+      void daemon.close().then(() => process.exit(0));
     });
-    console.log(`READY watch parent=${parentId} home=${bellwetherHome()}`);
     await new Promise(() => {});
     return 0;
   }
 
-  watcher.start();
-  // One reconcile pass, then answer.
-  await new Promise((resolve) => setTimeout(resolve, 1500));
-  const context = { client, parentId, watcher };
-
-  if (command === 'list') {
-    console.log(await runBellwetherTool(context, 'agent_list', {}));
-  } else if (command === 'read') {
-    const child = positional[0];
-    if (!child) throw new Error('read needs a child');
-    console.log(await runBellwetherTool(context, 'agent_read', { child, lines: num(flags, 'lines') }));
-  } else if (command === 'send') {
-    const child = positional[0];
-    if (!child) throw new Error('send needs a child');
-    const keys = str(flags, 'keys')?.split(',').map((key) => key.trim()).filter(Boolean);
-    console.log(await runBellwetherTool(context, 'agent_send', { child, text: str(flags, 'text'), keys }));
-  } else if (command === 'stop') {
-    const child = positional[0];
-    if (!child) throw new Error('stop needs a child');
-    console.log(await runBellwetherTool(context, 'agent_stop', { child, force: flags['force'] === true }));
-  } else {
-    console.log('Usage: bellwether <spawn|watch|list|read|send|stop|report|parents|doctor>');
-    watcher.stop();
-    return 1;
+  try {
+    if (command === 'spawn') {
+      const name = str(flags, 'name');
+      if (!name) throw new Error('spawn needs --name');
+      console.log(await daemon.tool('agent_spawn', {
+        kind: str(flags, 'kind') ?? 'pi',
+        name,
+        cwd: str(flags, 'cwd'),
+        prompt: str(flags, 'prompt'),
+        model: str(flags, 'model'),
+        focus: flags['focus'] === true,
+        stuckMinutes: num(flags, 'stuck-minutes'),
+        maxDepth: num(flags, 'max-depth'),
+        args: str(flags, 'args')?.split('\u0000'),
+      }));
+    } else if (command === 'list') {
+      console.log(await daemon.tool('agent_list', {}));
+    } else if (command === 'read') {
+      const child = positional[0];
+      if (!child) throw new Error('read needs a child');
+      console.log(await daemon.tool('agent_read', { child, lines: num(flags, 'lines') }));
+    } else if (command === 'send') {
+      const child = positional[0];
+      if (!child) throw new Error('send needs a child');
+      const keys = str(flags, 'keys')?.split(',').map((key) => key.trim()).filter(Boolean);
+      console.log(await daemon.tool('agent_send', { child, text: str(flags, 'text'), keys }));
+    } else if (command === 'stop') {
+      const child = positional[0];
+      if (!child) throw new Error('stop needs a child');
+      console.log(await daemon.tool('agent_stop', { child, force: flags['force'] === true }));
+    } else {
+      console.log('Usage: bellwether <daemon|spawn|watch|list|read|send|stop|report|parents|doctor>');
+      return 1;
+    }
+  } finally {
+    await daemon.close();
   }
-  watcher.stop();
   return 0;
 }
 
-void parentTools;
 process.exitCode = await main();

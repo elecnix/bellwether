@@ -14,7 +14,7 @@ import { DaemonClient } from '../../daemon/client.ts';
 import { resolveSocketPath } from '../../core/herdr-client.ts';
 import { hostName } from '../../core/spawn.ts';
 import type { OutboxEntry } from '../../core/types.ts';
-import { childTools, parentTools } from '../tools.ts';
+import { childTools, parentTools, runChildToolLocally } from '../tools.ts';
 import { ReceiptScan, claudeConfigDir } from './transcript.ts';
 
 const log = (...args: unknown[]): void => console.error('[bellwether]', ...args);
@@ -61,6 +61,12 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
   const text = (body: unknown): { content: { type: 'text'; text: string }[] } => ({
     content: [{ type: 'text', text: typeof body === 'string' ? body : JSON.stringify(body, null, 2) }],
   });
+  try {
+    const local = runChildToolLocally(request.params.name, (request.params.arguments ?? {}) as Record<string, unknown>);
+    if (local !== undefined) return text(local);
+  } catch (error) {
+    return { ...text((error as Error).message), isError: true };
+  }
   await ready;
   if (!daemon) return { ...text(connectFailure), isError: true };
   try {

@@ -120,18 +120,27 @@ function describeChild(child: ChildRecord, watcher: Watcher): string {
   return `${child.name}\t${child.kind}\t${state}\t${age}s\t${child.paneId}\tunread ${unread}\t${child.cwd ?? ''}`;
 }
 
+/**
+ * The one tool a child runs in its own process. A report appends a line to the
+ * parent's spool, which needs the child's environment and nothing from the
+ * daemon, so the daemon would refuse it with no BELLWETHER_PARENT of its own.
+ */
+export function runChildToolLocally(name: string, args: Record<string, unknown>): string | undefined {
+  if (name !== 'parent_report') return undefined;
+  const status = optionalString(args['status']) as ReportStatus | undefined;
+  const text = optionalString(args['text']);
+  if (!status || !text) throw new Error('parent_report needs both status and text');
+  const written = reportToParent(status, text);
+  if (!written) throw new Error('This session has no BELLWETHER_PARENT, so there is nobody to report to.');
+  return `Reported ${status} to the parent.`;
+}
+
 export async function runBellwetherTool(ctx: ToolContext, name: string, args: Record<string, unknown>): Promise<string> {
   const record = readParent(ctx.parentId);
   if (!record) throw new Error(`No Bellwether registry for ${ctx.parentId}. Start a session with the Bellwether extension loaded.`);
 
-  if (name === 'parent_report') {
-    const status = optionalString(args['status']) as ReportStatus | undefined;
-    const text = optionalString(args['text']);
-    if (!status || !text) throw new Error('parent_report needs both status and text');
-    const written = reportToParent(status, text);
-    if (!written) throw new Error('This session has no BELLWETHER_PARENT, so there is nobody to report to.');
-    return `Reported ${status} to the parent.`;
-  }
+  const local = runChildToolLocally(name, args);
+  if (local !== undefined) return local;
 
   if (name === 'agent_spawn') {
     const options: SpawnOptions = {

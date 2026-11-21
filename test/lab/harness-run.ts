@@ -164,7 +164,9 @@ export async function ensureWorkspace(client: HerdrClient, cwd: string): Promise
 export async function waitForClaudeReady(client: HerdrClient, paneId: string, timeoutMs = 60_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
-    const text = await client.paneRead({ paneId, source: 'recent_unwrapped', lines: 80 }).catch(() => '');
+    // Claude draws on the alternate screen, which recent_unwrapped does not
+    // cover, so the visible screen is the one to read.
+    const text = await client.paneRead({ paneId, source: 'visible', lines: 80 }).catch(() => '');
     // Starting in manual mode offers to switch back to auto mode first.
     if (/Make auto mode your default permission mode/.test(text)) {
       await client.request('pane.send_keys', { pane_id: paneId, keys: ['down', 'enter'] }).catch(() => undefined);

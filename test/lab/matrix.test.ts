@@ -403,7 +403,7 @@ function pairTest(title: string, parentKind: LabHarnessKind, childKind: LabHarne
         }
       }
       await until('the parent transcript', 40_000, async () => (parentKind === 'pi' ? findTranscript(harness.agentDir, parent.session) : await harness.transcript())).catch(async (error: Error) => {
-        const pane = await harness.client.paneRead({ paneId: harness.paneId, source: 'recent_unwrapped', lines: 60 }).catch(() => '');
+        const pane = await harness.client.paneRead({ paneId: harness.paneId, source: 'visible', lines: 60 }).catch(() => '');
         throw new Error(`${error.message}\n--- the parent pane ---\n${pane}`);
       });
 

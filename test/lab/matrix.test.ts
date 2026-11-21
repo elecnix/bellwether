@@ -1,8 +1,8 @@
 // Tier 3: the four parent and child pairs, and the five child events. The Pi
 // parent runs a real TUI against the scripted provider, and a child is either a
-// real Pi TUI or a real Claude Code REPL. The Claude parent needs the channel
-// feature, which this Claude Code build reports as unavailable, so those two
-// pairs skip with that reason rather than pretend.
+// real Pi TUI or a real Claude Code REPL. A Claude parent needs the channel
+// feature, and this Claude Code build ignores the development channel for a
+// server entry, so those two pairs skip and say why rather than pretend.
 //
 // A cell passes only when the parent's transcript has the receipt followed by
 // a new assistant message, and the outbox marks that receipt read. A sent
@@ -23,6 +23,8 @@ import { createPiAgentDir, hasHarness, startHarness, type LabHarness, type LabHa
 const herdrMissing = (await hasHerdr()) ? false : 'herdr is not on PATH';
 const piMissing = (await hasHarness('pi')) ? false : 'pi is not on PATH';
 const claudeMissing = (await hasHarness('claude')) ? false : 'claude is not on PATH';
+/** Claude Code 2.1.323 says "--dangerously-load-development-channels ignored (server:bellwether)" and never loads the channel, so it cannot be woken. */
+const claudeChannelsReason = 'This Claude Code build ignores the development channel for a server entry, so a Claude parent cannot be woken';
 
 function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -424,5 +426,5 @@ function pairTest(title: string, parentKind: LabHarnessKind, childKind: LabHarne
 
 pairTest('the pi parent and pi child pair drives all five events', 'pi', 'pi', herdrMissing || piMissing);
 pairTest('the pi parent and claude child pair drives all five events', 'pi', 'claude', herdrMissing || piMissing || claudeMissing);
-pairTest('the claude parent and pi child pair drives all five events', 'claude', 'pi', herdrMissing || piMissing || claudeMissing);
-pairTest('the claude parent and claude child pair drives all five events', 'claude', 'claude', herdrMissing || claudeMissing);
+pairTest('the claude parent and pi child pair drives all five events', 'claude', 'pi', herdrMissing || piMissing || claudeMissing || claudeChannelsReason);
+pairTest('the claude parent and claude child pair drives all five events', 'claude', 'claude', herdrMissing || claudeMissing || claudeChannelsReason);

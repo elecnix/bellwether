@@ -383,7 +383,7 @@ async function runEvent(options: RunEventOptions): Promise<void> {
 function pairTest(title: string, parentKind: LabHarnessKind, childKind: LabHarnessKind, skip: string | boolean): void {
   test(title, { skip, timeout: 330_000 }, async (t) => {
     const parentModels = await startScriptedModels({ text: 'parent ready' });
-    const lab = await startLab();
+    const lab = await startLab({ keep: Boolean(process.env['BW_LAB_KEEP']) });
     const bellwetherHome = path.join(lab.root, 'bellwether');
     fs.mkdirSync(bellwetherHome, { recursive: true });
     const previousHome = process.env['BELLWETHER_HOME'];
@@ -402,7 +402,10 @@ function pairTest(title: string, parentKind: LabHarnessKind, childKind: LabHarne
           if (await waitFor(() => findTranscript(harness.agentDir, parent.session), 12_000)) break;
         }
       }
-      await until('the parent transcript', 40_000, async () => (parentKind === 'pi' ? findTranscript(harness.agentDir, parent.session) : await harness.transcript()));
+      await until('the parent transcript', 40_000, async () => (parentKind === 'pi' ? findTranscript(harness.agentDir, parent.session) : await harness.transcript())).catch(async (error: Error) => {
+        const pane = await harness.client.paneRead({ paneId: harness.paneId, source: 'recent_unwrapped', lines: 60 }).catch(() => '');
+        throw new Error(`${error.message}\n--- the parent pane ---\n${pane}`);
+      });
 
       for (const event of cases) {
         await t.test(`${event.event} reaches the ${parentKind} parent`, { timeout: 90_000 }, async () => {

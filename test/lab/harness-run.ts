@@ -171,6 +171,12 @@ export async function waitForClaudeReady(client: HerdrClient, paneId: string, ti
       await new Promise((resolve) => setTimeout(resolve, 600));
       continue;
     }
+    // A development channel asks for consent once, with the safe answer preselected.
+    if (/Loading development channels/.test(text)) {
+      await client.request('pane.send_keys', { pane_id: paneId, keys: ['enter'] }).catch(() => undefined);
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      continue;
+    }
     if (/shift\+tab to cycle|auto mode on|manual mode on|accept edits on|plan mode on/.test(text)) return;
     if (Date.now() > deadline) throw new Error(`Claude's TUI in ${paneId} was not ready in time`);
     await new Promise((resolve) => setTimeout(resolve, 300));

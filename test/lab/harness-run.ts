@@ -298,7 +298,7 @@ export async function startHarness(options: LabHarnessOptions): Promise<LabHarne
     // channel notifications as unavailable, so no plugin flag can wake a
     // Claude parent here.
     const flags = [
-      options.channel ? '--dangerously-load-development-channels server:bellwether' : '',
+      options.channel ? '--dangerously-load-development-channels=server:bellwether' : '',
       `--mcp-config ${path.join(agentDir, 'mcp.json')}`,
       '--strict-mcp-config',
       options.permissionMode ? `--permission-mode ${options.permissionMode}` : '',

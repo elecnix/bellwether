@@ -1,19 +1,20 @@
 // The Claude Code channel: an MCP server over stdio that gives the parent
 // session the Bellwether tools, and pushes each child event into the session
-// as a notifications/claude/channel event. A receipt id in the event text is
-// what marks that event read once it reaches the session transcript, which is
-// where Claude Code records what the model received.
+// as a notifications/claude/channel event. The core runs in the daemon; this
+// server is one client of it. A receipt id in the event text marks that event
+// read once it reaches the session transcript, which is where Claude Code
+// records what the model received.
 //
 // stdout carries the MCP protocol, so every log line goes to stderr.
 import os from 'node:os';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
-import { HerdrClient, type HerdrEvent, type Subscription } from '../../core/herdr-client.ts';
-import { emptyParent, parentId, readParent, saveParent } from '../../core/registry.ts';
-import { Watcher } from '../../core/watcher.ts';
+import { DaemonClient } from '../../daemon/client.ts';
+import { resolveSocketPath } from '../../core/herdr-client.ts';
+import { hostName } from '../../core/spawn.ts';
 import type { OutboxEntry } from '../../core/types.ts';
-import { childTools, parentTools, runBellwetherTool, type ToolContext } from '../tools.ts';
+import { childTools, parentTools } from '../tools.ts';
 import { ReceiptScan, claudeConfigDir } from './transcript.ts';
 
 const log = (...args: unknown[]): void => console.error('[bellwether]', ...args);
@@ -31,19 +32,6 @@ const workspace = process.env['HERDR_WORKSPACE_ID'];
 const cwd = process.env['CLAUDE_PROJECT_DIR'] ?? process.cwd();
 const depth = Number.parseInt(process.env['BELLWETHER_DEPTH'] ?? '0', 10) || 0;
 const isChild = Boolean(process.env['BELLWETHER_PARENT']);
-
-const existing = readParent(parentId('claude-code', session));
-const parent = existing ?? emptyParent('claude-code', session, cwd, { host: os.hostname(), paneId: pane, workspaceId: workspace, depth });
-saveParent(parent);
-
-const client = new HerdrClient();
-const watcher = new Watcher({
-  client,
-  parentId: parent.id,
-  log,
-  onEntries: (entries) => schedule(entries),
-});
-const context: ToolContext = { client, parentId: parent.id, watcher };
 
 const tools = isChild ? [...parentTools, ...childTools] : parentTools;
 
@@ -64,12 +52,19 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: tools.map(({ name, description, schema }) => ({ name, description, inputSchema: schema })),
 }));
 
+let daemon: DaemonClient | undefined;
+let connectFailure = 'Bellwether is not running: the daemon did not start for this session.';
+/** The first connection attempt, awaited by any tool call that arrives early. */
+let ready: Promise<void> = Promise.resolve();
+
 mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
   const text = (body: unknown): { content: { type: 'text'; text: string }[] } => ({
     content: [{ type: 'text', text: typeof body === 'string' ? body : JSON.stringify(body, null, 2) }],
   });
+  await ready;
+  if (!daemon) return { ...text(connectFailure), isError: true };
   try {
-    return text(await runBellwetherTool(context, request.params.name, (request.params.arguments ?? {}) as Record<string, unknown>));
+    return text(await daemon.tool(request.params.name, (request.params.arguments ?? {}) as Record<string, unknown>));
   } catch (error) {
     return { ...text((error as Error).message), isError: true };
   }
@@ -87,14 +82,13 @@ async function push(entry: OutboxEntry): Promise<void> {
   });
 }
 
-/** A receipt has been pushed, so a resend knows this is not its first send. */
-function markDelivered(receipt: string): void {
-  watcher.markDelivered(receipt);
-}
-
-// Receipts sent once more because the parent went idle without reading them.
+// Receipts this server has already pushed, and those sent once more after the
+// parent went idle without reading them.
+const sent = new Set<string>();
 const resent = new Set<string>();
+const settleTimers = new Map<string, NodeJS.Timeout>();
 let parentIdle: boolean | undefined;
+let burst: NodeJS.Timeout | undefined;
 
 /**
  * A push that never reached the model leaves its receipt unread. If the parent
@@ -102,7 +96,7 @@ let parentIdle: boolean | undefined;
  * more; after that, leave it for agent_list to show.
  */
 async function resendOnce(entry: OutboxEntry): Promise<boolean> {
-  if (!parentIdle || entry.read || resent.has(entry.receipt) || !entry.deliveredAt) return false;
+  if (!parentIdle || entry.read || resent.has(entry.receipt) || !sent.has(entry.receipt)) return false;
   resent.add(entry.receipt);
   try {
     await push(entry);
@@ -115,15 +109,12 @@ async function resendOnce(entry: OutboxEntry): Promise<boolean> {
 }
 
 async function resendWhenIdle(): Promise<void> {
-  if (!parentIdle) return;
-  for (const entry of watcher.outboxEntries()) await resendOnce(entry);
+  if (!parentIdle || !daemon) return;
+  for (const entry of daemon.unread()) await resendOnce(entry);
 }
 
-let burst: NodeJS.Timeout | undefined;
-const settleTimers = new Map<string, NodeJS.Timeout>();
-
 function schedule(entries: OutboxEntry[]): void {
-  if (!entries.some((entry) => !entry.deliveredAt)) return;
+  if (!entries.some((entry) => !entry.read && !sent.has(entry.receipt))) return;
   if (burst) return;
   burst = setTimeout(() => void flush(), SETTLE_MS);
   burst.unref?.();
@@ -131,15 +122,16 @@ function schedule(entries: OutboxEntry[]): void {
 
 async function flush(): Promise<void> {
   burst = undefined;
-  const fresh = watcher.outboxEntries().filter((entry) => !entry.read && !entry.deliveredAt);
+  if (!daemon) return;
+  const fresh = daemon.unread().filter((entry) => !entry.read && !sent.has(entry.receipt));
   for (const entry of fresh) {
     try {
       await push(entry);
-      markDelivered(entry.receipt);
+      sent.add(entry.receipt);
       log('pushed', entry.receipt, entry.name, entry.event);
       armResendCheck(entry.receipt);
     } catch (error) {
-      // A failed write leaves deliveredAt unset, so the next entry re-pushes it.
+      // A failed write leaves the receipt unsent, so the next event re-pushes it.
       log('push failed:', (error as Error).message);
     }
   }
@@ -150,7 +142,7 @@ function armResendCheck(receipt: string): void {
   if (settleTimers.has(receipt)) return;
   const timer = setTimeout(() => {
     settleTimers.delete(receipt);
-    const entry = watcher.outboxEntries().find((candidate) => candidate.receipt === receipt);
+    const entry = daemon?.unread().find((candidate) => candidate.receipt === receipt);
     if (!entry) return;
     void resendOnce(entry);
   }, RESEND_AFTER_MS);
@@ -158,68 +150,11 @@ function armResendCheck(receipt: string): void {
   settleTimers.set(receipt, timer);
 }
 
-// The parent's own pane is the one pane whose status this server needs: idle
-// means a queued notice should have started a turn. It arrives on the same
-// event stream as the children, so nothing polls herdr for status.
-const controller = new AbortController();
-let parentSubscription: Subscription | undefined;
-
-function idleStatus(value: unknown): boolean {
-  return value === 'idle' || value === 'done';
-}
-
-function onParentEvent(event: HerdrEvent): void {
-  if (event.event !== 'pane.agent_status_changed' && event.event !== 'pane_agent_status_changed') return;
-  const paneId = event.data['pane_id'];
-  if (typeof paneId === 'string' && pane !== undefined && paneId !== pane) return;
-  const status = event.data['agent_status'];
-  if (typeof status !== 'string') return;
-  const wasIdle = parentIdle;
-  parentIdle = idleStatus(status);
-  if (parentIdle && !wasIdle) void resendWhenIdle();
-}
-
-/** Subscribe first, then read the current status, so a turn in between is not missed. */
-async function watchParentPane(): Promise<void> {
-  if (!pane) return;
-  parentSubscription = await client.subscribe([{ type: 'pane.agent_status_changed', pane_id: pane }], onParentEvent, controller.signal);
-  void parentSubscription.closed.then(
-    () => {
-      if (stopping) return;
-      log('parent pane subscription lost; resubscribing');
-      retryWatch(250);
-    },
-    (error: unknown) => {
-      if (stopping) return;
-      log('parent pane subscription failed:', String(error));
-      retryWatch(500);
-    },
-  );
-  try {
-    const panes = await client.paneList(controller.signal);
-    parentIdle = idleStatus(panes.find((entry) => entry.paneId === pane)?.agentStatus);
-  } catch (error) {
-    log('parent pane status unknown:', (error as Error).message);
-  }
-}
-
-/** A lost subscription only costs the second send, but it should not stay lost. */
-function retryWatch(delay: number): void {
-  const timer = setTimeout(() => {
-    if (stopping) return;
-    void watchParentPane().catch((error: unknown) => {
-      log('parent pane watch failed:', String(error));
-      retryWatch(Math.min(delay * 2, 10_000));
-    });
-  }, delay);
-  timer.unref?.();
-}
-
 const scan = new ReceiptScan(session, cwd, claudeConfigDir());
 
 /** Mark an entry read, and drop the bookkeeping for its resend. */
 function readReceipt(receipt: string): void {
-  watcher.markRead(receipt);
+  daemon?.receipts([receipt]);
   resent.delete(receipt);
   const timer = settleTimers.get(receipt);
   if (timer) clearTimeout(timer);
@@ -228,7 +163,8 @@ function readReceipt(receipt: string): void {
 }
 
 function scanReceipts(): void {
-  const unread = watcher.outboxEntries().filter((entry) => !entry.read);
+  if (!daemon) return;
+  const unread = daemon.unread().filter((entry) => !entry.read);
   if (!unread.length) return;
   for (const receipt of scan.scan(unread.map((entry) => entry.receipt))) readReceipt(receipt);
 }
@@ -239,10 +175,30 @@ function scanReceipts(): void {
  * model has received.
  */
 function announcePending(): void {
-  const unread = watcher.outboxEntries().filter((entry) => !entry.read);
+  if (!daemon) return;
+  const unread = daemon.unread().filter((entry) => !entry.read);
   for (const receipt of scan.search(unread.map((entry) => entry.receipt))) readReceipt(receipt);
   scan.start();
   void flush();
+}
+
+/** The parent's own pane, watched through the daemon: idle means a queued notice should have started a turn. */
+function watchParentPane(attempt = 0): void {
+  if (!pane || !daemon) return;
+  daemon.watchPane(pane, (status) => {
+    if (status.startsWith('unavailable:')) {
+      const delay = Math.min(500 * 2 ** attempt, 10_000);
+      const timer = setTimeout(() => {
+        if (stopping) return;
+        watchParentPane(attempt + 1);
+      }, delay);
+      timer.unref?.();
+      return;
+    }
+    const wasIdle = parentIdle;
+    parentIdle = status === 'idle' || status === 'done';
+    if (parentIdle && !wasIdle) void resendWhenIdle();
+  });
 }
 
 let stopping = false;
@@ -253,10 +209,8 @@ function quit(): void {
   burst = undefined;
   for (const timer of settleTimers.values()) clearTimeout(timer);
   settleTimers.clear();
-  parentSubscription?.close();
-  parentSubscription = undefined;
-  controller.abort();
-  watcher.stop();
+  void daemon?.close();
+  daemon = undefined;
   process.exit(0);
 }
 
@@ -268,9 +222,26 @@ process.on('SIGINT', quit);
 mcp.onclose = quit;
 
 await mcp.connect(new StdioServerTransport());
+ready = (async () => {
+  try {
+    daemon = await DaemonClient.connect({
+      harness: 'claude-code',
+      session,
+      cwd,
+      host: hostName() || os.hostname(),
+      paneId: pane,
+      workspaceId: workspace,
+      depth,
+      herdrSocket: resolveSocketPath(),
+    }, { log });
+    daemon.onEvents((entries) => schedule(entries));
+  } catch (error) {
+    connectFailure = `Bellwether could not reach its daemon: ${(error as Error).message}`;
+    log(connectFailure);
+  }
+})();
+await ready;
 announcePending();
 setInterval(scanReceipts, SCAN_MS).unref?.();
-watcher.start();
-if (pane) void watchParentPane().catch((error: unknown) => log('parent pane watch failed:', String(error)));
-else log('no HERDR_PANE_ID: events still push, but an unread one is not sent twice');
-log('channel ready for', parent.id, 'in pane', pane ?? 'unknown');
+watchParentPane();
+log('channel ready for', daemon?.parentId ?? 'no parent', 'in pane', pane ?? 'unknown');

@@ -6,10 +6,11 @@ The MVP covers Pi and Claude Code, each as a parent and as a child.
 
 ## Parts
 
-A parent session runs an adapter: a Pi extension, or a Claude Code MCP channel server. Both adapters run the same Bellwether core.
+A parent session runs an adapter: a Pi extension, or a Claude Code MCP channel server. Both are clients of one local daemon that runs the Bellwether core. The daemon starts on demand from the first session that needs it, and one daemon serves every session on the machine. When a session resumes, it receives the events it missed. With nothing left to watch, the daemon exits.
 
+- **Daemon.** One per machine, on a socket under the Bellwether home. A lock file and a version handshake keep a second client from starting a second daemon. When a client is newer than the daemon it found, the client sends a drain request and the old daemon exits once no call is in flight. `bellwether daemon` runs it in the foreground when you want to watch it.
 - **herdr client.** Newline-delimited JSON on the herdr socket, one connection per request and one held open for the subscription. The subscription checks the `subscription_started` acknowledgement and buffers any event that arrives with it.
-- **Registry.** One JSON file per parent session, under `~/.bellwether/parents/`. Each child record stores its name, kind, pane, tab, start time, last status, last `completion_seq` and transcript path. Bellwether writes the record before it asks herdr for anything, so a crash mid-spawn still says what it asked herdr for.
+- **Registry.** One JSON file per parent session, under `~/.bellwether/parents/`, written by the daemon. Each child record stores its name, kind, pane, tab, start time, last status, last `completion_seq` and transcript path. Bellwether writes the record before it asks herdr for anything, so a crash mid-spawn still says what it asked herdr for.
 - **Watcher.** It subscribes to `pane.agent_status_changed` for each child pane, plus `pane.exited`, `pane.closed` and `pane.agent_detected`. On connect it subscribes first, then reads a snapshot on a second connection, then reconciles. A dropped subscription reconnects with backoff and takes a fresh snapshot, because herdr does not replay events.
 - **Classifier.** It turns herdr states into child events, with a settle time for each. It is a pure function of state, clock and observation.
 - **Outbox.** One pending entry per child, where a newer state replaces an older one. The receipt id in the entry marks it read once the parent's model context shows that id.
@@ -90,13 +91,14 @@ A child started by `agent_spawn` receives these variables in its tab:
 
 ```
 src/core/          herdr client, registry, watcher, classifier, outbox, spawn, report
+src/daemon/        the daemon: protocol, server, client, lock, parent service
 src/integrations/  the tool list, shared by both adapters
 src/integrations/pi/       the Pi extension
 src/integrations/claude/   the Claude Code MCP channel server
 bin/               the bellwether command
 docs/              probe results and notes
 test/unit/         tier 1: fake clock, in-memory registry
-test/integration/  tier 2: a fake herdr socket, tier 3: a real isolated herdr server
+test/integration/  tier 2: a fake herdr socket and the daemon, tier 3: a real isolated herdr server
 ```
 
 ## License

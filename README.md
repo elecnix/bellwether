@@ -98,7 +98,8 @@ src/integrations/claude/   the Claude Code MCP channel server
 bin/               the bellwether command
 docs/              probe results and notes
 test/unit/         tier 1: fake clock, in-memory registry
-test/integration/  tier 2: a fake herdr socket and the daemon, tier 3: a real isolated herdr server
+test/integration/  tier 2: a fake herdr socket and the daemon
+test/lab/          tier 3: a real isolated herdr server, the pair matrix and scripted models
 ```
 
 ## License

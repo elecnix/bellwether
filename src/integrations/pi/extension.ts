@@ -8,7 +8,7 @@ import { DaemonClient } from '../../daemon/client.ts';
 import { resolveSocketPath } from '../../core/herdr-client.ts';
 import { hostName } from '../../core/spawn.ts';
 import type { OutboxEntry } from '../../core/types.ts';
-import { childTools, parentTools } from '../tools.ts';
+import { childTools, parentTools, runChildToolLocally } from '../tools.ts';
 
 // The parts of pi's ExtensionAPI this extension uses.
 interface PiContext {
@@ -123,9 +123,12 @@ export default function bellwether(pi: PiApi): void {
       description: tool.description,
       parameters: tool.schema,
       async execute(_id, args, signal) {
-        if (!daemon) return result('Bellwether is not running: the daemon did not start for this session.');
         if (signal?.aborted) return result('Cancelled.');
         try {
+          // A report is a spool line, written by this process, not by the daemon.
+          const local = runChildToolLocally(tool.name, args);
+          if (local !== undefined) return result(local);
+          if (!daemon) return result('Bellwether is not running: the daemon did not start for this session.');
           return result(await daemon.tool(tool.name, args));
         } catch (error) {
           return result((error as Error).message);

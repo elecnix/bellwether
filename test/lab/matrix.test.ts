@@ -23,8 +23,6 @@ import { createPiAgentDir, hasHarness, startHarness, type LabHarness, type LabHa
 const herdrMissing = (await hasHerdr()) ? false : 'herdr is not on PATH';
 const piMissing = (await hasHarness('pi')) ? false : 'pi is not on PATH';
 const claudeMissing = (await hasHarness('claude')) ? false : 'claude is not on PATH';
-/** Claude Code 2.1.318 reports channel notifications as unavailable in the lab. */
-const claudeChannelsReason = 'Claude Code reports channels are not currently available, so a Claude parent cannot be woken';
 
 function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -392,7 +390,7 @@ function pairTest(title: string, parentKind: LabHarnessKind, childKind: LabHarne
     process.env['BELLWETHER_HOME'] = bellwetherHome;
     let parentHarness: LabHarness | undefined;
     try {
-      const harness = await startHarness({ lab, kind: parentKind, label: `${parentKind}-parent`, scriptedUrl: parentModels.url, bellwetherHome, cwd: lab.root });
+      const harness = await startHarness({ lab, kind: parentKind, label: `${parentKind}-parent`, scriptedUrl: parentModels.url, bellwetherHome, cwd: lab.root, channel: parentKind === 'claude' });
       parentHarness = harness;
       const parent = await until('the parent registry', 60_000, () => listParents().find((candidate) => candidate.paneId === harness.paneId));
       // A Pi session starts at the first prompt, so prompt once herdr has the
@@ -423,5 +421,5 @@ function pairTest(title: string, parentKind: LabHarnessKind, childKind: LabHarne
 
 pairTest('the pi parent and pi child pair drives all five events', 'pi', 'pi', herdrMissing || piMissing);
 pairTest('the pi parent and claude child pair drives all five events', 'pi', 'claude', herdrMissing || piMissing || claudeMissing);
-pairTest('the claude parent and pi child pair drives all five events', 'claude', 'pi', herdrMissing || piMissing || claudeMissing || claudeChannelsReason);
-pairTest('the claude parent and claude child pair drives all five events', 'claude', 'claude', herdrMissing || claudeMissing || claudeChannelsReason);
+pairTest('the claude parent and pi child pair drives all five events', 'claude', 'pi', herdrMissing || piMissing || claudeMissing);
+pairTest('the claude parent and claude child pair drives all five events', 'claude', 'claude', herdrMissing || claudeMissing);

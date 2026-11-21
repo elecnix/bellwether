@@ -31,6 +31,8 @@ export interface LabHarnessOptions {
   extraExtensions?: string[];
   /** A Pi agent directory whose bin and herdr integration can be reused. */
   baseAgentDir?: string;
+  /** Load the Bellwether MCP server as a development channel, so it can wake this session. */
+  channel?: boolean;
   /** A Claude permission mode, such as "manual", for the session. */
   permissionMode?: string;
   /** Claude permission rules to pre-approve, such as an MCP tool name. */
@@ -288,6 +290,7 @@ export async function startHarness(options: LabHarnessOptions): Promise<LabHarne
     // channel notifications as unavailable, so no plugin flag can wake a
     // Claude parent here.
     const flags = [
+      options.channel ? '--dangerously-load-development-channels server:bellwether' : '',
       `--mcp-config ${path.join(agentDir, 'mcp.json')}`,
       '--strict-mcp-config',
       options.permissionMode ? `--permission-mode ${options.permissionMode}` : '',

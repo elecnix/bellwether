@@ -4,8 +4,8 @@ import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { FEATURES, type Feature } from '../../src/daemon/features.ts';
-import { approvalNotice, bumpFormula, compareVersions, featureLine, installNotice, prBody, protocolOf, release, ReleaseError, SITE_TIMEOUT_MS, staleSiteMessage, type ReleaseDeps, type RunOptions, type RunResult } from '../../scripts/release.ts';
+import { BEHAVIORS, FEATURES, type Behavior, type Feature } from '../../src/daemon/features.ts';
+import { approvalNotice, behaviorLine, bumpFormula, compareVersions, featureLine, installNotice, NO_ENTRY_LABEL, prBody, unrecorded, type MergedPr, protocolOf, release, ReleaseError, SITE_TIMEOUT_MS, staleSiteMessage, type ReleaseDeps, type RunOptions, type RunResult } from '../../scripts/release.ts';
 import { bylineOpening, SITE_URL } from '../../scripts/site-version.ts';
 
 const TARBALL = 'https://registry.npmjs.org/@elecnix/bellwether/-/bellwether-0.1.4.tgz';
@@ -35,6 +35,10 @@ interface World {
   site: string[];
   /** The feature table in the release tree's `src/daemon/features.ts`. */
   treeFeatures: Feature[];
+  /** The behavior table in the same file. */
+  treeBehaviors: Behavior[];
+  /** The pull requests merged on main since the previous release, oldest first. */
+  merged: MergedPr[];
   /** What `vale sync` answers in the release worktree. */
   valeSync?: RunResult;
 }
@@ -59,6 +63,8 @@ async function harness(overrides: Partial<World> = {}) {
     formulaOnMain: FORMULA,
     site: ['0.1.4'],
     treeFeatures: [],
+    treeBehaviors: [],
+    merged: [],
     ...overrides,
   };
   const calls: string[] = [];
@@ -90,6 +96,12 @@ async function harness(overrides: Partial<World> = {}) {
     if (line === 'git rev-parse --show-toplevel') return ok(`${top}\n`);
     if (line === 'git show origin/main:package.json') return ok(JSON.stringify({ type: 'module', version: world.mainVersion }));
     if (line.startsWith('git log -1')) return ok('c0ffee\n');
+    if (line.startsWith('git log --format=%H -S')) return ok('b0a5e00\n');
+    if (line.startsWith('git log --first-parent')) return ok(world.merged.map((pr) => `${pr.title} (#${pr.number})\n`).reverse().join(''));
+    if (line.startsWith('gh pr view')) {
+      const pr = world.merged.find((each) => String(each.number) === args[2])!;
+      return ok(JSON.stringify({ number: pr.number, title: pr.title, labels: pr.labels.map((name) => ({ name })) }));
+    }
     if (line === 'git rev-parse origin/main') return ok('abc1234def\n');
     if (line.startsWith('git status --porcelain')) return ok(world.dirty);
     if (line.startsWith('git rev-parse --verify')) return { code: 1, stdout: '', stderr: '' };
@@ -97,7 +109,7 @@ async function harness(overrides: Partial<World> = {}) {
       const tree = args.find((arg) => arg.includes('release-'))!;
       await mkdir(path.join(tree, 'src/daemon'), { recursive: true });
       await writeFile(path.join(tree, 'src/daemon/protocol.ts'), 'export const DAEMON_PROTOCOL = 3;\n');
-      await writeFile(path.join(tree, 'src/daemon/features.ts'), `export const FEATURES = ${JSON.stringify(world.treeFeatures)};\n`);
+      await writeFile(path.join(tree, 'src/daemon/features.ts'), `export const FEATURES = ${JSON.stringify(world.treeFeatures)};\nexport const BEHAVIORS = ${JSON.stringify(world.treeBehaviors)};\n`);
       await writeFile(path.join(tree, 'package.json'), JSON.stringify({ type: 'module', version: world.mainVersion }));
       await mkdir(path.join(tree, '.claude-plugin'), { recursive: true });
       await writeFile(path.join(tree, '.claude-plugin/plugin.json'), `${JSON.stringify({ name: 'bellwether', version: world.mainVersion }, null, 2)}\n`);
@@ -369,7 +381,7 @@ test('a feature added for a release appears in its body, and a release without o
   assert.match(body, /^- The `example_tool` tool\. A parent asks for an example\.$/m);
   assert.match(body, /^- The `example` kind of `agent_spawn`\. Starts an Example child\.$/m);
   assert.doesNotMatch(body, /`hello`/, 'a feature from an earlier release stays out');
-  assert.doesNotMatch(body, /doesn't record/);
+  assert.doesNotMatch(body, /doesn't record a new tool/);
 });
 
 test('the release pull request lists the features recorded in the tree it releases', async () => {
@@ -472,4 +484,79 @@ test('a site that cannot be read counts as stale, and the error says what the re
   const h = await harness({ published: ['0.1.3', '0.1.4'], latest: '0.1.4', formulaOnMain: CURRENT_FORMULA });
   h.deps.fetchText = async () => { throw new Error('getaddrinfo ENOTFOUND elecnix.github.io'); };
   await assert.rejects(release({ version: '0.1.4', sitePollMs: 1, siteTimeoutMs: 2 }, h.deps), /still shows no page \(getaddrinfo ENOTFOUND elecnix\.github\.io\)/);
+});
+
+// 0.1.7 shipped three behaviour changes its body never mentioned, because
+// features.ts recorded only wire changes and nothing noticed the gap (#157).
+const MERGED: MergedPr = { number: 170, title: 'retire: the daemon removes a worktree', labels: [] };
+
+test('a release whose merged pull request has an entry under its version opens the pull request with that line', async () => {
+  const behavior: Behavior = { version: '0.1.4', prs: [170], summary: 'Retirement removes a child worktree.' };
+  const h = await harness({ merged: [MERGED], treeBehaviors: [behavior] });
+  await release({ version: '0.1.4' }, h.deps);
+  assert.ok(h.calls.some((call) => call === 'gh pr view 170 -R elecnix/bellwether --json number,title,labels'), h.calls.join('\n'));
+  assert.ok(h.bodies[0]!.includes(behaviorLine(behavior)), h.bodies[0]);
+});
+
+test('a release whose merged pull request has no entry stops before the gates, naming the pull request', async () => {
+  const h = await harness({ merged: [MERGED], treeBehaviors: [{ version: '0.1.3', prs: [170], summary: 'An entry under the release before.' }] });
+  const error = await release({ version: '0.1.4' }, h.deps).then(() => undefined, (caught: unknown) => caught);
+  assert.ok(error instanceof ReleaseError, String(error));
+  assert.match(error.message, /#170 retire: the daemon removes a worktree/);
+  assert.ok(error.message.includes(NO_ENTRY_LABEL), 'the error says how to mark a pull request that needs no entry');
+  for (const step of ['npm test', 'npm run typecheck', 'npm version', 'git push', 'gh pr create', 'npx -y npm@12 stage publish']) {
+    assert.ok(!h.calls.some((call) => call.startsWith(step)), `${step} ran before the check stopped the release:\n${h.calls.join('\n')}`);
+  }
+  const range = h.calls.find((call) => call.startsWith('git log --first-parent'))!;
+  assert.match(range, /b0a5e00\.\.HEAD$/, 'the range starts at the commit that set the previous version');
+});
+
+test('a merged pull request labelled as needing no entry passes the check', async () => {
+  const h = await harness({ merged: [{ ...MERGED, labels: [NO_ENTRY_LABEL] }] });
+  const outcome = await release({ version: '0.1.4' }, h.deps);
+  assert.equal(outcome.state, 'awaiting-approval');
+});
+
+test('a wire feature that names its pull request covers it', () => {
+  const feature: Feature = { name: 'example_tool', kind: 'tool', protocol: 4, version: '0.1.4', summary: 'A parent asks for an example.', prs: [170] };
+  assert.deepEqual(unrecorded('0.1.4', [MERGED], [feature], []), []);
+  assert.deepEqual(unrecorded('0.1.5', [MERGED], [{ ...feature, version: '0.1.5' }], []), []);
+  assert.deepEqual(unrecorded('0.1.4', [MERGED], [{ ...feature, prs: undefined }], []), [MERGED]);
+});
+
+test('the body for a mixed version lists what it does before what it adds to the protocol', () => {
+  const feature: Feature = { name: 'example_tool', kind: 'tool', protocol: 4, version: '0.1.4', summary: 'A parent asks for an example.' };
+  const behavior: Behavior = { version: '0.1.4', prs: [170, 171], summary: 'Retirement removes a child worktree.' };
+  const body = prBody('0.1.4', '0.1.3', undefined, [feature], [behavior]);
+  const does = body.indexOf('## What 0.1.4 changes');
+  const speaks = body.indexOf('## What 0.1.4 adds to the protocol');
+  assert.ok(does >= 0 && speaks > does, body);
+  assert.match(body, /^- Retirement removes a child worktree\. \(#170, #171\)$/m);
+  assert.ok(body.indexOf(featureLine(feature)) > speaks, body);
+  const wireOnly = prBody('0.1.4', '0.1.3', undefined, [feature], []);
+  assert.match(wireOnly, /doesn't record a change in behavior under 0\.1\.4/);
+});
+
+/** The pull requests merged between the 0.1.6 and 0.1.7 release commits, with the label each would carry. */
+const MERGED_0_1_7: MergedPr[] = [
+  [136, 'send: a parent\'s message enters the child\'s session, and typing stays the fallback'],
+  [137, 'fix: a resume keeps a brief the child never read'],
+  [141, 'vale: ignore the signature line, not every line with a signature link', NO_ENTRY_LABEL],
+  [144, 'send: a message to a child on another machine enters its session through that machine\'s daemon'],
+  [145, 'release: sync the Vale style packs in the release worktree', NO_ENTRY_LABEL],
+  [147, 'spawn: start a bare child behind `command`, and answer the channel question by its digit'],
+  [148, 'spawn: a pi child that exits or stops on a fatal error at startup fails its spawn'],
+  [152, 'An adopted session that runs a Bellwether adapter gains parent_report over its open daemon connection'],
+  [153, 'Each alert ends with one line about the parent\'s other children'],
+  [151, 'retire: the daemon removes a child\'s worktree after its tab closes, and agent_stop retires the child'],
+  [154, 'The roster line counts states, and rides an alert only when it changed, at most once in 10 minutes'],
+  [155, 'upgrading: a daemon\'s own children never hand it over; say so, and say what to run', NO_ENTRY_LABEL],
+  [150, 'dialogs: settle a child\'s reads at launch, and decline the questions it still asks'],
+].map(([number, title, label]) => ({ number: number as number, title: title as string, labels: label ? [label as string] : [] }));
+
+test('the 0.1.7 table as it shipped would have stopped the release on its three unrecorded behaviors', () => {
+  const asShipped = FEATURES.map(({ prs: _prs, ...feature }) => feature as Feature);
+  const missing = unrecorded('0.1.7', MERGED_0_1_7, asShipped, []).map((pr) => pr.number);
+  for (const number of [151, 152, 154]) assert.ok(missing.includes(number), `#${number} passes without an entry: ${missing.join(', ')}`);
+  assert.deepEqual(unrecorded('0.1.7', MERGED_0_1_7, FEATURES, BEHAVIORS), [], 'the table now records every 0.1.7 change');
 });

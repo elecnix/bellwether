@@ -16,11 +16,10 @@ import { DaemonClient } from '../../daemon/client.ts';
 import { resolveSocketPath } from '../../core/herdr-client.ts';
 import { standDown } from '../../core/pi-extension.ts';
 import { hostName } from '../../core/spawn.ts';
-import { childLabel } from '../../core/label.ts';
-import { byEventTime, lateNote } from '../../core/notice.ts';
 import { PROMPT_NOTICE, maxDepthFromEnv } from '../../core/report.ts';
 import type { OutboxEntry } from '../../core/types.ts';
 import { fallbackTools } from '../tools.ts';
+import { composeBurst } from '../alert.ts';
 import type { InboxMessage, ServedTool } from '../../daemon/protocol.ts';
 
 // The parts of pi's ExtensionAPI this extension uses.
@@ -93,19 +92,6 @@ function messagesInHistory(ctx: PiContext | undefined): Set<string> {
   return found;
 }
 
-/**
- * One message for a burst of events, so three children changing at once read
- * once. Events come oldest first, and one delivered late says so.
- */
-function compose(entries: OutboxEntry[], now = Date.now()): string {
-  if (!entries.length) return '';
-  const head = entries.length === 1 ? '[bellwether]' : `[bellwether] ${entries.length} children changed`;
-  const body = byEventTime(entries)
-    .map((entry) => `${childLabel({ name: entry.name, paneId: entry.paneId, id: entry.childId })} ${entry.event}, a ${entry.kind} agent — receipt ${entry.receipt}${lateNote(entry, now)}\n${entry.text}`)
-    .join('\n\n');
-  return `${head}\n${body}\n\nRead more with agent_read. Reply with agent_send.`;
-}
-
 /** The receipts one of this extension's own messages carries, or none for any other message. */
 function receiptsOf(message: PiMessage | undefined): string[] {
   if (!message || message.customType !== CUSTOM_TYPE) return [];
@@ -169,7 +155,8 @@ export default function bellwether(pi: PiApi): void {
     if (!pending.size) return;
     const batch = [...pending.values()];
     pending.clear();
-    const text = compose(batch);
+    // The roster line leaves out every child this burst names, and is absent when no other child is live.
+    const text = composeBurst(batch, Date.now(), daemon?.roster());
     if (!text) return;
     for (const entry of batch) sent.add(entry.receipt);
     // An idle session starts a turn now. A busy one takes the message after

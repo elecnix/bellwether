@@ -201,7 +201,7 @@ export class RelayLinks {
     const text = await this.ask(host, 'relay-adopt', (id) => ({ type: 'relay-adopt', id, ...claim }));
     const answer = JSON.parse(text) as Partial<RelayAdoptAnswer>;
     if (typeof answer.childId !== 'string' || !answer.childId) throw new Error(`machine ${host} answered the adoption without a child id`);
-    return { childId: answer.childId, held: answer.held === true };
+    return { childId: answer.childId, held: answer.held === true, ...(answer.session === 'tools' || answer.session === 'older' || answer.session === 'none' ? { session: answer.session } : {}) };
   }
 
   /**

@@ -2,6 +2,7 @@
 // version travels in every hello, so a client newer than a running daemon can
 // ask it to drain and start the new one.
 import type { CallerIdentity, Harness, OutboxEntry, RelayHostState, ReportStatus } from '../core/types.ts';
+import type { AncestryAnswer } from '../core/ancestry.ts';
 
 export type { RelayHostState, RelayLinkStatus } from '../core/types.ts';
 
@@ -226,7 +227,18 @@ export interface SessionsRequest {
   id: string;
 }
 
-export type DaemonRequest = HelloRequest | CallRequest | ReceiptRequest | ByeRequest | DrainRequest | WatchRequest | ReportRequest | RelaySubscribeRequest | RelayAckRequest | RelayReadRequest | RelayAdoptRequest | RelayStatusRequest | SessionsRequest;
+/**
+ * The agent tree above one agent, for `bellwether ancestry`. Needs no hello,
+ * and changes nothing. Added without a protocol bump.
+ */
+export interface AncestryRequest {
+  type: 'ancestry';
+  id: string;
+  /** The agent as another program holds it: `<harness>:<session>`, or a bare child id or session. */
+  agent: string;
+}
+
+export type DaemonRequest = HelloRequest | CallRequest | ReceiptRequest | ByeRequest | DrainRequest | WatchRequest | ReportRequest | RelaySubscribeRequest | RelayAckRequest | RelayReadRequest | RelayAdoptRequest | RelayStatusRequest | SessionsRequest | AncestryRequest;
 
 export interface HelloReply {
   type: 'hello';
@@ -367,7 +379,14 @@ export interface SessionsReply {
   relaySubscribers: number;
 }
 
-export type DaemonReply = HelloReply | ResultReply | EventsPush | ErrorReply | ClosedReply | StatusPush | RelayHelloReply | RelayReportPush | RelayDrainedPush | RelayStatusReply | SessionsReply;
+/** The answer to an ancestry request, computed by the daemon from what it holds. */
+export interface AncestryReply {
+  type: 'ancestry';
+  id: string;
+  answer: AncestryAnswer;
+}
+
+export type DaemonReply = HelloReply | ResultReply | EventsPush | ErrorReply | ClosedReply | StatusPush | RelayHelloReply | RelayReportPush | RelayDrainedPush | RelayStatusReply | SessionsReply | AncestryReply;
 
 /** A report as it crosses from a child's machine to its parent's. The receipt makes it unique. */
 export interface RelayReport {
@@ -473,6 +492,12 @@ export function parseRequest(line: string): DaemonRequest {
       const id = text(value['id']);
       if (!id) throw new ProtocolError('invalid_sessions', 'a sessions request needs an id');
       return { type: 'sessions', id };
+    }
+    case 'ancestry': {
+      const id = text(value['id']);
+      const agent = text(value['agent']);
+      if (!id || !agent) throw new ProtocolError('invalid_ancestry', 'an ancestry request needs an id and an agent');
+      return { type: 'ancestry', id, agent };
     }
     case 'watch': {
       const paneId = text(value['paneId']);

@@ -137,3 +137,87 @@ A child started by `agent_spawn` gets these variables, for its own scripts and f
 | `BELLWETHER_CHILD_NAME` | this child's name |
 | `BELLWETHER_DEPTH` | how many levels deep this child sits |
 | `BELLWETHER_HARNESS` | `pi`, `claude-code`, `opencode`, `codex`, or `other` |
+
+## The agent tree
+
+`bellwether ancestry AGENT --json` prints the ancestors of one agent, nearest first, and marks which of them still run. A program that needs the tree runs this command instead of reading the files under `~/.bellwether`, whose layout can change in any release. The JSON in this section is the interface, and its fields keep their names and meanings. A change that would break a reader raises `schema`.
+
+`AGENT` takes the form `<harness>:<session>`: `claude:<session id>` for Claude Code, `pi:<session id>` for pi, and the kind for another harness, such as `codex:<session id>`. A pi session file path works too, and the command reads the id from its name. A bare value matches a child id or a session of any harness.
+
+The command queries the daemon on this machine and never starts one. It exits 0 whenever it prints an answer, including `unknown` and `stale`, and exits 1 when the argument is missing.
+
+```json
+{
+  "schema": 1,
+  "query": "claude:claude-leaf-session",
+  "stale": false,
+  "source": "daemon",
+  "status": "known",
+  "agent": {
+    "agent": "claude:claude-leaf-session",
+    "harness": "claude-code",
+    "session": "claude-leaf-session",
+    "childId": "leaf000000000001",
+    "childName": "name-leaf000000000001",
+    "registryId": null,
+    "host": "local",
+    "depth": 2,
+    "alive": false,
+    "evidence": "exited",
+    "since": "2026-11-01T12:00:00.000Z",
+    "retiredAt": null,
+    "match": { "rule": "single", "records": [{ "childId": "leaf000000000001", "parentId": "pi-pi-mid-session", "startedAt": "2026-11-01T10:00:00.000Z" }] }
+  },
+  "chain": [
+    { "agent": "pi:pi-mid-session", "harness": "pi", "childName": "name-mid0000000000001", "alive": true, "evidence": "watched", "...": "the same fields" },
+    { "agent": "claude:claude-root-session", "harness": "claude-code", "childName": null, "alive": true, "evidence": "connected", "...": "the same fields" }
+  ],
+  "nearestAlive": 0,
+  "top": "root"
+}
+```
+
+| Field | Meaning |
+| -- | -- |
+| `schema` | The layout, 1. Check it before you read the rest. |
+| `status` | `known`, or `unknown` when no Bellwether record matches the agent. An unknown agent is absent from the tree, which differs from an agent with no living ancestor. An unknown answer has `agent: null` and an empty `chain`. |
+| `stale` | `true` when the daemon did not answer and the command read the registry itself. `staleReason` then gives the cause: no daemon answers on the socket, or the daemon predates the request. |
+| `source` | `daemon`, or `registry` for a stale answer. |
+| `agent` | The agent queried, as one level. |
+| `chain` | Its ancestors, nearest first. A root has an empty chain. |
+| `nearestAlive` | The index in `chain` of the nearest level where `alive` is `true`, or `null` when no level has it. |
+| `top` | Where the chain stops: `root` at a session with no parent, or `outside` at a session whose parent's registry sits on another machine. |
+
+Each level has these fields:
+
+| Field | Meaning |
+| -- | -- |
+| `agent` | `<harness>:<session>`, or `null` until the harness reports a session. |
+| `harness`, `session` | The harness and its session id. |
+| `childId`, `childName` | The id and name that the parent's spawn assigned, or `null` for a root. |
+| `registryId` | The session's own parent id, `<harness>-<session>`, once it has completed the hello exchange with a daemon. |
+| `host`, `depth` | Herdr machine where the session runs (`local` for this one), and generation, 0 at the root. |
+| `alive`, `evidence`, `since` | Whether the session runs, how the daemon knows, and since when. The next section explains these three fields. |
+| `retiredAt` | When Bellwether removed its worktree and branch, or `null`. |
+| `match` | The records that reference this session, with the chosen record first, and the `rule` that selected it. |
+
+### What alive means
+
+`alive: true` means the daemon can vouch, at the moment it answers, that the session runs. The session holds a connection to the daemon (`connected`). Otherwise, the daemon watches the child's pane through its parent's herdr subscription, and herdr has not reported the pane gone (`watched`). `since` is then the latest start, resume or restart, or the time a root connected.
+
+`alive: false` comes from a recorded exit, in which case `since` is the exit time (`exited`). It also comes from a session that is nobody's child here and has no connection (`disconnected`).
+
+`alive: null` means the daemon cannot know. A child's record has no recorded exit, and no running service watches its parent, so nothing would have recorded an exit (`unwatched`). In a stale answer, every level without a recorded exit reads `null` with `stale`, because the files record exits but not which sessions run.
+
+The daemon cannot know two things. First, a root session can run while its Bellwether server is down, and it then reads `disconnected`. Second, a session with `connected` or `watched` can end in the moment after the answer.
+
+### Choosing between two records
+
+When a parent resumes a child under another parent, two records share one session. The answer keeps one record per level. `match.rule` names the rule used to choose the record:
+
+1. `single`: one record matches the session.
+2. `alive`: the record whose session runs wins, and a record of unknown state beats one with a recorded exit.
+3. `latest-start`: among records that tie on the first test, Bellwether picks the record with the latest start. A resume and a restart both count as starts.
+4. `child-id`: when both tests tie, the lower child id wins. The answer then stays the same for the same files.
+
+`match.records` lists every candidate in that order, so a caller can see the rejected record.

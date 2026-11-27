@@ -69,3 +69,8 @@ test('a call without a tool is refused', () => {
 test('a line that is not JSON is refused', () => {
   assert.throws(() => parseRequest('not json'), (error: unknown) => error instanceof ProtocolError && error.code === 'invalid_json');
 });
+
+test('an ancestry request carries the agent, and one without it is refused', () => {
+  assert.deepEqual(parseRequest(JSON.stringify({ type: 'ancestry', id: 'a1', agent: ' claude:abc ' })), { type: 'ancestry', id: 'a1', agent: 'claude:abc' });
+  assert.throws(() => parseRequest(JSON.stringify({ type: 'ancestry', id: 'a1' })), (error: unknown) => error instanceof ProtocolError && error.code === 'invalid_ancestry');
+});

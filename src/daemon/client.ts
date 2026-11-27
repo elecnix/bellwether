@@ -15,6 +15,7 @@ import { isAlive, readLock } from './lock.ts';
 import { HANDOVER_TIMEOUT_MS, decideHandOver, type DaemonIdentity } from './handover.ts';
 import { canConnect } from './server.ts';
 import type { ModelPair, OutboxEntry } from '../core/types.ts';
+import type { AncestryAnswer } from '../core/ancestry.ts';
 
 const DEFAULT_TIMEOUT_MS = 60_000;
 const START_TIMEOUT_MS = 10_000;
@@ -877,7 +878,7 @@ function askOnce(socketPath: string, line: string, timeoutMs: number): Promise<D
     let buffer = '';
     const timer = setTimeout(() => {
       socket.destroy();
-      reject(new Error(`the daemon did not answer the report within ${timeoutMs} ms`));
+      reject(new Error(`the daemon did not answer within ${timeoutMs} ms`));
     }, timeoutMs);
     timer.unref?.();
     socket.setEncoding('utf8');
@@ -927,6 +928,17 @@ export async function daemonSessions(socketPath: string, timeoutMs = START_TIMEO
   if (reply.type === 'sessions') return reply;
   if (reply.type === 'error') throw new Error(`${reply.code}: ${reply.message}`);
   throw new Error(`the daemon answered ${reply.type} to a sessions request`);
+}
+
+/**
+ * The agent tree above one agent, as the daemon on a socket answers it. A
+ * daemon before 0.1.6 answers unknown_type, which this throws with its code.
+ */
+export async function daemonAncestry(socketPath: string, agent: string, timeoutMs = START_TIMEOUT_MS): Promise<AncestryAnswer> {
+  const reply = await askOnce(socketPath, formatRequest({ type: 'ancestry', id: 'a1', agent }), timeoutMs);
+  if (reply.type === 'ancestry') return reply.answer;
+  if (reply.type === 'error') throw new Error(`${reply.code}: ${reply.message}`);
+  throw new Error(`the daemon answered ${reply.type} to an ancestry request`);
 }
 
 /** The state of every connection the daemon on a socket holds to a remote host. */

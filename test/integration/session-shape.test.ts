@@ -14,7 +14,7 @@ import { Watcher } from '../../src/core/watcher.ts';
 import type { ChildRecord, OutboxEntry } from '../../src/core/types.ts';
 import type { RemoteOps } from '../../src/core/remote.ts';
 import { runBellwetherTool, type ToolContext } from '../../src/integrations/tools.ts';
-import { startFakeHerdr, type FakeHerdr } from '../fixtures/fake-herdr.ts';
+import { startFakeHerdr, type FakeHerdr, harnessStarts, harnessStart } from '../fixtures/fake-herdr.ts';
 import { fakeWorld, type FakeWorld } from '../fixtures/fake-world.ts';
 import { isolate } from '../fixtures/isolated.ts';
 
@@ -104,8 +104,8 @@ test('a resumed child comes back with the same session and id, and takes a promp
   const text = await runBellwetherTool(context(id, local), 'agent_spawn', { resume: 'worker', prompt });
   assert.match(text, /resumed session sess-1/);
 
-  const start = local.fake.requests.find((request) => request.method === 'agent.start');
-  const args = start?.params['args'] as string[];
+  const start = harnessStarts(local.fake)[0];
+  const args = start?.args as string[];
   assert.deepEqual(args.slice(args.indexOf('--resume'), args.indexOf('--resume') + 2), ['--resume', 'sess-1']);
   // The prompt travels in a private file, never on the command line.
   assert.equal(args.some((arg) => arg.includes('What did you tell me')), false, 'no prompt text in the arguments');
@@ -126,7 +126,7 @@ test('a resumed child comes back with the same session and id, and takes a promp
   // The resumed Claude child paints the channel dialog, and the resume answers it.
   assert.ok(holdDuringStart && Date.parse(holdDuringStart) > Date.now(), 'the watcher holds the child while its dialog is answered');
   const keys = local.fake.requests.filter((request) => request.method === 'agent.send_keys');
-  assert.deepEqual(keys.map((request) => request.params['keys']), [['Enter']]);
+  assert.deepEqual(keys.map((request) => request.params['keys']), [['1']]);
 
   const child = childOf(id, 'worker');
   assert.equal(child?.id, 'child-worker', 'the same child id, so its history continues');
@@ -151,7 +151,7 @@ test('a pi child resumes with --session and its transcript path', async (t) => {
   const transcript = '/home/x/.pi/agent/sessions/--work--/2026_abc.jsonl';
   upsertChild(id, exitedChild('pi-worker', { kind: 'pi', harness: 'pi', transcript }));
   await runBellwetherTool(context(id, local), 'agent_spawn', { resume: 'pi-worker' });
-  const args = local.fake.requests.find((request) => request.method === 'agent.start')?.params['args'] as string[];
+  const args = harnessStarts(local.fake)[0]?.args as string[];
   assert.deepEqual(args.slice(args.indexOf('--session'), args.indexOf('--session') + 2), ['--session', transcript]);
 });
 
@@ -243,10 +243,10 @@ test('a spawn on a machine records the host, targets that machine, and resumes t
   assert.match(child?.paneId ?? '', /^w7:/);
   const create = remote.fake.requests.find((request) => request.method === 'tab.create');
   assert.equal(create?.params['workspace_id'], null, 'the local workspace id is not sent to another machine');
-  assert.equal(local.fake.requests.some((request) => request.method === 'tab.create' || request.method === 'agent.start'), false, 'nothing starts locally');
+  assert.equal(local.fake.requests.some((request) => request.method === 'tab.create' || harnessStart(request) !== undefined), false, 'nothing starts locally');
   // A server talks to the daemon on its own machine, so the child gets the
   // MCP config that machine wrote, and no file is left here.
-  const remoteArgs = remote.fake.requests.find((request) => request.method === 'agent.start')?.params['args'] as string[];
+  const remoteArgs = harnessStarts(remote.fake)[0]?.args as string[];
   assert.ok(remoteArgs.includes(`--mcp-config=/far/.bellwether/mcp/${child?.id}.json`), `a remote child got ${JSON.stringify(remoteArgs)}`);
   assert.deepEqual(child?.toolSource, { server: 'per-child', suppressed: [] });
   assert.equal(fs.existsSync(mcpConfigPath(child?.id ?? '?')), false);
@@ -280,7 +280,7 @@ test('a spawn on a machine records the host, targets that machine, and resumes t
   const resumed = childOf(id, 'far');
   assert.match(resumed?.paneId ?? '', /^w7:/);
   assert.equal(remote.world.panes.get(resumed?.paneId ?? '')?.agent_session?.value, first);
-  assert.equal(local.fake.requests.some((request) => request.method === 'agent.start'), false);
+  assert.equal(local.fake.requests.some((request) => harnessStart(request) !== undefined), false);
 });
 
 test('a spawn on an unknown machine is refused before any record is written', async (t) => {
@@ -295,7 +295,7 @@ test('a spawn on an unknown machine is refused before any record is written', as
 test('a resume herdr refuses leaves the exited child as it was, and no brief behind', async (t) => {
   scratch(t);
   const world = fakeWorld();
-  const fake = await startFakeHerdr({ respond: (request) => (request.method === 'agent.start' ? { error: { code: 'agent_start_failed', message: 'no such agent kind' } } : world.respond(request)) });
+  const fake = await startFakeHerdr({ respond: (request) => (harnessStart(request) !== undefined ? { error: { code: 'agent_start_failed', message: 'no such agent kind' } } : world.respond(request)) });
   t.after(() => fake.stop());
   const local: Herdr = { fake, world, client: new HerdrClient({ socketPath: fake.socketPath }) };
   const id = parent('resume-fails');

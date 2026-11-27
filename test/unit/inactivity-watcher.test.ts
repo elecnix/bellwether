@@ -13,6 +13,7 @@ import { spawnChild } from '../../src/core/spawn.ts';
 import { emptyParent, readParent, saveParent } from '../../src/core/registry.ts';
 import { Watcher } from '../../src/core/watcher.ts';
 import type { OutboxEntry } from '../../src/core/types.ts';
+import { typedLaunchStub } from '../fixtures/typed-launch.ts';
 
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'bellwether-inactivity-watch-'));
 process.env['BELLWETHER_HOME'] = home;
@@ -22,14 +23,16 @@ const MINUTE = 60_000;
 
 /** The herdr calls a spawn and a watcher pass make, answered in memory. */
 function stubClient() {
+  const launch = typedLaunchStub();
   const stub = {
     /** What the child's pane shows. A test changes it to simulate output. */
     screen: 'quiet',
     tabCreate: async () => ({ tabId: 'tab-1', paneId: 'w1:p1' }),
-    agentStart: async () => undefined,
+    sendInput: launch.sendInput,
+    agentRename: launch.agentRename,
     agentList: async () => [],
     tabClose: async () => undefined,
-    subscribe: async () => ({ closed: new Promise<void>(() => {}), close: () => {} }),
+    subscribe: launch.subscribe,
     request: async (method: string) => (method === 'pane.list' ? { panes: [] } : {}),
     snapshot: async () => ({}),
     paneRead: async () => stub.screen,

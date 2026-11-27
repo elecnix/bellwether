@@ -19,7 +19,7 @@ import { Watcher } from '../../src/core/watcher.ts';
 import type { ChildRecord } from '../../src/core/types.ts';
 import type { RestartHooks } from '../../src/core/restart.ts';
 import { runBellwetherTool, type ToolContext } from '../../src/integrations/tools.ts';
-import { startFakeHerdr, type FakeHerdr, type RecordedRequest } from '../fixtures/fake-herdr.ts';
+import { startFakeHerdr, type FakeHerdr, type RecordedRequest, harnessStarts } from '../fixtures/fake-herdr.ts';
 import { fakeWorld, type FakePane, type FakeWorld } from '../fixtures/fake-world.ts';
 import { isolate } from '../fixtures/isolated.ts';
 
@@ -133,14 +133,14 @@ test('via a route starts the launcher in front of claude, on the default tier, a
   const brief = path.join(bellwetherHome(), 'prompts', `${record.id}.md`);
   const mcp = path.join(bellwetherHome(), 'mcp', `${record.id}.json`);
   assert.deepEqual(started.args, [`--mcp-config=${mcp}`, `--settings=${claudeSettingsPath(record.id)}`, '--dangerously-load-development-channels=server:bellwether', `@${brief}`]);
-  assert.equal(calls(r.fake, 'agent.start').length, 0, 'herdr never started a bare claude');
+  assert.equal(harnessStarts(r.fake).length, 0, 'herdr never started a bare claude');
   assert.deepEqual(calls(r.fake, 'agent.rename').map((request) => request.params), [{ target: record.paneId, name: 'routed' }]);
   // The startup dialog was answered, as for a bare claude child.
   assert.equal(started.agent_status, 'idle');
   assert.equal(started.name, 'routed');
 });
 
-test('via a route with a tier passes that tier, and a bare spawn goes through agent.start with no launcher', async (t) => {
+test('via a route with a tier passes that tier, and a bare spawn types the harness behind `command`, with no launcher', async (t) => {
   const r = await rig(t, 'routes-tier');
   await r.tool('agent_spawn', { kind: 'claude', name: 'fast', cwd: '/work/repo', via: 'example-router', model: 'example-fast' });
   const fast = child(r, 'fast');
@@ -151,11 +151,34 @@ test('via a route with a tier passes that tier, and a bare spawn goes through ag
   await r.tool('agent_spawn', { kind: 'claude', name: 'plain', cwd: '/work/repo', model: 'haiku' });
   const plain = child(r, 'plain');
   assert.equal(plain.route, undefined);
-  const starts = calls(r.fake, 'agent.start');
+  const starts = harnessStarts(r.fake);
   assert.equal(starts.length, 1);
-  assert.equal(starts[0]?.params['kind'], 'claude');
-  assert.deepEqual((starts[0]?.params['args'] as string[]).slice(0, 2), ['--model', 'haiku']);
+  assert.equal(starts[0]?.via, 'typed', 'a bare claude is typed behind `command`, so a shell function named claude cannot change it');
+  assert.equal(starts[0]?.kind, 'claude');
+  assert.deepEqual((starts[0]?.args as string[]).slice(0, 2), ['--model', 'haiku']);
   assert.equal(pane(r, plain.paneId).launcher, undefined);
+});
+
+test('a bare child starts behind `command`, so a shell function named after its harness cannot change its arguments (issue #133)', async (t) => {
+  const r = await rig(t, 'routes-shell-function');
+  // The operator's startup files wrap claude to add development channels of their own.
+  r.world.shellFunctions.set('claude', ['--dangerously-load-development-channels', 'server:example-one', 'server:example-two']);
+  r.world.shellFunctions.set('pi', ['--provider', 'example-provider']);
+
+  await r.tool('agent_spawn', { kind: 'claude', name: 'plain', cwd: '/work/repo', prompt: 'Do the thing.' });
+  const record = child(r, 'plain');
+  const started = pane(r, record.paneId);
+  assert.match(started.typed ?? '', /^command claude /, 'the launch line names claude behind `command`');
+  const brief = path.join(bellwetherHome(), 'prompts', `${record.id}.md`);
+  const mcp = path.join(bellwetherHome(), 'mcp', `${record.id}.json`);
+  assert.deepEqual(started.args, [`--mcp-config=${mcp}`, `--settings=${claudeSettingsPath(record.id)}`, '--dangerously-load-development-channels=server:bellwether', `@${brief}`], 'the child got exactly the arguments Bellwether chose');
+  assert.equal(started.agent_status, 'idle', 'the channel question was answered');
+  assert.equal(started.name, 'plain', 'the agent is named after its detection');
+
+  await r.tool('agent_spawn', { kind: 'pi', name: 'pi-plain', cwd: '/work/repo', model: 'example-model', provider: 'example-host' });
+  const pi = pane(r, child(r, 'pi-plain').paneId);
+  assert.match(pi.typed ?? '', /^command pi /);
+  assert.ok(!pi.args?.includes('example-provider'), `the pi function ran: ${JSON.stringify(pi.args)}`);
 });
 
 test('each mismatch is refused by name before any tab opens', async (t) => {
@@ -210,7 +233,7 @@ test('a restart moves a bare child onto a route and back off it, keeping its ses
   assert.deepEqual(started.launcher, ['example-router', '--yes', '--model', 'example-fast']);
   assert.deepEqual(started.args?.slice(-2), ['--resume', 'sess-1']);
   assert.equal(started.agent_session?.value, 'sess-1');
-  assert.equal(calls(r.fake, 'agent.start').length, 0);
+  assert.equal(harnessStarts(r.fake).length, 0);
 
   // Without via, a restart keeps the route it runs on.
   await r.tool('agent_restart', { target: 'worker' });
@@ -225,9 +248,9 @@ test('a restart moves a bare child onto a route and back off it, keeping its ses
   assert.equal(record.session?.value, 'sess-1');
   started = pane(r, record.paneId);
   assert.equal(started.launcher, undefined, 'a bare restart types no launcher');
-  const bare = calls(r.fake, 'agent.start');
+  const bare = harnessStarts(r.fake);
   assert.equal(bare.length, 1);
-  const args = bare[0]?.params['args'] as string[];
+  const args = bare[0]?.args as string[];
   assert.deepEqual(args.slice(args.indexOf('--resume'), args.indexOf('--resume') + 2), ['--resume', 'sess-1']);
   assert.equal(started.agent_session?.value, 'sess-1');
 });

@@ -38,7 +38,7 @@ The inactivity threshold defaults to 5 minutes. `agent_spawn` takes `inactive_mi
 
 | Tool | Who gets it | What it does |
 | -- | -- | -- |
-| `agent_spawn` | any session | starts a child in a new tab, on this machine or on a saved herdr machine named by `machine`; with `resume`, sends the prompt to an earlier child instead, reopening its session first when herdr no longer has it |
+| `agent_spawn` | any session | starts a child in a new tab, on this machine or on a saved herdr machine named by `machine`, or with `resume` messages an earlier child, reopening its session in a new tab when herdr no longer has it |
 | `agent_adopt` | any session | makes a running agent this session did not start into its child, such as one `herdr-spawn.sh` started, and refuses a pane another session watches |
 | `agent_list` | any session | lists this session's children with status, age and unread events |
 | `agent_read` | any session | returns a child's last assistant message, or its screen when you pass `lines` |

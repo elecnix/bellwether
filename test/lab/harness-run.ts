@@ -111,11 +111,11 @@ export async function createPiAgentDir(options: {
   const extensions = [path.resolve(import.meta.dirname, '../../src/integrations/pi/extension.ts'), ...(options.extraExtensions ?? [])];
   fs.writeFileSync(
     path.join(dir, 'models.json'),
-    `${JSON.stringify({ providers: { scripted: { baseUrl: scriptedUrl, api: 'openai-completions', apiKey: 'lab', models: [{ id: 'scripted-model', name: 'Scripted', contextWindow: 100_000, maxTokens: 4_096 }] } } }, null, 2)}\n`,
+    `${JSON.stringify({ providers: { stub: { baseUrl: scriptedUrl, api: 'openai-completions', apiKey: 'lab', models: [{ id: 'stub-model', name: 'Scripted', contextWindow: 100_000, maxTokens: 4_096 }] } } }, null, 2)}\n`,
   );
   fs.writeFileSync(
     path.join(dir, 'settings.json'),
-    `${JSON.stringify({ defaultProvider: 'scripted', defaultModel: 'scripted-model', extensions, theme: 'dark', defaultProjectTrust: 'always' }, null, 2)}\n`,
+    `${JSON.stringify({ defaultProvider: 'stub', defaultModel: 'stub-model', extensions, theme: 'dark', defaultProjectTrust: 'always' }, null, 2)}\n`,
   );
   return dir;
 }
@@ -246,7 +246,7 @@ export async function waitForPiReady(client: HerdrClient, paneId: string, agentD
     const pane = (await client.agentList().catch(() => [] as HerdrPane[])).find((entry) => entry.paneId === paneId);
     const text = await client.paneRead({ paneId, source: 'recent_unwrapped', lines: 80 }).catch(() => '');
     const idle = pane?.agentStatus === 'idle' || pane?.agentStatus === 'done';
-    if (idle && downloaded() && /scripted-model|Scripted/.test(text)) return;
+    if (idle && downloaded() && /stub-model|Scripted/.test(text)) return;
     if (Date.now() > deadline) {
       // A pair must not fail on a slow first-run download or a footer that
       // reads differently; herdr already said the agent is up.

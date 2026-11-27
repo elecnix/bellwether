@@ -30,6 +30,8 @@ export interface ParentService {
 /** What the daemon lends every parent service: the connections to remote hosts it holds. */
 export interface ServiceDeps {
   links?: RelayLinks;
+  /** The daemon's log, for what a tool does that a person may need to trace, such as a move. */
+  log?: (message: string) => void;
 }
 
 export type ServiceFactory = (parent: ParentHello, id: string, deps: ServiceDeps) => ParentService;
@@ -63,7 +65,7 @@ export function createHerdrService(parent: ParentHello, id: string, deps: Servic
       restartJobs.set(key, running);
     },
   };
-  const context: ToolContext = { client, clientFor, parentId: record.id, watcher, remote, relayState, restart };
+  const context: ToolContext = { client, clientFor, parentId: record.id, watcher, remote, relayState, restart, log: deps.log };
   const paneWatches = new Set<{ close: () => void }>();
   watcher.start();
   // Finish a restart a daemon stopped part of the way through.

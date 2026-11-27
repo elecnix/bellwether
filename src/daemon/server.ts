@@ -139,7 +139,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
     const id = parentIdOf(parent);
     const existing = services.get(id);
     if (existing) return { parentId: id, service: existing };
-    const service = factory(parent, id, { links });
+    const service = factory(parent, id, { links, log });
     services.set(id, service);
     service.onEvents((entries) => {
       push(id, entries);
@@ -255,7 +255,8 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
   const acceptRelayed = (host: string, report: RelayReport): { refused?: string } => {
     const route = routeReport({ parentId: report.parentId, childId: report.childId });
     if (route.kind !== 'local') return { refused: `this machine holds no parent ${report.parentId} with child ${report.childId}` };
-    if (hostOf(route.child) !== host) return { refused: `child ${report.childId} runs on machine ${hostOf(route.child)}, not ${host}` };
+    // A report the child left on the machine it moved away from still counts.
+    if (hostOf(route.child) !== host && route.child.movedFrom?.host !== host) return { refused: `child ${report.childId} runs on machine ${hostOf(route.child)}, not ${host}` };
     const { duplicate } = acceptLocalReport(route.parent, route.child, { parentId: report.parentId, childId: report.childId, receipt: report.receipt, status: report.status, text: report.text });
     if (duplicate) log(`report ${report.receipt} for child ${report.childId} from machine ${host} was already accepted, so the copy was dropped`);
     else log(`report ${report.receipt} from child ${report.childId} on machine ${host} accepted for parent ${report.parentId}`);

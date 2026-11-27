@@ -39,7 +39,8 @@ export const opencode: HarnessEntry = {
     storePath: (hooks) => hooks.store ?? openCodeDbPath(),
     mint: () => newOpenCodeSessionId(),
     async confirm({ store, session, cwd, briefFile }, hooks) {
-      await findOpenCodeSession({ db: store, sessionId: session, cwd, prompt: openCodeBriefLine(briefFile), waitMs: hooks.waitMs, intervalMs: hooks.intervalMs });
+      if (!session) throw new Error('the spawn minted no OpenCode session id');
+      return (await findOpenCodeSession({ db: store, sessionId: session, cwd, prompt: openCodeBriefLine(briefFile), waitMs: hooks.waitMs, intervalMs: hooks.intervalMs })).id;
     },
   },
   reports: {

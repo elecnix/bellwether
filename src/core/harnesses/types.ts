@@ -122,17 +122,25 @@ export type SessionSource =
   /** herdr's agent_session for the pane, as an id or a path. */
   | { from: 'herdr'; kind: 'id' | 'path' }
   /**
-   * The harness's own store, by a session id the spawn picks and passes on
-   * the launch line. herdr reports no agent_session for such a harness.
+   * The harness's own store. herdr reports no agent_session for such a
+   * harness. When the harness takes a session id on its launch line, the
+   * spawn mints one and the store confirms it. Otherwise the store finds the
+   * session the harness picked, by the child's directory, its start time and
+   * the brief line, and hands back its id.
    */
   | {
       from: 'store';
       /** The store's path on this machine, as the harness itself resolves it. */
       storePath(hooks: HarnessHooks): string;
-      /** A new session id in the harness's own form. */
-      mint(): string;
-      /** Wait until the store shows the session with the brief line, or throw naming the store. */
-      confirm(input: { store: string; session: string; cwd: string; briefFile: string }, hooks: HarnessHooks): Promise<void>;
+      /** A new session id in the harness's own form, for a harness that takes one on its launch line. */
+      mint?(): string;
+      /**
+       * Wait until the store shows the session with the brief line, and
+       * return its id, or throw naming the store. `session` is the minted id,
+       * when the entry mints one. `since` is when the child's record was
+       * written, before its harness started.
+       */
+      confirm(input: { store: string; session?: string; cwd: string; briefFile: string; since: string }, hooks: HarnessHooks): Promise<string>;
     };
 
 /** How Bellwether reads what a child said, and whether it moved. */

@@ -13,6 +13,7 @@ import { LOCAL_HOST, hostOf, type ClientFor } from './machine.ts';
 import { Outbox } from './outbox.ts';
 import { mutateParent, readParent, updateChild } from './registry.ts';
 import { DIALOG_NAMES, detectDialog, watchStartup } from './startup-dialogs.ts';
+import { detectModal } from './modal.ts';
 import { agentNameOf, lastAssistantMessage, locateTranscript, piSessionModel, sessionFrom } from './transcript.ts';
 import { removeChildFiles } from './mcp-config.ts';
 import { childLabel } from './label.ts';
@@ -441,6 +442,7 @@ export class Watcher {
       const stateSeq = typeof event.data['state_change_seq'] === 'number' ? (event.data['state_change_seq'] as number) : undefined;
       updateChild(this.parentId, child.id, (entry) => {
         if (status !== 'unknown' && !entry.harnessSeenAt) entry.harnessSeenAt = new Date().toISOString();
+        if (entry.prompt?.source === 'screen' && (entry.lastStatus !== status || (stateSeq !== undefined && stateSeq !== entry.stateChangeSeq))) delete entry.prompt;
         if (entry.lastStatus !== status) {
           entry.statusChangedAt = new Date().toISOString();
           // herdr 0.9.5 sends no state_change_seq on this event, so a seq
@@ -552,6 +554,8 @@ export class Watcher {
       if (status !== child.lastStatus || (seq !== undefined && seq !== child.completionSeq) || (stateSeq !== undefined && stateSeq !== child.stateChangeSeq) || sessionChanged || nameChanged) {
         updateChild(this.parentId, child.id, (entry) => {
           const at = new Date().toISOString();
+          // A dialog read off the screen holds only until herdr says something new.
+          if (entry.prompt?.source === 'screen' && (status !== entry.lastStatus || (seq !== undefined && seq !== entry.completionSeq) || (stateSeq !== undefined && stateSeq !== entry.stateChangeSeq))) delete entry.prompt;
           if (entry.lastStatus !== status) entry.statusChangedAt = at;
           // A new turn is activity even when the status did not change. The
           // record keeps it, so a restarted parent does not lose the period.
@@ -596,7 +600,7 @@ export class Watcher {
       const busy = await this.childIsBusy(child, now);
       // A spawn can set its own stuck and inactivity thresholds. The stuck one
       // is what the lab uses to reach that event in seconds rather than minutes.
-      const { state: next, event } = advance(state, { status: child.lastStatus, completionSeq: child.completionSeq, busy }, now, limitsFor(child, this.limits));
+      const { state: next, event } = advance(state, { status: child.lastStatus, completionSeq: child.completionSeq, busy, prompt: child.prompt?.line }, now, limitsFor(child, this.limits));
       this.states.set(child.id, next);
       if (!event) continue;
       if (event === 'inactive') {
@@ -619,18 +623,56 @@ export class Watcher {
         this.states.set(child.id, markReported(next, now));
         continue;
       }
+      // Bellwether reports a dialog and never answers it, apart from Claude
+      // Code's own startup questions, which answerStartupDialog owns. Approving
+      // a permission question is the operator's decision, not the tool's: do not
+      // add a keystroke on this path. test/integration/blocked-modal.test.ts
+      // fails when one reaches the pane.
       if (event === 'blocked') {
+        if (child.prompt) {
+          this.offer(child, event, this.describeBlocked(child, child.prompt.line));
+          continue;
+        }
         // TODO(api): the screen decides whether this blocked child is on a Claude
         // Code startup question, which the watcher answers itself. herdr's blocked
         // status does not say which dialog is up. A field on the status event, or in
         // Claude Code's hooks, naming the pending dialog would retire the read as
-        // evidence. The same text reaches the parent as the dialog to answer.
+        // evidence. The same text names the dialog for the parent.
         const dialog = await this.clientFor(hostOf(child))
           .then((client) => client.paneRead({ paneId: child.paneId, source: 'detection', lines: 30 }))
           .catch(() => '');
         if (this.answerStartupDialog(child, dialog)) continue;
-        this.offer(child, event, this.describeBlocked(child, dialog));
+        this.offer(child, event, this.describeBlocked(child, detectModal(dialog)));
         continue;
+      }
+      if (event === 'idle') {
+        // herdr reports a harness that waits on a dialog as idle when the
+        // harness never told it otherwise, as pi does for an extension's dialog.
+        // TODO(api): the screen tells a finished turn from a dialog for a harness
+        // that does not report its prompts. pi's ui_prompt_start event already
+        // retires this read for a local pi child, through the child's extension.
+        // Claude Code's Notification hook with notification_type permission_prompt,
+        // wired into each Claude Code child's settings, or a herdr status that maps
+        // every harness's dialog to blocked, would retire it for the rest.
+        const screen = await this.clientFor(hostOf(child))
+          .then((client) => client.paneRead({ paneId: child.paneId, source: 'detection', lines: 30 }))
+          .catch(() => '');
+        const line = detectModal(screen);
+        if (line) {
+          // The turn stays unreported, so the idle event still comes once the
+          // dialog closes and the child settles.
+          const held: ClassifierState = { ...next, reportedFor: state.reportedFor, prompt: line, promptSince: now, firedBlocked: true };
+          if (this.answerStartupDialog(child, screen)) {
+            this.states.set(child.id, state);
+            continue;
+          }
+          updateChild(this.parentId, child.id, (entry) => {
+            entry.prompt = { line, source: 'screen', since: new Date(now).toISOString() };
+          });
+          this.states.set(child.id, held);
+          this.offer(child, 'blocked', this.describeBlocked(child, line));
+          continue;
+        }
       }
       const quietSince = event === 'inactive' ? next.lastActivityAt : next.lastBusyAt;
       this.offer(child, event, await this.describe(child, event, quietSince, now));
@@ -783,11 +825,12 @@ export class Watcher {
     const age = this.age(Date.parse(child.startedAt));
     if (event === 'exited') return this.describeExit(child, child.exitCode, child.harnessEnded === 'before-start');
     if (event === 'blocked') {
-      // Pane feature: the parent's event text shows the dialog its child is blocked on.
+      if (child.prompt) return this.describeBlocked(child, child.prompt.line);
+      // Pane feature: the parent's event text names the dialog its child is blocked on.
       const dialog = await this.clientFor(hostOf(child))
         .then((client) => client.paneRead({ paneId: child.paneId, source: 'detection', lines: 30 }))
         .catch(() => '');
-      return this.describeBlocked(child, dialog);
+      return this.describeBlocked(child, detectModal(dialog));
     }
     // Measure the quiet period on the classifier's own clock. The registry's
     // lastBusyAt can be written by another process that only sees file size.
@@ -811,8 +854,13 @@ export class Watcher {
     return ` Bellwether is not hearing from machine ${host}: it is ${state.status} (${heard})${state.lastError ? `, and the last attempt failed with ${state.lastError}` : ''}. A report the child made waits there and arrives once the connection returns.`;
   }
 
-  private describeBlocked(child: ChildRecord, dialog: string): string {
-    return `${childLabel(child)} is blocked on a dialog after ${this.age(Date.parse(child.startedAt))}. The dialog:\n${trim(dialog)}\n\nAnswer it with agent_send keys, or answer the card your-attention posted.`;
+  /**
+   * One line for the dialog, not the screen: enough to tell a trust question
+   * from a permission question. agent_read shows the whole screen.
+   */
+  private describeBlocked(child: ChildRecord, line: string | undefined): string {
+    const what = line ? `: ${line}` : ', which Bellwether could not name from the screen';
+    return `${childLabel(child)} is blocked on a dialog after ${this.age(Date.parse(child.startedAt))}${what}\nIt waits for a person to answer, and Bellwether does not answer it. Read the screen with agent_read, then answer with agent_send keys.`;
   }
 
   private describeExit(child: ChildRecord, code: number | undefined, beforeStart = false): string {

@@ -31,7 +31,9 @@ export function newChildId(): string {
 export function isSuperseded(entry: OutboxEntry, child: ChildRecord | undefined): boolean {
   if (!child || entry.read) return false;
   const newer = entry.stateChangeSeq === undefined || child.stateChangeSeq === undefined || child.stateChangeSeq > entry.stateChangeSeq;
-  if (entry.event === 'blocked') return Boolean(child.exitedAt) || (child.lastStatus !== 'blocked' && newer);
+  // A child herdr calls idle can still be waiting on the dialog this entry
+  // names, so an open prompt keeps the entry as much as herdr's blocked does.
+  if (entry.event === 'blocked') return Boolean(child.exitedAt) || (child.lastStatus !== 'blocked' && !child.prompt && newer);
   if (entry.event === 'stuck') {
     if (child.exitedAt) return true;
     const moved = Date.parse(child.lastBusyAt) > Date.parse(entry.at);

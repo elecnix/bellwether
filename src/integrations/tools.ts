@@ -4,7 +4,7 @@ import os from 'node:os';
 import type { HerdrClient } from '../core/herdr-client.ts';
 import { AGENT_KINDS, DEFAULT_MAX_DEPTH, spawnChild, type RegisterRemote, type SpawnOptions } from '../core/spawn.ts';
 import { removeChildFiles } from '../core/mcp-config.ts';
-import { reportForCaller } from '../core/report.ts';
+import { PROMPT_NOTICE, notePromptForCaller, reportForCaller } from '../core/report.ts';
 import { childById, readParent, updateChild } from '../core/registry.ts';
 import { adoptPane } from '../core/adopt.ts';
 import { LOCAL_HOST, hostOf, knownHosts, type ClientFor } from '../core/machine.ts';
@@ -255,6 +255,11 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
     if (!status || !text) throw new Error('parent_report needs both status and text');
     const written = reportForCaller(caller, status, text);
     return `Reported ${status} to the parent, as ${written.childName}.`;
+  }
+
+  if (name === PROMPT_NOTICE) {
+    // Sent by a pi child's extension, never offered to a model.
+    return notePromptForCaller(caller, { open: args['open'] === true, title: optionalString(args['title']), kind: optionalString(args['kind']) });
   }
 
   if (name === RETIRE_TOOL) {

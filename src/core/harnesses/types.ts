@@ -157,8 +157,13 @@ export interface AdoptedInboxGap {
 
 /** Where a child's session id comes from. */
 export type SessionSource =
-  /** herdr's agent_session for the pane, as an id or a path. */
-  | { from: 'herdr'; kind: 'id' | 'path' }
+  /**
+   * herdr's agent_session for the pane, as an id or a path. `integration`
+   * names herdr's integration that reports it, the target `herdr integration
+   * install` takes. Without it on the child's machine, herdr reports no
+   * session, so a move, a restart or a resume by session cannot work.
+   */
+  | { from: 'herdr'; kind: 'id' | 'path'; integration?: string }
   /**
    * The harness's own store. herdr reports no agent_session for such a
    * harness. When the harness takes a session id on its launch line, the

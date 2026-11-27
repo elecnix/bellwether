@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { HerdrClient, HerdrPane } from './herdr-client.ts';
 import { briefsOf, nextBrief, type NextBrief } from './brief-history.ts';
+import { withSessionCause } from './herdr-integration.ts';
 import { removeChildFiles } from './mcp-config.ts';
 import { LOCAL_HOST } from './machine.ts';
 import { newChildId } from './outbox.ts';
@@ -124,7 +125,7 @@ export async function resumeChild(client: HerdrClient, parent: ParentRecord, tar
   resumeArgs(kind, { value: '', kind: 'id' });
   const session = target.session ?? (existing ? sessionOf(existing) : undefined);
   if (!session) {
-    throw new Error(existing ? `${existing.name} has no recorded session, so there is nothing to resume. Pass resume with the session id and kind to reopen it as a new child.` : 'A resume needs a child of this session or a session id.');
+    throw new Error(existing ? await withSessionCause(`${existing.name} has no recorded session, so there is nothing to resume. Pass resume with the session id and kind to reopen it as a new child.`, client, harnessFor(kind), existing) : 'A resume needs a child of this session or a session id.');
   }
   const args = resumeArgs(kind, session);
   // The route is decided before anything is written, so a refusal leaves the record as it was.

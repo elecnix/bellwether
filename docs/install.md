@@ -18,6 +18,17 @@ This install is for a parent session. A pi child needs nothing in the host's pi 
 
 An older copy in pi's settings has no such guard, and pi exits at startup when two extensions register the same tool. While pi's settings list one, a pi spawn refuses to start, and its error says to run `pi install npm:@elecnix/bellwether`.
 
+## herdr's integrations
+
+herdr reports a pi or Claude Code session only through its own integration for that harness. Run these once on every machine that runs a child, and `herdr integration status` shows the result:
+
+```sh
+herdr integration install pi
+herdr integration install claude
+```
+
+Without the integration a child still starts and reports, but Bellwether never records its session, so `agent_move`, `agent_restart` and a resume by session refuse it. The spawn reply warns when herdr on the child's machine lacks the integration.
+
 ## Plugin and channel
 
 The plugin runs Bellwether's MCP server and declares it a channel, which carries child events.

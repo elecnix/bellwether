@@ -5,6 +5,7 @@
 import crypto from 'node:crypto';
 import path from 'node:path';
 import { LOCAL_HOST } from './machine.ts';
+import { noSessionCause } from './herdr-integration.ts';
 import { claudeProjectDir } from './transcript.ts';
 import type { AgentStatus, ChildRecord } from './types.ts';
 import { agentKinds, harnessFor, harnessNamed } from './harnesses/index.ts';
@@ -196,6 +197,8 @@ export interface RefusalInput {
   /** A move already recorded on the child, still inside its window. */
   moveInFlight?: { to: string; since: string };
   hasSession: boolean;
+  /** The herdr integration that reports this harness's session, when herdr on the source says it is missing: the cause of a missing session. */
+  missingIntegration?: string;
   /** The harness on the source, for the version that wrote the session. */
   sourceHarness?: HarnessProbe;
   /** The harness on the target. */
@@ -237,7 +240,10 @@ export function moveRefusals(input: RefusalInput): string[] {
     refusals.push(`${input.childName} is ${input.status}. A move stops the child, which would cut its turn short, so wait for it to go idle and move it then.`);
   }
   if (input.moveInFlight) refusals.push(`${input.childName} is already being moved to ${machineName(input.moveInFlight.to)}, since ${input.moveInFlight.since}.`);
-  if (!input.hasSession) refusals.push(`${input.childName} has no recorded session, so there is no conversation to carry across.`);
+  if (!input.hasSession) {
+    const cause = input.missingIntegration ? ` ${noSessionCause(input.missingIntegration, input.source, input.childName)}` : '';
+    refusals.push(`${input.childName} has no recorded session, so there is no conversation to carry across.${cause}`);
+  }
   const kind = input.harness === 'pi' ? 'pi' : 'claude';
   if (input.targetHarness && !input.targetHarness.path) {
     refusals.push(`${kind} is not installed on ${where}${input.targetHarness.error ? ` (${input.targetHarness.error})` : ''}. Install it there, then move the child.`);

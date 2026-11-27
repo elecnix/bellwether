@@ -28,7 +28,8 @@ export const pi: HarnessEntry = {
       ...extra,
     ];
   },
-  session: { from: 'herdr', kind: 'path' },
+  // herdr learns the session from its pi extension, which `herdr integration install pi` writes.
+  session: { from: 'herdr', kind: 'path', integration: 'pi' },
   reports: {
     via: 'extension',
     // Resolved before anything else is written, so a missing extension writes nothing.

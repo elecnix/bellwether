@@ -82,6 +82,14 @@ test('a busy, exited, sessionless, already-moving or same-machine child is refus
   assert.match(moveRefusals(ready({ target: LOCAL_HOST }))[0] ?? '', /already runs on this machine/);
 });
 
+test('a sessionless child whose machine\'s herdr lacks the integration is refused with the cause and the fix', () => {
+  const [plain] = moveRefusals(ready({ harness: 'pi', hasSession: false }));
+  assert.equal(plain, 'worker has no recorded session, so there is no conversation to carry across.');
+  const [caused] = moveRefusals(ready({ harness: 'pi', hasSession: false, source: 'example-box', target: LOCAL_HOST, missingIntegration: 'pi' }));
+  assert.ok(caused?.startsWith(`${plain} herdr on machine example-box has no pi integration`), caused);
+  assert.ok(caused?.includes('`herdr integration install pi` on machine example-box'), caused);
+});
+
 test('every refusal that applies is reported at once', () => {
   const reasons = moveRefusals(ready({ status: 'working', targetCwdExists: false, targetHarness: { path: '/bin/claude', version: '1.0.0' } }));
   assert.equal(reasons.length, 3);

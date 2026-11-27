@@ -16,6 +16,7 @@ Leave out `machine` when the parent's machine knows exactly one other machine. B
 - For a pi child, the provider and model pair the session last used, as `pi --list-models` offers it on the target. pi needs both together.
 - The working directory on the target. Bellwether moves the conversation, not the repository. Check out the same work there first, such as a worktree of the same branch.
 - An idle child. A move closes the child's tab, and that would cut a turn short.
+- A recorded session, which herdr reports only through its integration for the harness on the child's machine. Run `herdr integration install pi`, or `claude`, on every machine a child may start on, before it starts.
 
 `bellwether doctor` lists, for each known machine, the claude and pi versions, how many pi models it offers and the Bellwether version. For each live claude or pi child, it then says whether each other machine could take it, and why not. It checks the working directory only when the move runs.
 
@@ -30,7 +31,7 @@ Bellwether checks every condition below before it changes anything on either mac
 - a working directory that doesn't exist on the target
 - a child that is working or blocked
 - a child that has exited
-- a child with no recorded session
+- a child with no recorded session. When herdr on the child's machine lacks its integration for the harness, the refusal says so, and gives the `herdr integration install` command to run there before you spawn the child again.
 - a child that another resume or move holds. The lock file under `~/.bellwether/locks/` is the same one a resume takes.
 
 ## Order of operations

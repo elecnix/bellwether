@@ -73,7 +73,8 @@ function defaultResult(request: RecordedRequest): unknown {
     case 'tab.list':
       return { type: 'tab_list', tabs: [] };
     case 'integration.list':
-      return { type: 'integration_list', integrations: [] };
+      // herdr lists every integration it has; these two report pi and Claude Code sessions.
+      return { type: 'integration_list', integrations: [{ target: 'pi', label: 'pi', command: 'pi', available: true, state: 'current' }, { target: 'claude', label: 'claude', command: 'claude', available: true, state: 'current' }] };
     default:
       return { type: 'ok' };
   }

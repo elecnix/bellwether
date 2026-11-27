@@ -23,6 +23,7 @@ import { withChildLock } from './child-lock.ts';
 import { HerdrApiError, type HerdrClient, type HerdrEvent, type HerdrPane, type Subscription } from './herdr-client.ts';
 import { LOCAL_HOST, hostOf } from './machine.ts';
 import { bellwetherHome } from './paths.ts';
+import { withSessionCause } from './herdr-integration.ts';
 import { readRelayRecord } from './relay-records.ts';
 import { childOfCaller } from './report.ts';
 import { listParents, mutateParent, readParent, recordDecisions, updateChild } from './registry.ts';
@@ -310,7 +311,7 @@ async function restartChildLocked(client: HerdrClient, parentId: string, childId
   if (isMoving(child)) throw new RestartRefused(`${child.name} (child ${child.id}) is being moved to ${child.moving?.to === LOCAL_HOST ? 'this machine' : `machine ${child.moving?.to}`}, since ${child.moving?.since}. Wait for the move to finish, then restart it.`);
   if (child.origin === 'adopt') throw new RestartRefused(`${child.name} (child ${child.id}) was adopted, not started by Bellwether, so agent_restart will not close pane ${child.paneId}: it closes only panes Bellwether started.`);
   const session = sessionOf(child);
-  if (!session) throw new RestartRefused(`${child.name} (child ${child.id}, pane ${child.paneId || 'none'}) has no recorded session, so agent_restart cannot reopen it. Resume it once with agent_spawn and resume, which records the session herdr reports.`);
+  if (!session) throw new RestartRefused(await withSessionCause(`${child.name} (child ${child.id}, pane ${child.paneId || 'none'}) has no recorded session, so agent_restart cannot reopen it. Resume it once with agent_spawn and resume, which records the session herdr reports.`, client, requireHarness(child.kind), child));
   const resume = resumeArgs(child.kind, session);
   // Decided before the old pane closes, so a refused route leaves the child running.
   const change = options.change ?? child.restartRoute ?? {};
@@ -677,14 +678,14 @@ export async function runAgentRestart(client: HerdrClient, ownParentId: string, 
   throw new RestartRefused(`${pane.name ?? pane.label ?? pane.agent ?? 'The agent'} in pane ${pane.paneId} is not a session any Bellwether registry holds, so agent_restart neither closes that pane nor starts a second copy of its session. Restart it from the session that owns it, or close it and reopen its session by hand.`);
 }
 
-function deferChildRestart(client: HerdrClient, parent: ParentRecord, childNow: ChildRecord, caller: CallerIdentity, hooks: RestartHooks, change?: RouteChange): string {
+async function deferChildRestart(client: HerdrClient, parent: ParentRecord, childNow: ChildRecord, caller: CallerIdentity, hooks: RestartHooks, change?: RouteChange): Promise<string> {
   const child = readParent(parent.id)?.children.find((entry) => entry.id === childNow.id) ?? childNow;
   if (child.restartRequestedAt) return `${child.name} (child ${child.id}) already has a restart pending from ${child.restartRequestedAt}; the daemon acts once its turn ends.`;
   if (!hooks.defer) throw new RestartRefused('This daemon cannot defer a restart, so it cannot restart the session that asked.');
   if (hostOf(child) !== LOCAL_HOST) throw new RestartRefused(`${child.name} runs on machine ${hostOf(child)}, and this daemon only restarts agents on its own machine.`);
   if (child.origin === 'adopt') throw new RestartRefused(`${child.name} (child ${child.id}) was adopted, not started by Bellwether, so agent_restart will not close pane ${child.paneId}: it closes only panes Bellwether started.`);
   const session = sessionOf(child);
-  if (!session) throw new RestartRefused(`${child.name} (child ${child.id}, pane ${child.paneId || 'none'}) has no recorded session, so agent_restart cannot reopen it. Resume it once with agent_spawn and resume, which records the session herdr reports.`);
+  if (!session) throw new RestartRefused(await withSessionCause(`${child.name} (child ${child.id}, pane ${child.paneId || 'none'}) has no recorded session, so agent_restart cannot reopen it. Resume it once with agent_spawn and resume, which records the session herdr reports.`, client, requireHarness(child.kind), child));
   const resume = resumeArgs(child.kind, session);
   // A wrong route, or reads for a harness that takes none, is refused now, while the caller can still read why.
   const launch = nextLaunch(child, change ?? {}, 'restarted');

@@ -1,9 +1,10 @@
 // The daemon protocol: one request per line, JSON, on a local socket. The
 // version travels in every hello, so a client newer than a running daemon can
 // ask it to drain and start the new one.
-import type { Harness, OutboxEntry } from '../core/types.ts';
+import type { CallerIdentity, Harness, OutboxEntry } from '../core/types.ts';
 
-export const DAEMON_PROTOCOL = 1;
+// 2: a call carries the caller identity, and parent_report routes by it.
+export const DAEMON_PROTOCOL = 2;
 
 /** The largest line a daemon or client will read, matching the herdr client. */
 export const MAX_DAEMON_FRAME_BYTES = 4 * 1024 * 1024;
@@ -29,6 +30,8 @@ export interface ParentHello {
   depth: number;
   /** The herdr socket this session watches, so a daemon can serve several. */
   herdrSocket: string;
+  /** The child id a spawn handed this session, when it is a Bellwether child. */
+  childId?: string;
 }
 
 export interface HelloRequest {
@@ -43,6 +46,8 @@ export interface CallRequest {
   id: string;
   tool: string;
   args: Record<string, unknown>;
+  /** Who is calling, so the daemon routes by its own records, whichever client asked. */
+  caller?: CallerIdentity;
 }
 
 export interface ReceiptRequest {
@@ -131,7 +136,8 @@ export function parseRequest(line: string): DaemonRequest {
       const tool = text(value['tool']);
       if (!id || !tool) throw new ProtocolError('invalid_call', 'a call needs an id and a tool');
       const args = isRecord(value['args']) ? value['args'] : {};
-      return { type: 'call', id, tool, args };
+      const caller = parseCaller(value['caller']);
+      return caller ? { type: 'call', id, tool, args, caller } : { type: 'call', id, tool, args };
     }
     case 'receipt': {
       const receipts = Array.isArray(value['receipts']) ? value['receipts'].filter((entry): entry is string => typeof entry === 'string' && entry.length > 0) : [];
@@ -149,6 +155,16 @@ export function parseRequest(line: string): DaemonRequest {
     default:
       throw new ProtocolError('unknown_type', `unknown request type ${JSON.stringify(value['type'])}`);
   }
+}
+
+function parseCaller(value: unknown): CallerIdentity | undefined {
+  if (!isRecord(value)) return undefined;
+  const caller: CallerIdentity = {};
+  const childId = text(value['childId']);
+  const paneId = text(value['paneId']);
+  if (childId) caller.childId = childId;
+  if (paneId) caller.paneId = paneId;
+  return caller;
 }
 
 function parseHello(value: Record<string, unknown>): HelloRequest {
@@ -169,7 +185,7 @@ function parseHello(value: Record<string, unknown>): HelloRequest {
     type: 'hello',
     protocol,
     client: text(value['client']) || 'unknown',
-    parent: { harness, session, cwd, host, depth, herdrSocket, paneId: optional('paneId'), workspaceId: optional('workspaceId') },
+    parent: { harness, session, cwd, host, depth, herdrSocket, paneId: optional('paneId'), workspaceId: optional('workspaceId'), childId: optional('childId') },
   };
 }
 

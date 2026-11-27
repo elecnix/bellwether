@@ -5,14 +5,14 @@ import fs from 'node:fs';
 import type { HerdrClient } from '../core/herdr-client.ts';
 import { HerdrApiError } from '../core/herdr-client.ts';
 import { AGENT_KINDS, DEFAULT_MAX_DEPTH, spawnChild, type SpawnOptions } from '../core/spawn.ts';
-import { removeBrief } from '../core/brief.ts';
-import { reportToParent } from '../core/report.ts';
+import { removeChildFiles } from '../core/mcp-config.ts';
+import { reportForCaller } from '../core/report.ts';
 import { childById, readParent, updateChild } from '../core/registry.ts';
 import { adoptPane } from '../core/adopt.ts';
 import { LOCAL_HOST, hostOf, type ClientFor } from '../core/machine.ts';
 import { findResumable, resumeChild } from '../core/resume.ts';
 import type { Watcher } from '../core/watcher.ts';
-import type { ChildRecord, ReportStatus } from '../core/types.ts';
+import type { CallerIdentity, ChildRecord, ReportStatus } from '../core/types.ts';
 
 export interface ToolContext {
   /** The parent's own herdr. */
@@ -167,18 +167,22 @@ function describeChild(child: ChildRecord, watcher: Watcher): string {
   return `${child.name}\t${child.kind}\t${state}\t${age}s\t${hostOf(child)}\t${child.paneId}\tunread ${unread}\t${child.cwd ?? ''}`;
 }
 
-export async function runBellwetherTool(ctx: ToolContext, name: string, args: Record<string, unknown>): Promise<string> {
-  const record = readParent(ctx.parentId);
-  if (!record) throw new Error(`No Bellwether registry for ${ctx.parentId}. Start a session with the Bellwether extension loaded.`);
-
+/**
+ * Run one tool for a session. `caller` is the identity the session's adapter
+ * sent with the call; parent_report routes by it and by the child records
+ * this daemon holds, never by the daemon's own environment.
+ */
+export async function runBellwetherTool(ctx: ToolContext, name: string, args: Record<string, unknown>, caller: CallerIdentity = {}): Promise<string> {
   if (name === 'parent_report') {
     const status = optionalString(args['status']) as ReportStatus | undefined;
     const text = optionalString(args['text']);
     if (!status || !text) throw new Error('parent_report needs both status and text');
-    const written = reportToParent(status, text);
-    if (!written) throw new Error('This session has no BELLWETHER_PARENT, so there is nobody to report to.');
-    return `Reported ${status} to the parent.`;
+    const written = reportForCaller(caller, status, text);
+    return `Reported ${status} to the parent, as ${written.childName}.`;
   }
+
+  const record = readParent(ctx.parentId);
+  if (!record) throw new Error(`No Bellwether registry for ${ctx.parentId}. Start a session with the Bellwether extension loaded.`);
 
   if (name === 'agent_spawn') {
     const options: SpawnOptions = {
@@ -317,7 +321,7 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
     updateChild(ctx.parentId, child.id, (entry) => {
       entry.exitedAt = new Date().toISOString();
     });
-    removeBrief(child.id);
+    removeChildFiles(child.id);
     return `Closed ${child.name}.`;
   }
 

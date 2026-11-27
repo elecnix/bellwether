@@ -13,7 +13,8 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { daemonsUnder, stopDaemonsUnder } from '../fixtures/daemons.ts';
 import { claudeProjectDir } from '../../src/core/transcript.ts';
-import { parentId, slug } from '../../src/core/registry.ts';
+import { emptyParent, parentId, slug } from '../../src/core/registry.ts';
+import { mcpConfig } from '../../src/core/mcp-config.ts';
 import type { OutboxEntry } from '../../src/core/types.ts';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -192,6 +193,38 @@ test('a child session also gets parent_report', async () => {
   try {
     const listed = await client.listTools();
     assert.ok(listed.tools.some((tool) => tool.name === 'parent_report'));
+  } finally {
+    await client.close();
+    await closeLab(room);
+  }
+});
+
+test('a server started from a spawn MCP config reports through the daemon to the parent that holds the child', async () => {
+  const room = lab();
+  // The parent's registry, with the child the spawn wrote before it started the tab.
+  const parentRecord = emptyParent('claude-code', 'the-real-parent', room.cwd, { paneId: 'w1:p1' });
+  const at = new Date().toISOString();
+  parentRecord.children.push({ id: 'kid-7', name: 'reporter', kind: 'claude', harness: 'claude-code', paneId: 'w1:p9', host: 'local', startedAt: at, lastStatus: 'working', statusChangedAt: at, lastBusyAt: at, depth: 1 });
+  fs.mkdirSync(room.parents, { recursive: true });
+  fs.writeFileSync(path.join(room.parents, `${slug(parentRecord.id)}.json`), JSON.stringify(parentRecord));
+
+  // Exactly what Claude Code runs from the file: no BELLWETHER_* variable at all.
+  const configured = mcpConfig('kid-7').mcpServers['bellwether'];
+  assert.ok(configured);
+  const notifications: { method: string; params: unknown }[] = [];
+  const client = new Client({ name: 'claude-code', version: '0.0.0' }, { capabilities: {} });
+  client.fallbackNotificationHandler = async (notification: { method: string }): Promise<void> => {
+    notifications.push(notification as { method: string; params: unknown });
+  };
+  await client.connect(new StdioClientTransport({ command: configured.command, args: configured.args, env: { ...room.env, HERDR_PANE_ID: 'w1:p9' }, stderr: 'pipe' }));
+  try {
+    const listed = await client.listTools();
+    assert.ok(listed.tools.some((tool) => tool.name === 'parent_report'), 'a child named by --child gets parent_report');
+    const reply = (await client.callTool({ name: 'parent_report', arguments: { status: 'done', text: 'shipped' } })) as { content: { text: string }[]; isError?: boolean };
+    assert.equal(reply.isError, undefined, reply.content[0]?.text);
+    const spool = path.join(room.home, 'spool', `${slug(parentRecord.id)}.jsonl`);
+    const report = JSON.parse(fs.readFileSync(spool, 'utf8').trim()) as { childId: string; childName: string; paneId: string };
+    assert.deepEqual([report.childId, report.childName, report.paneId], ['kid-7', 'reporter', 'w1:p9']);
   } finally {
     await client.close();
     await closeLab(room);

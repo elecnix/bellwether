@@ -219,7 +219,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
       }
       if (request.type === 'call') {
         try {
-          const text = await session.service.tool(request.tool, request.args);
+          const text = await session.service.tool(request.tool, request.args, request.caller ?? {});
           reply({ type: 'result', id: request.id, text });
         } catch (error) {
           reply({ type: 'result', id: request.id, error: (error as Error).message });

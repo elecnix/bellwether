@@ -33,7 +33,19 @@ const pane = process.env['HERDR_PANE_ID'];
 const workspace = process.env['HERDR_WORKSPACE_ID'];
 const cwd = process.env['CLAUDE_PROJECT_DIR'] ?? process.cwd();
 const depth = Number.parseInt(process.env['BELLWETHER_DEPTH'] ?? '0', 10) || 0;
-const isChild = Boolean(process.env['BELLWETHER_PARENT']);
+
+/** The value after a flag, in the `--child <id>` or `--child=<id>` form. */
+function argument(argv: string[], flag: string): string | undefined {
+  const index = argv.indexOf(flag);
+  if (index >= 0) return argv[index + 1];
+  return argv.find((arg) => arg.startsWith(`${flag}=`))?.slice(flag.length + 1);
+}
+
+// The spawn's MCP config names the child with --child. A server loaded some
+// other way may still sit in a child's pane, so it passes the id its tab
+// carries, and the daemon checks either one against the record it holds.
+const childId = argument(process.argv.slice(2), '--child') ?? process.env['BELLWETHER_CHILD'];
+const isChild = Boolean(childId || process.env['BELLWETHER_PARENT']);
 
 const tools = isChild ? [...parentTools, ...childTools] : parentTools;
 
@@ -235,6 +247,7 @@ ready = (async () => {
       workspaceId: workspace,
       depth,
       herdrSocket: resolveSocketPath(),
+      childId,
     }, { log });
     daemon.onEvents((entries) => schedule(entries));
   } catch (error) {

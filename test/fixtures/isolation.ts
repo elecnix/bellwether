@@ -1,0 +1,71 @@
+// Loaded with --import before every test file, in every tier. It gives the
+// test process a Bellwether home and daemon socket of its own under a
+// temporary root, and makes any attempt to reach the live daemon socket or
+// the live home throw. A test that forgets its own isolation fails here
+// instead of talking to the operator's daemon or writing to the real registry.
+import fs from 'node:fs';
+import net from 'node:net';
+import os from 'node:os';
+import path from 'node:path';
+
+/** The operator's real Bellwether home, read before any test can move HOME. */
+export const LIVE_HOME = path.resolve(path.join(os.userInfo().homedir, '.bellwether'));
+export const LIVE_SOCKET = path.join(LIVE_HOME, 'daemon.sock');
+
+/** Whether a path sits in the live home, including the live socket. */
+export function isLive(target: string): boolean {
+  const resolved = path.resolve(target);
+  return resolved === LIVE_HOME || resolved.startsWith(`${LIVE_HOME}${path.sep}`);
+}
+
+export class LiveBellwetherError extends Error {
+  constructor(what: string, target: string) {
+    super(`a test tried to ${what} ${target}, which belongs to the live Bellwether. Give the test its own BELLWETHER_HOME and daemon socket under a temporary root.`);
+    this.name = 'LiveBellwetherError';
+  }
+}
+
+/** The root this process's default home and socket live under. */
+export const ISOLATION_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'bellwether-test-'));
+
+process.env['BELLWETHER_HOME'] = path.join(ISOLATION_ROOT, 'home');
+process.env['BELLWETHER_DAEMON_SOCKET'] = path.join(ISOLATION_ROOT, 'home', 'daemon.sock');
+// The operator may run the suite from inside a Bellwether child. Its identity
+// must not leak into the cases or the processes they start.
+for (const key of ['BELLWETHER_PARENT', 'BELLWETHER_CHILD', 'BELLWETHER_CHILD_NAME', 'BELLWETHER_DEPTH', 'BELLWETHER_HARNESS']) delete process.env[key];
+
+/** The path a net call names, in any of its argument shapes. */
+function socketPath(args: unknown[]): string | undefined {
+  const first = args[0];
+  if (typeof first === 'string') return first;
+  if (typeof first === 'object' && first !== null && typeof (first as { path?: unknown }).path === 'string') return (first as { path: string }).path;
+  return undefined;
+}
+
+function guardConnect<T extends (...args: any[]) => any>(original: T): T {
+  return function (this: unknown, ...args: unknown[]) {
+    const target = socketPath(args);
+    if (target && isLive(target)) throw new LiveBellwetherError('connect to', target);
+    return original.apply(this, args);
+  } as T;
+}
+
+net.connect = guardConnect(net.connect);
+net.createConnection = guardConnect(net.createConnection);
+const listen = net.Server.prototype.listen;
+net.Server.prototype.listen = function (this: net.Server, ...args: unknown[]) {
+  const target = socketPath(args);
+  if (target && isLive(target)) throw new LiveBellwetherError('listen on', target);
+  return (listen as (...rest: unknown[]) => net.Server).apply(this, args);
+} as typeof listen;
+
+/** The guard is in place: the isolation test reads this to prove the preload ran. */
+(globalThis as { __bellwetherIsolation?: string }).__bellwetherIsolation = ISOLATION_ROOT;
+
+process.on('exit', () => {
+  try {
+    fs.rmSync(ISOLATION_ROOT, { recursive: true, force: true });
+  } catch {
+    // A detached daemon may still be writing; the temporary directory is cleaned later.
+  }
+});

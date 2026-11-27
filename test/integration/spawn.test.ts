@@ -7,7 +7,8 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { HerdrClient } from '../../src/core/herdr-client.ts';
-import { promptPath } from '../../src/core/paths.ts';
+import { channelEntry } from '../../src/core/mcp-config.ts';
+import { mcpConfigPath, promptPath } from '../../src/core/paths.ts';
 import { emptyParent, readParent, saveParent } from '../../src/core/registry.ts';
 import { spawnChild } from '../../src/core/spawn.ts';
 import type { ParentRecord } from '../../src/core/types.ts';
@@ -97,6 +98,92 @@ test('a spawn herdr refuses leaves no record, no tab and no brief behind', async
     assert.ok(space.herdr.requests.some((request) => request.method === 'tab.close' && request.params['tab_id'] === 'w1:t1'), 'the tab was left open');
     const prompts = path.join(space.home, 'prompts');
     assert.deepEqual(fs.existsSync(prompts) ? fs.readdirSync(prompts) : [], []);
+  } finally {
+    await space.close();
+  }
+});
+
+/** The tab environment herdr was asked for, which is what the child's shell inherits. */
+function tabEnv(herdr: FakeHerdr): Record<string, string> {
+  const create = herdr.requests.find((request) => request.method === 'tab.create');
+  assert.ok(create, 'herdr was never asked for a tab');
+  return create.params['env'] as Record<string, string>;
+}
+
+/** The --mcp-config argument, in the equals form that keeps the flag to one value. */
+function mcpArgument(args: string[]): string | undefined {
+  return args.find((arg) => arg.startsWith('--mcp-config='))?.slice('--mcp-config='.length);
+}
+
+function idleOnStart(): { options: FakeHerdrOptions; bind: (herdr: FakeHerdr) => void } {
+  let herdr: FakeHerdr | undefined;
+  return {
+    options: {
+      respond: (request) => {
+        if (request.method === 'agent.start') setTimeout(() => herdr?.send({ event: 'pane_agent_status_changed', data: { pane_id: 'w1:p1', agent_status: 'idle' } }), 20);
+        return undefined;
+      },
+    },
+    bind: (next) => {
+      herdr = next;
+    },
+  };
+}
+
+test('a Claude Code spawn hands the child its own MCP server through a private --mcp-config file', async () => {
+  const idle = idleOnStart();
+  const space = await room(idle.options);
+  idle.bind(space.herdr);
+  try {
+    const { child } = await spawnChild(space.client, space.parent, { kind: 'claude', name: 'reporter', prompt: brief });
+    const file = mcpConfigPath(child.id);
+    const args = startArgs(space.herdr);
+    assert.equal(mcpArgument(args), file, `no --mcp-config=${file} in ${JSON.stringify(args)}`);
+    assert.ok(args.includes('--dangerously-load-development-channels=server:bellwether'), 'the channel flag is still there');
+    assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+    assert.equal(fs.statSync(path.dirname(file)).mode & 0o777, 0o700);
+
+    // The file names the packaged server, and nothing else.
+    const config = JSON.parse(fs.readFileSync(file, 'utf8')) as { mcpServers: Record<string, { command: string; args: string[]; env?: unknown }> };
+    assert.deepEqual(Object.keys(config), ['mcpServers']);
+    assert.deepEqual(Object.keys(config.mcpServers), ['bellwether']);
+    const server = config.mcpServers['bellwether'];
+    assert.ok(server);
+    assert.equal(server.command, process.execPath);
+    assert.equal(server.env, undefined, 'no identity rides in a process environment');
+    const entry = server.args.find((arg) => /integrations[\\/]claude[\\/]channel\.(ts|js)$/.test(arg));
+    assert.ok(entry && fs.existsSync(entry), `the packaged channel entry is missing from ${JSON.stringify(server.args)}`);
+    assert.equal(entry, channelEntry());
+
+    // The server names its child by the record the daemon holds, and that id
+    // is the one the tab's environment carries.
+    assert.deepEqual(server.args.slice(server.args.indexOf('--child'), server.args.indexOf('--child') + 2), ['--child', child.id]);
+    assert.equal(tabEnv(space.herdr)['BELLWETHER_CHILD'], child.id);
+    assert.ok(readParent(space.parent.id)?.children.some((entry) => entry.id === child.id));
+  } finally {
+    await space.close();
+  }
+});
+
+test('a Pi spawn gets no MCP config, because its extension is its adapter', async () => {
+  const space = await room();
+  try {
+    const { child } = await spawnChild(space.client, space.parent, { kind: 'pi', name: 'pi-child', prompt: brief });
+    assert.equal(mcpArgument(startArgs(space.herdr)), undefined);
+    assert.equal(fs.existsSync(mcpConfigPath(child.id)), false);
+  } finally {
+    await space.close();
+  }
+});
+
+test('a failed Claude Code spawn removes its MCP config with its brief', async () => {
+  const space = await room({
+    respond: (request) => (request.method === 'agent.start' ? { error: { code: 'agent_start_failed', message: 'no such agent kind' } } : undefined),
+  });
+  try {
+    await assert.rejects(spawnChild(space.client, space.parent, { kind: 'claude', name: 'ghost', prompt: brief }), /no such agent kind/);
+    const dir = path.join(space.home, 'mcp');
+    assert.deepEqual(fs.existsSync(dir) ? fs.readdirSync(dir) : [], []);
   } finally {
     await space.close();
   }

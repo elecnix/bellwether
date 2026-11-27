@@ -31,6 +31,35 @@ interface Connection {
   buffer: string;
 }
 
+/**
+ * The variables that name one session. The daemon serves every session on the
+ * machine, so it starts without the identity of whichever session started it.
+ */
+export const SESSION_IDENTITY = ['BELLWETHER_PARENT', 'BELLWETHER_CHILD', 'BELLWETHER_CHILD_NAME', 'BELLWETHER_DEPTH', 'BELLWETHER_HARNESS', 'HERDR_PANE_ID', 'CLAUDE_CODE_SESSION_ID'] as const;
+
+/** The environment a daemon starts with: the caller's, less any session identity. */
+export function daemonEnv(env: NodeJS.ProcessEnv, home: string): NodeJS.ProcessEnv {
+  const next: NodeJS.ProcessEnv = { ...env, BELLWETHER_HOME: home };
+  for (const key of SESSION_IDENTITY) delete next[key];
+  return next;
+}
+
+/** A daemon that speaks another protocol, and the one it speaks. */
+class ProtocolMismatch extends Error {
+  readonly daemonProtocol: number | undefined;
+
+  constructor(message: string, daemonProtocol: number | undefined) {
+    super(`protocol_mismatch: ${message}`);
+    this.daemonProtocol = daemonProtocol;
+    this.name = 'ProtocolMismatch';
+  }
+}
+
+/** The daemon socket a client uses when none is given: the one under its home. */
+export function defaultDaemonSocket(home: string): string {
+  return path.join(home, 'daemon.sock');
+}
+
 export class DaemonClient {
   private connection: Connection | undefined;
   private readonly waiting = new Map<string, { resolve: (text: string) => void; reject: (error: Error) => void }>();
@@ -69,7 +98,7 @@ export class DaemonClient {
 
   static async connect(parent: ParentHello, options: ConnectOptions = {}): Promise<DaemonClient> {
     const home = options.home ?? process.env['BELLWETHER_HOME'] ?? path.join(os.homedir(), '.bellwether');
-    const socketPath = options.socketPath ?? path.join(home, 'daemon.sock');
+    const socketPath = options.socketPath ?? defaultDaemonSocket(home);
     const client = new DaemonClient(parent, home, socketPath, options);
     const hello = await client.establish();
     return Object.assign(client, { parentId: hello.parentId, pid: hello.pid });
@@ -109,7 +138,10 @@ export class DaemonClient {
     if (this.stopped) throw new Error('the daemon client is closed');
     await this.ensure();
     const id = `c${++this.sequence}`;
-    const line = formatRequest({ type: 'call', id, tool: name, args });
+    // The caller identity travels with every call, so the daemon routes by its
+    // own records whichever client process asked.
+    const caller = { ...(this.parent.paneId ? { paneId: this.parent.paneId } : {}), ...(this.parent.childId ? { childId: this.parent.childId } : {}) };
+    const line = formatRequest({ type: 'call', id, tool: name, args, caller });
     return new Promise<string>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.waiting.delete(id);
@@ -168,11 +200,23 @@ export class DaemonClient {
     this.waiting.clear();
   }
 
-  /** Connect, starting a daemon when nothing answers and spawning is allowed. */
+  /**
+   * Connect, starting a daemon when nothing answers and spawning is allowed.
+   * A daemon from an older release is drained first, so the newer protocol
+   * takes over; a newer daemon is left running, and the error says to update.
+   */
   private async establish(): Promise<{ parentId: string; pid: number }> {
     try {
       return await this.handshake();
     } catch (error) {
+      if (error instanceof ProtocolMismatch) {
+        if (error.daemonProtocol === undefined || error.daemonProtocol > DAEMON_PROTOCOL) {
+          throw new Error(`the running daemon speaks protocol ${error.daemonProtocol ?? 'unknown'}, newer than this client's ${DAEMON_PROTOCOL}. Update this Bellwether install.`);
+        }
+        this.log(`draining the daemon on protocol ${error.daemonProtocol}, older than ${DAEMON_PROTOCOL}`);
+        const replaced = await this.drainOlder();
+        if (replaced) return replaced;
+      }
       if (!this.spawnAllowed) throw error;
       await this.startDaemon();
       return this.handshake();
@@ -199,6 +243,7 @@ export class DaemonClient {
     const reply = await this.ask(connection, formatRequest(hello));
     if (reply.type === 'error') {
       connection.socket.destroy();
+      if (reply.code === 'protocol_mismatch') throw new ProtocolMismatch(reply.message, reply.protocol);
       throw new Error(`${reply.code}: ${reply.message}`);
     }
     if (reply.type !== 'hello') {
@@ -210,6 +255,31 @@ export class DaemonClient {
     for (const entry of reply.pending) this.received.set(entry.receipt, entry);
     if (reply.pending.length) for (const handler of this.handlers) handler(reply.pending);
     return { parentId: reply.parentId, pid: reply.pid };
+  }
+
+  /**
+   * Ask an older daemon to drain, and wait until its socket stops answering,
+   * or answers with this protocol because another client started the new daemon first.
+   */
+  private async drainOlder(): Promise<{ parentId: string; pid: number } | undefined> {
+    const connection = await this.open();
+    await new Promise<void>((resolve) => {
+      connection.socket.once('close', () => resolve());
+      connection.socket.write(formatRequest({ type: 'drain' }));
+      setTimeout(() => resolve(), START_TIMEOUT_MS).unref?.();
+    });
+    connection.socket.destroy();
+    const deadline = Date.now() + START_TIMEOUT_MS;
+    while (await canConnect(this.socketPath)) {
+      try {
+        return await this.handshake();
+      } catch (error) {
+        if (!(error instanceof ProtocolMismatch)) throw error;
+      }
+      if (Date.now() > deadline) throw new Error(`the daemon on ${this.socketPath} did not drain within ${START_TIMEOUT_MS} ms`);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    return undefined;
   }
 
   private open(): Promise<Connection> {
@@ -334,7 +404,7 @@ export class DaemonClient {
       const child = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', entry, '--socket', this.socketPath], {
         detached: true,
         stdio: 'ignore',
-        env: { ...process.env, BELLWETHER_HOME: this.home },
+        env: daemonEnv(process.env, this.home),
       });
       child.unref();
       try {

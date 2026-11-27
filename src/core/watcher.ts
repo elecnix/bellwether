@@ -14,7 +14,7 @@ import { Outbox } from './outbox.ts';
 import { mutateParent, readParent, updateChild } from './registry.ts';
 import { DIALOG_NAMES, detectDialog, watchStartup } from './startup-dialogs.ts';
 import { resolveTranscript, sessionFrom } from './transcript.ts';
-import { removeBrief } from './brief.ts';
+import { removeChildFiles } from './mcp-config.ts';
 import { childLabel } from './label.ts';
 import { spoolPath } from './paths.ts';
 import type { AgentStatus, ChildEventKind, ChildRecord, OutboxEntry, SpoolReport } from './types.ts';
@@ -221,7 +221,7 @@ export class Watcher {
       entry.exitCode = code;
       entry.lastStatus = 'unknown';
     });
-    removeBrief(child.id);
+    removeChildFiles(child.id);
     this.offer(child, 'exited', this.describeExit(child, code));
   }
 

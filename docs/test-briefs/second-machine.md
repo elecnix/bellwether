@@ -87,7 +87,8 @@ The SSH session on CHILD that carries the bridge runs as your own user, so you c
 - During the freeze, `bellwether doctor` on PARENT prints `fail  relay CHILD: reconnecting` within 45 to 60 seconds, with an error that mentions a timeout. `ServerAliveInterval=15` and `ServerAliveCountMax=3` set that window.
 - PARENT then reconnects on a new session, and doctor prints `connected` again.
 - Ask the child to report while the old session is frozen. The report arrives once, over the new connection.
-- When the subshell ends, it resumes the old session. That session has lost its connection, so it exits, and the bridge under it exits within seconds. `pgrep -af 'bellwether relay-bridge'` on CHILD then prints one process.
+- About 45 seconds after the freeze, before the subshell ends, the bridge under the frozen session exits: its parent has sent nothing for three heartbeats. `pgrep -af 'bellwether relay-bridge'` on CHILD then prints one process. A build from before the heartbeat keeps both bridges until the session resumes.
+- When the subshell ends, it resumes the old session. That session has lost its connection, so it exits.
 
 A `kill -9` of that subshell is the one exit no trap can catch. If a check fails partway, look for a session left stopped, and resume it:
 
@@ -102,13 +103,13 @@ kill -CONT <pid>
 - On PARENT, `pkill -f relay-bridge` ends the ssh client.
 - On CHILD, the noted pid exits within seconds, and the parent's reconnect starts one new bridge with another pid.
 
-A real network failure differs from check 2 in one way. The sshd on CHILD never hears about the failure, so the old bridge lingers until sshd notices the dead TCP connection. With the default `ClientAliveInterval 0`, that takes hours. [#55](https://github.com/elecnix/bellwether/issues/55) tracks the lingering bridge, with a heartbeat on the relay stream as the fix.
+With the default `ClientAliveInterval 0`, sshd on CHILD would take hours to notice a real network failure. Since [#55](https://github.com/elecnix/bellwether/issues/55), the bridge exits after three heartbeats of silence instead, which is what check 2 measures.
 
 ## 4. A far end on the old protocol
 
 - On CHILD, `npm install -g @elecnix/bellwether@0.1.4`, then `bellwether drain`.
 - On PARENT, `bellwether doctor` prints `fail  relay CHILD: reconnecting`, and PARENT retries with backoff.
-- Today the error in that line is the tail of 0.1.4's stack trace. PARENT keeps the last three lines of stderr, and the line that states the problem, `Error: invalid_hello: the parent needs a session, cwd, host and herdr socket`, sits above them. A pending change makes the error quote that line and name the machine to update.
+- The error in that line quotes the far end's error line, `Error: invalid_hello: the parent needs a session, cwd, host and herdr socket`, and ends with `Update @elecnix/bellwether on machine CHILD`. A parent from before that fix shows the last three lines of the stack trace instead.
 - 0.1.4 handles an unknown command by opening a `cli-<directory>` registry on CHILD. Remove that file from `~/.bellwether/parents/` afterwards.
 - Install the build under test on CHILD again, the same way as in the set-up.
 

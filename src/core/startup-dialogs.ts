@@ -16,6 +16,12 @@
 // arrows, and Enter goes out only once the screen shows that option selected,
 // so a dialog whose shape changed fails the spawn instead of taking a stray
 // Enter.
+//
+// The options are read by the screen's structure, never by a glyph alone: the
+// dialog's own line, then the block of options under it (optionBlock). A shell
+// prompt that starts with the same ❯ a menu uses for its selection sits above
+// the dialog, so it is never read as the chosen option (issue #160). A block
+// with the marker on two options is not guessed at: the start fails by name.
 import type { HerdrClient, Subscription } from './herdr-client.ts';
 import type { DialogDecision } from './types.ts';
 
@@ -61,8 +67,11 @@ export interface KnownDialog {
   names?: 'path';
 }
 
-// Claude Code marks the selected option with ❯, and Codex with ›.
-const SELECTED = /^\s*[❯›>]\s/u;
+// Claude Code marks the selected option with ❯, and Codex with ›. The marker
+// sits in the gutter left of the option's text.
+const MARKER = /^[❯›>]\s*/u;
+/** A numbered option's text, such as `1. Yes`, with its digit when it has one digit. */
+const NUMBERED = /^(?:(\d)|\d{2,})\.\s+(?=\S)/u;
 
 /**
  * Claude Code's startup questions, the folder-trust question and the
@@ -175,24 +184,105 @@ export function dialogPath(screen: string): string | undefined {
     .find((line) => /^\/\S+$/.test(line));
 }
 
-/** The label among `accept` that the screen lists as an option, or the first one. */
-function chosenLabel(screen: string, accept: KnownDialog['accept']): string {
+/** The label among `accept` that the dialog lists as an option, or the first one. */
+function chosenLabel(screen: string, accept: KnownDialog['accept'], shows: RegExp): string {
   const labels = typeof accept === 'string' ? [accept] : accept;
-  return labels.find((label) => optionLine(screen.split('\n'), label) >= 0) ?? labels[0] ?? '';
+  const options = optionBlock(screen, shows)?.options ?? [];
+  return labels.find((label) => options.some((option) => option.label.startsWith(label))) ?? labels[0] ?? '';
+}
+
+/** One option of a dialog's option block. */
+export interface DialogOption {
+  /** The option's line on the screen. */
+  line: number;
+  /** Its text, without the marker and the number. */
+  label: string;
+  /** The digit the dialog numbers it with, when it has a one-digit number. */
+  digit?: string;
+  /** Whether the selection marker is on it. */
+  selected: boolean;
 }
 
 /**
- * The index of the option line that starts with `label`, or -1. On a screen
- * with numbered options only a numbered line counts, so the dialog's own text
- * never does. Claude Code's folder-trust question numbers none.
+ * A dialog's options as the screen draws them: the lines under the dialog's
+ * own text that start at one column, each with the marker gutter to its left.
  */
-function optionLine(lines: readonly string[], label: string): number {
-  const numbered = lines.some((line) => OPTION.test(unframed(line)));
-  return lines.findIndex((line) => {
-    const text = unframed(line);
-    if (numbered && !OPTION.test(text)) return false;
-    return text.replace(/^[❯›>]\s*/u, '').replace(/^\d+\.\s*/, '').startsWith(label);
-  });
+export interface OptionBlock {
+  options: DialogOption[];
+  /** Every line of the block that carries the marker, as drawn. More than one is ambiguous. */
+  marked: string[];
+}
+
+/** One screen line, without a box's side borders: where its text starts, and whether a marker precedes it. */
+interface Drawn {
+  marked: boolean;
+  /** The column the text after the marker starts at. */
+  column: number;
+  text: string;
+  /** The line from its marker or its text, for an error. */
+  shown: string;
+}
+
+const SIDES = /^\s*[│┃]|[│┃]\s*$/gu;
+
+function drawn(line: string): Drawn | undefined {
+  const body = line.replace(SIDES, '').trimEnd();
+  const shown = body.trimStart();
+  if (!shown) return undefined;
+  const indent = body.length - shown.length;
+  const marker = MARKER.exec(shown)?.[0] ?? '';
+  return { marked: marker !== '', column: indent + marker.length, text: shown.slice(marker.length), shown };
+}
+
+/**
+ * The option block of the dialog whose own line matches `shows`. The rule,
+ * which herdr-box-state.sh should share so a pane and a dialog never
+ * disagree:
+ *
+ * - The anchor is the dialog's own line: the last line on screen that
+ *   matches `shows`. Nothing above it is part of the dialog, so a shell
+ *   prompt that starts with ❯, and any earlier output, never count.
+ * - The block starts at the first line under the anchor that is numbered or
+ *   carries the marker, widened up through the unmarked lines that start at
+ *   the same column (an unnumbered list's first options have no marker).
+ * - It runs down through the contiguous lines whose text starts at that
+ *   column, which are options, and lines indented deeper, which continue the
+ *   option above them. A blank line or a line at another column ends it.
+ * - A menu offers at least two options. Fewer is a dialog still drawing, so
+ *   there is no block.
+ * - The selection is the one option whose line carries the marker. A block
+ *   with the marker on two lines has no selection a reader can trust.
+ *
+ * Undefined when the screen shows no such block.
+ */
+export function optionBlock(screen: string, shows: RegExp): OptionBlock | undefined {
+  const lines = screen.split('\n');
+  const anchor = lines.findLastIndex((line) => shows.test(line));
+  if (anchor < 0) return undefined;
+  let start = -1;
+  for (let index = anchor + 1; index < lines.length; index += 1) {
+    const line = drawn(lines[index] ?? '');
+    if (line && (line.marked || NUMBERED.test(line.text))) {
+      start = index;
+      break;
+    }
+  }
+  if (start < 0) return undefined;
+  const column = drawn(lines[start] ?? '')?.column ?? 0;
+  let first = start;
+  while (first - 1 > anchor && drawn(lines[first - 1] ?? '')?.column === column) first -= 1;
+  const options: DialogOption[] = [];
+  const marked: string[] = [];
+  for (let index = first; index < lines.length; index += 1) {
+    const line = drawn(lines[index] ?? '');
+    if (!line) break;
+    if (line.column === column) {
+      const number = NUMBERED.exec(line.text);
+      options.push({ line: index, label: line.text.slice(number?.[0].length ?? 0).trim(), ...(number?.[1] ? { digit: number[1] } : {}), selected: line.marked });
+    } else if (line.marked || line.column < column) break;
+    if (line.marked) marked.push(line.shown);
+  }
+  return options.length >= 2 ? { options, marked } : undefined;
 }
 
 /** A start that stopped on a dialog Bellwether never answers. */
@@ -206,19 +296,19 @@ export class StartupDialogRefused extends Error {
 }
 
 /**
- * The key that answers a selection list with `wanted`. When the screen numbers
- * the option, as in `1. I am using this for local development`, it is that
- * digit, which Claude Code takes as select and confirm in one key wherever
- * the cursor is. Otherwise it is the arrow that moves the selection toward
- * the option, or Enter once it is selected. Undefined when the screen shows
- * neither the option nor a selection, which happens while a dialog is still
- * drawing.
+ * The key that answers the dialog whose own line matches `shows` with
+ * `wanted`. When the dialog numbers the option, as in `1. I am using this for
+ * local development`, it is that digit, which Claude Code takes as select and
+ * confirm in one key wherever the cursor is. Otherwise it is the arrow that
+ * moves the selection toward the option, or Enter once it is selected.
+ * Undefined when the screen shows neither the option nor a selection, which
+ * happens while a dialog is still drawing, and when the block has the marker
+ * on two options, where any key would be a guess.
  */
-export function answerKey(screen: string, wanted: string): string | undefined {
-  const lines = screen.split('\n');
-  const at = optionLine(lines, wanted);
-  const digit = at >= 0 ? /^(?:[❯›>]\s*)?(\d)\.\s/u.exec(unframed(lines[at] ?? ''))?.[1] : undefined;
-  return digit ?? keyToward(screen, wanted);
+export function answerKey(screen: string, wanted: string, shows: RegExp): string | undefined {
+  const block = optionBlock(screen, shows);
+  if (!block || block.marked.length > 1) return undefined;
+  return block.options.find((option) => option.label.startsWith(wanted))?.digit ?? keyToward(screen, wanted, shows);
 }
 
 /** Whether a key from answerKey confirms the option, rather than moving toward it. */
@@ -227,25 +317,35 @@ export function confirms(key: string): boolean {
 }
 
 /**
- * The arrow that moves a selection list toward `wanted`, or Enter once it is
- * selected. Undefined when the screen shows neither the option nor a
- * selection, which happens while a dialog is still drawing.
+ * The arrow that moves the selection in the dialog's option block toward
+ * `wanted`, or Enter once it is selected. Undefined when the block lacks the
+ * option or a single selection.
  */
-export function keyToward(screen: string, wanted: string): 'Enter' | 'Up' | 'Down' | undefined {
-  const lines = screen.split('\n');
-  // An option line, not any line that mentions the label: a dialog's own
-  // text can hold a word such as "No".
-  const target = optionLine(lines, wanted);
-  const selected = lines.findIndex((line) => SELECTED.test(line));
-  if (target < 0 || selected < 0) return undefined;
+export function keyToward(screen: string, wanted: string, shows: RegExp): 'Enter' | 'Up' | 'Down' | undefined {
+  const block = optionBlock(screen, shows);
+  if (!block || block.marked.length !== 1) return undefined;
+  // An option, not any line that mentions the label: a dialog's own text can hold a word such as "No".
+  const target = block.options.find((option) => option.label.startsWith(wanted));
+  const selected = block.options.find((option) => option.selected);
+  if (!target || !selected) return undefined;
   if (target === selected) return 'Enter';
-  return target < selected ? 'Up' : 'Down';
+  return target.line < selected.line ? 'Up' : 'Down';
 }
 
 /** The option the selection marker is on, for an error message. */
-function selectedOption(screen: string): string | undefined {
-  const line = screen.split('\n').find((candidate) => SELECTED.test(candidate));
-  return line?.replace(SELECTED, '').replace(/^\d+\.\s*/, '').trim() || undefined;
+function selectedOption(screen: string, shows: RegExp): string | undefined {
+  const block = optionBlock(screen, shows);
+  return block?.marked.length === 1 ? block.options.find((option) => option.selected)?.label || undefined : undefined;
+}
+
+/** A start that stopped on a dialog whose option block has the marker on more than one option. */
+export class StartupDialogAmbiguous extends Error {
+  readonly dialog: StartupDialog;
+  constructor(message: string, dialog: StartupDialog) {
+    super(message);
+    this.name = 'StartupDialogAmbiguous';
+    this.dialog = dialog;
+  }
 }
 
 export class StartupDialogTimeout extends Error {
@@ -289,7 +389,7 @@ export interface StartupWatchOptions {
   onDecision?: (decision: DialogDecision) => void;
 }
 
-/** How many reads in a row must show the same unknown question before the start fails on it. */
+/** How many reads in a row must show the same unknown question, or the same ambiguous block, before the start fails on it. */
 const UNKNOWN_READS = 3;
 
 /** Open the status watch for a child whose harness shows startup dialogs. Call before agent.start. */
@@ -335,6 +435,8 @@ export async function watchStartup(client: HerdrClient, paneId: string, signal?:
       let screen = '';
       let dialog: StartupDialog | undefined;
       let unknown: { question: string; reads: number } | undefined;
+      /** The marked lines of an ambiguous block, and how many reads in a row have shown them. */
+      let ambiguous: { marked: string; reads: number } | undefined;
       /** The decision whose keys are going out, until its Enter. */
       let pending: DialogDecision | undefined;
       while (Date.now() < deadline && !controller.signal.aborted) {
@@ -355,8 +457,21 @@ export async function watchStartup(client: HerdrClient, paneId: string, signal?:
         if (dialog) {
           unknown = undefined;
           const known = set.dialogs.find((entry) => entry.id === dialog);
-          const wanted = known ? chosenLabel(screen, known.accept) : '';
-          const key = answerKey(screen, wanted);
+          // A block with the marker on two options is never answered on a
+          // guess. A redraw caught halfway can show two for one read, so the
+          // start fails once the same block holds for a few reads, and no key
+          // goes out meanwhile.
+          const marked = known ? (optionBlock(screen, known.shows)?.marked ?? []) : [];
+          if (known && marked.length > 1) {
+            const seen = marked.join('\n');
+            ambiguous = { marked: seen, reads: ambiguous?.marked === seen ? ambiguous.reads + 1 : 1 };
+            if (ambiguous.reads >= UNKNOWN_READS) throw ambiguousError(set, paneId, known, marked, screen);
+            await sleep(redrawMs);
+            continue;
+          }
+          ambiguous = undefined;
+          const wanted = known ? chosenLabel(screen, known.accept, known.shows) : '';
+          const key = known ? answerKey(screen, wanted, known.shows) : undefined;
           if (key) {
             // TODO(api): keys typed into the pane answer a question no API reaches. A
             // documented way to pre-answer Claude Code's development-channel and
@@ -416,11 +531,18 @@ function unknownError(set: StartupDialogSet, paneId: string, question: string, s
   return new StartupDialogUnknown(`${set.harness} in pane ${paneId} stopped on a question Bellwether does not know: "${question}". Bellwether answers only ${known}, so it ended the start rather than leave the question for a person. The screen:\n${tail}`, question);
 }
 
+function ambiguousError(set: StartupDialogSet, paneId: string, dialog: KnownDialog, marked: readonly string[], screen: string): StartupDialogAmbiguous {
+  const tail = screen.trim().split('\n').slice(-12).join('\n');
+  const lines = marked.map((line) => `"${line}"`).join(' and ');
+  return new StartupDialogAmbiguous(`${set.harness} in pane ${paneId} showed ${dialog.name} with the selection marker on ${marked.length} of its options, ${lines}, so Bellwether pressed nothing rather than guess which one is chosen. The screen:\n${tail}`, dialog.id);
+}
+
 function timeoutError(set: StartupDialogSet, paneId: string, timeoutMs: number, dialog: StartupDialog | undefined, status: string, screen: string): StartupDialogTimeout {
   const seconds = Math.round(timeoutMs / 1000);
   const tail = screen.trim().split('\n').slice(-12).join('\n');
+  const known = set.dialogs.find((entry) => entry.id === dialog);
   if (dialog) {
-    const selected = selectedOption(screen);
+    const selected = known ? selectedOption(screen, known.shows) : undefined;
     const where = selected ? `with "${selected}" selected` : 'with no option selected';
     return new StartupDialogTimeout(`${set.harness} in pane ${paneId} was still on ${dialogName(dialog, set)}, ${where}, when the spawn timed out after ${seconds} s. The screen:\n${tail}`, dialog);
   }

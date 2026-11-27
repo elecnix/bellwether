@@ -27,6 +27,12 @@
 // these lists to the ones in the operator's settings: the launch decides what
 // the child can always read, and the operator's settings can only add to it.
 //
+// The set is a floor, not a limit. Whether Claude Code asks about a read
+// outside it is the machine's decision: in auto mode, Claude Code 2.1.332 asks
+// only until `hasSeenAutoModeOutsideReadPrompt` is set in `~/.claude.json`,
+// and after that a child reads outside its set without a question. A live
+// check on 2026-11-27 saw a child read outside its set with no dialog.
+//
 // This hook reports a dialog. It never answers one. A Notification hook
 // cannot approve anything, and `bellwether claude-hook` writes nothing to
 // standard output, where a decision hook would put one. Approving a

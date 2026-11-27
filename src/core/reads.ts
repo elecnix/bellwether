@@ -2,7 +2,10 @@
 // home, which a parent names at spawn or restart (`reads`). A brief that tells
 // a child to copy a rule from another checkout, or to follow a skill under the
 // operator's dotfiles, needs that one directory. The parent knows it, so it says
-// so at launch, and Claude Code never asks. Naming the whole home, or the root,
+// so at launch, and Claude Code never asks about a read there. The list widens
+// what a child reads without a question; it limits nothing, because a machine
+// where Claude Code no longer asks lets a child read outside it too (see
+// src/core/claude-hooks.ts). Naming the whole home, or the root,
 // would teach every child to read the world, so both are refused, by name.
 import os from 'node:os';
 import path from 'node:path';

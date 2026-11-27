@@ -49,6 +49,14 @@ export interface ClassifierState {
   firedInactiveFor?: number;
   /** The last observable activity: a status change, a new turn, output, or a report. */
   lastActivityAt: number;
+  /**
+   * The dialog the child waits on, named in one line, while one is open. herdr
+   * can report such a child idle or working, so an open prompt is a block of
+   * its own, beside herdr's blocked status.
+   */
+  prompt?: string;
+  /** When the open prompt appeared, for the blocked settle time. */
+  promptSince?: number;
 }
 
 export interface Observation {
@@ -56,6 +64,8 @@ export interface Observation {
   completionSeq?: number;
   /** True when the child produced output or its transcript grew since the last look. */
   busy?: boolean;
+  /** The one-line name of a dialog the child waits on, while it is open. */
+  prompt?: string;
 }
 
 export interface InitialSeed {
@@ -124,18 +134,42 @@ export function advance(state: ClassifierState, observation: Observation, now: n
     next.completionSeq = (state.completionSeq ?? 0) + 1;
     next.statusSince = now;
   }
+  if (observation.prompt !== state.prompt) {
+    next.lastActivityAt = now;
+    if (observation.prompt === undefined) {
+      // The prompt closed. A child that answered it and goes on working is in
+      // the same turn, so the idle settle starts again from here rather than
+      // counting the wait as a finished turn.
+      next.prompt = undefined;
+      next.promptSince = undefined;
+      next.statusSince = now;
+      next.firedBlocked = undefined;
+    } else if (state.prompt === undefined) {
+      next.prompt = observation.prompt;
+      next.promptSince = now;
+      next.firedBlocked = undefined;
+    } else {
+      // The same wait with a reworded line is still one block.
+      next.prompt = observation.prompt;
+    }
+  }
   if (observation.busy) {
     next.lastBusyAt = now;
     next.firedStuckSince = undefined;
-    next.firedBlocked = undefined;
+    // Output under an open prompt is the dialog redrawing, not a new block.
+    if (next.prompt === undefined) next.firedBlocked = undefined;
   }
 
   // A blocked child stays blocked until someone answers it, so report the
   // dialog once and then wait for the status to move rather than repeating it
   // on every tick.
-  if (next.status === 'blocked' && now - next.statusSince >= limits.blockedMs && !next.firedBlocked) {
+  const blockedSince = next.prompt !== undefined ? (next.promptSince ?? now) : next.status === 'blocked' ? next.statusSince : undefined;
+  if (blockedSince !== undefined && now - blockedSince >= limits.blockedMs && !next.firedBlocked) {
     return { state: { ...next, firedBlocked: true }, event: 'blocked' };
   }
+  // A child waiting on a prompt has not finished its turn, and it is neither
+  // stuck nor inactive: it is blocked, which it already said.
+  if (next.prompt !== undefined) return { state: next };
   if (isReady(next.status) && next.completionSeq !== undefined && next.completionSeq !== next.reportedFor && now - next.statusSince >= limits.idleMs) {
     return { state: { ...next, reportedFor: next.completionSeq }, event: 'idle' };
   }

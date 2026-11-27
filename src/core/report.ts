@@ -5,7 +5,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { LOCAL_HOST } from './machine.ts';
 import { mcpDir, registryPath, relayChildPath, spoolPath } from './paths.ts';
-import { listParents, readParent } from './registry.ts';
+import { listParents, readParent, updateChild } from './registry.ts';
+import { MODAL_LINE_LIMIT } from './modal.ts';
 import { readRelayRecord, type RelayRecord } from './relay-records.ts';
 import type { CallerIdentity, ChildRecord, ParentRecord, ReportStatus, SpoolReport } from './types.ts';
 
@@ -179,4 +180,34 @@ export const REPORT_STATUSES: readonly ReportStatus[] = ['done', 'needs-input', 
 
 export function isReportStatus(value: unknown): value is ReportStatus {
   return typeof value === 'string' && (REPORT_STATUSES as readonly string[]).includes(value);
+}
+
+/**
+ * The call a pi child's own extension makes when pi opens or closes a dialog,
+ * on pi's ui_prompt_start and ui_prompt_end events. It is not a tool any model
+ * sees: the extension sends it, routed by the caller's identity like
+ * parent_report, and the parent's watcher reads the prompt from the record.
+ */
+export const PROMPT_NOTICE = 'child_prompt';
+
+/** Record or clear the dialog the calling child waits on. */
+export function notePromptForCaller(caller: CallerIdentity, notice: { open: boolean; title?: string; kind?: string }): string {
+  const found = childOfCaller(caller);
+  if (!found) throw new Error(`${PROMPT_NOTICE} came from ${caller.paneId ? `pane ${caller.paneId}` : 'no pane'}, where no Bellwether child on this machine runs.`);
+  const { parent, child } = found;
+  updateChild(parent.id, child.id, (entry) => {
+    if (!notice.open) {
+      if (entry.prompt?.source === 'pi') delete entry.prompt;
+      return;
+    }
+    const kind = notice.kind?.trim() || undefined;
+    const line = clipLine(notice.title?.trim() || `a pi ${kind ?? 'dialog'} prompt with no title`);
+    entry.prompt = { line, source: 'pi', ...(kind ? { kind } : {}), since: entry.prompt?.source === 'pi' ? entry.prompt.since : new Date().toISOString() };
+  });
+  return notice.open ? `Recorded that ${child.name} waits on a dialog.` : `Recorded that ${child.name} no longer waits on a dialog.`;
+}
+
+function clipLine(line: string): string {
+  const flat = line.replace(/\s+/g, ' ');
+  return flat.length > MODAL_LINE_LIMIT ? `${flat.slice(0, MODAL_LINE_LIMIT - 1)}…` : flat;
 }

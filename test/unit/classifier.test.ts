@@ -80,3 +80,78 @@ test('isReady treats idle and done the same way', () => {
   assert.equal(isReady('working'), false);
   assert.equal(isReady('blocked'), false);
 });
+
+test('a child idle on an open prompt reports blocked, not idle', () => {
+  // pi's extension dialog leaves herdr reporting idle for the whole wait.
+  const ready = advance(initialState('working', 0), { status: 'idle', completionSeq: 1, prompt: 'Share usage totals?' }, 0, limits).state;
+  assert.equal(advance(ready, { status: 'idle', completionSeq: 1, prompt: 'Share usage totals?' }, limits.blockedMs - 1, limits).event, undefined);
+  const fired = advance(ready, { status: 'idle', completionSeq: 1, prompt: 'Share usage totals?' }, limits.blockedMs, limits);
+  assert.equal(fired.event, 'blocked');
+  // Past every settle time, the open prompt still owes no idle event.
+  assert.equal(advance(fired.state, { status: 'idle', completionSeq: 1, prompt: 'Share usage totals?' }, limits.idleMs * 10, limits).event, undefined);
+});
+
+test('a child at its prompt after a finished turn reads idle', () => {
+  const ready = advance(initialState('working', 0), { status: 'idle', completionSeq: 1 }, 0, limits).state;
+  assert.equal(advance(ready, { status: 'idle', completionSeq: 1 }, limits.idleMs, limits).event, 'idle');
+});
+
+test('a child that answers its prompt and works on fires one idle, at the end of the turn', () => {
+  const prompt = 'Do you want to proceed?';
+  let state = advance(initialState('working', 0), { status: 'working', prompt }, 0, limits).state;
+  const blocked = advance(state, { status: 'working', prompt }, limits.blockedMs, limits);
+  assert.equal(blocked.event, 'blocked');
+  state = blocked.state;
+
+  // The operator answers. The prompt closes, and the child goes on working.
+  const events: string[] = [];
+  let now = limits.blockedMs + 1;
+  for (const observation of [{ status: 'working' as const }, { status: 'working' as const, busy: true }, { status: 'idle' as const, completionSeq: 1 }]) {
+    const step = advance(state, observation, now, limits);
+    if (step.event) events.push(step.event);
+    state = step.state;
+    now += 1_000;
+  }
+  for (let at = now; at < now + limits.idleMs * 3; at += 1_000) {
+    const step = advance(state, { status: 'idle', completionSeq: 1 }, at, limits);
+    if (step.event) events.push(step.event);
+    state = step.state;
+  }
+  assert.deepEqual(events, ['idle']);
+});
+
+test('a prompt that closes on an idle child restarts the idle settle, so answering it is not a finished turn', () => {
+  const prompt = 'Share usage totals?';
+  // A child first seen idle on a dialog, as a pi child is at its first-run question.
+  let state = advance(initialState('unknown', 0), { status: 'idle', prompt }, 0, limits).state;
+  const blocked = advance(state, { status: 'idle', prompt }, limits.idleMs * 2, limits);
+  assert.equal(blocked.event, 'blocked');
+  state = blocked.state;
+
+  // Answered at t; the child starts its task within the settle time.
+  const t = limits.idleMs * 3;
+  const closed = advance(state, { status: 'idle' }, t, limits);
+  assert.equal(closed.event, undefined);
+  assert.equal(advance(closed.state, { status: 'idle' }, t + limits.idleMs - 1, limits).event, undefined);
+  const working = advance(closed.state, { status: 'working', busy: true }, t + limits.idleMs - 1, limits);
+  assert.equal(working.event, undefined);
+  // The task ends, and its end is the one idle event.
+  const done = advance(working.state, { status: 'idle', completionSeq: 1 }, t + limits.idleMs * 3, limits);
+  assert.equal(done.event, undefined);
+  const fired = advance(done.state, { status: 'idle', completionSeq: 1 }, t + limits.idleMs * 4, limits);
+  assert.equal(fired.event, 'idle');
+  assert.equal(advance(fired.state, { status: 'idle', completionSeq: 1 }, t + limits.idleMs * 9, limits).event, undefined);
+});
+
+test('an open prompt is not stuck however long it waits', () => {
+  const prompt = 'Allow this tool?';
+  let state = initialState('working', 0);
+  const seen: string[] = [];
+  for (let at = 0; at <= limits.stuckMs * 2; at += 60_000) {
+    const step = advance(state, { status: 'working', prompt }, at, limits);
+    if (step.event) seen.push(step.event);
+    state = step.state;
+  }
+  assert.ok(!seen.includes('stuck'));
+  assert.equal(seen.filter((event) => event === 'blocked').length, 1);
+});

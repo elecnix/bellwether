@@ -99,6 +99,14 @@ class ClaudePane {
   }
 }
 
+async function until(what: string, check: () => boolean, timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!check()) {
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+    await sleep(5);
+  }
+}
+
 interface Rig {
   fake: FakeHerdr;
   pane: ClaudePane;
@@ -242,7 +250,11 @@ test('a question the operator owns is still published as blocked', async () => {
     await sleep(60);
     pane.screen = 'permission';
     pane.setStatus('blocked');
-    await sleep(300);
+    // Wait for the event itself: a fixed sleep raced the settle time and the
+    // screen read on a loaded CI runner. The pause after it lets a second
+    // blocked event show up if one would.
+    await until('the blocked event', () => r.published.some((entry) => entry.event === 'blocked'));
+    await sleep(150);
     assert.deepEqual(pane.keys, []);
     const blocked = r.published.filter((entry) => entry.event === 'blocked');
     assert.equal(blocked.length, 1);

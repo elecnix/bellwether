@@ -131,11 +131,11 @@ export const parentTools: ToolDefinition[] = [
   },
   {
     name: RESTART_TOOL,
-    description: 'Restart an agent in place of its session: a child by name, id or pane, another session by its parent id, session id or pane, a live agent by name or pane, or yourself when you omit the target. The new process runs the same harness on the same session, in the same directory, so the conversation continues. A child comes back in a new tab under the same child id, and its history, receipts and retire state continue. For a session or a live agent the daemon starts a new pane and leaves the old one alone for the person to close. Restarting yourself returns first: the daemon acts once your turn ends, so finish your reply and say where you will land. It refuses a target with no session to name, one on another machine, a pane Bellwether did not start when closing one is involved, and a target that is still mid-turn when the wait runs out.',
+    description: 'Restart an agent in place of its session: a child by name, id or pane, another session by its parent id, session id or pane, or yourself when you omit the target. The daemon closes the old pane, then runs the same harness on the same session in a new tab, in the same directory, so the conversation continues and no pane is left over. A child keeps its child id, so its history, receipts and retire state continue. Restarting yourself returns first: the daemon acts once your turn ends, so finish your reply and say where you will land. It refuses a target with no session to name, one on another machine, a pane no registry holds, a parent pane that now holds another session, and a target that is still mid-turn when the wait runs out.',
     schema: {
       type: 'object',
       properties: {
-        target: { type: 'string', description: 'What to restart: a child name, id or pane, a parent session id or pane, a live agent name or pane. Omit it to restart this session.' },
+        target: { type: 'string', description: 'What to restart: a child name, id or pane, or a parent session id or pane. Omit it to restart this session.' },
         wait_seconds: { type: 'number', description: 'How long to wait for the target\'s turn to end before refusing. Defaults to 30, and is held under 45 so the call can still answer.' },
       },
     },

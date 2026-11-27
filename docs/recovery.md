@@ -19,7 +19,7 @@ To resume a Claude Code child by hand, run `claude --resume <session id>`. The r
 
 ## Restarting an agent
 
-`agent_restart` restarts a session and keeps it. Its harness, session id and working directory stay the same, and the conversation continues in a new process. It takes an optional target, and with no target it restarts the session that called it. A target is a child's name, id or pane, another session by its parent id, session id or pane, or a live agent by name or pane.
+`agent_restart` restarts a session and keeps it. Its harness, session id and working directory stay the same, and the conversation continues in a new process. It takes an optional target, and with no target it restarts the session that called it. A target is a child's name, id or pane, or another session by its parent id, session id or pane. Either way the old pane closes before the new one starts, so one process holds the session at a time and you have no old pane to close.
 
 Children come back in a new tab under the same child id, so their history, receipts and retire state continue. Bellwether closes the child's tab first, but only a pane Bellwether started, and only once the child is idle or done. Before anything closes, the record releases the pane, so the close counts as part of the restart. Without that step, a watcher would read it as the child exiting on its own.
 
@@ -27,15 +27,15 @@ Each new tab gets the same environment, label and directory, and the harness sta
 
 One JSON line goes to `~/.bellwether/restart.log`. It records what it stopped and what it started. That line also records the new pane and whether herdr reported the session that the restart requested.
 
-For a parent session, the daemon starts a new pane on the same session and leaves the old pane alone, for the person to close afterwards. Live agents outside the registry restart in the same way, and the old pane remains open too.
+A parent session restarts from its own record, which stores its session id, its working directory and its pane. The daemon closes that pane only when herdr reports the same session id there. When herdr reports another session or another harness in it, the daemon refuses and leaves it open. A session that is itself a child restarts as that child, under its child id.
 
-Either restart takes the session id and the working directory from the record or, for a live agent, from herdr.
+Pi sessions restart with the file under `~/.pi/agent/sessions` passed to `--session`. Claude Code sessions restart with `--resume` and the `plugin:bellwether@bellwether` channel flag, the one the install guide starts a parent with, so the new process loads Bellwether again. The daemon sends the accepting key to the channel question in the new pane.
 
-Pi sessions restart with the file under `~/.pi/agent/sessions` passed to `--session`, and Claude Code sessions with `--resume`.
+The daemon refuses to restart a live agent missing from every registry. It closes only a pane it can identify from a registry, and it never starts a second copy of a running session.
 
 Sessions that restart themselves hear back first. That call records `restartRequestedAt` and registers the work with the daemon. It answers with what will happen.
 
-Meanwhile, the daemon waits for herdr to report the caller idle or done, and only then closes the tab and starts the new one.
+Meanwhile, the daemon waits for herdr to report the caller idle or done, and only then closes the caller's pane and starts the new one. Closing that pane ends the caller's adapter, and the daemon finishes the restart anyway.
 
 Killing its own caller mid-call would leave a tool with nowhere to send its answer. Anyone watching would see nothing happen. When a daemon stops during the wait, it runs the request again as soon as the session's service starts next.
 
@@ -46,6 +46,8 @@ The daemon refuses a restart when:
 - the target has no recorded session, and the refusal includes the child and its pane
 - the child runs on another machine
 - Bellwether did not start the pane of an adopted child
+- the target is a live agent missing from every registry
+- the parent's pane now holds another session or another harness
 - the record contains a process marker instead of a session id
 - the Pi session's file no longer exists
 - herdr shows the pane with no agent

@@ -12,6 +12,8 @@ export interface FakePane {
   agent_status: 'idle' | 'working' | 'blocked' | 'done' | 'unknown';
   agent?: string;
   name?: string;
+  /** The tab label herdr reports for the pane. */
+  label?: string;
   cwd?: string;
   agent_session?: { agent: string; kind: 'id' | 'path'; source: string; value: string };
   /** The arguments the agent started with. */
@@ -126,6 +128,14 @@ export function fakeWorld(workspace = 'w1'): FakeWorld {
           return { type: 'pane_list', panes: [...panes.values()] };
         case 'session.snapshot':
           return { type: 'session_snapshot', snapshot: { panes: [...panes.values()], agents: agents() } };
+        case 'pane.close': {
+          // A pane close makes herdr send pane_closed for that pane.
+          const pane = panes.get(String(params['pane_id']));
+          if (!pane) return { error: { code: 'pane_not_found', message: 'no such pane' } };
+          panes.delete(pane.pane_id);
+          setTimeout(() => this.emit({ event: 'pane_closed', data: { pane_id: pane.pane_id } }), 20);
+          return { type: 'ok' };
+        }
         case 'tab.close': {
           // A tab close makes herdr send tab_closed and no pane event, which is
           // what a watcher sees when the daemon closes a child's tab.

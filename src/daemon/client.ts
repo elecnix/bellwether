@@ -389,6 +389,9 @@ export class DaemonClient {
     this.connection = connection;
     this.sentWatches = new Set();
     connection.socket.on('data', (chunk: string) => this.read(connection, chunk));
+    // A daemon that exits or drains resets the socket. The close below
+    // reconnects, so the error is logged rather than thrown in the session's process.
+    connection.socket.on('error', (error: Error) => this.log(`daemon connection: ${error.message}`));
     connection.socket.on('close', () => {
       if (this.connection === connection) this.connection = undefined;
       if (connection.abandoned) return;

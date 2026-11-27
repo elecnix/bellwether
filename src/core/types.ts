@@ -195,6 +195,7 @@ export interface OutboxEntry {
   event: ChildEventKind;
   text: string;
   at: string;
+  /** When a delivery reached the parent's model, set with `read`. */
   deliveredAt?: string;
   read: boolean;
   /** The herdr status this entry describes, for the state events. */

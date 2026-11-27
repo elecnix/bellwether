@@ -1,10 +1,13 @@
 // The outbox: one pending entry per child, where a newer state replaces an
-// older one, and an entry counts as read once its receipt id reaches the
-// parent's model context. It survives a restart on disk, because a parent
-// session that resumes still owes its children an answer.
+// older one. An entry counts as read once a delivery happened: the adapter saw
+// its own notice, carrying the receipt, reach the parent's model. The file
+// keeps the read flag beside each entry, so a restarted daemon replays only the
+// entries no delivery reached, because a parent session that resumes still
+// owes its children an answer.
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { byEventTime } from './notice.ts';
 import { outboxPath } from './paths.ts';
 import type { ChildRecord, OutboxEntry } from './types.ts';
 
@@ -116,17 +119,16 @@ export class Outbox {
     this.entries.push(entry);
   }
 
-  /** Mark an entry read. A repeated receipt is not an error; it returns false. */
-  markRead(receipt: string): boolean {
+  /**
+   * Mark an entry read, for a delivery that reached the parent's model, and
+   * record when. A repeated receipt is not an error; it returns false.
+   */
+  markRead(receipt: string, at = new Date().toISOString()): boolean {
     const entry = this.entries.find((candidate) => candidate.receipt === receipt);
     if (!entry || entry.read) return false;
     entry.read = true;
+    entry.deliveredAt = at;
     return true;
-  }
-
-  markDelivered(receipt: string, at = new Date().toISOString()): void {
-    const entry = this.entries.find((candidate) => candidate.receipt === receipt);
-    if (entry) entry.deliveredAt = at;
   }
 
   /** Drop every entry for a child, for one whose spawn failed. */
@@ -137,8 +139,9 @@ export class Outbox {
     return this.entries.length !== before;
   }
 
+  /** Unread entries, oldest event first, whatever order they reached the file in. */
   pending(): OutboxEntry[] {
-    return this.entries.filter((entry) => !entry.read);
+    return byEventTime(this.entries.filter((entry) => !entry.read));
   }
 
   unreadFor(childId: string): OutboxEntry[] {

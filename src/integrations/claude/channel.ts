@@ -3,8 +3,9 @@
 // session the Bellwether tools, and pushes each child event into the session
 // as a notifications/claude/channel event. The core runs in the daemon; this
 // server is one client of it. A receipt id in the event text marks that event
-// read once it reaches the session transcript, which is where Claude Code
-// records what the model received.
+// read once the transcript records the channel message reaching the model,
+// which is where Claude Code records what the model received. The same id in
+// a tool result does not count.
 //
 // stdout carries the MCP protocol, so every log line goes to stderr.
 import os from 'node:os';
@@ -15,6 +16,7 @@ import { DaemonClient } from '../../daemon/client.ts';
 import { resolveSocketPath } from '../../core/herdr-client.ts';
 import { hostName } from '../../core/spawn.ts';
 import { childLabel } from '../../core/label.ts';
+import { byEventTime, lateNote } from '../../core/notice.ts';
 import type { OutboxEntry } from '../../core/types.ts';
 import { BELLWETHER_VERSION } from '../../core/version.ts';
 import { toolsFor } from '../tools.ts';
@@ -83,9 +85,9 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 });
 
-/** One channel event's text. The receipt rides in the text, not only in meta. */
+/** One channel event's text. The receipt rides in the text, not only in meta. A late event says so. */
 function compose(entry: OutboxEntry): string {
-  return `[bellwether] ${childLabel({ name: entry.name, paneId: entry.paneId, id: entry.childId })} ${entry.event}, a ${entry.kind} agent — receipt ${entry.receipt}\n${entry.text}\n\nRead more with agent_read. Reply with agent_send.`;
+  return `[bellwether] ${childLabel({ name: entry.name, paneId: entry.paneId, id: entry.childId })} ${entry.event}, a ${entry.kind} agent — receipt ${entry.receipt}${lateNote(entry)}\n${entry.text}\n\nRead more with agent_read. Reply with agent_send.`;
 }
 
 async function push(entry: OutboxEntry): Promise<void> {
@@ -136,7 +138,7 @@ function schedule(entries: OutboxEntry[]): void {
 async function flush(): Promise<void> {
   burst = undefined;
   if (!daemon) return;
-  const fresh = daemon.unread().filter((entry) => !entry.read && !sent.has(entry.receipt));
+  const fresh = byEventTime(daemon.unread().filter((entry) => !entry.read && !sent.has(entry.receipt)));
   for (const entry of fresh) {
     try {
       await push(entry);

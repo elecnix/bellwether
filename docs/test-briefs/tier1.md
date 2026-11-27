@@ -16,7 +16,7 @@ Add these test files under `test/unit/`, one concern per file:
 
 - `classifier.test.ts`: the settle times. An idle child that goes busy again inside `idleMs` sends no event. One that stays idle past `idleMs` sends one. A blocked child waits `blockedMs` before its dialog is reported. A working child whose transcript stops growing for `stuckMs` fires once, not on every later observation. A new `completionSeq` starts a fresh turn, and a report that already covered that turn suppresses the idle event. Drive all of this from a fake clock you control, with no timers and no socket.
 
-- `outbox.test.ts`: merging and receipts. A newer state for the same child replaces an older pending entry rather than appending. Several children changing at once produce one merged message. A receipt that appears in the parent's context marks the entry read. A repeated receipt is dropped. An unread entry survives a registry reload.
+- `outbox.test.ts`: merging and receipts. A newer state for the same child replaces an older pending entry rather than appending. Several children changing at once produce one merged message. The adapter's own delivered message marks the entry read, and a reload keeps the flag, while a receipt in a tool result leaves the entry unread. A repeated receipt is dropped. An unread entry survives a registry reload.
 
 - `registry.test.ts`: persistence. A child record is written before `tab.create` is called. A reload reads the same record. A resumed parent session sees its children. A malformed file does not crash the reader.
 

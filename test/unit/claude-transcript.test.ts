@@ -1,5 +1,7 @@
 // The receipt scan is the only thing that decides an event is read, so it is
 // tested without a session: a real file, a real byte offset, a real append.
+// A receipt counts only in the line where Claude Code records a channel
+// message reaching the model, never in a tool result that happens to quote it.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -17,8 +19,15 @@ function scratch(): { root: string; cwd: string; session: string; file: string }
   return { root, cwd, session, file: path.join(dir, `${session}.jsonl`) };
 }
 
-function append(file: string, text: string): void {
-  fs.appendFileSync(file, `${JSON.stringify({ type: 'user', message: { role: 'user', content: text } })}\n`);
+/** The line Claude Code writes when a channel message reaches the model mid-turn or starts a turn. */
+function append(file: string, text: string, server = 'bellwether'): void {
+  const prompt = `<channel source="${server}">${text}</channel>`;
+  fs.appendFileSync(file, `${JSON.stringify({ type: 'attachment', attachment: { type: 'queued_command', prompt, commandMode: 'prompt', origin: { kind: 'channel', server } } })}\n`);
+}
+
+/** A line that quotes a receipt without being a delivery. */
+function quote(file: string, line: unknown): void {
+  fs.appendFileSync(file, `${JSON.stringify(line)}\n`);
 }
 
 test('findTranscript falls back to any project directory', () => {
@@ -58,6 +67,44 @@ test('search finds a receipt from before this server started', () => {
   append(file, 'event from the previous server, receipt bw-333333333333');
   const scan = new ReceiptScan(session, cwd, root);
   assert.deepEqual([...scan.search(['bw-333333333333', 'bw-444444444444'])], ['bw-333333333333']);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('a receipt in a tool result, a typed prompt or a queued line is not a delivery', () => {
+  const { root, cwd, session, file } = scratch();
+  const scan = new ReceiptScan(session, cwd, root);
+  scan.start();
+  // The parent ran cat on its outbox file: the receipt reaches the model as tool output.
+  quote(file, { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: '"receipt": "bw-666666666666"' }] } });
+  quote(file, { type: 'user', message: { role: 'user', content: 'what happened to bw-666666666666?' } });
+  // Claude Code queued the notice, and has not handed it to the model yet.
+  quote(file, { type: 'queue-operation', operation: 'enqueue', content: '<channel source="bellwether">receipt bw-666666666666</channel>' });
+  assert.deepEqual([...scan.scan(['bw-666666666666'])], []);
+  assert.deepEqual([...scan.search(['bw-666666666666'])], []);
+  append(file, 'receipt bw-666666666666');
+  assert.deepEqual([...scan.scan(['bw-666666666666'])], ['bw-666666666666']);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('a delivery from the plugin copy of the server counts, and one from another channel does not', () => {
+  const { root, cwd, session, file } = scratch();
+  const scan = new ReceiptScan(session, cwd, root);
+  scan.start();
+  append(file, 'receipt bw-777777777777', 'plugin:bellwether:bellwether');
+  append(file, 'receipt bw-888888888888', 'your-attention');
+  assert.deepEqual([...scan.scan(['bw-777777777777', 'bw-888888888888'])], ['bw-777777777777']);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('a line still being written is read whole on the next look', () => {
+  const { root, cwd, session, file } = scratch();
+  const scan = new ReceiptScan(session, cwd, root);
+  scan.start();
+  const line = JSON.stringify({ type: 'attachment', attachment: { type: 'queued_command', prompt: 'receipt bw-999999999999', origin: { kind: 'channel', server: 'bellwether' } } });
+  fs.appendFileSync(file, line.slice(0, 40));
+  assert.deepEqual([...scan.scan(['bw-999999999999'])], []);
+  fs.appendFileSync(file, `${line.slice(40)}\n`);
+  assert.deepEqual([...scan.scan(['bw-999999999999'])], ['bw-999999999999']);
   fs.rmSync(root, { recursive: true, force: true });
 });
 

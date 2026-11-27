@@ -421,6 +421,15 @@ export class HerdrClient {
     return this.request('agent.send_keys', { target, keys }, { signal }).then(() => undefined);
   }
 
+  /** Type text into a pane's terminal, then press keys, in one request. */
+  sendInput(paneId: string, text: string, keys: string[], signal?: AbortSignal): Promise<void> {
+    return this.request('pane.send_input', { pane_id: paneId, text, keys }, { signal }).then(() => undefined);
+  }
+
+  agentRename(target: string, name: string, signal?: AbortSignal): Promise<void> {
+    return this.request('agent.rename', { target, name }, { signal }).then(() => undefined);
+  }
+
   paneClose(paneId: string, signal?: AbortSignal): Promise<void> {
     return this.request('pane.close', { pane_id: paneId }, { signal }).then(() => undefined);
   }

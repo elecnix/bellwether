@@ -2,7 +2,8 @@
 // naming the operation and the release that brought it.
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { FEATURES, featureNamed, missingFeatureMessage, missingFrom, serves, unknownTo } from '../../src/daemon/features.ts';
+import { FEATURES, featureNamed, missingFeatureMessage, missingFrom, routeArgumentRefusal, serves, unknownTo } from '../../src/daemon/features.ts';
+import { describePairing } from '../../src/daemon/upgrade-status.ts';
 import { refusalMessage } from '../../src/daemon/client.ts';
 import { DAEMON_PROTOCOL, MIN_CLIENT_PROTOCOL, ProtocolError, parseRequest } from '../../src/daemon/protocol.ts';
 import { daemonCallNames, toolNames } from '../../src/integrations/tools.ts';
@@ -51,4 +52,13 @@ test('a refusal quotes the range the daemon serves and names the install to upda
   const old = refusalMessage('/h/daemon.sock', { daemonProtocol: 1, reason: 'the client spoke another protocol' }, { version: '0.1.5', protocol: 4 }, '/opt/bellwether');
   assert.match(old, /serves protocol 1,/);
   assert.match(old, /Upgrade the Bellwether install that started that daemon/);
+});
+
+test('a call with via or key_file is refused before it reaches a daemon that would ignore them and start the child bare', () => {
+  const older = { protocol: 4, version: '0.1.5', features: FEATURES.filter((feature) => feature.name !== 'via').map((feature) => feature.name) };
+  assert.equal(routeArgumentRefusal({ kind: 'claude', name: 'a', via: 'example-router' }, older), '`via` needs Bellwether 0.1.5 (protocol 4); this daemon is an earlier build on protocol 4 (Bellwether 0.1.5). Upgrade the machine holding the daemon when convenient. Every other tool keeps working.');
+  assert.ok(routeArgumentRefusal({ kind: 'claude', name: 'a', key_file: '/k' }, older));
+  assert.equal(routeArgumentRefusal({ kind: 'claude', name: 'a' }, older), undefined, 'a call without a route argument still goes');
+  assert.equal(routeArgumentRefusal({ via: 'example-router' }, { protocol: 4, version: '0.1.5', features: FEATURES.map((feature) => feature.name) }), undefined);
+  assert.ok(describePairing({ version: '0.1.5', protocol: 4, minClientProtocol: 2 }, older).some((line) => /the daemon would ignore the via \(protocol 4, Bellwether 0\.1\.5\) argument, so this install refuses a call that passes it/.test(line)));
 });

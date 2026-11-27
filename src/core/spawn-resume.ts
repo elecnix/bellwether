@@ -11,7 +11,8 @@ import { withChildLock } from './child-lock.ts';
 import { LOCAL_HOST, hostOf } from './machine.ts';
 import { readParent, updateChild } from './registry.ts';
 import { findResumable, holdsSession, resumeArgs, resumeChild, sessionOf, type HarnessSession, type ResumeOptions } from './resume.ts';
-import { herdrLink } from './spawn.ts';
+import { herdrLink, nextLaunch } from './spawn.ts';
+import { routeLabel } from './routes.ts';
 import { isMoving } from './move-plan.ts';
 import { promptChild } from './send.ts';
 import type { ChildRecord } from './types.ts';
@@ -49,6 +50,18 @@ function sessionTarget(value: string): HarnessSession {
   return { value, kind: value.includes('/') ? 'path' : 'id' };
 }
 
+/**
+ * A live child gets a resume's prompt as a message, which cannot change how it
+ * was launched. A resume that asks for another route says so, rather than
+ * delivering the prompt and leaving the route as it was.
+ */
+function refuseLiveRouteChange(child: ChildRecord, request: SpawnResumeRequest): void {
+  if (request.via === undefined && request.keyFile === undefined) return;
+  const wanted = nextLaunch(child, { via: request.via, model: request.model, keyFile: request.keyFile, provider: request.provider }, 'resumed');
+  if (routeLabel(wanted.route) === routeLabel(child.route) && wanted.route?.keyFile === child.route?.keyFile) return;
+  throw new Error(`${child.name} is alive in pane ${child.paneId} on route ${routeLabel(child.route)}, so a resume would only message it and could not move it to ${routeLabel(wanted.route)}. Call agent_restart on ${child.name} with the same via, which restarts it on the same session, then message it.`);
+}
+
 function paneLabel(pane: HerdrPane): string {
   return `pane ${pane.paneId}${pane.name ? ` (${pane.name})` : ''}`;
 }
@@ -67,7 +80,7 @@ export async function spawnResume(clientFor: (host: string) => Promise<HerdrClie
     // this one may have just brought the child back.
     const record = readParent(parentId) ?? first;
     const panes = await client.agentList(signal);
-    const options: ResumeOptions = { prompt: request.prompt, model: request.model, args: request.args, focus: request.focus, startupTimeoutMs: request.startupTimeoutMs, redrawMs: request.redrawMs, registerRemote: request.registerRemote, cleanupRemote: request.cleanupRemote };
+    const options: ResumeOptions = { prompt: request.prompt, model: request.model, via: request.via, keyFile: request.keyFile, provider: request.provider, args: request.args, focus: request.focus, startupTimeoutMs: request.startupTimeoutMs, redrawMs: request.redrawMs, registerRemote: request.registerRemote, cleanupRemote: request.cleanupRemote };
 
     if (!known) {
       const wanted = sessionTarget(request.target);
@@ -90,6 +103,7 @@ export async function spawnResume(clientFor: (host: string) => Promise<HerdrClie
     const holder = session ? panes.find((pane) => holdsSession(pane, session)) : undefined;
 
     if (holder && holder.paneId === child.paneId) {
+      refuseLiveRouteChange(child, request);
       // Alive where this session put it: the prompt is an ordinary message.
       let corrected: string | undefined;
       if (child.exitedAt) {
@@ -116,6 +130,7 @@ export async function spawnResume(clientFor: (host: string) => Promise<HerdrClie
       // only case Bellwether can still trust.
       const own = panes.find((pane) => pane.paneId === child.paneId && pane.agent === child.kind);
       if (!child.exitedAt && own) {
+        refuseLiveRouteChange(child, request);
         const reply = request.prompt ? await promptChild(client, child, request.prompt) : `${child.name} is alive in pane ${child.paneId}, and there was no prompt to send.`;
         return { action: 'messaged', child, reply, link: herdrLink('pane', child.paneId) };
       }

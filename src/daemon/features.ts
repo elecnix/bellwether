@@ -12,8 +12,12 @@
 
 export interface Feature {
   name: string;
-  /** A tool a model calls, a request on the wire, or a notice an adapter sends as a call that no model sees. */
-  kind: 'tool' | 'request' | 'notice';
+  /**
+   * A tool a model calls, a request on the wire, a notice an adapter sends as
+   * a call that no model sees, or an argument a tool takes that an older
+   * daemon would ignore rather than refuse.
+   */
+  kind: 'tool' | 'request' | 'notice' | 'argument';
   /** The first protocol whose daemons serve it. */
   protocol: number;
   /** The first release that served it. */
@@ -31,7 +35,24 @@ export const FEATURES: readonly Feature[] = [
   ...['agent_restart', 'agent_move'].map((name) => ({ name, kind: 'tool' as const, protocol: 4, version: '0.1.5' })),
   // A pi child's extension reports an open dialog; an older daemon refuses it, and the extension ignores the refusal.
   { name: 'child_prompt', kind: 'notice', protocol: 4, version: '0.1.5' },
+  // A daemon without routes would drop `via` and `key_file` and start the child bare, so the client refuses the call first.
+  { name: 'via', kind: 'argument', protocol: 4, version: '0.1.5' },
 ];
+
+/** The arguments that need the `via` feature, which an older daemon would ignore. */
+export const ROUTE_ARGUMENTS = ['via', 'key_file'] as const;
+
+/**
+ * The refusal for a call that passes a route argument to a daemon that would
+ * ignore it, or undefined when the call may go. Without it, the child would
+ * start bare and nobody would hear why.
+ */
+export function routeArgumentRefusal(args: Record<string, unknown>, daemon: DaemonOffer | undefined): string | undefined {
+  const routed = ROUTE_ARGUMENTS.some((key) => args[key] !== undefined && args[key] !== null && args[key] !== '');
+  const feature = featureNamed('via');
+  if (!routed || !feature || !daemon || serves(daemon, feature)) return undefined;
+  return missingFeatureMessage('via', daemon);
+}
 
 /** What a client knows of the daemon it reached. */
 export interface DaemonOffer {

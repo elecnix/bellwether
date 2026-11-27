@@ -28,6 +28,7 @@ export const PAGES: readonly Page[] = [
   { source: 'docs/recovery.md', output: 'recovery.html' },
   { source: 'docs/remote-machines.md', output: 'remote-machines.html' },
   { source: 'docs/moving.md', output: 'moving.html' },
+  { source: 'docs/routes.md', output: 'routes.html' },
   { source: 'docs/upgrading.md', output: 'upgrading.html' },
   { source: 'docs/releasing.md', output: 'releasing.html' },
 ];

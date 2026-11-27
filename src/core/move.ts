@@ -187,6 +187,8 @@ export async function moveChild(deps: MoveDeps, parentId: string, request: MoveR
     // 1-2. What can be refused from the record alone is refused before any machine is reached.
     const base: RefusalInput = { childName: child.name, harness: child.harness, requestedHarness, status: child.lastStatus, exited: Boolean(child.exitedAt) || !child.paneId, source: hostOf(child), target, moveInFlight, hasSession: Boolean(session) };
     const early = moveRefusals(base);
+    // A route is this machine's launcher, which the other machine's routes file does not hold.
+    if (child.route && target !== LOCAL_HOST) early.push(`${child.name} runs on route ${child.route.name}, a launcher this machine's routes file defines, so it cannot resume behind it on ${where(target)}. Restart it with agent_restart and via none first, then move it.`);
     if (!cwd && early.length === 0) early.push(`${child.name} has no recorded working directory, so Bellwether cannot tell where it resumes on ${where(target)}. Pass cwd.`);
     if (early.length) throw new MoveRefusedError(child.name, target, early);
     const harness = child.harness as MovableHarness;

@@ -32,6 +32,9 @@ process.env['BELLWETHER_HOME'] = path.join(ISOLATION_ROOT, 'home');
 process.env['BELLWETHER_DAEMON_SOCKET'] = path.join(ISOLATION_ROOT, 'home', 'daemon.sock');
 // pi's agent directory holds the operator's pi settings, which a pi spawn reads.
 process.env['PI_CODING_AGENT_DIR'] = path.join(ISOLATION_ROOT, 'pi-agent');
+// The routes file describes the operator's own launchers. A case that needs
+// routes writes its own file here, so none reads ~/.config/bellwether.
+process.env['BELLWETHER_ROUTES'] = path.join(ISOLATION_ROOT, 'routes.json');
 // The operator may run the suite from inside a Bellwether child. Its identity
 // must not leak into the cases or the processes they start.
 for (const key of ['BELLWETHER_PARENT', 'BELLWETHER_CHILD', 'BELLWETHER_CHILD_NAME', 'BELLWETHER_DEPTH', 'BELLWETHER_HARNESS', 'BELLWETHER_PI_EXTENSION']) delete process.env[key];

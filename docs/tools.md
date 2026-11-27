@@ -23,6 +23,12 @@ A caller who names both, in `provider` and `model` or in `args`, wins. Naming on
 
 Either way, the spawn reply states the provider account and model the child runs on, since the account is what pays. For a default, Bellwether reads the pair from the child's session file once pi writes it, and `agent_list` shows it beside the kind. Before that, the reply gives the pair that pi's settings point to, along with the setting and its file. It marks that pair unverified.
 
+With `via`, a spawn starts the child behind a route. A route is a launcher wrapper that this machine's routes file defines, and `model` then names one of its tiers. `key_file` runs that launcher under the key in a file, and the record keeps only the file's path.
+
+`agent_restart` and `agent_spawn` with `resume` also take `via`, which moves a child onto a route or off it on the same session. `agent_list` shows each child's route in its `route` column, or `bare`.
+
+[routes.md](routes.md) describes the routes file, the launch and the refusals.
+
 A child record keeps the session file that herdr reports for a pi child, including after the child exits and the daemon retires it. `agent_read` reads the child's last message from that file. When pi gives the child a name of its own, the record keeps it as `agentName`, beside the parent's chosen name. `agent_list` shows both names. The other tools accept either one, unless two children answer to the same name.
 
 ## Events a parent receives

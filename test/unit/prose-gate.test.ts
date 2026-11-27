@@ -168,3 +168,19 @@ test('the lint in a checkout that never ran vale sync names the remedy', { skip:
     fs.rmSync(repo, { recursive: true, force: true });
   }
 });
+
+// On a fresh machine Vale is absent and so are the packs. One message gives
+// both steps, so the person installs and syncs before the next run.
+test('the lint on a machine without Vale names the install and the sync', () => {
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'bw-novale-'));
+  try {
+    fs.symlinkSync(process.execPath, path.join(bin, 'node'));
+    const result = spawnSync(path.join(bin, 'node'), ['--disable-warning=ExperimentalWarning', path.join(root, 'scripts/prose.ts'), 'lint'], { cwd: root, encoding: 'utf8', env: { PATH: bin } });
+    assert.equal(result.status, 2, result.stderr);
+    assert.match(result.stderr, /Install Vale 3\.20\.0/);
+    assert.ok(result.stderr.includes(`cd ${root} && vale sync`), result.stderr);
+    assert.doesNotMatch(result.stderr, /\n\s+at /, 'no stack trace');
+  } finally {
+    fs.rmSync(bin, { recursive: true, force: true });
+  }
+});

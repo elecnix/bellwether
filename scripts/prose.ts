@@ -78,7 +78,7 @@ export function valeFailure(root: string, status: number | null, output: string)
 
 function vale(root: string, args: string[]): { status: number | null; stdout: string; stderr: string } {
   const result = spawnSync('vale', args, { cwd: root, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
-  if (result.error) throw new Error(`vale did not run (${result.error.message}). Install Vale 3.20.0, the version CI pins.`);
+  if (result.error) throw new Error(`vale did not run (${result.error.message}). Install Vale 3.20.0, the version CI pins, then run \`cd ${root} && vale sync\` to fetch the style packs.`);
   // Vale exits 1 when it reports an error-level alert, and 2 when it cannot run.
   if (result.status !== 0 && result.status !== 1) throw new Error(valeFailure(root, result.status, result.stderr.trim() || result.stdout));
   return { status: result.status, stdout: result.stdout, stderr: result.stderr };

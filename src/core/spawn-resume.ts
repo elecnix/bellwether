@@ -10,6 +10,7 @@ import type { HerdrClient, HerdrPane } from './herdr-client.ts';
 import { withChildLock } from './child-lock.ts';
 import { LOCAL_HOST, hostOf } from './machine.ts';
 import { readParent, updateChild } from './registry.ts';
+import type { NextBrief } from './brief-history.ts';
 import { findResumable, holdsSession, resumeArgs, resumeChild, sessionOf, type HarnessSession, type ResumeOptions } from './resume.ts';
 import { herdrLink, nextLaunch } from './spawn.ts';
 import { agentKinds, harnessFor } from './harnesses/index.ts';
@@ -44,6 +45,8 @@ export type SpawnResumeResult =
       session: HarnessSession;
       link: string;
       corrected?: string;
+      /** The brief the child started on, and the unread one it repeats. */
+      brief?: NextBrief;
     };
 
 function sessionTarget(value: string): HarnessSession {
@@ -93,7 +96,7 @@ export async function spawnResume(clientFor: (host: string) => Promise<HerdrClie
       }
       resumeArgs(request.kind, wanted);
       const resumed = await resumeChild(client, record, { session: wanted, kind: request.kind, name: request.name, cwd: request.cwd, host }, options, signal);
-      return { action: 'resumed', child: resumed.child, session: resumed.session, link: resumed.link };
+      return { action: 'resumed', child: resumed.child, session: resumed.session, link: resumed.link, ...(resumed.brief ? { brief: resumed.brief } : {}) };
     }
 
     const child = record.children.find((entry) => entry.id === known.id) ?? known;
@@ -151,6 +154,6 @@ export async function spawnResume(clientFor: (host: string) => Promise<HerdrClie
       child.exitedAt = at;
     }
     const resumed = await resumeChild(client, record, { child }, options, signal);
-    return { action: 'resumed', child: resumed.child, session: resumed.session, link: resumed.link, corrected };
+    return { action: 'resumed', child: resumed.child, session: resumed.session, link: resumed.link, corrected, ...(resumed.brief ? { brief: resumed.brief } : {}) };
   });
 }

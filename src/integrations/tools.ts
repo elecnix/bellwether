@@ -5,6 +5,7 @@ import type { HerdrClient } from '../core/herdr-client.ts';
 import { spawnChild, type RegisterRemote, type SpawnOptions } from '../core/spawn.ts';
 import { agentKinds, harnessFor, harnessNamed, locateTranscript } from '../core/harnesses/index.ts';
 import { GRANT_DEPTH_TOOL, REQUEST_DEPTH_TOOL, ceilingOf, childCeiling, describeDepth, grantDepth, raiseTree, requestDepth } from '../core/depth.ts';
+import { keepsBriefs, type NextBrief } from '../core/brief-history.ts';
 import { removeChildFiles } from '../core/mcp-config.ts';
 import { PROMPT_NOTICE, notePromptForCaller, reportForCaller } from '../core/report.ts';
 import { childById, mutateParent, readParent, updateChild } from '../core/registry.ts';
@@ -427,7 +428,10 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
     }
     ctx.watcher.reset(child.id);
     const where = child.host === LOCAL_HOST ? '' : ` on machine ${child.host}`;
-    lines.push(`${child.name} resumed session ${result.session.value}${where} in pane ${child.paneId}, as the same child ${child.id}, on route ${routeLabel(child.route)}.`, 'Bellwether watches it again, and its earlier events and receipts carry on.', `herdr link: ${result.link}`);
+    lines.push(`${child.name} resumed session ${result.session.value}${where} in pane ${child.paneId}, as the same child ${child.id}, on route ${routeLabel(child.route)}.`, 'Bellwether watches it again, and its earlier events and receipts carry on.');
+    const repeated = repeatedBriefNote(child, result.brief);
+    if (repeated) lines.push(repeated);
+    lines.push(`herdr link: ${result.link}`);
     return lines.join('\n');
   }
 
@@ -595,7 +599,8 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
     updateChild(ctx.parentId, child.id, (entry) => {
       entry.exitedAt = new Date().toISOString();
     });
-    removeChildFiles(child.id, hostOf(child) === LOCAL_HOST ? child.cwd : undefined);
+    // A brief nothing shows the child read stays, so a resume can still hand it over.
+    removeChildFiles(child.id, hostOf(child) === LOCAL_HOST ? child.cwd : undefined, { briefs: !keepsBriefs(child) });
     // A workspace Bellwether made for the child closes once nothing is left in it.
     const released = await releaseWorkspace(herdr, child).catch((error: unknown) => {
       ctx.log?.(`agent_stop: could not check ${child.name}'s workspace ${child.workspaceId}: ${(error as Error).message}`);
@@ -689,4 +694,16 @@ async function readRemoteChild(ctx: ToolContext, child: ChildRecord, herdr: Herd
 
 export function hostEnv(): Record<string, string> {
   return { host: os.hostname() };
+}
+
+/**
+ * What the reply says when a resume handed over a brief the child had not
+ * read: why, and the file that still holds the first one (issue #132).
+ */
+function repeatedBriefNote(child: ChildRecord, brief: NextBrief | undefined): string | undefined {
+  if (!brief?.repeats) return undefined;
+  const first = Math.min(...(brief.brief.carries ?? [brief.repeats.n]));
+  const original = child.briefs?.find((entry) => entry.n === first)?.file ?? brief.repeats.file;
+  const how = brief.reused ? `Bellwether handed that brief over again, from ${brief.brief.file}` : `Bellwether put that brief ahead of your prompt in ${brief.brief.file}`;
+  return `${child.name} had not read the brief it started on: its record shows no report and no finished turn since. ${how}. Its first brief stays at ${original}.`;
 }

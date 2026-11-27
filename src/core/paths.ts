@@ -23,8 +23,13 @@ export function promptsDir(): string {
   return path.join(bellwetherHome(), 'prompts');
 }
 
-export function promptPath(childId: string): string {
-  return path.join(promptsDir(), `${slug(childId)}.md`);
+/**
+ * The file that holds a child's brief number `n`. The spawn's brief, number 1,
+ * keeps the name every release before numbering wrote, and each later one
+ * gets its number, so no brief is written over.
+ */
+export function promptPath(childId: string, n = 1): string {
+  return path.join(promptsDir(), n === 1 ? `${slug(childId)}.md` : `${slug(childId)}-${n}.md`);
 }
 
 /** Each Claude Code child's MCP configuration, passed with --mcp-config. */

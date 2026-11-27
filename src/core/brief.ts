@@ -6,45 +6,37 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { bellwetherHome, promptPath, promptsDir, slug } from './paths.ts';
 
-/** A brief is read when the child starts. One a week old has been read. */
-const BRIEF_MAX_AGE_MS = 7 * 24 * 60 * 60_000;
-
-/** Write the brief with mode 0600 in a 0700 directory, and return its path. */
-export function writeBrief(childId: string, text: string, now = Date.now()): string {
+/**
+ * Write brief number `n` with mode 0600 in a 0700 directory, and return its
+ * path. Each number has its own file, so a resume never writes over a brief
+ * the child may not have read. The daemon's prune removes a brief once its
+ * child has read it and gone (`src/core/hygiene.ts`).
+ */
+export function writeBrief(childId: string, text: string, n = 1): string {
   const dir = promptsDir();
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   fs.chmodSync(dir, 0o700);
-  pruneBriefs(now);
-  const file = promptPath(childId);
+  const file = promptPath(childId, n);
   fs.writeFileSync(file, text, { mode: 0o600 });
   fs.chmodSync(file, 0o600);
   return file;
 }
 
-/** Remove a child's brief. A brief that is already gone is not an error. */
-export function removeBrief(childId: string): void {
-  fs.rmSync(promptPath(childId), { force: true });
+/** Whether `name`, a file in the prompts directory, holds one of this child's briefs. */
+export function isBriefOf(childId: string, name: string): boolean {
+  const base = slug(childId);
+  return name === `${base}.md` || (name.startsWith(`${base}-`) && /^\d+\.md$/.test(name.slice(base.length + 1)));
 }
 
-/**
- * Remove the briefs older than a week. A child that exits removes its own, so
- * this only catches a daemon that stopped before its child did.
- */
-export function pruneBriefs(now = Date.now()): void {
+/** Remove every brief of a child. A brief that is already gone is not an error. */
+export function removeBrief(childId: string): void {
   let names: string[];
   try {
     names = fs.readdirSync(promptsDir());
   } catch {
     return;
   }
-  for (const name of names) {
-    const file = path.join(promptsDir(), name);
-    try {
-      if (now - fs.statSync(file).mtimeMs > BRIEF_MAX_AGE_MS) fs.rmSync(file, { force: true });
-    } catch {
-      // Another process removed it first.
-    }
-  }
+  for (const name of names) if (isBriefOf(childId, name)) fs.rmSync(path.join(promptsDir(), name), { force: true });
 }
 
 /** The directory a child's working directory holds its brief in. It ignores itself in git. */
@@ -60,7 +52,7 @@ export const WORKDIR_BRIEF_DIR = '.bellwether';
  * `.bellwether` is the Bellwether home itself, takes the brief in the prompts
  * directory there, which is inside it too.
  */
-export function writeBriefIn(cwd: string, childId: string, text: string): string {
+export function writeBriefIn(cwd: string, childId: string, text: string, n = 1): string {
   let stat: fs.Stats;
   try {
     stat = fs.statSync(cwd);
@@ -69,7 +61,7 @@ export function writeBriefIn(cwd: string, childId: string, text: string): string
   }
   if (!stat.isDirectory()) throw new Error(`the working directory ${cwd} is not a directory on this machine`);
   const dir = path.join(cwd, WORKDIR_BRIEF_DIR);
-  if (path.resolve(dir) === path.resolve(bellwetherHome())) return writeBrief(childId, text);
+  if (path.resolve(dir) === path.resolve(bellwetherHome())) return writeBrief(childId, text, n);
   fs.mkdirSync(dir, { mode: 0o700, recursive: true });
   const ignore = path.join(dir, '.gitignore');
   if (!fs.existsSync(ignore)) fs.writeFileSync(ignore, '*\n', { mode: 0o600 });

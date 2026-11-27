@@ -16,6 +16,7 @@ import { detectDialog, dialogName, watchStartup } from './startup-dialogs.ts';
 import { harnessFor, harnessNamed } from './harnesses/index.ts';
 import { detectModal } from './modal.ts';
 import { agentNameOf, lastAssistantMessage, sessionFrom } from './transcript.ts';
+import { keepsBriefs } from './brief-history.ts';
 import { removeChildFiles } from './mcp-config.ts';
 import { childLabel } from './label.ts';
 import { spoolPath } from './paths.ts';
@@ -413,9 +414,14 @@ export class Watcher {
     updateChild(this.parentId, child.id, (entry) => {
       entry.tabClosedAt = new Date().toISOString();
     });
-    removeChildFiles(child.id, hostOf(child) === LOCAL_HOST ? child.cwd : undefined);
+    removeChildFiles(child.id, hostOf(child) === LOCAL_HOST ? child.cwd : undefined, { briefs: !this.keepsBriefs(child) });
     void this.releaseWorkspace(child);
     void this.retire(child.id);
+  }
+
+  /** Whether the record, as saved now, shows the child has a brief it never read. */
+  private keepsBriefs(child: ChildRecord): boolean {
+    return keepsBriefs(readParent(this.parentId)?.children.find((entry) => entry.id === child.id) ?? child);
   }
 
   /**
@@ -459,7 +465,8 @@ export class Watcher {
       if (harnessEnded) entry.harnessEnded = harnessEnded;
     });
     child = { ...child, ...(harnessEnded ? { harnessEnded } : {}) };
-    removeChildFiles(child.id, hostOf(child) === LOCAL_HOST ? child.cwd : undefined);
+    // A brief nothing shows the child read stays for the resume that hands it over (issue #132).
+    removeChildFiles(child.id, hostOf(child) === LOCAL_HOST ? child.cwd : undefined, { briefs: !this.keepsBriefs(child) });
     if (hostOf(child) !== LOCAL_HOST && this.cleanupRemote) {
       this.cleanupRemote(child).catch((error: unknown) => this.log(`could not remove ${child.name}'s files on machine ${hostOf(child)}: ${(error as Error).message}`));
     }

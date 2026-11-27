@@ -5,6 +5,7 @@
 import { HerdrClient } from '../core/herdr-client.ts';
 import { machineClients } from '../core/machine.ts';
 import { remoteOps } from '../core/remote.ts';
+import { armPendingRestarts, type RestartHooks } from '../core/restart.ts';
 import { emptyParent, parentId, readParent, saveParent } from '../core/registry.ts';
 import { Watcher } from '../core/watcher.ts';
 import { runBellwetherTool, type ToolContext } from '../integrations/tools.ts';
@@ -47,9 +48,26 @@ export function createHerdrService(parent: ParentHello, id: string, deps: Servic
   const relayState = deps.links ? (host: string) => deps.links?.state(host) : undefined;
   const watcher = new Watcher({ client, clientFor, parentId: record.id, onEntries: (entries) => handler?.(entries), cleanupRemote: (child) => remote.cleanup(child), relayState });
   // A remote child's reports and reads both go over the connection the daemon holds to its machine.
-  const context: ToolContext = { client, clientFor, parentId: record.id, watcher, remote, relayState };
+  // A restart the caller asked for runs after the tool answered, and stops
+  // with the service. One act per target, so a second request joins the first.
+  const restartStop = new AbortController();
+  const restartJobs = new Map<string, Promise<void>>();
+  const restart: RestartHooks = {
+    signal: restartStop.signal,
+    reset: (childId) => watcher.reset(childId),
+    defer: (key, job) => {
+      if (restartJobs.has(key)) return;
+      const running = job()
+        .catch(() => undefined)
+        .finally(() => restartJobs.delete(key));
+      restartJobs.set(key, running);
+    },
+  };
+  const context: ToolContext = { client, clientFor, parentId: record.id, watcher, remote, relayState, restart };
   const paneWatches = new Set<{ close: () => void }>();
   watcher.start();
+  // Finish a restart a daemon stopped part of the way through.
+  armPendingRestarts(client, record, restart);
   return {
     tool: (name, args, caller) => runBellwetherTool(context, name, args, caller),
     markRead: (receipts) => {
@@ -79,6 +97,7 @@ export function createHerdrService(parent: ParentHello, id: string, deps: Servic
       };
     },
     stop: () => {
+      restartStop.abort();
       for (const watch of paneWatches) watch.close();
       paneWatches.clear();
       watcher.stop();

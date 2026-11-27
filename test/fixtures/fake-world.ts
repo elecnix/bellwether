@@ -91,8 +91,9 @@ export function fakeWorld(workspace = 'w1'): FakeWorld {
           pane.args = args;
           pane.agent_session = { agent: pane.agent, kind: value.includes('/') ? 'path' : 'id', source: `herdr:${pane.agent}`, value };
           this.onStart?.(pane);
-          // A Claude Code child opens on the channel confirmation and waits.
-          if (pane.agent === 'claude') {
+          // A Claude Code session loaded with the development channel opens on
+          // the confirmation and waits; one started without the flag does not.
+          if (pane.agent === 'claude' && args.some((arg) => arg.startsWith('--dangerously-load-development-channels'))) {
             pane.screen = CHANNEL_DIALOG;
             status(this, pane, 'blocked');
           } else {
@@ -125,9 +126,14 @@ export function fakeWorld(workspace = 'w1'): FakeWorld {
           return { type: 'pane_list', panes: [...panes.values()] };
         case 'session.snapshot':
           return { type: 'session_snapshot', snapshot: { panes: [...panes.values()], agents: agents() } };
-        case 'tab.close':
-          for (const [id, pane] of panes) if (pane.tab_id === params['tab_id']) panes.delete(id);
+        case 'tab.close': {
+          // A tab close makes herdr send tab_closed and no pane event, which is
+          // what a watcher sees when the daemon closes a child's tab.
+          const closed = [...panes.values()].filter((pane) => pane.tab_id === params['tab_id']);
+          for (const pane of closed) panes.delete(pane.pane_id);
+          for (const tab of new Set(closed.map((pane) => pane.tab_id))) setTimeout(() => this.emit({ event: 'tab_closed', data: { tab_id: tab } }), 20);
           return { type: 'ok' };
+        }
         default:
           return undefined;
       }

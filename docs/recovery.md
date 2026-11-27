@@ -1,4 +1,4 @@
-# Resuming, unsticking and retiring a child
+# Resuming, restarting, unsticking and retiring a child
 
 ## A child that stopped
 
@@ -16,6 +16,42 @@ Bellwether refuses a live agent that isn't a child, a harness with no resume fla
 A second call for the same child can't open a second tab. A lock file per child under `~/.bellwether/locks/` fails that call at once, naming the process that holds the lock. Bellwether takes over a lock whose process has exited or that is older than five minutes.
 
 To resume a Claude Code child by hand, run `claude --resume <session id>`. The registry keeps the session id and the transcript path after the child exits.
+
+## Restarting an agent
+
+`agent_restart` restarts a session and keeps it. Its harness, session id and working directory stay the same, and the conversation continues in a new process. It takes an optional target, and with no target it restarts the session that called it. A target is a child's name, id or pane, another session by its parent id, session id or pane, or a live agent by name or pane.
+
+Children come back in a new tab under the same child id, so their history, receipts and retire state continue. Bellwether closes the child's tab first, but only a pane Bellwether started, and only once the child is idle or done. Before anything closes, the record releases the pane, so the close counts as part of the restart. Without that step, a watcher would read it as the child exiting on its own.
+
+Each new tab gets the same environment, label and directory, and the harness starts with `--resume` for Claude Code or `--session` for Pi. For a Claude Code child, the daemon writes the MCP configuration again and answers the spawn's startup dialogs as it does at spawn. Its record gains `restartedAt`.
+
+One JSON line goes to `~/.bellwether/restart.log`. It records what it stopped and what it started. That line also records the new pane and whether herdr reported the session that the restart requested.
+
+For a parent session, the daemon starts a new pane on the same session and leaves the old pane alone, for the person to close afterwards. Live agents outside the registry restart in the same way, and the old pane remains open too.
+
+Either restart takes the session id and the working directory from the record or, for a live agent, from herdr.
+
+Pi sessions restart with the file under `~/.pi/agent/sessions` passed to `--session`, and Claude Code sessions with `--resume`.
+
+Sessions that restart themselves hear back first. That call records `restartRequestedAt` and registers the work with the daemon. It answers with what will happen.
+
+Meanwhile, the daemon waits for herdr to report the caller idle or done, and only then closes the tab and starts the new one.
+
+Killing its own caller mid-call would leave a tool with nowhere to send its answer. Anyone watching would see nothing happen. When a daemon stops during the wait, it runs the request again as soon as the session's service starts next.
+
+That reply includes the new pane, the tab and the session id, so the caller can report them instead of "restart requested".
+
+The daemon refuses a restart when:
+
+- the target has no recorded session, and the refusal includes the child and its pane
+- the child runs on another machine
+- Bellwether did not start the pane of an adopted child
+- the record contains a process marker instead of a session id
+- the Pi session's file no longer exists
+- herdr shows the pane with no agent
+- the target is still mid-turn when the wait runs out
+
+By default the wait lasts 30 seconds, and `wait_seconds` raises it. It stays under 45 seconds so the call still answers inside the client's own timeout. One lock per target spans the wait and the restart, so two callers produce one restart. That second caller gets a refusal that reports the process that holds the lock.
 
 ## A blocked or stuck child
 

@@ -3,6 +3,7 @@
 // ask it to drain and start the new one.
 import type { CallerIdentity, Harness, OutboxEntry, RelayHostState, ReportStatus } from '../core/types.ts';
 import type { AncestryAnswer } from '../core/ancestry.ts';
+import type { RosterChild } from '../core/roster.ts';
 import type { SessionReach } from '../core/adopted-session.ts';
 
 export type { RelayHostState, RelayLinkStatus } from '../core/types.ts';
@@ -329,6 +330,8 @@ export interface HelloReply {
   parentId: string;
   pid: number;
   pending: OutboxEntry[];
+  /** The parent's live children, for the roster line on the pending entries. A daemon before issue #146 leaves it out. */
+  roster?: RosterChild[];
   /** The daemon's package version. A daemon before 0.1.5 leaves it out, and the client reads the lock instead. */
   version?: string;
   /** The daemon's build, its commit. A daemon from before builds were named leaves it out. */
@@ -365,6 +368,12 @@ export interface ResultReply {
 export interface EventsPush {
   type: 'events';
   entries: OutboxEntry[];
+  /**
+   * The parent's live children as the registry holds them at the push, for
+   * the roster line an alert carries (issue #146). Additive: a daemon before
+   * it leaves the field out, and the adapter then adds no line.
+   */
+  roster?: RosterChild[];
 }
 
 /** A parent's message, which the child's adapter puts in its session. */

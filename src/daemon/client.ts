@@ -16,6 +16,7 @@ import { HANDOVER_TIMEOUT_MS, decideHandOver, type DaemonIdentity } from './hand
 import { canConnect } from './server.ts';
 import type { ModelPair, OutboxEntry } from '../core/types.ts';
 import type { AncestryAnswer } from '../core/ancestry.ts';
+import { rosterFrom, type RosterChild } from '../core/roster.ts';
 
 const DEFAULT_TIMEOUT_MS = 60_000;
 const START_TIMEOUT_MS = 10_000;
@@ -132,6 +133,8 @@ export class DaemonClient {
   private stopped = false;
   private reconnecting = false;
   private lastEvents: OutboxEntry[] = [];
+  /** The parent's live children, as the daemon sent them with its newest push or hello. */
+  private lastRoster: RosterChild[] | undefined;
   private closedReply: (() => void) | undefined;
   /** What was logged once already, so a daemon that repeats something this client does not know is not logged each time. */
   private readonly warned = new Set<string>();
@@ -210,6 +213,14 @@ export class DaemonClient {
   /** Unread entries the daemon sent with the last hello. */
   pending(): Promise<OutboxEntry[]> {
     return Promise.resolve([...this.lastEvents]);
+  }
+
+  /**
+   * The parent's live children as of the daemon's newest push, for the roster
+   * line. A daemon from before issue #146 sends none, and the adapter adds no line.
+   */
+  roster(): RosterChild[] | undefined {
+    return this.lastRoster?.map((child) => ({ ...child }));
   }
 
   /** Unread entries this client has seen, newest state per child. */
@@ -478,6 +489,7 @@ export class DaemonClient {
     this.attach(connection);
     const pending = Array.isArray(reply.pending) ? reply.pending : [];
     this.lastEvents = pending;
+    this.lastRoster = rosterFrom(reply.roster);
     for (const entry of pending) this.received.set(entry.receipt, entry);
     if (pending.length) for (const handler of this.handlers) handler(pending);
     // A daemon before 0.1.5 sends no version in its hello, and its lock is the only record of it.
@@ -600,6 +612,8 @@ export class DaemonClient {
         this.warnOnce('events-shape', 'the daemon sent events without a list of entries; they were ignored');
         return;
       }
+      // The roster comes before the handlers run, so the message they compose carries it.
+      if (reply.roster !== undefined) this.lastRoster = rosterFrom(reply.roster);
       // An entry that arrives read was settled in the daemon, by a newer state
       // or a newer event for the same child. Drop it, so no resend repeats it.
       const unread: OutboxEntry[] = [];

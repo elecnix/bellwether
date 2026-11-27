@@ -354,6 +354,14 @@ export class Watcher {
 
   /** The tab of a child whose harness already ended was closed: forget the pane, and say nothing. */
   private closeQuietly(child: ChildRecord): void {
+    // herdr can name one tab close twice, as pane_closed and tab_closed. Both
+    // reach the watcher when they arrive with a subscription's acknowledgement,
+    // before dropLink knows that subscription. The record decides, as it does
+    // for an exit, so the workspace is released and retirement started once.
+    if (readParent(this.parentId)?.children.find((entry) => entry.id === child.id)?.tabClosedAt) return;
+    updateChild(this.parentId, child.id, (entry) => {
+      entry.tabClosedAt = new Date().toISOString();
+    });
     removeChildFiles(child.id, hostOf(child) === LOCAL_HOST ? child.cwd : undefined);
     void this.releaseWorkspace(child);
     void this.retire(child.id);

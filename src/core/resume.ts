@@ -164,6 +164,7 @@ export async function resumeChild(client: HerdrClient, parent: ParentRecord, tar
   // The new harness has yet to show herdr it runs, and the watcher checks it once after its start window.
   delete child.harnessSeenAt;
   delete child.harnessEnded;
+  delete child.tabClosedAt;
   // A child brought back did not ask for this run to end its worktree.
   clearRetirement(child);
   child.lastStatus = 'unknown';

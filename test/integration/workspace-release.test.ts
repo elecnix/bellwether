@@ -5,18 +5,21 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
+import net from 'node:net';
 import path from 'node:path';
 import test from 'node:test';
 import { HerdrClient } from '../../src/core/herdr-client.ts';
 import { emptyParent, readParent, saveParent } from '../../src/core/registry.ts';
 import { Watcher } from '../../src/core/watcher.ts';
-import type { ChildRecord } from '../../src/core/types.ts';
+import type { ChildRecord, OutboxEntry } from '../../src/core/types.ts';
 import { runBellwetherTool } from '../../src/integrations/tools.ts';
-import { startFakeHerdr, type FakeHerdr } from '../fixtures/fake-herdr.ts';
+import { startFakeHerdr, type FakeHerdr, type RecordedRequest } from '../fixtures/fake-herdr.ts';
 
 const PANE = 'w5:p1';
 const TAB = 'w5:t1';
 const WORKSPACE = 'w5';
+/** A pane in another workspace, for a second child that keeps the subscription open. */
+const NEIGHBOUR = 'w1:p9';
 
 async function until(what: string, check: () => boolean, timeoutMs = 5_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
@@ -32,16 +35,34 @@ interface World {
   parentId: string;
   /** The tabs herdr still lists in the child's workspace once the child's own tab is gone. */
   others: string[];
+  /** The receipt of each exited event a watcher handed the parent. */
+  exited: Set<string>;
   watcher(): Watcher;
 }
 
-async function world(t: test.TestContext, child: Partial<ChildRecord>, others: string[]): Promise<World> {
+/**
+ * Take over a subscription's acknowledgement, as `startFakeHerdr` allows.
+ * `closeTab` makes herdr list the child's tab as gone.
+ */
+type SubscribeHook = (socket: net.Socket, request: RecordedRequest, w: { herdr: FakeHerdr; closeTab(): void }) => boolean;
+
+async function world(t: test.TestContext, child: Partial<ChildRecord>, others: string[], subscribe?: SubscribeHook): Promise<World> {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'bellwether-release-'));
   const previous = process.env['BELLWETHER_HOME'];
   process.env['BELLWETHER_HOME'] = home;
   let paneLive = true;
-  const list = (): Record<string, unknown>[] => (paneLive ? [{ pane_id: PANE, tab_id: TAB, workspace_id: WORKSPACE, agent: 'codex', agent_status: 'idle' }] : []);
-  const herdr = await startFakeHerdr({
+  const neighbour = { pane_id: NEIGHBOUR, tab_id: 'w1:t9', workspace_id: 'w1', agent: 'codex', agent_status: 'idle' };
+  const list = (): Record<string, unknown>[] => [...(paneLive ? [{ pane_id: PANE, tab_id: TAB, workspace_id: WORKSPACE, agent: 'codex', agent_status: 'idle' }] : []), neighbour];
+  const herdr: FakeHerdr = await startFakeHerdr({
+    subscribe: subscribe
+      ? (socket, request) =>
+          subscribe(socket, request, {
+            herdr,
+            closeTab: () => {
+              paneLive = false;
+            },
+          })
+      : undefined,
     respond: (request) => {
       if (request.method === 'pane.list') return { result: { type: 'pane_list', panes: list() } };
       if (request.method === 'session.snapshot') return { result: { type: 'session_snapshot', snapshot: { panes: list(), agents: list() } } };
@@ -56,6 +77,7 @@ async function world(t: test.TestContext, child: Partial<ChildRecord>, others: s
   saveParent(parent);
   const client = new HerdrClient({ socketPath: herdr.socketPath });
   const watchers: Watcher[] = [];
+  const exited = new Set<string>();
   t.after(async () => {
     for (const watcher of watchers) watcher.stop();
     await herdr.stop();
@@ -68,8 +90,12 @@ async function world(t: test.TestContext, child: Partial<ChildRecord>, others: s
     client,
     parentId: parent.id,
     others,
+    exited,
     watcher() {
-      const watcher = new Watcher({ client, parentId: parent.id, onEntries: () => {}, tickMs: 60_000, screenPollMs: 0 });
+      const onEntries = (entries: OutboxEntry[]): void => {
+        for (const entry of entries) if (entry.event === 'exited') exited.add(entry.receipt);
+      };
+      const watcher = new Watcher({ client, parentId: parent.id, onEntries, tickMs: 60_000, screenPollMs: 0 });
       watchers.push(watcher);
       return watcher;
     },
@@ -161,4 +187,41 @@ test('an exit that arrives twice, from the reconcile and then from pane_closed, 
   await watcher.retirements();
   assert.deepEqual(closes(w.herdr), [WORKSPACE], 'the workspace was closed once');
   assert.equal(w.herdr.requests.filter((request) => request.method === 'tab.list').length, 1, 'the release ran once');
+});
+
+test('a child whose harness ended in its pane, then whose tab closes with both pane_closed and tab_closed, has its workspace closed once and one exit', async (t) => {
+  // herdr names one tab close twice, by its pane and by the tab. Both arrive
+  // while the watcher resubscribes after the harness ended, so they come in
+  // the read that carries the acknowledgement, and both reach the watcher.
+  let armed = false;
+  const subscribe: SubscribeHook = (socket, request, { herdr, closeTab }) => {
+    if (!armed) return false;
+    armed = false;
+    const frames = [{ id: request.id, result: { type: 'subscription_started' } }, { event: 'pane_closed', data: { pane_id: PANE, tab_id: TAB } }, { event: 'tab_closed', data: { tab_id: TAB } }];
+    // The release at the exit looks first, and the child's tab keeps the workspace then.
+    void until('the release at the exit', () => herdr.requests.some((entry) => entry.method === 'tab.list')).then(() => {
+      closeTab();
+      socket.write(frames.map((frame) => `${JSON.stringify(frame)}\n`).join(''));
+    });
+    return true;
+  };
+  const w = await world(t, { ownsWorkspace: true, harnessSeenAt: new Date(Date.now() - 60_000).toISOString(), completionSeq: 1 }, [], subscribe);
+  // A second child keeps the watcher subscribed once the first one's harness has ended.
+  const parent = readParent(w.parentId);
+  assert.ok(parent);
+  parent.children.push({ ...(parent.children[0] as ChildRecord), id: 'c-next', name: 'next', paneId: NEIGHBOUR, tabId: 'w1:t9', workspaceId: 'w1', ownsWorkspace: undefined });
+  saveParent(parent);
+  const watcher = w.watcher();
+  watcher.start();
+  await w.herdr.waitFor('events.subscribe');
+  // herdr releases the agent: the harness ended, and its pane stays open on the shell.
+  armed = true;
+  w.herdr.send({ event: 'pane_agent_detected', data: { pane_id: PANE, released: true } });
+  await until('the workspace close', () => closes(w.herdr).length > 0);
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  await watcher.retirements();
+  assert.equal(readParent(w.parentId)?.children[0]?.harnessEnded, 'in-pane');
+  assert.deepEqual(closes(w.herdr), [WORKSPACE], 'the workspace was closed once');
+  assert.equal(w.herdr.requests.filter((request) => request.method === 'tab.list').length, 2, 'one release at the exit, which the open tab kept, and one at the close');
+  assert.equal(w.exited.size, 1, 'the parent heard one exit');
 });

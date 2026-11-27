@@ -14,7 +14,7 @@ import { spawnChild } from '../../src/core/spawn.ts';
 import type { ChildRecord } from '../../src/core/types.ts';
 import { Watcher } from '../../src/core/watcher.ts';
 import { runBellwetherTool, type ToolContext } from '../../src/integrations/tools.ts';
-import { startFakeHerdr, type FakeHerdr } from '../fixtures/fake-herdr.ts';
+import { harnessStarts, startFakeHerdr, type FakeHerdr } from '../fixtures/fake-herdr.ts';
 import { fakeWorld, type FakeWorld } from '../fixtures/fake-world.ts';
 import { isolate } from '../fixtures/isolated.ts';
 
@@ -76,10 +76,9 @@ async function exitPane(space: Room, paneId: string, childId: string): Promise<C
   });
 }
 
-/** The file the last agent.start pointed pi at, from its `@file` argument. */
+/** The file the last start pointed pi at, from its `@file` argument. */
 function lastBriefArgument(space: Room): string {
-  const starts = space.fake.requests.filter((request) => request.method === 'agent.start');
-  const args = (starts.at(-1)?.params['args'] ?? []) as string[];
+  const args = harnessStarts(space.fake).at(-1)?.args ?? [];
   const pointer = args.find((arg) => arg.startsWith('@'));
   assert.ok(pointer, `no @file argument in ${JSON.stringify(args)}`);
   return pointer.slice(1);

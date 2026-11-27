@@ -25,6 +25,7 @@ Prose in Markdown files runs through Vale. The rules are the `ai-tells`, `ai-tel
 - **Send input only to panes this parent started.** A parent must never type into a pane it does not own.
 - **Wake the parent through its harness.** `pi.sendMessage(..., {triggerTurn: true, deliverAs: 'followUp'})` for Pi, `notifications/claude/channel` for Claude Code. Never type into the parent's own pane.
 - **A receipt marks an event read.** Sending a notification does not prove a turn started.
+- **Install the tool a check needs.** Vale, `gh`, `jq` and the rest are part of the work, not an excuse to skip it. Take the version that the dotfiles pin with `mise`, which is how this machine gets Vale 3.20.0, and on a machine without mise install that same release by hand. When an install cannot happen, name what blocked it in the pull request and leave the check failing. A missing binary never counts as a pass.
 
 ## Test tiers
 

@@ -4,9 +4,9 @@ Every session with Bellwether gets these tools, in Pi and in Claude Code alike.
 
 | Tool | Who gets it | What it does |
 | -- | -- | -- |
-| `agent_spawn` | any session | starts a child in a new tab, on this machine or on a saved herdr machine named by `machine`. With `resume`, it messages an earlier child instead, and reopens its session when herdr no longer has it. |
+| `agent_spawn` | any session | starts a child in a new tab, on this machine or on a saved herdr machine named by `machine`, in your workspace or the one `workspace` names. With `resume`, it messages an earlier child instead, and reopens its session when herdr no longer has it. |
 | `agent_adopt` | any session | makes a running agent this session didn't start into its child, and refuses a pane another session watches |
-| `agent_list` | any session | lists this session's children with status, age and unread events |
+| `agent_list` | any session | lists this session's children with status, age, workspace and unread events |
 | `agent_read` | any session | returns a child's last assistant message, or its screen when you pass `lines` |
 | `agent_send` | any session | prompts a child, or sends keys when herdr refuses a blocked one |
 | `agent_move` | any session | moves a live claude or pi child to another machine, under the same id and with its session. [moving.md](moving.md) lists the refusals. |
@@ -24,6 +24,20 @@ A caller who names both, in `provider` and `model` or in `args`, wins. Naming on
 Either way, the spawn reply states the provider account and model the child runs on, since the account is what pays. For a default, Bellwether reads the pair from the child's session file once pi writes it, and `agent_list` shows it beside the kind. Before that, the reply gives the pair that pi's settings point to, along with the setting and its file. It marks that pair unverified.
 
 A child record keeps the session file that herdr reports for a pi child, including after the child exits and the daemon retires it. `agent_read` reads the child's last message from that file. When pi gives the child a name of its own, the record keeps it as `agentName`, beside the parent's chosen name. `agent_list` shows both names. The other tools accept either one, unless two children answer to the same name.
+
+## Workspaces
+
+A child opens in your own herdr workspace unless the spawn names another with `workspace`. The value `"new"` asks herdr for a workspace of the child's own, labelled with the child's name, or with `workspace_label` when you pass one. The child runs in that workspace's first tab, so the workspace never holds an empty shell. Its own children open in that workspace too, because each session's children default to its own workspace, so a whole subtree stays out of yours.
+
+Any other value names an existing workspace, by id and then by label. A name that matches nothing fails the spawn before anything is written, and the error lists the workspaces there. So does a label that two workspaces share. `"new"` always means a new workspace, even where one is labelled `new`.
+
+A child on another machine gets its workspace on that machine: `"new"` creates it through that machine's herdr. A workspace id from this machine means nothing there. Passing one fails the spawn with an error that says so, names the workspace on this machine, and lists the ones on the child's machine.
+
+`max_depth` counts the same in a new workspace as anywhere else.
+
+Bellwether closes only a workspace it created, and only once it holds no tab. herdr already closes a workspace when its last tab closes, so the close covers a herdr that leaves an empty one. A workspace that still holds another tab stays open, and so does any workspace a person made, even an empty one. A restart or resume of a child whose workspace herdr has closed opens a new one under the same label.
+
+`agent_list` has a `workspace` column, and `bellwether doctor` names the workspace of each live child. Both mark a workspace that Bellwether made for the child with `[made for it]`.
 
 ## Events a parent receives
 

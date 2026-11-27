@@ -530,3 +530,37 @@ test('an unknown target says what to call next', async (t) => {
   const id = parent('restart-unknown');
   await assert.rejects(context(id, rig).tool('agent_restart', { target: 'nonesuch' }), /No child, parent session or live agent matches "nonesuch"\. Call agent_list for this session's children/);
 });
+
+test('a child in a workspace Bellwether made for it restarts in a new one under the same label once herdr has closed the old one', async (t) => {
+  isolate(t, 'bellwether-restart-');
+  const rig = await herdr(t);
+  const id = parent('restart-own-workspace');
+  // The child's tab was the only one in w5, so closing it leaves herdr no w5.
+  upsertChild(id, worker({ paneId: 'w5:p1', tabId: 'w5:t1', workspaceId: 'w5', workspaceLabel: 'big-job', ownsWorkspace: true }));
+  rig.world.add({ pane_id: 'w5:p1', tab_id: 'w5:t1', workspace_id: 'w5', agent: 'claude', name: 'worker', agent_status: 'idle', agent_session: SESSION_1 });
+
+  const text = await context(id, rig).tool('agent_restart', { target: 'worker' });
+  assert.match(text, /Restarted worker \(child child-worker\)/);
+  assert.equal(calls(rig.fake, 'tab.create').length, 0, 'the restart opened a tab in a workspace that no longer exists');
+  const created = calls(rig.fake, 'workspace.create')[0]?.params;
+  assert.equal(created?.['label'], 'big-job');
+  const child = children(id)[0];
+  assert.ok(child?.workspaceId && child.workspaceId !== 'w5');
+  assert.equal(child.ownsWorkspace, true);
+  assert.equal(child.paneId, `${child.workspaceId}:p1`);
+});
+
+test('a child whose own workspace still holds another tab restarts in that same workspace', async (t) => {
+  isolate(t, 'bellwether-restart-');
+  const rig = await herdr(t);
+  const id = parent('restart-shared-workspace');
+  upsertChild(id, worker({ paneId: 'w5:p1', tabId: 'w5:t1', workspaceId: 'w5', workspaceLabel: 'big-job', ownsWorkspace: true }));
+  rig.world.add({ pane_id: 'w5:p1', tab_id: 'w5:t1', workspace_id: 'w5', agent: 'claude', name: 'worker', agent_status: 'idle', agent_session: SESSION_1 });
+  rig.world.add({ pane_id: 'w5:p2', tab_id: 'w5:t2', workspace_id: 'w5' });
+
+  await context(id, rig).tool('agent_restart', { target: 'worker' });
+  assert.equal(calls(rig.fake, 'workspace.create').length, 0);
+  assert.equal(calls(rig.fake, 'tab.create')[0]?.params['workspace_id'], 'w5');
+  assert.equal(children(id)[0]?.workspaceId, 'w5');
+  assert.equal(children(id)[0]?.ownsWorkspace, true);
+});

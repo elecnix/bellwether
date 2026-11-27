@@ -429,6 +429,33 @@ export class HerdrClient {
     return this.request('tab.close', { tab_id: tabId }, { signal }).then(() => undefined);
   }
 
+  /**
+   * Create a workspace. herdr answers with the workspace, its first tab and
+   * that tab's root pane, which already carries the env and cwd given here.
+   */
+  workspaceCreate(params: { label?: string; cwd?: string; env?: Record<string, string>; focus?: boolean }, signal?: AbortSignal): Promise<{ workspaceId?: string; label?: string; tabId?: string; paneId?: string }> {
+    return this.request('workspace.create', { label: params.label ?? null, cwd: params.cwd ?? null, env: params.env ?? {}, focus: params.focus ?? false }, { signal }).then((result) => {
+      if (!isRecord(result)) return {};
+      const workspace = isRecord(result['workspace']) ? result['workspace'] : undefined;
+      const tab = isRecord(result['tab']) ? result['tab'] : undefined;
+      const pane = isRecord(result['root_pane']) ? result['root_pane'] : undefined;
+      return { workspaceId: optionalString(workspace?.['workspace_id']), label: optionalString(workspace?.['label']), tabId: optionalString(tab?.['tab_id']), paneId: optionalString(pane?.['pane_id']) };
+    });
+  }
+
+  workspaceClose(workspaceId: string, signal?: AbortSignal): Promise<void> {
+    return this.request('workspace.close', { workspace_id: workspaceId }, { signal }).then(() => undefined);
+  }
+
+  /** The tabs of one workspace. herdr refuses a workspace it does not know with workspace_not_found. */
+  tabList(workspaceId: string, signal?: AbortSignal): Promise<Record<string, unknown>[]> {
+    return this.request('tab.list', { workspace_id: workspaceId }, { signal }).then((result) => (isRecord(result) && Array.isArray(result['tabs']) ? (result['tabs'] as Record<string, unknown>[]) : []));
+  }
+
+  tabRename(tabId: string, label: string, signal?: AbortSignal): Promise<void> {
+    return this.request('tab.rename', { tab_id: tabId, label }, { signal }).then(() => undefined);
+  }
+
   workspaceList(signal?: AbortSignal): Promise<Record<string, unknown>[]> {
     return this.request('workspace.list', {}, { signal }).then((result) => (isRecord(result) && Array.isArray(result['workspaces']) ? (result['workspaces'] as Record<string, unknown>[]) : []));
   }

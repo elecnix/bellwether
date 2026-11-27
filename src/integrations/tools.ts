@@ -15,6 +15,7 @@ import { RETIRE_TOOL, realRetireOps, requestRetirement, type RetireOps } from '.
 import type { RemoteOps } from '../core/remote.ts';
 import { lastAssistantMessage, locateTranscript } from '../core/transcript.ts';
 import { moveChild } from '../core/move.ts';
+import { parseWorkspaces, releaseWorkspace, workspaceColumn, workspaceName } from '../core/workspace.ts';
 import { moveEndpoints, type EndpointFor } from '../core/move-endpoint.ts';
 import type { Watcher } from '../core/watcher.ts';
 import type { CallerIdentity, ChildRecord, RelayHostState, ReportStatus } from '../core/types.ts';
@@ -76,8 +77,10 @@ export const parentTools: ToolDefinition[] = [
         focus: { type: 'boolean', description: 'Move your view to the new tab. Defaults to false, so the child does not steal focus.' },
         stuck_minutes: { type: 'number', description: 'How long the child may be quiet before it counts as stuck. Defaults to 10.' },
         inactive_minutes: { type: 'number', description: 'How long the child may show no activity of any kind, blocked included, before you are told. Defaults to 5. Clamped to between 1 and 1440. It cannot be turned off.' },
-        max_depth: { type: 'number', description: 'How deep children may spawn children. Defaults to 2.' },
+        max_depth: { type: 'number', description: 'How deep children may spawn children. Defaults to 2. A child in a workspace of its own counts the same depth as any other.' },
         machine: { type: 'string', description: `${MACHINE_DESCRIPTION} With resume, a known child always goes back to its own machine.` },
+        workspace: { type: 'string', description: 'The herdr workspace for the child\'s tab. "new" creates a workspace for the child, on the child\'s machine, and starts the child in its first tab; the child\'s own children then open there too, so its subtree stays out of your workspace, and Bellwether closes that workspace once nothing is left in it. An existing workspace\'s id or label puts the child there, on the child\'s machine, and Bellwether never closes it; a name that matches nothing is refused. Omit it to open the child in your own workspace, as before.' },
+        workspace_label: { type: 'string', description: 'The label of the workspace that workspace "new" creates. Defaults to the child\'s name.' },
       },
     },
   },
@@ -240,7 +243,7 @@ function describeChild(child: ChildRecord, watcher: Watcher, relayState?: ToolCo
   const state = `${child.exitedAt ? `exited${child.exitCode === undefined ? '' : ` (${child.exitCode})`}` : child.lastStatus}${restart}${retire}`;
   const name = child.agentName ? `${child.name} (${child.agentName})` : child.name;
   const kind = child.model ? `${child.kind} (${child.model.provider}/${child.model.id})` : child.kind;
-  return `${name}\t${kind}\t${state}\t${age}s\t${hostColumn(child, relayState)}\t${child.paneId}\tunread ${unread}\t${child.cwd ?? ''}`;
+  return `${name}\t${kind}\t${state}\t${age}s\t${hostColumn(child, relayState)}\t${workspaceColumn(child)}\t${child.paneId}\tunread ${unread}\t${child.cwd ?? ''}`;
 }
 
 /**
@@ -318,14 +321,22 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
       inactiveMinutes: typeof args['inactive_minutes'] === 'number' ? (args['inactive_minutes'] as number) : undefined,
       maxDepth: typeof args['max_depth'] === 'number' ? (args['max_depth'] as number) : DEFAULT_MAX_DEPTH,
       host: optionalString(args['machine']) ?? LOCAL_HOST,
+      workspace: optionalString(args['workspace']),
+      workspaceLabel: optionalString(args['workspace_label']),
     };
     if (!optionalString(args['kind'])) throw new Error('agent_spawn needs a kind for a new child, or resume to message an earlier one.');
     if (!options.name) throw new Error('agent_spawn needs a name for a new child, or resume to message an earlier one.');
     // Resolve the machine before anything is written, so a typo leaves no record.
     const client = await clientFor(ctx, options.host ?? LOCAL_HOST);
-    const { child, link, reportWarning, modelNote } = await spawnChild(client, record, options, undefined, { forget: (childId) => ctx.watcher.forget(childId), registerRemote: registrar(ctx, record), cleanupRemote: remoteCleanup(ctx) });
+    const { child, link, reportWarning, modelNote } = await spawnChild(client, record, options, undefined, {
+      forget: (childId) => ctx.watcher.forget(childId),
+      registerRemote: registrar(ctx, record),
+      cleanupRemote: remoteCleanup(ctx),
+      localWorkspaces: async () => parseWorkspaces(await ctx.client.workspaceList()),
+    });
     const where = child.host === LOCAL_HOST ? '' : ` on machine ${child.host}`;
-    const lines = [`${child.name} started as a ${child.kind} agent${where} in pane ${child.paneId}, tab ${child.tabId ?? child.paneId}.`, `Bellwether watches it, and your next turn starts when it changes state.`, `herdr link: ${link}`];
+    const room = child.ownsWorkspace ? `, in workspace ${workspaceName(child)}, which Bellwether created for it` : options.workspace && child.workspaceId ? `, in workspace ${workspaceName(child)}` : '';
+    const lines = [`${child.name} started as a ${child.kind} agent${where} in pane ${child.paneId}, tab ${child.tabId ?? child.paneId}${room}.`, `Bellwether watches it, and your next turn starts when it changes state.`, `herdr link: ${link}`];
     if (modelNote) lines.push(modelNote);
     if (reportWarning) lines.push(reportWarning);
     return lines.join('\n');
@@ -344,7 +355,7 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
 
   if (name === 'agent_list') {
     if (!record.children.length) return 'No children yet. Start one with agent_spawn.';
-    const header = 'name\tkind\tstate\tage\thost\tpane\tunread\tcwd';
+    const header = 'name\tkind\tstate\tage\thost\tworkspace\tpane\tunread\tcwd';
     return [header, ...record.children.map((child) => describeChild(child, ctx.watcher, ctx.relayState))].join('\n');
   }
 
@@ -420,16 +431,22 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
       entry.exitedAt = new Date().toISOString();
     });
     removeChildFiles(child.id);
+    // A workspace Bellwether made for the child closes once nothing is left in it.
+    const released = await releaseWorkspace(herdr, child).catch((error: unknown) => {
+      ctx.log?.(`agent_stop: could not check ${child.name}'s workspace ${child.workspaceId}: ${(error as Error).message}`);
+      return undefined;
+    });
+    const roomNote = released === 'kept' ? ` Its workspace ${workspaceName(child)} stays open, because it still holds another tab.` : '';
     // A child on another machine has its brief, config and relay record there.
     if (hostOf(child) !== LOCAL_HOST && ctx.remote) {
       try {
         await ctx.remote.cleanup(child);
       } catch (error) {
         ctx.log?.(`agent_stop: could not remove ${child.name}'s files on machine ${hostOf(child)}: ${(error as Error).message}`);
-        return `Closed ${child.name}. Its brief, MCP config and relay record on machine ${hostOf(child)} could not be removed, and stay there until \`bellwether relay-cleanup --child ${child.id}\` runs on that machine: ${(error as Error).message}`;
+        return `Closed ${child.name}.${roomNote} Its brief, MCP config and relay record on machine ${hostOf(child)} could not be removed, and stay there until \`bellwether relay-cleanup --child ${child.id}\` runs on that machine: ${(error as Error).message}`;
       }
     }
-    return `Closed ${child.name}.`;
+    return `Closed ${child.name}.${roomNote}`;
   }
 
   throw new Error(`Bellwether has no tool named ${name}`);

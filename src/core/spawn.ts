@@ -13,6 +13,7 @@ import { removeChild, updateChild, upsertChild } from './registry.ts';
 import { watchStartup, type StartupDialog, type StartupWatch } from './startup-dialogs.ts';
 import { agentNameOf, locateTranscript, piSessionModel, sessionFrom } from './transcript.ts';
 import type { RemoteRegistration } from './remote.ts';
+import { openChildTab, parseWorkspaces, placeChild, undoChildTab, type ChildTab, type WorkspaceEntry } from './workspace.ts';
 import type { ChildRecord, Harness, ModelPair, ParentRecord } from './types.ts';
 
 /** How deep a Bellwether child may spawn. The design starts at 2. */
@@ -47,8 +48,14 @@ export interface SpawnOptions {
    * switch the notification off.
    */
   inactiveMinutes?: number;
-  /** The workspace to open the tab in. Defaults to the parent's own. */
-  workspaceId?: string;
+  /**
+   * The workspace to open the tab in: "new" for one of the child's own, or an
+   * existing workspace's id or label on the child's machine. Omitted, a child
+   * on this machine opens in the parent's workspace, as before.
+   */
+  workspace?: string;
+  /** The label of a new workspace. Defaults to the child's name. Only with workspace "new". */
+  workspaceLabel?: string;
   /** How deep a child may itself spawn. */
   maxDepth?: number;
   /** How long the startup dialogs may take. Tests shorten it. */
@@ -181,6 +188,8 @@ export interface SpawnHooks {
   cleanupRemote?: (child: ChildRecord) => Promise<void>;
   /** Where this package's pi extension is. Tests point it at a missing file. */
   piExtension?: () => string;
+  /** The workspaces on the parent's machine, so a local id passed for a remote child is refused by name. */
+  localWorkspaces?: () => Promise<WorkspaceEntry[]>;
 }
 
 /** The files a child starts with, wherever it runs, and what its spawn reply should warn about. */
@@ -247,6 +256,18 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
 
   // Refused before the record, so half a pair leaves nothing behind.
   const chosen = chooseChildModel(options);
+  // The workspace is settled before the record too, so a name that matches
+  // nothing leaves nothing behind. Nothing is created yet.
+  const host = options.host ?? LOCAL_HOST;
+  const placement = await placeChild({
+    workspace: options.workspace,
+    label: options.workspaceLabel,
+    childName: options.name,
+    host,
+    parentWorkspaceId: parent.workspaceId,
+    childWorkspaces: async () => parseWorkspaces(await client.workspaceList(signal)),
+    localWorkspaces: hooks.localWorkspaces,
+  });
   const now = new Date().toISOString();
   const child: ChildRecord = {
     ...(chosen ? { model: chosen } : {}),
@@ -255,7 +276,7 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
     kind: options.kind,
     harness: harnessOf(options.kind),
     paneId: '',
-    host: options.host ?? LOCAL_HOST,
+    host,
     origin: 'spawn',
     cwd: options.cwd,
     startedAt: now,
@@ -269,7 +290,7 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
   // 1. The record lands before herdr is asked for anything.
   upsertChild(parent.id, child);
 
-  let tabId: string | undefined;
+  let opened: ChildTab | undefined;
   let startup: StartupWatch | undefined;
   let reportWarning: string | undefined;
   let registered = false;
@@ -281,15 +302,17 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
 
     // 2. The tab carries the environment the child needs to find its parent.
     const env = childEnv(parent, child, piExtension);
-    // The parent's workspace id means nothing to another machine's herdr.
-    const workspaceId = options.workspaceId ?? (child.host === LOCAL_HOST ? parent.workspaceId : undefined);
-    const tab = await client.tabCreate({ workspaceId, cwd: options.cwd, label: child.name, env, focus: options.focus ?? false }, signal);
-    tabId = tab.tabId ?? tab.paneId;
+    // A new workspace is made on the child's machine, through that machine's
+    // herdr, and the child runs in its root pane, so it holds no empty shell.
+    const tab = await openChildTab(client, placement, { cwd: options.cwd, label: child.name, env, focus: options.focus ?? false }, signal);
+    opened = tab;
     if (!tab.paneId) throw new Error('herdr created no pane for the child tab');
 
     child.tabId = tab.tabId;
     child.paneId = tab.paneId;
-    child.workspaceId = workspaceId;
+    child.workspaceId = tab.workspaceId;
+    if (tab.workspaceLabel) child.workspaceLabel = tab.workspaceLabel;
+    if (tab.ownsWorkspace) child.ownsWorkspace = true;
     // Claude Code opens on dialogs the spawn answers, so the watcher holds the
     // child's events until then, and the status watch opens before the start.
     if (options.kind === 'claude') {
@@ -305,7 +328,7 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
     await startWithRetry(client, { name: child.name, kind: options.kind, paneId: tab.paneId, args: childArgs(options.kind, { ...options, ...(chosen ? { provider: chosen.provider, model: chosen.id } : {}) }, { briefFile, mcpConfigFile, piExtension }) }, signal);
   } catch (error) {
     startup?.close();
-    await abandon(client, parent.id, child, tabId, hooks, registered);
+    await abandon(client, parent.id, child, opened, hooks, registered);
     throw error;
   }
 
@@ -319,7 +342,7 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
       answered = await startup.answer();
     } catch (error) {
       startup.close();
-      await abandon(client, parent.id, child, tabId, hooks, registered);
+      await abandon(client, parent.id, child, opened, hooks, registered);
       throw error;
     }
     startup.close();
@@ -381,11 +404,12 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
  * the watcher finds no child when the tab-closed event arrives and the parent
  * hears nothing about a child that never ran.
  */
-async function abandon(client: HerdrClient, parentId: string, child: ChildRecord, tabId: string | undefined, hooks: SpawnHooks, registered: boolean): Promise<void> {
+async function abandon(client: HerdrClient, parentId: string, child: ChildRecord, opened: ChildTab | undefined, hooks: SpawnHooks, registered: boolean): Promise<void> {
   removeChild(parentId, child.id);
   hooks.forget?.(child.id);
   removeChildFiles(child.id);
-  if (tabId) await client.tabClose(tabId).catch(() => {});
+  // A workspace the spawn created goes with the tab; any other keeps its tabs.
+  await undoChildTab(client, opened);
   // The brief and config on the child's machine go too. A failed hop leaves
   // them for that machine's week-old prune, as nothing else can reach them.
   if (registered) await hooks.cleanupRemote?.(child).catch(() => {});

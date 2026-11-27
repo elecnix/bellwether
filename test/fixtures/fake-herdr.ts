@@ -62,6 +62,12 @@ function defaultResult(request: RecordedRequest): unknown {
       return { type: 'agent_prompted' };
     case 'workspace.list':
       return { type: 'workspace_list', workspaces: [] };
+    case 'workspace.create': {
+      const label = typeof request.params['label'] === 'string' ? request.params['label'] : '1';
+      return { type: 'workspace_created', workspace: { workspace_id: 'w2', label, tab_count: 1 }, tab: { tab_id: 'w2:t1', workspace_id: 'w2', label: '1' }, root_pane: { pane_id: 'w2:p1', tab_id: 'w2:t1', workspace_id: 'w2' } };
+    }
+    case 'tab.list':
+      return { type: 'tab_list', tabs: [] };
     default:
       return { type: 'ok' };
   }

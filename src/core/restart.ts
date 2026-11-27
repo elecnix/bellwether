@@ -32,6 +32,7 @@ import { STARTUP_HOLD_MS, STARTUP_TIMEOUT_MS, childArgs, childEnv, childStartFil
 import { watchStartup, type StartupWatch } from './startup-dialogs.ts';
 import { resolveTranscript, sessionFrom } from './transcript.ts';
 import type { CallerIdentity, ChildRecord, ChildSession, ParentRecord } from './types.ts';
+import { openChildTab, returnPlacement, undoChildTab, type ChildTab } from './workspace.ts';
 
 export const RESTART_TOOL = 'agent_restart';
 
@@ -343,12 +344,17 @@ async function restartChildLocked(client: HerdrClient, parentId: string, childId
   // same child id and with the same environment.
   let newPane = '';
   let newTab: string | undefined;
+  let opened: ChildTab | undefined;
   let startup: StartupWatch | undefined;
   try {
     // The same start files a spawn and a resume give it: a Claude Code
     // child's own MCP configuration, and the extension a pi child loads.
     const { mcpConfigFile, piExtension } = await childStartFiles(child, undefined, undefined, hooks.piExtension);
-    const tab = await client.tabCreate({ workspaceId, cwd: child.cwd, label: child.name, env: childEnv(parent, child, piExtension), focus: false });
+    // Closing the old tab closed a workspace Bellwether made for the child
+    // when it was the last tab there, so the child gets a new one of its own.
+    const placement = await returnPlacement(client, child, workspaceId);
+    const tab = await openChildTab(client, placement, { cwd: child.cwd, label: child.name, env: childEnv(parent, child, piExtension), focus: false });
+    opened = tab;
     newTab = tab.tabId ?? tab.paneId;
     if (!tab.paneId) throw new Error('herdr created no pane for the restarted tab');
     newPane = tab.paneId;
@@ -356,6 +362,8 @@ async function restartChildLocked(client: HerdrClient, parentId: string, childId
     updateChild(parentId, child.id, (entry) => {
       entry.paneId = newPane;
       if (tab.tabId) entry.tabId = tab.tabId;
+      if (tab.workspaceId) entry.workspaceId = tab.workspaceId;
+      if (tab.workspaceLabel) entry.workspaceLabel = tab.workspaceLabel;
     });
     if (child.kind === 'claude') {
       const timeoutMs = hooks.startupTimeoutMs ?? STARTUP_TIMEOUT_MS;
@@ -372,7 +380,7 @@ async function restartChildLocked(client: HerdrClient, parentId: string, childId
     }
   } catch (error) {
     startup?.close();
-    if (newPane) await client.tabClose(newTab ?? newPane).catch(() => {});
+    if (newPane) await undoChildTab(client, opened ?? { tabId: newTab ?? newPane });
     updateChild(parentId, child.id, (entry) => {
       entry.exitedAt = new Date().toISOString();
       entry.lastStatus = 'unknown';

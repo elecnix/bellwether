@@ -275,7 +275,7 @@ export interface ChildRecord {
    */
   tabClosedAt?: string;
   /**
-   * Set when the child asked to be retired. The daemon cleans up once herdr
+   * Set when the child asked to be retired, or its parent stopped it. The daemon cleans up once herdr
    * reports the pane gone. Every retirement field is optional, so an older
    * record loads unchanged.
    */
@@ -289,6 +289,12 @@ export interface ChildRecord {
   retireOutcome?: 'removed' | 'refused';
   /** For a refusal: the condition that failed, and what a person would do about it. */
   retireReason?: string;
+  /**
+   * For a removal: the proof that the work exists elsewhere, such as the
+   * default branch containing it. Optional and additive: an older record
+   * loads unchanged, and an older daemon ignores it.
+   */
+  retireProof?: string;
 }
 
 /**

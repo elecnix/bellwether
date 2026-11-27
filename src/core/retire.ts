@@ -1,4 +1,7 @@
-// Retirement: a child asks to be retired, and the daemon cleans up after it.
+// Retirement: a child asks to be retired, or its parent stops it, and the
+// daemon cleans up after it. A child never removes its own worktree: a harness
+// that starts each command in its working directory, as pi does, fails every
+// command once that directory is gone (issue #143).
 //
 // The request runs while the child is alive, so it can tell the child which
 // checks pass now. It writes the intent on the child record and removes
@@ -52,8 +55,14 @@ export interface RetireOps {
   dirty(worktree: string): Promise<string[]>;
   /** Stash entries made on this branch. The stash is shared by every worktree of a repository. */
   stashes(repo: string, branch: string): Promise<string[]>;
-  /** Whether the branch is merged into the default branch, or pushed with its pull request merged or closed. */
+  /**
+   * Whether the branch's work exists somewhere other than this worktree: its
+   * tip is an ancestor of the default branch, every commit on it sits on a
+   * remote branch, or a merged pull request has its tip as head.
+   */
   safety(facts: { repo: string; worktree?: string; branch: string; defaultBranch?: string }): Promise<Safety>;
+  /** Whether a directory exists at the path. */
+  dirExists(dir: string): boolean;
   /** The processes whose working directory is inside the path, or undefined when that cannot be told. */
   busy(dir: string): Promise<number[] | undefined>;
   /** Whether git still lists the worktree, or a directory still sits at the path. */
@@ -109,6 +118,9 @@ export async function requestRetirement(caller: CallerIdentity, ops: RetireOps, 
   const bounds = outOfBounds(child);
   if (bounds) throw new RetireRefused(`${bounds} Nothing was written.`);
 
+  if (!ops.dirExists(child.cwd as string)) {
+    throw new RetireRefused(`Your working directory ${child.cwd} no longer exists, so a harness that starts each command there fails every shell command, and there is no worktree left to retire. Call parent_report, which needs no shell, to tell your parent, and ask it to close you with agent_stop. Nothing was written.`);
+  }
   const facts = await ops.inspect(child.cwd as string);
   if ('error' in facts) throw new RetireRefused(`${child.cwd} is not a git worktree Bellwether can retire: ${facts.error}. Nothing was written.`);
   if (facts.main) throw new RetireRefused(mainRefusal(facts.worktree, facts.main));
@@ -136,7 +148,7 @@ export async function requestRetirement(caller: CallerIdentity, ops: RetireOps, 
   lines.push(`Passed now: ${passed.length ? passed.join('; ') : 'none'}.`);
   if (failing.length) lines.push(`Failing now: ${failing.join('; ')}. Fix these before you exit, or the daemon will refuse and leave everything in place.`);
   lines.push('After your pane is gone, the daemon checks again that the pane and tab are gone, that the worktree is not a main worktree, is clean and has no stash, that the work is safe, and that no process works inside it. Only then does it remove the worktree and delete the branch.');
-  lines.push('Close your tab to finish.');
+  lines.push('Leave the worktree in place: you stand in it, and your harness needs it for every command until your tab closes. Close your tab to finish.');
   return lines.join('\n');
 }
 
@@ -148,6 +160,61 @@ export function clearRetirement(child: ChildRecord): void {
   delete child.retiredAt;
   delete child.retireOutcome;
   delete child.retireReason;
+  delete child.retireProof;
+}
+
+/** The intent records the parent's stop as its reason, where a child gives its own words. */
+export const STOP_REASON = 'agent_stop by the parent';
+
+/**
+ * The one line that says a local child's working directory is gone, or
+ * undefined while it exists or once retirement removed it.
+ */
+export function goneCwdLine(child: ChildRecord, ops: Pick<RetireOps, 'dirExists'>): string | undefined {
+  if (!child.cwd || hostOf(child) !== LOCAL_HOST || child.retireOutcome === 'removed') return undefined;
+  if (ops.dirExists(child.cwd)) return undefined;
+  const effect = child.exitedAt ? 'A resume has nowhere to start it.' : "A harness that starts each command there, as pi does, now fails every shell command; the child's Bellwether tools still work, so it can still call parent_report, and agent_stop still closes it.";
+  return `${child.name}'s working directory ${child.cwd} no longer exists. ${effect}`;
+}
+
+/** What retirement did, or will do, with a child's worktree, in one line; undefined when it has nothing to say. */
+export function retireLine(child: ChildRecord): string | undefined {
+  const intent = child.retireIntent;
+  if (!intent) return undefined;
+  if (child.retireOutcome === 'removed') return `Retired: removed worktree ${intent.worktree} and branch ${intent.branch}${child.retireProof ? `, because ${child.retireProof}` : ''}.`;
+  if (child.retireOutcome === 'refused') {
+    const reason = (child.retireReason ?? '').replace(/^condition \d \([^)]*\): /, '').replace(/^out of bounds: /, '');
+    const unproved = child.retireReason?.startsWith('condition 3');
+    return `Retirement left worktree ${intent.worktree} and branch ${intent.branch} in place, because ${unproved ? 'Bellwether could not prove the work merged: ' : ''}${reason}`;
+  }
+  if (child.retireRequestedAt) return `Retirement pending: Bellwether removes worktree ${intent.worktree} and branch ${intent.branch} once herdr no longer lists the pane, if it can still prove the work merged. agent_list and retire.log show the outcome.`;
+  return undefined;
+}
+
+/**
+ * A parent's agent_stop retires the child it closes. This records the intent
+ * before the tab closes, as request_retirement would, and returns the line to
+ * give the parent when there is nothing for the cleanup to do: a working
+ * directory that is gone, not a git worktree, a main worktree, or out of
+ * bounds. A child that already asked keeps its own request.
+ */
+export async function retireOnStop(parentId: string, child: ChildRecord, ops: RetireOps): Promise<string | undefined> {
+  if (retirementPending(child) || !child.cwd) return undefined;
+  // An adopted child's directory, and one on another machine, are not this daemon's to retire.
+  if (outOfBounds(child)) return undefined;
+  if (!ops.dirExists(child.cwd)) return `${child.name}'s working directory ${child.cwd} no longer exists, so retirement had no worktree left to remove.`;
+  const facts = await ops.inspect(child.cwd);
+  if ('error' in facts) return `Its working directory ${child.cwd} is not a git worktree, so retirement leaves it in place.`;
+  if (facts.main) return `Retirement leaves ${facts.worktree} in place: it is the repository's main worktree (${facts.main}), and Bellwether never removes a main worktree.`;
+  if (!facts.branch) return `Retirement leaves ${facts.worktree} in place: it has a detached HEAD at ${facts.head.slice(0, 12)}, so Bellwether cannot tell whether its work merged.`;
+  const intent: RetireIntent = { worktree: facts.worktree, repo: facts.repo, branch: facts.branch, head: facts.head, ...(facts.defaultBranch ? { defaultBranch: facts.defaultBranch } : {}), reason: STOP_REASON };
+  const now = new Date().toISOString();
+  updateChild(parentId, child.id, (entry) => {
+    if (entry.retireOutcome) clearRetirement(entry);
+    entry.retireRequestedAt = now;
+    entry.retireIntent = intent;
+  });
+  return undefined;
 }
 
 /** Whether a child has asked to be retired and the cleanup has not finished. */
@@ -223,10 +290,12 @@ export async function reapChild(parentId: string, childId: string, deps: ReapDep
 
   // 3. The work is safe. Checked again after the worktree is gone, because the
   // branch is deleted only when it holds nothing that exists nowhere else.
+  let proof: string | undefined;
   const branchLeft = child.retireStage !== 'branch-deleted' && (await ops.branchExists(intent.repo, intent.branch));
   if (branchLeft) {
     const safety = await ops.safety({ repo: intent.repo, worktree: worktreeDone ? undefined : intent.worktree, branch: intent.branch, defaultBranch: intent.defaultBranch });
-    if (!safety.safe) return refuse(`condition 3 (work is safe): ${safety.how}. Merge the branch, or push it and merge or close its pull request, then remove the worktree and the branch by hand.`);
+    if (!safety.safe) return refuse(`condition 3 (work is safe): ${safety.how}. Push the branch or merge it, then remove the worktree and the branch by hand.`);
+    proof = safety.how;
   }
 
   // 4. No process works inside the path. A shell can take a moment to leave
@@ -264,21 +333,23 @@ export async function reapChild(parentId: string, childId: string, deps: ReapDep
   if (pathLeft || branchStill) {
     return refuse(`condition 5 (verify): after removal ${[pathLeft ? `${intent.worktree} still exists` : '', branchStill ? `branch ${intent.branch} still exists` : ''].filter(Boolean).join(' and ')}. Remove what is left by hand.`);
   }
-  finish(parentId, child, 'removed');
-  log(`retire ${child.name}: removed ${intent.worktree} and branch ${intent.branch}`);
+  finish(parentId, child, 'removed', undefined, proof);
+  log(`retire ${child.name}: removed ${intent.worktree} and branch ${intent.branch}${proof ? `, because ${proof}` : ''}`);
   return { outcome: 'removed' };
 }
 
 /** Record the outcome on the child record first, then append the log line. */
-function finish(parentId: string, child: ChildRecord, outcome: 'removed' | 'refused', reason?: string): void {
+function finish(parentId: string, child: ChildRecord, outcome: 'removed' | 'refused', reason?: string, proof?: string): void {
   const at = new Date().toISOString();
   updateChild(parentId, child.id, (entry) => {
     entry.retiredAt = at;
     entry.retireOutcome = outcome;
     if (reason) entry.retireReason = reason;
     else delete entry.retireReason;
+    if (proof) entry.retireProof = proof;
+    else delete entry.retireProof;
   });
-  const line = { at, parent: parentId, child: child.id, name: child.name, outcome, worktree: child.retireIntent?.worktree, branch: child.retireIntent?.branch, ...(reason ? { reason } : {}) };
+  const line = { at, parent: parentId, child: child.id, name: child.name, outcome, worktree: child.retireIntent?.worktree, branch: child.retireIntent?.branch, ...(reason ? { reason } : {}), ...(proof ? { proof } : {}) };
   fs.mkdirSync(path.dirname(retireLogPath()), { recursive: true });
   fs.appendFileSync(retireLogPath(), `${JSON.stringify(line)}\n`);
 }
@@ -393,13 +464,20 @@ export function realRetireOps(options: RealOpsOptions = {}): RetireOps {
       const tip = await git(repo, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]);
       if (tip.code !== 0) return { safe: false, how: `branch ${branch} does not exist in ${repo}` };
       const sha = tip.stdout.trim();
+      // Proof 1: the default branch contains the tip.
       const base = defaultBranch ?? (await defaultBranchOf(repo));
       if (base) {
         const ancestor = await git(repo, ['merge-base', '--is-ancestor', sha, base]);
         if (ancestor.code === 0) return { safe: true, how: `branch ${branch} is merged into ${base}` };
       }
+      // Proof 2: every commit on the branch sits on a remote branch, as the last fetch saw it.
+      const counted = await git(repo, ['rev-list', '--count', sha, '--not', '--remotes']);
+      const unpushed = counted.code === 0 ? Number(counted.stdout.trim()) : Number.NaN;
+      if (unpushed === 0) return { safe: true, how: `every commit on branch ${branch} is on a remote branch` };
+      const offRemote = Number.isNaN(unpushed) ? `git could not count the commits of branch ${branch} that sit on no remote` : `branch ${branch} has ${unpushed} commit(s) on no remote`;
+      // Proof 3: a merged pull request whose head is the tip, as a squash merge leaves it.
       const pr = await run('gh', ['pr', 'list', '--head', branch, '--state', 'all', '--json', 'number,state,headRefOid', '--limit', '20'], worktree && fs.existsSync(worktree) ? worktree : repo);
-      if (pr.code !== 0) return { safe: false, how: `branch ${branch} is not merged into ${base ?? 'a default branch'}, and gh could not list its pull requests (${(pr.stderr || pr.stdout).trim().split('\n')[0]})` };
+      if (pr.code !== 0) return { safe: false, how: `${offRemote}, is not merged into ${base ?? 'a default branch'}, and gh could not list its pull requests (${(pr.stderr || pr.stdout).trim().split('\n')[0]})` };
       let prs: { number: number; state: string; headRefOid: string }[] = [];
       try {
         prs = JSON.parse(pr.stdout) as typeof prs;
@@ -407,11 +485,16 @@ export function realRetireOps(options: RealOpsOptions = {}): RetireOps {
         prs = [];
       }
       const pushed = prs.filter((entry) => entry.headRefOid === sha);
-      const settled = pushed.find((entry) => entry.state === 'MERGED' || entry.state === 'CLOSED');
-      if (settled) return { safe: true, how: `branch ${branch} is pushed and pull request #${settled.number} is ${settled.state.toLowerCase()}` };
+      const merged = pushed.find((entry) => entry.state === 'MERGED');
+      if (merged) return { safe: true, how: `branch ${branch} is pushed and pull request #${merged.number} is merged` };
       const open = pushed.find((entry) => entry.state === 'OPEN');
-      if (open) return { safe: false, how: `branch ${branch} is pushed but pull request #${open.number} is still open` };
-      return { safe: false, how: `branch ${branch} is not merged into ${base ?? 'a default branch'}, and no merged or closed pull request has its tip ${sha.slice(0, 12)}, so its work may exist nowhere else` };
+      if (open) return { safe: false, how: `${offRemote}, and pull request #${open.number} is still open` };
+      const closed = pushed.find((entry) => entry.state === 'CLOSED');
+      if (closed) return { safe: false, how: `${offRemote}, and pull request #${closed.number} was closed without merging` };
+      return { safe: false, how: `${offRemote}, is not merged into ${base ?? 'a default branch'}, and no merged pull request has its tip ${sha.slice(0, 12)}, so its work may exist nowhere else` };
+    },
+    dirExists(dir) {
+      return fs.existsSync(dir);
     },
     async busy(dir) {
       const target = realpath(dir);

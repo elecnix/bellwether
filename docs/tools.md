@@ -10,10 +10,10 @@ Every session with Bellwether gets these tools, in Pi and in Claude Code alike.
 | `agent_read` | any session | returns a child's last assistant message, or its screen when you pass `lines` |
 | `agent_send` | any session | sends a child a message, or keys for a dialog. [Messages to a child](#messages-to-a-child) gives the path a message takes |
 | `agent_move` | any session | moves a live claude or pi child to another machine, under the same id and with its session. [moving.md](moving.md) lists the refusals. |
-| `agent_stop` | any session | closes a child's tab, and refuses a working child unless you pass `force` |
+| `agent_stop` | any session | closes a child's tab and retires it, removing its worktree once the work provably merged, and refuses a working child unless you pass `force` |
 | `agent_restart` | any session | closes a child's or a session's pane and reopens the same session in a new one, or restarts the caller when it omits the target |
 | `parent_report` | a child Bellwether started or resumed | sends `done`, `needs-input` or `progress` to its parent |
-| `request_retirement` | a child Bellwether started | asks the daemon to remove the child's worktree and branch once herdr reports its pane gone |
+| `request_retirement` | a child Bellwether started | asks the daemon to remove the child's worktree and branch once herdr reports its pane gone; the child leaves the worktree in place |
 | `agent_request_depth` | a child Bellwether started or resumed | asks its parent for a deeper ceiling, and returns at once with a request id |
 | `agent_grant_depth` | any session | answers a child's depth request: grants levels, or refuses with 0 |
 

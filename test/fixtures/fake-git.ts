@@ -19,8 +19,14 @@ export interface FakeGit extends RetireOps {
   branches: Set<string>;
   /** Branches merged into the default branch, as `repo:branch`. */
   merged: Set<string>;
-  /** Branches whose pull request is merged or closed, as `repo:branch`. */
-  settledPrs: Set<string>;
+  /** Branches with a merged pull request whose head is the branch's tip, as `repo:branch`. */
+  mergedPrs: Set<string>;
+  /** Branches whose every commit sits on a remote branch, as `repo:branch`. */
+  onRemote: Set<string>;
+  /** How many of a branch's commits sit on no remote, as `repo:branch`; 1 when unset. */
+  unpushed: Map<string, number>;
+  /** Directories that exist beside the worktrees, such as a working directory that is not a git worktree. */
+  dirs: Set<string>;
   stashList: Map<string, string[]>;
   /** Every removal and deletion, in order. */
   calls: string[];
@@ -33,7 +39,10 @@ export function fakeGit(): FakeGit {
   const worktrees = new Map<string, FakeWorktree>();
   const branches = new Set<string>();
   const merged = new Set<string>();
-  const settledPrs = new Set<string>();
+  const mergedPrs = new Set<string>();
+  const onRemote = new Set<string>();
+  const unpushed = new Map<string, number>();
+  const dirs = new Set<string>();
   const stashList = new Map<string, string[]>();
   const calls: string[] = [];
   const override: Partial<RetireOps> = {};
@@ -41,7 +50,10 @@ export function fakeGit(): FakeGit {
     worktrees,
     branches,
     merged,
-    settledPrs,
+    mergedPrs,
+    onRemote,
+    unpushed,
+    dirs,
     stashList,
     calls,
     override,
@@ -65,8 +77,13 @@ export function fakeGit(): FakeGit {
     },
     async safety({ repo, branch }): Promise<Safety> {
       if (merged.has(`${repo}:${branch}`)) return { safe: true, how: `branch ${branch} is merged into origin/main` };
-      if (settledPrs.has(`${repo}:${branch}`)) return { safe: true, how: `branch ${branch} is pushed and pull request #7 is merged` };
-      return { safe: false, how: `branch ${branch} is not merged into origin/main, and no merged or closed pull request has its tip abc123def456, so its work may exist nowhere else` };
+      if (onRemote.has(`${repo}:${branch}`)) return { safe: true, how: `every commit on branch ${branch} is on a remote branch` };
+      if (mergedPrs.has(`${repo}:${branch}`)) return { safe: true, how: `branch ${branch} is pushed and pull request #7 is merged` };
+      const count = unpushed.get(`${repo}:${branch}`) ?? 1;
+      return { safe: false, how: `branch ${branch} has ${count} commit(s) on no remote, is not merged into origin/main, and no merged pull request has its tip abc123def456, so its work may exist nowhere else` };
+    },
+    dirExists(dir) {
+      return worktrees.has(dir) || dirs.has(dir);
     },
     async busy(dir) {
       if (override.busy) return override.busy(dir);

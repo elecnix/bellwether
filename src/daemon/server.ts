@@ -20,13 +20,14 @@ import { hostOf } from '../core/machine.ts';
 import { acceptLocalReport, isReportStatus, localParentOf, routeReport, type ReportInput } from '../core/report.ts';
 import { readRelayRecord } from '../core/relay-records.ts';
 import { claimPane } from '../core/pane-claims.ts';
+import { adoptedParentOf, type SessionReach } from '../core/adopted-session.ts';
 import { lastAssistantMessage } from '../core/transcript.ts';
 import { harnessFor, resolveTranscript } from '../core/harnesses/index.ts';
 import type { CallerIdentity, OutboxEntry } from '../core/types.ts';
 import type { InboxMessage, MessageAckRequest, RelayHostState, RelayReport, ServedTool } from './protocol.ts';
 import { unreadSessionMessages, type Inbox, type InboxAnswer } from '../core/send.ts';
 import { updateChild } from '../core/registry.ts';
-import { UnknownTool, servedTools } from '../integrations/tools.ts';
+import { UnknownTool, servedTools, type ToolScope } from '../integrations/tools.ts';
 import { FEATURES } from './features.ts';
 
 /** What this daemon serves, by name, sent in its hello so a client and doctor need not infer it. */
@@ -98,6 +99,20 @@ interface Attached {
   build?: string;
   protocol: number;
   connectedAt: string;
+  /** The tool list this session was last served, as JSON, so a push goes only when it changes. */
+  tools?: string;
+}
+
+/**
+ * Who a session answers to, for its tool list: the parent and child id its
+ * start gave it, or else the parent that adopted its pane, so a session
+ * Bellwether did not start offers parent_report once it has someone to
+ * report to.
+ */
+function scopeOf(parent: ParentHello): ToolScope {
+  if (parent.reportsTo || parent.childId) return { ...(parent.reportsTo ? { reportsTo: parent.reportsTo } : {}), ...(parent.childId ? { childId: parent.childId } : {}) };
+  const adopted = adoptedParentOf(parent);
+  return adopted ? { reportsTo: adopted.parentId } : {};
 }
 
 /**
@@ -110,7 +125,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
   const log = options.log ?? (() => {});
   const now = options.now ?? (() => Date.now());
   const factory = options.factory ?? defaultServiceFactory;
-  const sessionTools = options.tools ?? ((parent: ParentHello): ServedTool[] => servedTools({ reportsTo: parent.reportsTo, childId: parent.childId }));
+  const sessionTools = options.tools ?? ((parent: ParentHello): ServedTool[] => servedTools(scopeOf(parent)));
   const idleMs = options.idleMs ?? 5 * 60_000;
   const idleCheckMs = options.idleCheckMs ?? 30_000;
   const outbox = options.relayOutbox ?? new RelayOutbox({ log });
@@ -153,6 +168,34 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
     let found: net.Socket | undefined;
     for (const [socket, entry] of attached) if (entry.parent.childId === childId && entry.parent.accepts?.includes('message') && socket.writable) found = socket;
     return found;
+  };
+
+  /**
+   * Send each connected session that takes a tool list the tools it has now,
+   * when they changed: an adoption gave a session a parent, or a stop took
+   * its parent away. A session whose adapter predates the push gets the same
+   * list in the hello of its next connection.
+   */
+  const pushTools = (): void => {
+    for (const [socket, entry] of attached) {
+      if (!entry.parent.accepts?.includes('tools') || !socket.writable) continue;
+      const tools = sessionTools(entry.parent);
+      const json = JSON.stringify(tools);
+      if (json === entry.tools) continue;
+      entry.tools = json;
+      socket.write(formatReply({ type: 'tools', tools }));
+    }
+  };
+
+  /** Whether the session in an adopted pane holds a Bellwether adapter connected here, and whether it takes a new tool list. */
+  const sessionReach = (paneId: string): SessionReach => {
+    let older = false;
+    for (const [socket, entry] of attached) {
+      if (entry.parent.paneId !== paneId || !socket.writable || !adoptedParentOf(entry.parent)) continue;
+      if (entry.parent.accepts?.includes('tools')) return 'tools';
+      older = true;
+    }
+    return older ? 'older' : 'none';
   };
 
   const inbox: Inbox = (child, message) => {
@@ -235,7 +278,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
     const id = parentIdOf(parent);
     const existing = services.get(id);
     if (existing) return { parentId: id, service: existing };
-    const service = factory(parent, id, { links, log, inbox });
+    const service = factory(parent, id, { links, log, inbox, sessionReach });
     services.set(id, service);
     service.onEvents((entries) => {
       push(id, entries);
@@ -351,15 +394,19 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
   /**
    * parent_report from a child whose parent runs on another machine. A child
    * this daemon holds a parent record for is served locally, by the session's
-   * own tool, so it never reaches the relay.
+   * own tool, so it never reaches the relay. A session with no child id
+   * answers for the pane a parent on another machine adopted, by the claim
+   * that parent left here, as long as it is the session that was adopted.
    */
-  const relayCall = async (args: Record<string, unknown>, caller: CallerIdentity): Promise<string | undefined> => {
-    if (!caller.childId || !readRelayRecord(caller.childId) || localParentOf(caller.childId)) return undefined;
+  const relayCall = async (args: Record<string, unknown>, caller: CallerIdentity, session: string | undefined): Promise<string | undefined> => {
+    const adopted = caller.childId ? undefined : adoptedParentOf({ paneId: caller.paneId, session });
+    const childId = caller.childId ?? (adopted?.where === 'away' ? adopted.childId : undefined);
+    if (!childId || !readRelayRecord(childId) || localParentOf(childId)) return undefined;
     const status = typeof args['status'] === 'string' ? args['status'].trim() : undefined;
     const text = typeof args['text'] === 'string' ? args['text'].trim() : '';
     if (!status || !text) throw new Error('parent_report needs both status and text');
     if (!isReportStatus(status)) throw new Error('parent_report status must be done, needs-input or progress');
-    const route = routeReport({ childId: caller.childId, paneId: caller.paneId });
+    const route = routeReport({ childId, paneId: caller.paneId });
     if (route.kind !== 'relay') return undefined;
     return outbox.report(route.record, status, text);
   };
@@ -481,7 +528,9 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
         try {
           const answer = claimPane({ parentId: request.parentId, childId: request.childId, name: request.name, kind: request.kind, paneId: request.paneId, ...(request.session ? { session: request.session } : {}) });
           log(`relay-adopt: pane ${request.paneId} ${answer.held ? 'was already' : 'is now'} a child of ${request.parentId} on another machine, as ${answer.childId}`);
-          reply({ type: 'result', id: request.id, text: JSON.stringify(answer) });
+          // The adopted session's adapter, when one is connected here, now answers to that parent.
+          pushTools();
+          reply({ type: 'result', id: request.id, text: JSON.stringify({ ...answer, session: sessionReach(request.paneId) }) });
         } catch (error) {
           reply({ type: 'result', id: request.id, error: (error as Error).message, code: 'pane_watched' });
         }
@@ -506,8 +555,9 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
         const set = subscribers.get(session.parentId) ?? new Set<net.Socket>();
         set.add(socket);
         subscribers.set(session.parentId, set);
-        attached.set(socket, { parentId: session.parentId, parent: request.parent, client: request.client, ...(request.build ? { build: request.build } : {}), protocol: request.protocol, connectedAt: new Date(now()).toISOString() });
-        reply({ type: 'hello', protocol: DAEMON_PROTOCOL, parentId: session.parentId, pid, pending: session.service.pending(), version: BELLWETHER_VERSION, build: BELLWETHER_BUILD_ID, minProtocol: MIN_CLIENT_PROTOCOL, features: SERVED, tools: sessionTools(request.parent) });
+        const tools = sessionTools(request.parent);
+        attached.set(socket, { parentId: session.parentId, parent: request.parent, client: request.client, ...(request.build ? { build: request.build } : {}), protocol: request.protocol, connectedAt: new Date(now()).toISOString(), tools: JSON.stringify(tools) });
+        reply({ type: 'hello', protocol: DAEMON_PROTOCOL, parentId: session.parentId, pid, pending: session.service.pending(), version: BELLWETHER_VERSION, build: BELLWETHER_BUILD_ID, minProtocol: MIN_CLIENT_PROTOCOL, features: SERVED, tools });
         // A child's session that reconnects, after a hand-over or a restart of its server, takes again what it has not read.
         if (request.parent.childId && request.parent.accepts?.includes('message')) replayMessages(socket, request.parent.childId);
         return;
@@ -553,11 +603,13 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
         }
         inFlight += 1;
         try {
-          const relayed = request.tool === 'parent_report' ? await relayCall(request.args, request.caller ?? {}) : undefined;
+          const relayed = request.tool === 'parent_report' ? await relayCall(request.args, request.caller ?? {}, attached.get(socket)?.parent.session) : undefined;
           const text = relayed ?? (await session.service.tool(request.tool, request.args, request.caller ?? {}));
           reply({ type: 'result', id: request.id, text });
           // A spawn or a stop may have added or removed the last child on a host.
           links.sync();
+          // An adoption gives a session here a parent, and a stop takes it away.
+          if (request.tool === 'agent_adopt' || request.tool === 'agent_stop') pushTools();
         } catch (error) {
           reply({ type: 'result', id: request.id, error: (error as Error).message, ...(error instanceof UnknownTool ? { code: 'unknown_tool' } : {}) });
         } finally {

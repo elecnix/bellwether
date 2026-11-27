@@ -66,9 +66,11 @@ When the connection to that machine drops, the child is unreachable, not exited.
 
 When the machine answers again, the watcher takes a fresh snapshot and the child goes on under the same child id, with no second adoption. A turn that finished during the outage arrives once, as an `idle` event. A restart of the daemon on that machine drops only the relay connection, which reconnects, and the herdr connection that carries the child's status stays up. The new daemon reads the adoption from its relay record on disk.
 
-An adopted child can't call `parent_report`, on this machine or another. Claude Code and pi load the Bellwether server or extension that carries a child id only when they start, and adoption happens after that. No daemon can then tell which parent a report from that session is for.
+An adopted child on that machine can call `parent_report` when its session loaded Bellwether at its start, through pi's package or Claude Code's plugin. That machine must also run Bellwether 0.1.7 or later.
 
-A session Bellwether starts or restarts gets a child id. An adopted session would need a harness that loads a new MCP server or extension while it runs. Until then, its status changes are what start the parent's turns.
+The adapter in the session already has a connection open to the daemon there. That daemon gives the adapter `parent_report` once the claim arrives. It then keeps each report from that session under the adoption's child id in its relay outbox.
+
+The parent's daemon collects it over the same connection as a report from a spawned child. A session that didn't load a Bellwether adapter can't report, and the `agent_adopt` reply says which kind of session the parent adopted. [tools.md](tools.md#adopted-sessions) covers both kinds, on this machine and on another.
 
 When the child's pane closes, the watcher runs `bellwether relay-cleanup` there, which removes the adoption.
 

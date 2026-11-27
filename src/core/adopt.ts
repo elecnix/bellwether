@@ -17,6 +17,7 @@ import { herdrLink } from './spawn.ts';
 import { harnessFor } from './harnesses/index.ts';
 import type { ChildRecord, ParentRecord } from './types.ts';
 import { resolveInactiveMs } from './inactivity.ts';
+import type { SessionReach } from './adopted-session.ts';
 
 export interface AdoptOptions {
   /** A pane id, or the name of a live agent, on the host. */
@@ -29,7 +30,7 @@ export interface AdoptOptions {
    * For a pane on another machine: ask that machine's daemon to record the
    * adoption, which refuses a pane someone there already watches.
    */
-  claim?: (host: string, claim: PaneClaim) => Promise<{ childId: string; held: boolean }>;
+  claim?: (host: string, claim: PaneClaim) => Promise<{ childId: string; held: boolean; session?: SessionReach }>;
 }
 
 export interface AdoptResult {
@@ -37,6 +38,8 @@ export interface AdoptResult {
   link: string;
   /** True when this parent already watched the pane. */
   already: boolean;
+  /** For a pane on another machine: how its session can report, as that machine's daemon answered. Absent when that daemon predates the answer. */
+  session?: SessionReach;
 }
 
 /** Where a pane sits, in the words an error uses. */
@@ -67,13 +70,14 @@ export async function adoptPane(client: HerdrClient, parent: ParentRecord, optio
 
   const name = options.name ?? pane.name ?? pane.label ?? pane.paneId;
   let id = newChildId();
+  let reach: SessionReach | undefined;
   if (host === LOCAL_HOST) {
     // A parent on another machine may have adopted this pane: its claim sits in this machine's relay records.
     const decision = decideClaim({ parentId: parent.id, paneId: pane.paneId, session: pane.agentSessionId }, claimantOf(pane.paneId));
     if (decision.kind === 'refuse') throw new Error(`Pane ${pane.paneId} on local cannot be adopted: ${decision.reason}.`);
   } else {
     if (!options.claim) throw new Error(`This session holds no relay connection to machine ${host}, so it cannot ask that machine who watches pane ${pane.paneId}.`);
-    let answer: { childId: string; held: boolean };
+    let answer: { childId: string; held: boolean; session?: SessionReach };
     try {
       answer = await options.claim(host, { parentId: parent.id, childId: id, name, kind: pane.agent, paneId: pane.paneId, ...(pane.agentSessionId ? { session: pane.agentSessionId } : {}) });
     } catch (error) {
@@ -81,6 +85,7 @@ export async function adoptPane(client: HerdrClient, parent: ParentRecord, optio
     }
     // The far daemon already held this pane for this parent, from an adoption whose record this machine lost: keep its child id.
     id = answer.childId;
+    reach = answer.session;
   }
 
   const now = new Date().toISOString();
@@ -115,5 +120,5 @@ export async function adoptPane(client: HerdrClient, parent: ParentRecord, optio
     inactiveMs: resolveInactiveMs(undefined),
   };
   upsertChild(parent.id, child);
-  return { child, link: herdrLink('pane', child.paneId), already: false };
+  return { child, link: herdrLink('pane', child.paneId), already: false, ...(reach ? { session: reach } : {}) };
 }

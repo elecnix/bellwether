@@ -62,6 +62,11 @@ export interface LaunchInput {
   files: ChildFiles;
 }
 
+/** A request to herdr on the child's machine, for a check that herdr's API answers. */
+export interface HerdrRequester {
+  request(method: string, params?: Record<string, unknown>): Promise<unknown>;
+}
+
 /** What a spawn knows when it checks a harness before writing anything. */
 export interface PreflightInput {
   name: string;
@@ -69,6 +74,8 @@ export interface PreflightInput {
   /** The model the harness itself gets. */
   model?: string;
   host: string;
+  /** herdr on the child's machine, for a harness that herdr watches only through an integration of its own. */
+  herdr?: HerdrRequester;
 }
 
 /** What a harness's tool files are written from. */

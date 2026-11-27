@@ -206,10 +206,10 @@ export async function childStartFiles(parent: ParentRecord, child: ChildRecord, 
  * Refuse a spawn of a kind whose child could not report, or whose harness
  * says it cannot work here, before anything is written.
  */
-async function checkHarness(entry: HarnessEntry, options: SpawnOptions, model: string | undefined, hooks: HarnessHooks): Promise<void> {
+async function checkHarness(entry: HarnessEntry, options: SpawnOptions, model: string | undefined, hooks: HarnessHooks, herdr: HerdrClient): Promise<void> {
   const refused = spawnRefusal(entry, options.name);
   if (refused) throw new Error(refused);
-  await entry.preflight?.({ name: options.name, cwd: options.cwd, model, host: options.host ?? LOCAL_HOST }, hooks);
+  await entry.preflight?.({ name: options.name, cwd: options.cwd, model, host: options.host ?? LOCAL_HOST, herdr }, hooks);
 }
 
 export async function spawnChild(client: HerdrClient, parent: ParentRecord, options: SpawnOptions, signal?: AbortSignal, hooks: SpawnHooks = {}): Promise<SpawnResult> {
@@ -230,7 +230,7 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
   const harnessHooks = hooks.harness ?? {};
   const store = entry.session.from === 'store' ? entry.session : undefined;
   // On a route the tier picks the model, so the check sees the model the harness itself gets.
-  await checkHarness(entry, options, harnessOptions.model, harnessHooks);
+  await checkHarness(entry, options, harnessOptions.model, harnessHooks, client);
   // The workspace is settled before the record too, so a name that matches
   // nothing leaves nothing behind. Nothing is created yet.
   const host = options.host ?? LOCAL_HOST;

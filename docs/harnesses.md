@@ -9,7 +9,7 @@ Each `agent_spawn` kind names the harness a child runs in, and Bellwether's harn
 | `pi` | yes | `@file`, attached | herdr, as a file path | session file | the Bellwether pi extension, loaded with `-e` | pi's extension | `--session` | yes | yes |
 | `claude` | yes | `@file`, attached | herdr, as an id | transcript file | its own MCP server, through `--mcp-config` | a `Notification` hook | `--resume` | yes | yes |
 | `opencode` | yes | a sentence that references a file in the working directory | the spawn picks the id and finds it in OpenCode's store | OpenCode's store | its own MCP server, named in `OPENCODE_CONFIG` | the screen | no | no | no |
-| `omp` | yes, after you run `herdr integration install omp` | `@file`, attached | herdr, as a file path | session file | the Bellwether pi extension, loaded with `-e` | herdr's omp integration, then the screen | `--session` | no | no |
+| `omp` | yes, after you run `herdr integration install omp` | `@file`, attached | herdr, as a file path | session file | the Bellwether pi extension, loaded with `-e` | herdr's omp integration, then the screen | `--session` | no | yes |
 | `codex` | yes | a sentence that references a file | the spawn finds it in Codex's rollouts | the rollout | its own MCP server, defined in a `-c` override on its launch line | the screen | `codex resume` | no | no |
 | `kilo` | yes, on the native binary | a sentence that references a file in the working directory | found in kilo's store by directory, start time and prompt | kilo's store | its own MCP server, named in `KILO_CONFIG` | herdr's screen rule for kilo | `--session` | no | no |
 | `cline` | only with `-y` | a sentence that references a file | in Cline's `sessions.db` | Cline's `sessions.db` | its own MCP server, named in `CLINE_MCP_SETTINGS_PATH` | the screen | no | no | no |
@@ -42,9 +42,9 @@ Each kind has the same three bullets, so a reader can line up two kinds. The bul
 
 ### `omp`
 
-- **Can:** report, request retirement, request depth, and start and message children of its own within its depth ceiling.
-- **Cannot:** start until you run `herdr integration install omp`, since only that integration reports the child's state and session file to herdr. It cannot run on another machine yet, because a child there doesn't get extra environment variables, so `OMP_SKIP_SETUP` never reaches it ([#96](https://github.com/elecnix/bellwether/issues/96)). It cannot move, because `agent_move` finds only pi and Claude Code session files.
-- **How:** the same Bellwether pi extension, passed with `-e`. omp runs pi extensions, and its extension API has every call this one makes. The extension stores this child's id, and the tab sets `OMP_SKIP_SETUP`, so omp's setup wizard doesn't block the brief. Bellwether answers no omp dialog.
+- **Can:** report, request retirement, request depth, and start and message children of its own within its depth ceiling. It runs on another machine once herdr there has its omp integration.
+- **Cannot:** start until you run `herdr integration install omp`, since only that integration reports the child's state and session file to herdr. It cannot move, because `agent_move` finds only pi and Claude Code session files.
+- **How:** the same Bellwether pi extension, passed with `-e`. omp runs pi extensions, and its extension API has every call this one makes. The extension stores this child's id, and the tab sets `OMP_SKIP_SETUP`, so omp's setup wizard doesn't block the brief. On another machine, `bellwether relay-register` there names the extension and hands the variable back for the tab. The spawn refuses a machine whose Bellwether hands back no variables, with an error that specifies the variable and the upgrade that machine needs. Bellwether answers no omp dialog.
 
 ### `codex`
 

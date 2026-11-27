@@ -19,6 +19,11 @@ export interface FakeMachine {
   home: string;
   /** Its HOME, where a transcript would sit. */
   userHome: string;
+  /**
+   * Variables that machine's shell sets for every command, such as a
+   * NODE_OPTIONS that loads a harness entry only that machine knows.
+   */
+  env?: Record<string, string>;
 }
 
 /** What one ssh call does: refuse (exit 255, nothing runs), drop (runs, then exit 255), or ok. */
@@ -97,7 +102,7 @@ if (!machine) { process.stderr.write('ssh: Could not resolve hostname ' + target
 // A real ssh carries none of the parent's harness directories to the other machine.
 const inherited = { ...process.env };
 for (const key of ['CLAUDE_CONFIG_DIR', 'PI_CODING_AGENT_DIR', 'PI_CODING_AGENT_SESSION_DIR']) delete inherited[key];
-const env = { ...inherited, HOME: machine.userHome, BELLWETHER_HOME: machine.home, BELLWETHER_DAEMON_SOCKET: path.join(machine.home, 'daemon.sock'), FAKE_SSH_TARGET: target, PATH: dir + path.delimiter + process.env.PATH };
+const env = { ...inherited, ...(machine.env || {}), HOME: machine.userHome, BELLWETHER_HOME: machine.home, BELLWETHER_DAEMON_SOCKET: path.join(machine.home, 'daemon.sock'), FAKE_SSH_TARGET: target, PATH: dir + path.delimiter + process.env.PATH };
 const liveDir = path.join(dir, 'live');
 fs.mkdirSync(liveDir, { recursive: true });
 const liveFile = path.join(liveDir, String(process.pid));

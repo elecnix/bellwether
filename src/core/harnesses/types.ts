@@ -122,6 +122,13 @@ export type ReportPath =
       remote?: 'mcpConfig' | 'piExtension';
       /** Why a child on another machine is refused, when `remote` is absent. */
       remoteRefusal?: string;
+      /**
+       * Variables from `local` that a child on another machine cannot start
+       * without. relay-register there runs `local` and hands its environment
+       * back, and a registration that hands back none of these, from a release
+       * before it did, is refused by name.
+       */
+      remoteEnv?: readonly string[];
     }
   | { via: 'none'; reason: string };
 

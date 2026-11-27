@@ -14,13 +14,13 @@ import path from 'node:path';
 import test from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import { HerdrClient } from '../../src/core/herdr-client.ts';
-import { relayChildPath, relayOutboxDir, spoolPath } from '../../src/core/paths.ts';
+import { registryPath, relayChildPath, relayOutboxDir, spoolPath } from '../../src/core/paths.ts';
 import { PI_EXTENSION_ENV, piExtensionEntry } from '../../src/core/pi-extension.ts';
 import { emptyParent, readParent, saveParent, upsertChild } from '../../src/core/registry.ts';
 import { RELAY_SCHEMA, listForwards, readRelayRecord, saveForward, saveRelayRecord, type RelayRecord } from '../../src/core/relay-records.ts';
 import { mcpConfigPath } from '../../src/core/paths.ts';
 import { BELLWETHER_BUILD_ID, BELLWETHER_VERSION } from '../../src/core/version.ts';
-import { remoteOps } from '../../src/core/remote.ts';
+import { parseRegistration, remoteOps, type RemoteRegistration } from '../../src/core/remote.ts';
 import { spawnChild } from '../../src/core/spawn.ts';
 import { claudeProjectDir } from '../../src/core/transcript.ts';
 import type { ChildRecord, SpoolReport } from '../../src/core/types.ts';
@@ -33,6 +33,7 @@ import { startDaemon, type Daemon, type ParentService } from '../../src/daemon/s
 import { runBellwetherTool } from '../../src/integrations/tools.ts';
 import { stopDaemonsUnder } from '../fixtures/daemons.ts';
 import { startFakeHerdr, type FakeHerdrOptions } from '../fixtures/fake-herdr.ts';
+import { ABSENT_HOME, ENV_HARNESS_FILE, ENV_KIND, KEY_FILE, READY } from '../fixtures/far-env-harness.ts';
 import { installFakeSsh, type FakeSsh } from '../fixtures/fake-ssh.ts';
 import { LIVE_HOME } from '../fixtures/isolation.ts';
 
@@ -62,7 +63,7 @@ function inHome<T>(home: string, fn: () => T): T {
   }
 }
 
-function world(t: test.TestContext, here: 'parent' | 'child' = 'parent'): World {
+function world(t: test.TestContext, here: 'parent' | 'child' = 'parent', childEnv?: Record<string, string>): World {
   // Under /tmp, because macOS caps a Unix socket path at 104 bytes.
   const root = fs.mkdtempSync('/tmp/bw-relay-');
   assert.ok(!root.startsWith(LIVE_HOME));
@@ -71,7 +72,7 @@ function world(t: test.TestContext, here: 'parent' | 'child' = 'parent'): World 
   for (const home of [childHome, parentHome]) fs.mkdirSync(home, { recursive: true });
   // `parent-box` is reachable too, so a hop toward it would succeed and be seen, not fail unseen.
   const ssh = installFakeSsh(t, root, {
-    'child-box': { home: childHome, userHome: path.dirname(childHome) },
+    'child-box': { home: childHome, userHome: path.dirname(childHome), ...(childEnv ? { env: childEnv } : {}) },
     'parent-box': { home: parentHome, userHome: path.dirname(parentHome) },
   });
   const saved = { home: process.env['BELLWETHER_HOME'], socket: process.env['BELLWETHER_DAEMON_SOCKET'] };
@@ -788,4 +789,111 @@ test('a relay record whose reports still wait outlives relay-cleanup, and goes w
   assert.ok(inHome(w.childHome, () => readRelayRecord('c-gone'))?.retiredAt, 'kept, and marked retired, while its report waits');
   inHome(w.childHome, () => new RelayOutbox().ack('rp-last'));
   assert.equal(inHome(w.childHome, () => readRelayRecord('c-gone')), undefined, 'gone with its last report');
+});
+
+// A harness entry can give its child's tab environment. On another machine the
+// entry runs inside relay-register there, and the variables come back in the
+// same line as the brief and the MCP config.
+
+/** herdr on the child's machine, with its omp integration installed. */
+const ompIntegration: FakeHerdrOptions['respond'] = (request) =>
+  request.method === 'integration.list' ? { result: { type: 'integration_list', integrations: [{ target: 'omp', label: 'omp', command: 'omp', available: true, state: 'current' }] } } : undefined;
+
+function tabEnv(herdr: Awaited<ReturnType<typeof startFakeHerdr>>): Record<string, string> {
+  return (herdr.requests.find((request) => request.method === 'tab.create')?.params['env'] as Record<string, string>) ?? {};
+}
+
+/** A child machine whose bellwether knows the env-agent kind, as the parent here does. */
+function envWorld(t: test.TestContext): World {
+  return world(t, 'parent', { NODE_OPTIONS: `${process.env['NODE_OPTIONS'] ?? ''} --import ${ENV_HARNESS_FILE}`.trim() });
+}
+
+test("an omp spawn on another machine starts with OMP_SKIP_SETUP, as relay-register there printed it", async (t) => {
+  const w = world(t);
+  const parent = saveParent(emptyParent('pi', 'omp-spawner', '/work', { workspaceId: 'w1' }));
+  const herdr = await idleHerdr(t, ompIntegration);
+  const ops = remoteOps(machines);
+  let printed: RemoteRegistration | undefined;
+  const { child, envNote } = await spawnChild(new HerdrClient({ socketPath: herdr.socketPath }), parent, { kind: 'omp', name: 'far-omp', host: 'child-box', prompt: 'report back' }, undefined, {
+    registerRemote: async (entry, text) => (printed = await ops.register(parent, entry, text)),
+  });
+  assert.equal(w.ssh.remoteCalls()[0]?.argv[0], 'relay-register');
+  assert.deepEqual(printed?.env, { OMP_SKIP_SETUP: '1' }, 'the omp entry ran on the child machine and its variable came back');
+  const env = tabEnv(herdr);
+  assert.equal(env['OMP_SKIP_SETUP'], '1', 'the tab skips the setup wizard');
+  assert.equal(env[PI_EXTENSION_ENV], piExtensionEntry());
+  assert.deepEqual(startArgs(herdr).slice(0, 2), ['-e', piExtensionEntry()]);
+  assert.equal(envNote, undefined, 'nothing was left out');
+  assert.equal(readParent(parent.id)?.children[0]?.id, child.id);
+});
+
+test('a key file named in an entry\'s environment reaches the remote tab as a path, unread, and no record holds it', async (t) => {
+  const w = envWorld(t);
+  const cwd = path.join(w.root, 'child', 'work');
+  fs.mkdirSync(cwd, { recursive: true });
+  const key = path.join(cwd, 'example-key');
+  fs.writeFileSync(key, 'example-secret-value\n', { mode: 0o600 });
+  // Unreadable, so a registration that opened it would fail.
+  fs.chmodSync(key, 0o000);
+  const parent = saveParent(emptyParent('claude-code', 'key-spawner', '/work', { workspaceId: 'w1' }));
+  const herdr = await idleHerdr(t);
+  const ops = remoteOps(machines);
+  let printed: RemoteRegistration | undefined;
+  const { child } = await spawnChild(new HerdrClient({ socketPath: herdr.socketPath }), parent, { kind: ENV_KIND, name: 'keyed', host: 'child-box', cwd, prompt: 'report back' }, undefined, {
+    registerRemote: async (entry, text) => (printed = await ops.register(parent, entry, text)),
+  });
+  assert.equal(printed?.env?.[KEY_FILE], key, 'relay-register printed the path');
+  assert.equal(tabEnv(herdr)[KEY_FILE], key, 'the tab gets the path, and the harness reads the file there');
+  assert.equal(tabEnv(herdr)[READY], '1');
+  const relayText = fs.readFileSync(inHome(w.childHome, () => relayChildPath(child.id)), 'utf8');
+  const parentText = fs.readFileSync(registryPath(parent.id), 'utf8');
+  for (const [where, text] of [['relay record', relayText], ['parent registry', parentText]] as const) {
+    assert.ok(!text.includes('example-secret-value'), `the ${where} holds no key`);
+    assert.ok(!text.includes(KEY_FILE) && !text.includes(READY), `the ${where} holds none of the child's environment`);
+  }
+});
+
+test('a variable that belongs to one machine is left out of the remote tab and named once in the spawn reply', async (t) => {
+  const w = envWorld(t);
+  const parent = saveParent(emptyParent('claude-code', 'drop-spawner', '/work', { workspaceId: 'w1' }));
+  const herdr = await idleHerdr(t);
+  const client = new HerdrClient({ socketPath: herdr.socketPath });
+  const reply = await runBellwetherTool(
+    { client, clientFor: async () => client, parentId: parent.id, watcher: new Watcher({ client, parentId: parent.id, onEntries: () => {} }), remote: remoteOps(machines) },
+    'agent_spawn',
+    { kind: ENV_KIND, name: 'trimmed', machine: 'child-box', prompt: 'report back' },
+    {},
+  );
+  assert.equal(w.ssh.remoteCalls()[0]?.argv[0], 'relay-register');
+  const env = tabEnv(herdr);
+  assert.equal(env[READY], '1', 'what the harness needs arrives');
+  assert.equal(env['HERDR_SOCKET_PATH'], undefined, "herdr's socket from the entry stays out, so herdr's own applies");
+  assert.equal(env['ENV_AGENT_STATE'], undefined, 'a path under a missing home stays out');
+  const count = (needle: string): number => reply.split(needle).length - 1;
+  assert.equal(count('HERDR_SOCKET_PATH'), 1, reply);
+  assert.equal(count('ENV_AGENT_STATE'), 1, reply);
+  assert.match(reply, /trimmed's tab on machine child-box starts without 2 variables its harness entry set: HERDR_SOCKET_PATH, because .*; ENV_AGENT_STATE, because it names a path under a home directory this machine does not have\./);
+  assert.ok(!reply.includes('/tmp/example-herdr.sock') && !reply.includes(ABSENT_HOME), 'the reply names the variables, never their values');
+});
+
+test('a remote spawn of a harness that declares no environment carries only Bellwether\'s own, as before', async (t) => {
+  const w = world(t);
+  const parent = saveParent(emptyParent('claude-code', 'plain-spawner', '/work', { workspaceId: 'w1' }));
+  const herdr = await idleHerdr(t);
+  const ops = remoteOps(machines);
+  let printed: RemoteRegistration | undefined;
+  const { child, envNote } = await spawnChild(new HerdrClient({ socketPath: herdr.socketPath }), parent, { kind: 'claude', name: 'plain', host: 'child-box', startupTimeoutMs: 2_000, redrawMs: 10 }, undefined, {
+    registerRemote: async (entry, text) => (printed = await ops.register(parent, entry, text)),
+  });
+  assert.equal(w.ssh.remoteCalls().length, 1);
+  assert.deepEqual(printed?.env, {}, 'relay-register says it has nothing to add');
+  assert.deepEqual(Object.keys(tabEnv(herdr)).sort(), ['BELLWETHER_CHILD', 'BELLWETHER_CHILD_NAME', 'BELLWETHER_DEPTH', 'BELLWETHER_HARNESS', 'BELLWETHER_MAX_DEPTH', 'BELLWETHER_PARENT']);
+  assert.equal(tabEnv(herdr)['BELLWETHER_CHILD'], child.id);
+  assert.equal(envNote, undefined);
+});
+
+test('a registration from a release that hands back no environment is refused for a harness that needs some', () => {
+  const old = JSON.stringify({ record: '/x', version: '0.1.5', build: 'example-build', mcpConfig: '/x/mcp.json', toolSource: { server: 'per-child', suppressed: [] } });
+  assert.throws(() => parseRegistration('child-box', old, ENV_KIND), /bellwether relay-register on child-box, version 0\.1\.5 build example-build, handed back no environment, and an Env Agent child cannot start without ENV_AGENT_READY\. Upgrade @elecnix\/bellwether on child-box\./);
+  assert.doesNotThrow(() => parseRegistration('child-box', old, 'claude'), 'a harness that needs none starts as before');
 });

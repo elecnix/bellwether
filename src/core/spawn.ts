@@ -8,6 +8,7 @@ import { newChildId } from './outbox.ts';
 import { PI_EXTENSION_ENV } from './pi-extension.ts';
 import { writeBrief, writeBriefIn } from './brief.ts';
 import { DEFAULT_MAX_DEPTH, tooDeep } from './depth.ts';
+import { droppedNote, type DroppedVariable } from './relay-env.ts';
 import { resolveInactiveMs } from './inactivity.ts';
 import { removeChildFiles } from './mcp-config.ts';
 import { argValue } from './args.ts';
@@ -82,6 +83,8 @@ export interface SpawnResult {
   modelNote?: string;
   /** What the child's harness entry says about how it was started, for the spawn reply. */
   harnessNote?: string;
+  /** The variables the child's machine left out of its tab, by name and reason, for the spawn reply. */
+  envNote?: string;
   link: string;
   /** The startup dialogs the spawn answered, in order. */
   answered?: StartupDialog[];
@@ -154,6 +157,8 @@ export interface SpawnHooks {
 export interface ChildStartFiles extends ChildFiles {
   /** Whether the child's machine holds files that must go with the child. */
   registered: boolean;
+  /** The variables of the harness entry that the child's machine left out of its tab. */
+  envDropped?: DroppedVariable[];
 }
 
 /**
@@ -162,7 +167,9 @@ export interface ChildStartFiles extends ChildFiles {
  * files first, so a missing pi extension writes nothing, then its brief. A
  * child on another machine is registered there first, and that machine
  * writes them: its brief arrives over the SSH transport, on standard input,
- * so the harness is pointed at a file that exists where it runs. A child
+ * so the harness is pointed at a file that exists where it runs. The
+ * environment the entry gives the tab comes back from that machine in the same
+ * registration, computed there. A child
  * whose brief or tools cannot be set up is not started, because it would run
  * with no task or no way to report: this throws.
  */
@@ -200,6 +207,8 @@ export async function childStartFiles(parent: ParentRecord, child: ChildRecord, 
         }
       : {}),
     ...(needsExtension && registration.piExtension ? { piExtension: registration.piExtension } : {}),
+    ...(registration.env && Object.keys(registration.env).length ? { env: registration.env } : {}),
+    ...(registration.envDropped?.length ? { envDropped: registration.envDropped } : {}),
     registered: true,
   };
 }
@@ -276,10 +285,12 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
   let startup: StartupWatch | undefined;
   let registered = false;
   let keptBrief: string | undefined;
+  let envNote: string | undefined;
   try {
-    const { registered: there, ...files } = await childStartFiles(parent, child, options.prompt || undefined, hooks.registerRemote, hooks.piExtension, harnessOptions.model);
+    const { registered: there, envDropped, ...files } = await childStartFiles(parent, child, options.prompt || undefined, hooks.registerRemote, hooks.piExtension, harnessOptions.model);
     const { briefFile } = files;
     registered = there;
+    envNote = droppedNote(child.name, host, envDropped);
     if (files.toolSource) child.toolSource = files.toolSource;
     keptBrief = store ? briefFile : undefined;
 
@@ -408,7 +419,7 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
 
   const note = modelNote(child);
   const harnessNote = entry.spawnNote?.(child, options.args ?? []);
-  return { child, link: herdrLink('pane', child.paneId), answered, ...(note ? { modelNote: note } : {}), ...(harnessNote ? { harnessNote } : {}) };
+  return { child, link: herdrLink('pane', child.paneId), answered, ...(note ? { modelNote: note } : {}), ...(harnessNote ? { harnessNote } : {}), ...(envNote ? { envNote } : {}) };
 }
 
 /**

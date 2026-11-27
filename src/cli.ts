@@ -19,6 +19,7 @@ import { RELAY_SCHEMA, listForwards, readRelayRecord, removeRelayRecord, saveRel
 import { relayChildPath, relayOutboxDir } from './core/paths.ts';
 import { removeBriefAt, writeBrief, writeBriefIn } from './core/brief.ts';
 import { removeChildFiles } from './core/mcp-config.ts';
+import { farEnvironment } from './core/relay-env.ts';
 import { harnessFor, harnessNamed } from './core/harnesses/index.ts';
 import { describeUpgrade, farPairing, gatherUpgrade } from './daemon/upgrade-status.ts';
 import { describeState } from './core/hygiene.ts';
@@ -608,7 +609,9 @@ function farEnd(command: string, run: () => number): number {
  * parent's, whose daemon connects here to collect reports. It prints the
  * record path, the brief, this install's version and build and, for a Claude
  * Code child, the MCP config the child starts with, or for a pi child, the
- * extension it loads, as one JSON line.
+ * extension it loads, as one JSON line. The same line carries the variables
+ * the harness entry gives the child's tab here, less any that belong to one
+ * machine, which it names in `envDropped`. The record holds none of them.
  */
 function relayRegister(argv: string[]): number {
   const values = exactFlags(argv, ['child', 'name', 'kind', 'parent', 'cwd', 'brief-stdin']);
@@ -622,13 +625,14 @@ function relayRegister(argv: string[]): number {
   // before anything else is written, when it is missing.
   const reports = harnessFor(values['kind'])?.reports;
   const tools = reports && reports.via !== 'none' && reports.remote ? reports.local({ id: childId, cwd, host: LOCAL_HOST }, { env: {}, farEnd: true }) : undefined;
+  const { env, dropped } = farEnvironment(tools?.env);
   let brief: string | undefined;
   if (values['brief-stdin'] === 'yes') {
     const text = fs.readFileSync(0, 'utf8');
     brief = cwd ? writeBriefIn(cwd, childId, text) : writeBrief(childId, text);
   }
   saveRelayRecord({ schema: RELAY_SCHEMA, childId, name: values['name'] ?? childId, kind: values['kind'] ?? 'other', parentId, ...(cwd ? { cwd } : {}), ...(brief ? { brief } : {}), registeredAt: new Date().toISOString() });
-  console.log(JSON.stringify({ record: relayChildPath(childId), version: BELLWETHER_VERSION, build: BELLWETHER_BUILD_ID, ...(brief ? { brief } : {}), ...(tools?.mcpConfigFile ? { mcpConfig: tools.mcpConfigFile, ...(tools.claudeSettingsFile ? { claudeSettings: tools.claudeSettingsFile } : {}), toolSource: tools.toolSource } : {}), ...(tools?.piExtension ? { piExtension: tools.piExtension } : {}) }));
+  console.log(JSON.stringify({ record: relayChildPath(childId), version: BELLWETHER_VERSION, build: BELLWETHER_BUILD_ID, ...(brief ? { brief } : {}), ...(tools?.mcpConfigFile ? { mcpConfig: tools.mcpConfigFile, ...(tools.claudeSettingsFile ? { claudeSettings: tools.claudeSettingsFile } : {}), toolSource: tools.toolSource } : {}), ...(tools?.piExtension ? { piExtension: tools.piExtension } : {}), env, ...(dropped.length ? { envDropped: dropped } : {}) }));
   return 0;
 }
 

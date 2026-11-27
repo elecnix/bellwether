@@ -15,7 +15,7 @@ import { spawnChild } from '../../src/core/spawn.ts';
 import { Watcher } from '../../src/core/watcher.ts';
 import type { OutboxEntry, ParentRecord } from '../../src/core/types.ts';
 import { startFakeHerdr, type FakeHerdr, type RecordedRequest, harnessStart } from '../fixtures/fake-herdr.ts';
-import { CHANNEL_ACCEPT_SELECTED, CHANNEL_FIVE_EXIT_SELECTED, CLAUDE_PROMPT, PERMISSION_QUESTION, TRUST_NO_SELECTED, TRUST_YES_SELECTED } from '../fixtures/claude-screens.ts';
+import { CHANNEL_ACCEPT_SELECTED, CHANNEL_FIVE_EXIT_SELECTED, CHANNEL_TWO_MARKED, CHANNEL_UNDER_GLYPH_PROMPT, CHANNEL_WITHOUT_PROMPT, CLAUDE_PROMPT, PERMISSION_QUESTION, TRUST_NO_SELECTED, TRUST_YES_SELECTED, underGlyphPrompt } from '../fixtures/claude-screens.ts';
 import { paneReadAnswer } from '../fixtures/ghost-screens.ts';
 
 const PANE = 'w1:p1';
@@ -45,15 +45,19 @@ class ClaudePane {
   seq = 0;
   readonly keys: { key: string; on: Screen }[] = [];
   fake!: FakeHerdr;
-  readonly options: { stubborn?: boolean };
+  readonly options: { stubborn?: boolean; glyphPrompt?: boolean; channel?: string };
 
-  constructor(first: Screen, options: { stubborn?: boolean } = {}) {
+  /**
+   * `glyphPrompt` draws each screen under a shell prompt that starts with ❯,
+   * and `channel` replaces the channel question's screen, as issue #160 needs.
+   */
+  constructor(first: Screen, options: { stubborn?: boolean; glyphPrompt?: boolean; channel?: string } = {}) {
     this.screen = first;
     this.options = options;
   }
 
   respond = (request: RecordedRequest): { result: unknown } | undefined => {
-    if (request.method === 'pane.read') return { result: paneReadAnswer(request.params, TEXT[this.screen], PANE) };
+    if (request.method === 'pane.read') return { result: paneReadAnswer(request.params, this.text(), PANE) };
     if (request.method === 'agent.get') return { result: { type: 'agent_info', agent: this.agentInfo() } };
     if (request.method === 'session.snapshot') return { result: { type: 'session_snapshot', snapshot: { panes: [], agents: [this.agentInfo()] } } };
     if (request.method === 'pane.list') return { result: { type: 'pane_list', panes: [{ pane_id: PANE }] } };
@@ -69,6 +73,11 @@ class ClaudePane {
     }
     return undefined;
   };
+
+  private text(): string {
+    const text = this.screen === 'channel' && this.options.channel !== undefined ? this.options.channel : TEXT[this.screen];
+    return this.options.glyphPrompt && this.options.channel === undefined && this.screen !== 'prompt' ? underGlyphPrompt(text) : text;
+  }
 
   private agentInfo(): Record<string, unknown> {
     const session = this.screen === 'prompt' ? { agent_session: { source: 'herdr:claude', agent: 'claude', kind: 'id', value: SESSION } } : {};
@@ -193,6 +202,74 @@ test('a channel question with five channels and the cursor on Exit is answered w
     // One key, the digit of "I am using this for local development". No arrow
     // depended on where the cursor started, and no Enter went to "Exit".
     assert.deepEqual(pane.keys, [{ key: '1', on: 'channel-exit' }]);
+  } finally {
+    await r.stop();
+  }
+});
+
+test('under a shell prompt that starts with ❯, the channel question from issue #160 is answered with its digit', async () => {
+  const pane = new ClaudePane('channel', { channel: CHANNEL_UNDER_GLYPH_PROMPT });
+  const r = await rig(pane);
+  try {
+    const { child } = await spawnChild(r.client, r.parent, { kind: 'claude', name: 'kid', prompt: 'go', redrawMs: 10, startupTimeoutMs: 5_000 });
+    assert.equal(pane.screen, 'prompt');
+    assert.equal(child.lastStatus, 'idle');
+    assert.deepEqual(pane.keys, [{ key: '1', on: 'channel' }]);
+  } finally {
+    await r.stop();
+  }
+});
+
+test('the same channel question with the prompt line absent is answered identically', async () => {
+  const pane = new ClaudePane('channel', { channel: CHANNEL_WITHOUT_PROMPT });
+  const r = await rig(pane);
+  try {
+    await spawnChild(r.client, r.parent, { kind: 'claude', name: 'kid', prompt: 'go', redrawMs: 10, startupTimeoutMs: 5_000 });
+    assert.equal(pane.screen, 'prompt');
+    assert.deepEqual(pane.keys, [{ key: '1', on: 'channel' }]);
+  } finally {
+    await r.stop();
+  }
+});
+
+test('under a shell prompt that starts with ❯, the folder-trust question still walks Down, then Enter', async () => {
+  // Before issue #160 the walk took the prompt's ❯ as the selection, sent
+  // Down on every read and never Enter, and the spawn timed out.
+  const pane = new ClaudePane('trust-no', { glyphPrompt: true });
+  const r = await rig(pane);
+  try {
+    await spawnChild(r.client, r.parent, { kind: 'claude', name: 'kid', prompt: 'go', redrawMs: 10, startupTimeoutMs: 5_000 });
+    assert.equal(pane.screen, 'prompt');
+    assert.deepEqual(pane.keys, [
+      { key: 'Down', on: 'trust-no' },
+      { key: 'Enter', on: 'trust-yes' },
+      { key: '1', on: 'channel' },
+    ]);
+  } finally {
+    await r.stop();
+  }
+});
+
+test('a channel question with the marker on two options fails the spawn by name and presses nothing', async () => {
+  const pane = new ClaudePane('channel', { channel: CHANNEL_TWO_MARKED });
+  const r = await rig(pane);
+  try {
+    await assert.rejects(
+      spawnChild(r.client, r.parent, { kind: 'claude', name: 'kid', redrawMs: 10, startupTimeoutMs: 5_000 }),
+      (error: Error) => {
+        assert.equal(error.name, 'StartupDialogAmbiguous');
+        assert.match(error.message, /the development-channel question with the selection marker on 2 of its options/);
+        assert.match(error.message, /"❯ 1\. I am using this for local development" and "❯ 2\. Exit"/);
+        assert.match(error.message, /pressed nothing rather than guess/);
+        // The screen is quoted as Bellwether saw it, prompt line included.
+        assert.match(error.message, /The screen:\n❯ command claude/);
+        assert.doesNotMatch(error.message, /timed out/);
+        return true;
+      },
+    );
+    assert.deepEqual(pane.keys, []);
+    assert.ok(r.fake.requests.some((request) => request.method === 'tab.close'));
+    assert.deepEqual(readParent(r.parent.id)?.children, []);
   } finally {
     await r.stop();
   }

@@ -6,7 +6,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { detectModal } from '../../src/core/modal.ts';
 import { boxLine, parseRuns, parseScreen, shownScreen } from '../../src/core/screen.ts';
-import { keyToward } from '../../src/core/startup-dialogs.ts';
+import { CLAUDE_STARTUP, keyToward } from '../../src/core/startup-dialogs.ts';
+
+const TRUST = CLAUDE_STARTUP.dialogs.find((dialog) => dialog.id === 'trust')?.shows ?? /^$/;
 import { BOX_CASES, CLAUDE_GHOST_QUESTION, PERMISSION_DIMMED, SUGGESTION, TRUST_DIMMED_ACCEPT, TRUST_FAINT_ACCEPT, TYPED, stripAnsi } from '../fixtures/ghost-screens.ts';
 
 for (const box of BOX_CASES) {
@@ -78,6 +80,6 @@ test('a dialog that dims its unselected options is still a dialog, and the scree
 });
 
 test('the spawn walks to an accepting option drawn dim, and never takes a faint marker as selected', () => {
-  assert.equal(keyToward(parseScreen(TRUST_DIMMED_ACCEPT, 'ansi'), 'Yes, I trust this folder'), 'Down');
-  assert.equal(keyToward(parseScreen(TRUST_FAINT_ACCEPT, 'ansi'), 'Yes, I trust this folder'), undefined);
+  assert.equal(keyToward(parseScreen(TRUST_DIMMED_ACCEPT, 'ansi'), 'Yes, I trust this folder', TRUST), 'Down');
+  assert.equal(keyToward(parseScreen(TRUST_FAINT_ACCEPT, 'ansi'), 'Yes, I trust this folder', TRUST), undefined);
 });

@@ -112,3 +112,29 @@ export const UNKNOWN_STARTUP_QUESTION = ` Example settings migration
  ❯ 1. Yes, import them
    2. No, start fresh
 `;
+
+/**
+ * A screen under a shell whose own prompt begins with ❯, as zsh themes such as
+ * pure draw it: the launch line replaces the bash prompt the probe captured.
+ */
+export function underGlyphPrompt(screen: string): string {
+  const launch = '❯ command claude --mcp-config=/var/tmp/bw/mcp.json --settings=/var/tmp/bw/settings.json --dangerously-load-development-channels=server:bellwether';
+  return screen.replace(/^[^\n]*\n/, `${launch}\n`);
+}
+
+/**
+ * The channel question as issue #160 quotes it from a Mac: the pane's prompt
+ * line, the warning, and the numbered options with the cursor on 1. The
+ * paths stand in for the real ones the issue elides.
+ */
+export const CHANNEL_UNDER_GLYPH_PROMPT = `❯ command claude --mcp-config=/var/tmp/bw/mcp.json --settings=/var/tmp/bw/settings.json --dangerously-load-development-channels=server:bellwether
+  WARNING: Loading development channels
+  ❯ 1. I am using this for local development
+    2. Exit
+`;
+
+/** The same question with the prompt line absent, as a pane that scrolled it away shows it. */
+export const CHANNEL_WITHOUT_PROMPT = CHANNEL_UNDER_GLYPH_PROMPT.replace(/^[^\n]*\n/, '');
+
+/** The channel question with the selection marker on both options, which no reader can resolve. */
+export const CHANNEL_TWO_MARKED = CHANNEL_UNDER_GLYPH_PROMPT.replace('    2. Exit', '  ❯ 2. Exit');

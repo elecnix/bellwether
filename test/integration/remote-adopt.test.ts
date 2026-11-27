@@ -275,6 +275,26 @@ test('an adopted session on another machine whose Bellwether adapter is already 
   assert.equal(reports[0]?.report.text, 'Rebased and pushed.');
 });
 
+test('a message to an adopted session on another machine enters that session over the relay, and the adoption promised it (issue #168)', async (t) => {
+  const w = await world(t, { accept: () => ({}) });
+  // A pi session there loaded Bellwether 0.1.8 from pi's settings: its extension takes messages in any session.
+  const far = await DaemonClient.connect({ harness: 'pi', session: SESSION, cwd: '/far/work', host: 'child-box', paneId: PANE, depth: 0, herdrSocket: path.join(w.root, 'far-herdr.sock'), accepts: ['message', 'tools'] }, { home: w.childHome, socketPath: path.join(w.childHome, 'daemon.sock') });
+  t.after(() => far.close());
+  const taken: string[] = [];
+  far.onMessage((message) => {
+    taken.push(message.text);
+    far.messageAck(message.id, 'queued', { via: 'pi-message' });
+  });
+
+  const text = await adopt(w);
+  assert.match(text, /which now offers it parent_report: a report from it reaches this session, and a message from agent_send enters its session\./, text);
+  const id = child(w)!.id;
+  await until('the relay to hold child-box open for the child', () => w.links.state('child-box')?.status === 'connected' && (w.links.state('child-box')?.children ?? []).includes(id));
+  const answer = await w.links.message('child-box', PARENT_ID, id, { id: 'm-0000a168', from: 'your parent', text: 'Rebase onto main before you push.', at: new Date().toISOString() });
+  assert.deepEqual(answer, { delivered: true, via: 'pi-message' });
+  assert.deepEqual(taken, ['Rebase onto main before you push.']);
+});
+
 test('a session in an adopted pane on another machine whose harness session is not the adopted one gains nothing, and its report is refused there', async (t) => {
   const w = await world(t);
   const far = await DaemonClient.connect({ harness: 'pi', session: 'sess-later-0002', cwd: '/far/work', host: 'child-box', paneId: PANE, depth: 0, herdrSocket: path.join(w.root, 'far-herdr.sock'), accepts: ['tools'] }, { home: w.childHome, socketPath: path.join(w.childHome, 'daemon.sock') });

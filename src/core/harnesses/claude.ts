@@ -50,8 +50,17 @@ export const claude: HarnessEntry = {
     },
     remote: 'mcpConfig',
   },
-  // The child's own server is a channel, so a parent's message arrives as a channel notification.
-  inbox: { via: 'claude-channel' },
+  // The child's own server is a channel, so a parent's message arrives as a
+  // channel notification. Claude Code makes a server a channel only at its
+  // launch, so a session Bellwether did not start takes no message from it.
+  inbox: {
+    via: 'claude-channel',
+    adopted: {
+      adapter: 'server',
+      why: "takes no messages: Claude Code puts a server's message in a session only when the session started with that server as a channel",
+      reply: "Claude Code puts a server's message in a session only when the session started with that server as a channel, which a session Bellwether did not start never did, so agent_send types into its pane.",
+    },
+  },
   conversation: { locate: locateClaudeTranscript },
   resume: {
     args: (session) => ['--resume', session.kind === 'path' ? path.basename(session.value, '.jsonl') : session.value],

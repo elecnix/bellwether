@@ -20,7 +20,7 @@ import { LOCAL_HOST, hostOf } from '../core/machine.ts';
 import { acceptLocalReport, isReportStatus, localParentOf, routeReport, type ReportInput } from '../core/report.ts';
 import { readRelayRecord, updateRelayRecord } from '../core/relay-records.ts';
 import { claimPane } from '../core/pane-claims.ts';
-import { adoptedParentOf, type SessionReach } from '../core/adopted-session.ts';
+import { adoptedInboxGap, adoptedParentOf, type SessionReach } from '../core/adopted-session.ts';
 import { lastAssistantMessage } from '../core/transcript.ts';
 import { harnessFor, resolveTranscript } from '../core/harnesses/index.ts';
 import type { CallerIdentity, OutboxEntry } from '../core/types.ts';
@@ -181,11 +181,40 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
   const sessionWaitMs = options.sessionWaitMs ?? BRIEF_SESSION_WAIT_MS;
   const arrivals = new Map<string, Set<() => void>>();
 
+  /**
+   * The child a connected session is: the child id its start gave it, or,
+   * for a session Bellwether did not start, the child id of the adoption that
+   * claims its pane, here or from a parent on another machine. An adoption
+   * made after the hello is found at once, and a stop drops it, because the
+   * claim is read each time rather than copied onto the connection.
+   */
+  const childIdOf = (entry: Attached): string | undefined => entry.parent.childId ?? adoptedParentOf(entry.parent)?.childId;
+
+  /** The live connections of one child's session, newest last. */
+  const childSockets = (childId: string): [net.Socket, Attached][] => [...attached].filter(([socket, entry]) => socket.writable && childIdOf(entry) === childId);
+
   /** The newest connection of a child's own session that takes messages. */
-  const inboxSocket = (childId: string): net.Socket | undefined => {
-    let found: net.Socket | undefined;
-    for (const [socket, entry] of attached) if (entry.parent.childId === childId && entry.parent.accepts?.includes('message') && socket.writable) found = socket;
-    return found;
+  const inboxSocket = (childId: string): net.Socket | undefined =>
+    childSockets(childId)
+      .filter(([, entry]) => entry.parent.accepts?.includes('message'))
+      .at(-1)?.[0];
+
+  /** Whether a child is a session a parent adopted, by this machine's registry or by a claim a parent on another machine left here. */
+  const isAdopted = (childId: string): boolean => {
+    const found = localParentOf(childId);
+    return found ? found.child.origin === 'adopt' : readRelayRecord(childId)?.adopted === true;
+  };
+
+  /** Why no session of a child takes a message, naming an adopted session's own case rather than a child's. */
+  const noInboxReason = (child: { id: string; name: string; kind: string }, waitMs = 0): string => {
+    if (isAdopted(child.id)) {
+      const held = childSockets(child.id).at(-1)?.[1];
+      if (!held) return `${child.name} is an adopted session with no Bellwether server or extension connected to this machine's daemon, so nothing in it can take a message`;
+      const gap = adoptedInboxGap(held.parent.harness);
+      return `${child.name} is an adopted session whose Bellwether ${gap.adapter} ${gap.why}`;
+    }
+    const connected = waitMs > 0 ? `connected to this machine's Bellwether daemon within ${Math.round(waitMs / 100) / 10} s of the start` : "is connected to this machine's Bellwether daemon";
+    return `no session of ${child.name} that takes messages ${connected}: its harness has not started its Bellwether ${harnessFor(child.kind)?.inbox.via === 'claude-channel' ? 'channel server' : 'extension'} yet, or that copy predates messages`;
   };
 
   /**
@@ -203,6 +232,17 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
       entry.tools = json;
       socket.write(formatReply({ type: 'tools', tools }));
     }
+  };
+
+  /** Whether the adapter connected from an adopted pane takes a parent's message, or undefined when none from that pane is connected. */
+  const sessionMessages = (paneId: string): boolean | undefined => {
+    let found: boolean | undefined;
+    for (const [socket, entry] of attached) {
+      if (entry.parent.paneId !== paneId || !socket.writable || !adoptedParentOf(entry.parent)) continue;
+      if (entry.parent.accepts?.includes('message')) return true;
+      found = false;
+    }
+    return found;
   };
 
   /** Whether the session in an adopted pane holds a Bellwether adapter connected here, and whether it takes a new tool list. */
@@ -243,8 +283,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
   const sessionInbox = async (child: { id: string; name: string; kind: string }, message: InboxMessage, waitMs = 0): Promise<InboxAnswer> => {
     await awaitSession(child.id, waitMs);
     const socket = inboxSocket(child.id);
-    const connected = waitMs > 0 ? `connected to this machine's Bellwether daemon within ${Math.round(waitMs / 100) / 10} s of the start` : "is connected to this machine's Bellwether daemon";
-    if (!socket) return { delivered: false, reason: `no session of ${child.name} that takes messages ${connected}: its harness has not started its Bellwether ${harnessFor(child.kind)?.inbox.via === 'claude-channel' ? 'channel server' : 'extension'} yet, or that copy predates messages` };
+    if (!socket) return { delivered: false, reason: noInboxReason(child, waitMs) };
     return new Promise<InboxAnswer>((resolve) => {
       const timer = setTimeout(() => {
         inboxWaits.delete(message.id);
@@ -309,7 +348,8 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
     wait?.settle({ delivered: true, via: ack.via ?? 'session' });
     if (!wait && ack.outcome === 'queued' && lapsed.has(ack.id)) log(`message ${ack.id} reached the child's session after its wait ran out, so the child also has the typed copy`);
     if (ack.outcome !== 'read') return;
-    const childId = attached.get(socket)?.parent.childId;
+    const entry = attached.get(socket);
+    const childId = entry ? childIdOf(entry) : undefined;
     if (!childId) return;
     const found = localParentOf(childId);
     if (!found) {
@@ -356,7 +396,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
     const id = parentIdOf(parent);
     const existing = services.get(id);
     if (existing) return { parentId: id, service: existing };
-    const service = factory(parent, id, { links, log, inbox, sessionReach });
+    const service = factory(parent, id, { links, log, inbox, sessionReach, sessionMessages });
     services.set(id, service);
     service.onEvents((entries) => {
       push(id, entries, service);
@@ -620,7 +660,8 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
           log(`relay-adopt: pane ${request.paneId} ${answer.held ? 'was already' : 'is now'} a child of ${request.parentId} on another machine, as ${answer.childId}`);
           // The adopted session's adapter, when one is connected here, now answers to that parent.
           pushTools();
-          reply({ type: 'result', id: request.id, text: JSON.stringify({ ...answer, session: sessionReach(request.paneId) }) });
+          const messages = sessionMessages(request.paneId);
+          reply({ type: 'result', id: request.id, text: JSON.stringify({ ...answer, session: sessionReach(request.paneId), ...(messages === undefined ? {} : { messages }) }) });
         } catch (error) {
           reply({ type: 'result', id: request.id, error: (error as Error).message, code: 'pane_watched' });
         }
@@ -669,10 +710,12 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
         const pending = session.service.pending();
         reply({ type: 'hello', protocol: DAEMON_PROTOCOL, parentId: session.parentId, pid, pending, ...rosterFor(session.service, pending), version: BELLWETHER_VERSION, build: BELLWETHER_BUILD_ID, minProtocol: MIN_CLIENT_PROTOCOL, features: SERVED, tools });
         // A child's session that reconnects, after a hand-over or a restart of its server, takes again what it has not read.
-        if (request.parent.childId && request.parent.accepts?.includes('message')) {
-          replayMessages(socket, request.parent.childId);
+        // An adopted session's adapter, which says hello without a child id, takes them by the adoption of its pane.
+        const replayTo = childIdOf(attached.get(socket) as Attached);
+        if (replayTo && request.parent.accepts?.includes('message')) {
+          replayMessages(socket, replayTo);
           // A start that waits to hand this child its brief goes on now.
-          for (const arrive of [...(arrivals.get(request.parent.childId) ?? [])]) arrive();
+          for (const arrive of [...(arrivals.get(replayTo) ?? [])]) arrive();
         }
         return;
       }

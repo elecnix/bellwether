@@ -13,8 +13,8 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { emptyParent, saveParent } from '../../src/core/registry.ts';
-import type { OutboxEntry } from '../../src/core/types.ts';
+import { emptyParent, readParent, saveParent } from '../../src/core/registry.ts';
+import type { ChildMessage, OutboxEntry } from '../../src/core/types.ts';
 import { DaemonClient } from '../../src/daemon/client.ts';
 import { startDaemon } from '../../src/daemon/server.ts';
 import { startFakeHerdr, type FakeHerdr } from '../fixtures/fake-herdr.ts';
@@ -98,6 +98,56 @@ async function handStartedClaude(t: test.TestContext, space: Room, session: stri
   return { client, changed };
 }
 
+interface HandPi {
+  tools: Map<string, PiTool>;
+  sent: { content: string; details: unknown; options: unknown }[];
+  fire: (event: string, payload: unknown) => Promise<void>;
+  ctx: unknown;
+}
+
+interface PiTool {
+  execute: (id: string, params: Record<string, unknown>, signal: AbortSignal | undefined, onUpdate: unknown, ctx: unknown) => Promise<{ content: { text: string }[] }>;
+}
+
+/** The pi extension that pi's own settings load in a session Bellwether did not start: no BELLWETHER_CHILD, no BELLWETHER_PARENT. */
+async function handStartedPi(t: test.TestContext, space: Room): Promise<HandPi> {
+  const tools = new Map<string, PiTool>();
+  const sent: HandPi['sent'] = [];
+  const handlers = new Map<string, ((event: unknown, ctx: unknown) => unknown)[]>();
+  const pi = {
+    on: (event: string, handler: (event: unknown, ctx: unknown) => unknown) => handlers.set(event, [...(handlers.get(event) ?? []), handler]),
+    registerTool: (tool: PiTool & { name: string }) => tools.set(tool.name, tool),
+    sendMessage: (message: { content: string; details?: unknown }, options?: unknown) => sent.push({ content: message.content, details: message.details, options }),
+  };
+  const saved = { pane: process.env['HERDR_PANE_ID'], home: process.env['BELLWETHER_HOME'], socket: process.env['BELLWETHER_DAEMON_SOCKET'] };
+  process.env['HERDR_PANE_ID'] = PI_PANE;
+  process.env['BELLWETHER_HOME'] = space.home;
+  process.env['BELLWETHER_DAEMON_SOCKET'] = space.socketPath;
+  t.after(() => {
+    process.env['HERDR_PANE_ID'] = saved.pane;
+    process.env['BELLWETHER_HOME'] = saved.home;
+    process.env['BELLWETHER_DAEMON_SOCKET'] = saved.socket;
+  });
+  const { default: bellwether } = (await import('../../src/integrations/pi/extension.ts')) as { default: (pi: unknown) => void };
+  bellwether(pi);
+  const ctx = { isIdle: () => true, sessionManager: { getSessionId: () => PI_SESSION, getCwd: () => space.root, getEntries: () => [] } };
+  const fire = async (event: string, payload: unknown): Promise<void> => {
+    for (const handler of handlers.get(event) ?? []) await handler(payload, ctx);
+  };
+  await fire('session_start', {});
+  t.after(() => fire('session_shutdown', {}));
+  return { tools, sent, fire, ctx };
+}
+
+/** What herdr typed into a pane: every agent.prompt it took for it. */
+function typed(fake: FakeHerdr, paneId: string): string[] {
+  return fake.requests.filter((request) => request.method === 'agent.prompt' && request.params['target'] === paneId).map((request) => String(request.params['text']));
+}
+
+function messagesOf(space: Room, name: string): ChildMessage[] {
+  return readParent(space.parentId)?.children.find((child) => child.name === name)?.messages ?? [];
+}
+
 async function toolNames(client: Client): Promise<string[]> {
   return (await client.listTools()).tools.map((tool) => tool.name);
 }
@@ -124,35 +174,13 @@ test('an adopted Claude Code session whose Bellwether server is already connecte
 
 test('an adopted pi session registers parent_report from the extension it already loaded, and its report reaches the adopter', async (t) => {
   const space = await room(t);
-  const tools = new Map<string, { execute: (id: string, params: Record<string, unknown>, signal: AbortSignal | undefined, onUpdate: unknown, ctx: unknown) => Promise<{ content: { text: string }[] }> }>();
-  const handlers = new Map<string, ((event: unknown, ctx: unknown) => unknown)[]>();
-  const pi = {
-    on: (event: string, handler: (event: unknown, ctx: unknown) => unknown) => handlers.set(event, [...(handlers.get(event) ?? []), handler]),
-    registerTool: (tool: { name: string; execute: never }) => tools.set(tool.name, tool),
-    sendMessage: () => {},
-  };
-  const saved = { pane: process.env['HERDR_PANE_ID'], home: process.env['BELLWETHER_HOME'], socket: process.env['BELLWETHER_DAEMON_SOCKET'] };
-  process.env['HERDR_PANE_ID'] = PI_PANE;
-  process.env['BELLWETHER_HOME'] = space.home;
-  process.env['BELLWETHER_DAEMON_SOCKET'] = space.socketPath;
-  t.after(() => {
-    process.env['HERDR_PANE_ID'] = saved.pane;
-    process.env['BELLWETHER_HOME'] = saved.home;
-    process.env['BELLWETHER_DAEMON_SOCKET'] = saved.socket;
-  });
-  const { default: bellwether } = (await import('../../src/integrations/pi/extension.ts')) as { default: (pi: unknown) => void };
-  bellwether(pi);
-  const ctx = { isIdle: () => true, sessionManager: { getSessionId: () => PI_SESSION, getCwd: () => space.root, getEntries: () => [] } };
-  for (const handler of handlers.get('session_start') ?? []) await handler({}, ctx);
-  t.after(async () => {
-    for (const handler of handlers.get('session_shutdown') ?? []) await handler({}, ctx);
-  });
-  assert.ok(tools.has('agent_spawn') && !tools.has('parent_report'));
+  const pi = await handStartedPi(t, space);
+  assert.ok(pi.tools.has('agent_spawn') && !pi.tools.has('parent_report'));
 
   const reply = await space.parent.tool('agent_adopt', { target: PI_PANE });
   assert.match(reply, /now offers it parent_report/, reply);
-  const report = await until('pi to register parent_report', () => tools.get('parent_report'));
-  const result = await report.execute('call-1', { status: 'progress', text: 'Halfway through the migration.' }, undefined, undefined, ctx);
+  const report = await until('pi to register parent_report', () => pi.tools.get('parent_report'));
+  const result = await report.execute('call-1', { status: 'progress', text: 'Halfway through the migration.' }, undefined, undefined, pi.ctx);
   assert.match(result.content[0]?.text ?? '', /Reported progress to .*, as hand-pi\./);
   const event = await until('the report event at the adopter', () => space.events.find((entry) => entry.event === 'report'));
   assert.equal(event.paneId, PI_PANE);
@@ -185,4 +213,62 @@ test('an adopted session whose adapter predates the tool push is told apart, and
   const again = await DaemonClient.connect(hello, { socketPath: space.socketPath, home: space.home, spawn: false });
   t.after(() => again.close());
   assert.ok(again.tools().some((tool) => tool.name === 'parent_report'), 'the hello of its next connection carries parent_report');
+});
+
+// Issue #168: the adoption gave a session parent_report and its reports
+// arrived, while a message to it was typed into its pane with a reason that
+// blamed an extension that was running. The daemon found a session to message
+// by the child id in its hello, and a session Bellwether did not start has none.
+
+test('a message to an adopted pi session enters the session through the extension it already loaded, nothing is typed, and message_end marks it read', async (t) => {
+  const space = await room(t);
+  const pi = await handStartedPi(t, space);
+  const adopted = await space.parent.tool('agent_adopt', { target: PI_PANE });
+  assert.match(adopted, /now offers it parent_report: a report from it reaches this session, and a message from agent_send enters its session\./, adopted);
+
+  const reply = await space.parent.tool('agent_send', { child: 'hand-pi', text: 'Rebase onto main before you push.' });
+  const id = /^Delivered to hand-pi's session as message (m-[0-9a-f]{8}), through its Bellwether pi extension; nothing was typed into its pane\./.exec(reply)?.[1];
+  assert.ok(id, reply);
+  const message = await until('the steered message', () => pi.sent.find((entry) => (entry.details as { message?: string } | undefined)?.message === id));
+  assert.deepEqual(message.options, { triggerTurn: true, deliverAs: 'steer' });
+  assert.match(message.content, /Rebase onto main before you push\.$/);
+  assert.deepEqual(typed(space.fake, PI_PANE), [], 'nothing typed into the pane of an adopted session whose extension took the message');
+  assert.equal(messagesOf(space, 'hand-pi')[0]?.path, 'session');
+
+  await pi.fire('message_end', { message: { role: 'custom', customType: 'bellwether-message', details: { message: id } } });
+  await until('the read on the record', () => messagesOf(space, 'hand-pi').find((entry) => entry.id === id && entry.readAt));
+});
+
+test('an adopted pi session whose extension predates messages to adopted sessions keeps the keystrokes, and both replies name that case', async (t) => {
+  const space = await room(t);
+  // A 0.1.7 pi extension: it takes a new tool list, and messages only in a child Bellwether started.
+  const older = await DaemonClient.connect({ harness: 'pi', session: PI_SESSION, cwd: space.root, host: os.hostname(), paneId: PI_PANE, depth: 0, herdrSocket: space.fake.socketPath, accepts: ['tools'] }, { socketPath: space.socketPath, home: space.home, spawn: false });
+  t.after(() => older.close());
+  const adopted = await space.parent.tool('agent_adopt', { target: PI_PANE });
+  assert.match(adopted, /now offers it parent_report: a report from it reaches this session\. Its Bellwether extension predates 0\.1\.8 and takes no message in a session Bellwether did not start, so agent_send types into its pane until pi starts again with 0\.1\.8 or later\./, adopted);
+
+  const reply = await space.parent.tool('agent_send', { child: 'hand-pi', text: 'Are you there?' });
+  assert.match(reply, /^Prompted hand-pi: herdr typed message m-[0-9a-f]{8} into its pane, because hand-pi is an adopted session whose Bellwether extension predates 0\.1\.8 and takes no message in a session Bellwether did not start\./, reply);
+  assert.doesNotMatch(reply, /has not started its Bellwether extension yet/);
+  assert.deepEqual(typed(space.fake, PI_PANE), ['Are you there?']);
+  assert.equal(messagesOf(space, 'hand-pi')[0]?.path, 'keystrokes');
+});
+
+test('an adopted Claude Code session whose Bellwether server is a tool server, not a channel, keeps the keystrokes, and both replies say why', async (t) => {
+  const space = await room(t);
+  await handStartedClaude(t, space, CLAUDE_SESSION);
+  const adopted = await space.parent.tool('agent_adopt', { target: CLAUDE_PANE, name: 'first-mate' });
+  assert.match(adopted, /a report from it reaches this session\. Claude Code puts a server's message in a session only when the session started with that server as a channel, which a session Bellwether did not start never did, so agent_send types into its pane\./, adopted);
+
+  const reply = await space.parent.tool('agent_send', { child: 'first-mate', text: 'Stop after this commit.' });
+  assert.match(reply, /^Prompted first-mate: herdr typed message m-[0-9a-f]{8} into its pane, because first-mate is an adopted session whose Bellwether server takes no messages: Claude Code puts a server's message in a session only when the session started with that server as a channel\./, reply);
+  assert.deepEqual(typed(space.fake, CLAUDE_PANE), ['Stop after this commit.']);
+});
+
+test('a message to an adopted session with no Bellwether adapter is typed, and the reason says the session has none', async (t) => {
+  const space = await room(t);
+  await space.parent.tool('agent_adopt', { target: BARE_PANE });
+  const reply = await space.parent.tool('agent_send', { child: 'bare-claude', text: 'Status?' });
+  assert.match(reply, /^Prompted bare-claude: herdr typed message m-[0-9a-f]{8} into its pane, because bare-claude is an adopted session with no Bellwether server or extension connected to this machine's daemon, so nothing in it can take a message\./, reply);
+  assert.deepEqual(typed(space.fake, BARE_PANE), ['Status?']);
 });

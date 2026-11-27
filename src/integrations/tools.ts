@@ -53,6 +53,8 @@ export interface ToolContext {
   inbox?: Inbox;
   /** Whether a Bellwether adapter from a pane on this machine is connected to the daemon, so an adoption can say whether the session can report. */
   sessionReach?: (paneId: string) => SessionReach;
+  /** Whether the adapter connected from an adopted pane on this machine takes a parent's message, or undefined when none is. */
+  sessionMessages?: (paneId: string) => boolean | undefined;
 }
 
 function clientFor(ctx: ToolContext, host: string): Promise<HerdrClient> {
@@ -336,13 +338,25 @@ function resolve(record: ReturnType<typeof readParent>, child: string): ChildRec
  * part is not a workspace id, as child-box:first-mate.
  */
 /**
+ * The end of the adoption's sentence about a session that now reports: what a
+ * message from agent_send does in it (issue #168). Unknown, as from a far
+ * daemon that predates the answer, promises nothing.
+ */
+function adoptedMessages(messages: boolean | undefined, kind: string): string {
+  if (messages === true) return ', and a message from agent_send enters its session.';
+  if (messages === undefined) return '.';
+  const inbox = harnessFor(kind)?.inbox;
+  return `. ${inbox && inbox.via !== 'none' ? inbox.adopted.reply : 'Its Bellwether adapter takes no messages, so agent_send types into its pane.'}`;
+}
+
+/**
  * What an adoption gives the parent, in one paragraph: whether the adopted
  * session can report, from the daemon where its pane runs, which knows which
  * Bellwether adapters are connected there.
  */
-export function adoptedReach(reach: SessionReach | undefined, host: string): string {
+export function adoptedReach(reach: SessionReach | undefined, host: string, messages?: boolean, kind = ''): string {
   const daemon = host === LOCAL_HOST ? "this machine's daemon" : `the daemon on machine ${host}`;
-  if (reach === 'tools') return `Its session holds a Bellwether server or extension, connected to ${daemon}, which now offers it parent_report: a report from it reaches this session.`;
+  if (reach === 'tools') return `Its session holds a Bellwether server or extension, connected to ${daemon}, which now offers it parent_report: a report from it reaches this session${adoptedMessages(messages, kind)}`;
   if (reach === 'older') return `Its session holds a Bellwether server or extension, connected to ${daemon}, from a release before 0.1.7, which takes no new tool list while it runs. It gains parent_report the next time it connects to the daemon, as after an upgrade hands the daemon over. Until then, its status changes start your turns.`;
   if (reach === 'none') return `Its session holds no Bellwether server or extension connected to ${daemon}, so it cannot call parent_report. Its status changes still start your turns, and agent_send types into its pane. A session gets parent_report only from a Bellwether server or extension it loaded at its start: a plugin, a user-level server or pi's package.`;
   if (host !== LOCAL_HOST) return `Bellwether on machine ${host} predates 0.1.7, so it routes no report from an adopted session there: this child cannot call parent_report until that machine runs 0.1.7 or later. Its status changes still start your turns.`;
@@ -529,13 +543,14 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
       throw new Error(`Cannot adopt ${target} on machine ${host}: ${(error as Error).message}`);
     }
     const claim = ctx.remote?.claim?.bind(ctx.remote);
-    const { child, link, already, session: farReach } = await adoptPane(client, record, { target, host, name: optionalString(args['name']), stuckMinutes: typeof args['stuck_minutes'] === 'number' ? (args['stuck_minutes'] as number) : undefined, ...(claim ? { claim } : {}) });
+    const { child, link, already, session: farReach, messages: farMessages } = await adoptPane(client, record, { target, host, name: optionalString(args['name']), stuckMinutes: typeof args['stuck_minutes'] === 'number' ? (args['stuck_minutes'] as number) : undefined, ...(claim ? { claim } : {}) });
     if (already) return `${child.name} in pane ${child.paneId} is already a child of this session.`;
     const where = host === LOCAL_HOST ? '' : ` on machine ${host}`;
     const session = child.session ? ` Its harness session is ${child.session.value}.` : '';
     const outage = host === LOCAL_HOST ? '' : ` While the connection to machine ${host} is down, agent_list shows it unreachable, not exited.`;
     const reach = host === LOCAL_HOST ? ctx.sessionReach?.(child.paneId) : farReach;
-    return [`Adopted ${child.name}, a ${child.kind} agent${where} in pane ${child.paneId}, as child ${child.id}. Bellwether watches it from now on.${session}${outage}`, adoptedReach(reach, host), `herdr link: ${link}`].join('\n');
+    const messages = host === LOCAL_HOST ? ctx.sessionMessages?.(child.paneId) : farMessages;
+    return [`Adopted ${child.name}, a ${child.kind} agent${where} in pane ${child.paneId}, as child ${child.id}. Bellwether watches it from now on.${session}${outage}`, adoptedReach(reach, host, messages, child.kind), `herdr link: ${link}`].join('\n');
   }
 
   if (name === 'agent_list') {

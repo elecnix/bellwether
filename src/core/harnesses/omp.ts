@@ -117,7 +117,10 @@ export const omp: HarnessEntry = {
     remoteEnv: [OMP_SKIP_SETUP],
   },
   // omp loads the same pi extension, whose sendMessage takes a parent's message.
-  inbox: { via: 'pi-message' },
+  inbox: {
+    via: 'pi-message',
+    adopted: { adapter: 'extension', why: 'predates 0.1.8 and takes no message in a session Bellwether did not start', reply: 'Its Bellwether extension predates 0.1.8 and takes no message in a session Bellwether did not start, so agent_send types into its pane until omp starts again with 0.1.8 or later.' },
+  },
   conversation: {
     // herdr's omp integration reports the session file's path; an id comes only from a session omp does not save.
     locate: (session) => (session ? locateSessionPath(session) : undefined) ?? { missing: session ? `omp reported session ${session} without a file, so it saves no transcript` : 'herdr has not reported the session yet' },

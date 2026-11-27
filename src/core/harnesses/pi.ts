@@ -35,8 +35,12 @@ export const pi: HarnessEntry = {
     local: (_child, context) => ({ piExtension: resolvePiExtension((context.piExtension ?? piExtensionEntry)()) }),
     remote: 'piExtension',
   },
-  // The child's extension hands a parent's message to pi.sendMessage.
-  inbox: { via: 'pi-message' },
+  // The child's extension hands a parent's message to pi.sendMessage. From
+  // 0.1.8 on, it does so in any session, so an adopted one takes messages too.
+  inbox: {
+    via: 'pi-message',
+    adopted: { adapter: 'extension', why: 'predates 0.1.8 and takes no message in a session Bellwether did not start', reply: 'Its Bellwether extension predates 0.1.8 and takes no message in a session Bellwether did not start, so agent_send types into its pane until pi starts again with 0.1.8 or later.' },
+  },
   conversation: { locate: (session) => locatePiTranscript(session), modelOf: piSessionModel },
   resume: { args: (session) => ['--session', session.value], fromTranscript: (file) => ({ value: file, kind: 'path' }) },
   classify: { status: 'herdr', dialogs: { from: 'extension' }, activity: 'transcript' },

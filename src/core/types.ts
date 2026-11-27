@@ -130,10 +130,20 @@ export interface ChildRecord {
   /** The last report the child sent, and when. */
   lastReport?: { status: ReportStatus; text: string; at: string; seq: number };
   /**
-   * Set when a report arrives and cleared when the turn it covered ends, so a
-   * child that reported does not also produce an idle event for the same turn.
+   * Set when a final report arrives while its turn still runs, and cleared
+   * when that turn ends, so a child that reported does not also produce an
+   * idle event for the same turn.
    */
   reportPending?: boolean;
+  /**
+   * The newest turn the parent heard about, by a report or an idle event, and
+   * the pane that ran it. The watcher compares each finished turn against it
+   * rather than against herdr's current answer, so a status herdr repeats, a
+   * snapshot that reads the same turn again, or a watcher that starts again
+   * raises no second event. `seq` is herdr's completion_seq, or the watcher's
+   * own count of turns ends for a pane herdr does not number.
+   */
+  turnNotified?: { paneId: string; seq: number };
   /** The last time the child's transcript or screen moved. */
   lastBusyAt: string;
   /**

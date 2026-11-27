@@ -463,7 +463,15 @@ export class Watcher {
       if (child.exitedAt && child.harnessEnded) return;
       const status = statusOf(event.data, child.lastStatus);
       const stateSeq = typeof event.data['state_change_seq'] === 'number' ? (event.data['state_change_seq'] as number) : undefined;
+      // herdr numbers the turn on the event that ends it. Read the number here,
+      // as reconcile does from a snapshot, so the turn has one number from its
+      // end on: a later snapshot that reads the same turn finds it already known.
+      const seq = typeof event.data['completion_seq'] === 'number' ? (event.data['completion_seq'] as number) : undefined;
       updateChild(this.parentId, child.id, (entry) => {
+        if (seq !== undefined && seq !== entry.completionSeq) {
+          entry.completionSeq = seq;
+          entry.lastBusyAt = new Date().toISOString();
+        }
         if (status !== 'unknown' && !entry.harnessSeenAt) entry.harnessSeenAt = new Date().toISOString();
         if (entry.prompt?.source === 'screen' && (entry.lastStatus !== status || (stateSeq !== undefined && stateSeq !== entry.stateChangeSeq))) delete entry.prompt;
         if (entry.lastStatus !== status) {
@@ -633,19 +641,6 @@ export class Watcher {
           entry.inactiveNotifiedFor = notifiedFor;
         });
       }
-      // A report for this turn already told the parent everything the idle
-      // event would say, so keep the one message.
-      if (event === 'idle' && child.reportPending) {
-        updateChild(this.parentId, child.id, (entry) => {
-          entry.reportPending = false;
-        });
-        this.states.set(child.id, markReported(next, now));
-        continue;
-      }
-      if (event === 'idle' && child.lastReport && Date.parse(child.lastReport.at) >= Date.parse(child.statusChangedAt)) {
-        this.states.set(child.id, markReported(next, now));
-        continue;
-      }
       // Bellwether reports a dialog and never answers it, apart from Claude
       // Code's own startup questions, which answerStartupDialog owns. Approving
       // a permission question is the operator's decision, not the tool's: do not
@@ -698,9 +693,37 @@ export class Watcher {
         }
       }
       const quietSince = event === 'inactive' ? next.lastActivityAt : next.lastBusyAt;
+      // Written before the offer, so a watcher that starts again cannot send the same turn twice.
+      this.remember(child);
       this.offer(child, event, await this.describe(child, event, quietSince, now));
     }
+    for (const child of record.children) this.remember(child);
     this.publish();
+  }
+
+  /**
+   * Keep on the child record the turn the parent last heard about, and a final
+   * report that waits for its turn to end. A watcher seeds a child from these,
+   * so a new service, a daemon that took over, or a reconnect compares against
+   * what the parent was told rather than against herdr's current answer.
+   */
+  private remember(child: ChildRecord): void {
+    const state = this.states.get(child.id);
+    if (!state || !child.paneId) return;
+    const seq = state.reportedFor;
+    const pending = Boolean(state.reportPending);
+    const known = child.turnNotified?.paneId === child.paneId ? child.turnNotified.seq : undefined;
+    if (known === seq && Boolean(child.reportPending) === pending) return;
+    updateChild(this.parentId, child.id, (entry) => {
+      // The record moved to another pane since this pass read it: that pane counts its own turns.
+      if (entry.paneId !== child.paneId) return;
+      if (seq === undefined) delete entry.turnNotified;
+      else entry.turnNotified = { paneId: child.paneId, seq };
+      if (pending) entry.reportPending = true;
+      else delete entry.reportPending;
+    });
+    child.turnNotified = seq === undefined ? undefined : { paneId: child.paneId, seq };
+    child.reportPending = pending || undefined;
   }
 
   private readonly answering = new Set<string>();
@@ -859,7 +882,9 @@ export class Watcher {
     // lastBusyAt can be written by another process that only sees file size.
     if (event === 'stuck') return `${childLabel(child)} has been quiet for ${this.age(quietSince, now)}. Last screen lines:\n${trim(await this.screenTail(child))}`;
     if (event === 'inactive') return `${childLabel(child)} has shown no activity for ${this.age(quietSince, now)}, and its status is ${child.lastStatus}.${this.relayWarning(child)} Last screen lines:\n${trim(await this.screenTail(child))}`;
-    const text = child.lastReport?.text?.trim() || (await this.lastMessage(child)) || trim(await this.screenTail(child));
+    // The turn's own last message, never the last report: a report is an event
+    // of its own, and the record keeps it after the turn it belonged to.
+    const text = (await this.lastMessage(child)) || trim(await this.screenTail(child));
     return `${childLabel(child)} went idle after ${age}:${text ? `\n${text}` : ' no message and no readable screen.'}`;
   }
 
@@ -966,10 +991,12 @@ export class Watcher {
     updateChild(this.parentId, child.id, (entry) => {
       entry.lastReport = { status: report.status, text: report.text, at: report.at, seq: report.seq };
       entry.lastBusyAt = report.at;
-      entry.reportPending = true;
     });
-    const state = this.states.get(child.id);
-    if (state) this.states.set(child.id, markReported(state, this.now()));
+    // A child this watcher has not evaluated yet starts from its record, so the
+    // report covers the right turn either way.
+    const now = this.now();
+    this.states.set(child.id, markReported(this.states.get(child.id) ?? seedFor(child, now), now, report.status !== 'progress'));
+    this.remember(child);
     const label = report.status === 'needs-input' ? 'needs input' : report.status;
     this.offer(child, 'report', `${childLabel(child)} reported ${label}:\n${report.text}`);
     this.publish();

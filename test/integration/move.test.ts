@@ -243,6 +243,8 @@ test('a Claude Code child moves to the other machine under the same id, resumes 
   const [args] = startArgs(w.box);
   assert.deepEqual(args?.slice(args.indexOf('--resume'), args.indexOf('--resume') + 2), ['--resume', 'sess-1']);
   assert.ok(args?.some((arg) => arg.startsWith(`--mcp-config=${w.box.home}`)), args?.join(' '));
+  // A move resumes the session, so it hands the child no brief to read.
+  assert.ok(!args?.some((arg) => arg.startsWith('@')), args?.join(' '));
   assert.ok(inHome(w.box.home, () => readRelayRecord('child-worker')), 'the target holds the relay record its reports wait on');
   assert.equal(fs.existsSync(mcpConfigPath('child-worker')), false, 'the config on the machine it left is gone');
   assert.equal(w.here.world.panes.has('w1:p3'), false, 'the source tab is closed');
@@ -263,6 +265,15 @@ test('a resume that fails on the target rolls back: the child runs again where i
   const hereCwd = dir(w.here.user, 'src', 'repo');
   const boxCwd = dir(w.box.user, 'Source', 'repo');
   claudeHere(w, hereCwd);
+  const watcher = new Watcher({ client: w.here.client, clientFor: w.deps.clientFor, parentId: w.parentId, onEntries: () => {} });
+  watcher.start();
+  t.after(() => watcher.stop());
+  await w.here.herdr.waitFor('events.subscribe');
+  const close = w.here.world.answer.bind(w.here.world);
+  w.here.world.answer = (request) => {
+    if (request.method === 'tab.close') setTimeout(() => w.here.herdr.send({ event: 'pane_closed', data: { pane_id: 'w1:p3' } }), 5);
+    return close(request);
+  };
 
   const failure = await moveChild(w.deps, w.parentId, { child: 'worker', machine: 'box', cwd: boxCwd }).then(
     () => undefined,
@@ -283,6 +294,10 @@ test('a resume that fails on the target rolls back: the child runs again where i
   assert.deepEqual(args?.slice(args.indexOf('--resume'), args.indexOf('--resume') + 2), ['--resume', 'sess-1']);
   assert.equal(fs.existsSync(path.join(w.box.claude, 'projects', claudeProjectDir(fs.realpathSync(boxCwd)), 'sess-1.jsonl')), false, 'the copy on the target is removed');
   assert.equal(moveLog()[0]?.['outcome'], 'rolled-back');
+  assert.equal(back?.id, 'child-worker');
+  assert.ok(!args?.some((arg) => arg.startsWith('@')), 'the rollback resumes too, with no brief');
+  await delay(100);
+  assert.deepEqual(watcher.outboxEntries().filter((entry) => entry.event === 'exited'), [], 'the parent hears no exit for a child that came back');
 });
 
 test('a pi child moves the other way, from the other machine to this one, into a different directory', async (t) => {

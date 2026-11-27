@@ -57,6 +57,31 @@ test('an exit names the child by its pane, and removes its brief and MCP config'
   }
 });
 
+test('an exit of a child on another machine removes its brief and MCP config there', async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'bellwether-watcher-'));
+  const previous = process.env['BELLWETHER_HOME'];
+  process.env['BELLWETHER_HOME'] = home;
+  const herdr = await startFakeHerdr();
+  const parent = emptyParent('pi', 'watcher-remote', home);
+  parent.children.push({ ...child('cccc3333', 'far-child', 'w2:p3'), host: 'remote-box' });
+  saveParent(parent);
+  const cleaned: string[] = [];
+  let entries: OutboxEntry[] = [];
+  const client = new HerdrClient({ socketPath: herdr.socketPath });
+  const watcher = new Watcher({ client, clientFor: async () => client, parentId: parent.id, onEntries: (next) => (entries = next), tickMs: 60_000, cleanupRemote: async (gone) => void cleaned.push(`${gone.host}:${gone.id}`) });
+  try {
+    watcher.start();
+    await until('the exit event', () => (entries.length === 1 ? entries : undefined));
+    assert.deepEqual(cleaned, ['remote-box:cccc3333']);
+  } finally {
+    watcher.stop();
+    await herdr.stop();
+    if (previous === undefined) delete process.env['BELLWETHER_HOME'];
+    else process.env['BELLWETHER_HOME'] = previous;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
 test('a child whose spawn is answering its dialogs produces no blocked event until the hold ends', async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'bellwether-watcher-'));
   const previous = process.env['BELLWETHER_HOME'];

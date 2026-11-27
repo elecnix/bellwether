@@ -21,7 +21,7 @@ Bellwether uses your SSH configuration as it stands, with `BatchMode=yes`. It do
 
 Each machine runs its own daemon. The parent's daemon keeps the registry of record.
 
-1. Before the child's tab opens, the parent's daemon runs `bellwether relay-register` on the child's machine. That writes a relay record with the child, the parent and the parent's SSH target, and, for a Claude Code child, its MCP config.
+1. Before the child's tab opens, the parent's daemon runs `bellwether relay-register` on the child's machine. That writes a relay record with the child, the parent and the parent's SSH target, and, for a Claude Code child, its MCP config. The same command reads the child's brief from its standard input, so the brief never appears on a command line, and writes it to that machine's `~/.bellwether/prompts/<child id>.md` with mode 0600. The harness gets an `@` reference to that copy. When the copy fails, the spawn fails before any tab opens, so no child starts without its task. When the child exits, when `agent_stop` closes it, or when its spawn fails, `bellwether relay-cleanup` removes the brief and the MCP config there.
 
 2. The child calls `parent_report`, which goes to the daemon on its own machine. That daemon writes the report to its relay outbox, then forwards it in one SSH command.
 
@@ -33,7 +33,7 @@ A resume goes back to the child's original machine.
 
 ## Reports that do not arrive
 
-When registration fails, the child still starts and herdr status still follows it. Read the spawn's reply for why the child can't report.
+When registration fails for a child with no brief, the child still starts and herdr status still follows it. Read the spawn's reply for why the child can't report.
 
 A failed hop leaves the report in the relay outbox under `~/.bellwether/relay/outbox/` on the child's machine. Retries back off from 2 seconds to 5 minutes, and the daemon keeps running until the outbox empties. In the relay record under `~/.bellwether/relay/children/`, `unforwarded` counts those reports and `lastForwardError` shows the newest error. Each attempt logs its host in the daemon log.
 

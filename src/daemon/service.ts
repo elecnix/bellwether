@@ -37,8 +37,9 @@ export function createHerdrService(parent: ParentHello, id: string): ParentServi
   // One client per herdr host, shared by the tools and the watcher, so a
   // machine's bridge is dialled per request and its profile looked up once.
   const clientFor = machineClients(client);
-  const watcher = new Watcher({ client, clientFor, parentId: record.id, onEntries: (entries) => handler?.(entries) });
-  const context: ToolContext = { client, clientFor, parentId: record.id, watcher, remote: remoteOps() };
+  const remote = remoteOps();
+  const watcher = new Watcher({ client, clientFor, parentId: record.id, onEntries: (entries) => handler?.(entries), cleanupRemote: (child) => remote.cleanup(child) });
+  const context: ToolContext = { client, clientFor, parentId: record.id, watcher, remote };
   const paneWatches = new Set<{ close: () => void }>();
   watcher.start();
   return {

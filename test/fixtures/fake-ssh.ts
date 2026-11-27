@@ -6,6 +6,7 @@
 // target, so two machines are two homes in one temporary root. A `bellwether`
 // shim beside it runs this checkout's CLI and records its own argv, which is
 // what the remote side of a hop actually received after the shell unquoted it.
+// Standard input passes through to the remote command.
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -53,8 +54,10 @@ if (step === 'refuse') { process.stderr.write('ssh: connect to host ' + target +
 const machines = JSON.parse(fs.readFileSync(path.join(dir, 'machines.json'), 'utf8'));
 const machine = machines[target];
 if (!machine) { process.stderr.write('ssh: Could not resolve hostname ' + target + '\\n'); process.exit(255); }
+let input = '';
+try { input = fs.readFileSync(0, 'utf8'); } catch {}
 const env = { ...process.env, HOME: machine.userHome, BELLWETHER_HOME: machine.home, BELLWETHER_DAEMON_SOCKET: path.join(machine.home, 'daemon.sock'), FAKE_SSH_TARGET: target, PATH: dir + path.delimiter + process.env.PATH };
-const result = spawnSync('sh', ['-c', command], { env, encoding: 'utf8' });
+const result = spawnSync('sh', ['-c', command], { env, input, encoding: 'utf8' });
 process.stdout.write(result.stdout || '');
 process.stderr.write(result.stderr || '');
 if (step === 'drop') { process.stderr.write('Connection to ' + target + ' closed by remote host.\\n'); process.exit(255); }

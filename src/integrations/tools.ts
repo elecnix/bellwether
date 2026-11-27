@@ -2,7 +2,7 @@
 // MCP channel server register exactly the same names and schemas.
 import os from 'node:os';
 import type { HerdrClient } from '../core/herdr-client.ts';
-import { AGENT_KINDS, DEFAULT_MAX_DEPTH, spawnChild, type SpawnOptions } from '../core/spawn.ts';
+import { AGENT_KINDS, DEFAULT_MAX_DEPTH, spawnChild, type RegisterRemote, type SpawnOptions } from '../core/spawn.ts';
 import { removeChildFiles } from '../core/mcp-config.ts';
 import { reportForCaller } from '../core/report.ts';
 import { childById, readParent, updateChild } from '../core/registry.ts';
@@ -214,6 +214,7 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
       args: Array.isArray(args['args']) ? (args['args'] as string[]) : undefined,
       focus: args['focus'] === true,
       registerRemote: registrar(ctx, record),
+      cleanupRemote: remoteCleanup(ctx),
     });
     const { child } = result;
     const lines = result.corrected ? [result.corrected] : [];
@@ -247,7 +248,7 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
     if (!options.name) throw new Error('agent_spawn needs a name for a new child, or resume to message an earlier one.');
     // Resolve the machine before anything is written, so a typo leaves no record.
     const client = await clientFor(ctx, options.host ?? LOCAL_HOST);
-    const { child, link, reportWarning } = await spawnChild(client, record, options, undefined, { forget: (childId) => ctx.watcher.forget(childId), registerRemote: registrar(ctx, record) });
+    const { child, link, reportWarning } = await spawnChild(client, record, options, undefined, { forget: (childId) => ctx.watcher.forget(childId), registerRemote: registrar(ctx, record), cleanupRemote: remoteCleanup(ctx) });
     const where = child.host === LOCAL_HOST ? '' : ` on machine ${child.host}`;
     const lines = [`${child.name} started as a ${child.kind} agent${where} in pane ${child.paneId}, tab ${child.tabId ?? child.paneId}.`, `Bellwether watches it, and your next turn starts when it changes state.`, `herdr link: ${link}`];
     if (reportWarning) lines.push(reportWarning);
@@ -309,15 +310,22 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
       entry.exitedAt = new Date().toISOString();
     });
     removeChildFiles(child.id);
+    // A child on another machine has its brief and config there.
+    if (hostOf(child) !== LOCAL_HOST) await ctx.remote?.cleanup(child).catch(() => {});
     return `Closed ${child.name}.`;
   }
 
   throw new Error(`Bellwether has no tool named ${name}`);
 }
 
-function registrar(ctx: ToolContext, record: { id: string }): ((child: ChildRecord) => Promise<{ mcpConfig?: string }>) | undefined {
+function registrar(ctx: ToolContext, record: { id: string }): RegisterRemote | undefined {
   const remote = ctx.remote;
-  return remote ? (child) => remote.register(record, child) : undefined;
+  return remote ? (child, brief) => remote.register(record, child, brief) : undefined;
+}
+
+function remoteCleanup(ctx: ToolContext): ((child: ChildRecord) => Promise<void>) | undefined {
+  const remote = ctx.remote;
+  return remote ? (child) => remote.cleanup(child) : undefined;
 }
 
 /**

@@ -12,7 +12,8 @@ import { emptyParent, listParents, readParent, saveParent } from './core/registr
 import { isReportStatus } from './core/report.ts';
 import { RELAY_SCHEMA, saveRelayRecord } from './core/relay-records.ts';
 import { relayChildPath } from './core/paths.ts';
-import { writeMcpConfig } from './core/mcp-config.ts';
+import { writeBrief } from './core/brief.ts';
+import { removeChildFiles, writeMcpConfig } from './core/mcp-config.ts';
 import { REFUSED_EXIT } from './core/ssh.ts';
 import { lastAssistantMessage, resolveTranscript } from './core/transcript.ts';
 import { DaemonClient, ReportRefused, drainDaemon, postReport } from './daemon/client.ts';
@@ -234,7 +235,8 @@ async function main(): Promise<number> {
     console.log('  send   CHILD [--text TEXT | --keys KEY,...]');
     console.log('  stop   CHILD [--force]');
     console.log('  report --child ID --status done|needs-input|progress --text TEXT [--parent ID] [--receipt ID]');
-    console.log('  relay-register --child ID --name NAME --kind KIND --parent ID --parent-host SSH_TARGET [--cwd DIR]');
+    console.log('  relay-register --child ID --name NAME --kind KIND --parent ID --parent-host SSH_TARGET [--cwd DIR] [--brief-stdin yes]');
+    console.log('  relay-cleanup --child ID                 remove the brief and MCP config relay-register wrote');
     console.log('  last-message --harness pi|claude-code --session ID [--cwd DIR]');
     return 0;
   }
@@ -270,6 +272,7 @@ async function main(): Promise<number> {
 
   if (command === 'report') return report(rest);
   if (command === 'relay-register') return relayRegister(rest);
+  if (command === 'relay-cleanup') return relayCleanup(rest);
   if (command === 'last-message') return lastMessage(rest);
 
   const { id: parentId } = parentFor(flags);
@@ -375,18 +378,31 @@ async function report(argv: string[]): Promise<number> {
 /**
  * Record, on this machine, a child whose parent runs on another machine. A
  * parent's daemon runs it here over SSH before it creates the child's tab.
- * It prints the record path and, for a Claude Code child, the MCP config the
- * child starts with, as one JSON line.
+ * With --brief-stdin it reads the child's brief from standard input and
+ * writes it to this machine's prompts directory, so the harness is pointed at
+ * a file that exists here. It prints the record path, the brief and, for a
+ * Claude Code child, the MCP config the child starts with, as one JSON line.
  */
 function relayRegister(argv: string[]): number {
-  const values = exactFlags(argv, ['child', 'name', 'kind', 'parent', 'parent-host', 'cwd']);
+  const values = exactFlags(argv, ['child', 'name', 'kind', 'parent', 'parent-host', 'cwd', 'brief-stdin']);
   const childId = values['child'];
   const parentId = values['parent'];
   const parentHost = values['parent-host']?.trim();
   if (!childId || !parentId || !parentHost) throw new Error('relay-register needs --child, --parent and --parent-host');
+  const brief = values['brief-stdin'] === 'yes' ? writeBrief(childId, fs.readFileSync(0, 'utf8')) : undefined;
   saveRelayRecord({ schema: RELAY_SCHEMA, childId, name: values['name'] ?? childId, kind: values['kind'] ?? 'other', parentId, parentHost, ...(values['cwd'] ? { cwd: values['cwd'] } : {}), registeredAt: new Date().toISOString() });
   const mcpConfig = values['kind'] === 'claude' ? writeMcpConfig(childId) : undefined;
-  console.log(JSON.stringify({ record: relayChildPath(childId), ...(mcpConfig ? { mcpConfig } : {}) }));
+  console.log(JSON.stringify({ record: relayChildPath(childId), ...(brief ? { brief } : {}), ...(mcpConfig ? { mcpConfig } : {}) }));
+  return 0;
+}
+
+/** Remove the files relay-register wrote for a child that is gone. The relay record stays, for reports still in flight. */
+function relayCleanup(argv: string[]): number {
+  const values = exactFlags(argv, ['child']);
+  const childId = values['child'];
+  if (!childId) throw new Error('relay-cleanup needs --child');
+  removeChildFiles(childId);
+  console.log(JSON.stringify({ removed: childId }));
   return 0;
 }
 

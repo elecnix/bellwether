@@ -47,6 +47,8 @@ export interface WatcherOptions {
   log?: (message: string) => void;
   /** git, gh and the process table, for the retirement cleanup. Tests pass a fake. */
   retireOps?: RetireOps;
+  /** Remove a child's brief and MCP config on its own machine, for a child on another one. */
+  cleanupRemote?: (child: ChildRecord) => Promise<void>;
   /** How many times the cleanup looks again for a process leaving the worktree, and how long it waits. */
   retireBusyRetries?: number;
   retireBusyDelayMs?: number;
@@ -62,6 +64,7 @@ export class Watcher {
   private readonly screenPollMs: number;
   private readonly log: (message: string) => void;
   private readonly retireOps: RetireOps;
+  private readonly cleanupRemote: ((child: ChildRecord) => Promise<void>) | undefined;
   private readonly retireBusy: { retries?: number; delayMs?: number };
   /** Retirements in flight, so an exit event and a start never clean the same child at once. */
   private readonly retiring = new Map<string, Promise<void>>();
@@ -92,6 +95,7 @@ export class Watcher {
     this.screenPollMs = options.screenPollMs ?? 30_000;
     this.log = options.log ?? (() => {});
     this.retireOps = options.retireOps ?? realRetireOps();
+    this.cleanupRemote = options.cleanupRemote;
     this.retireBusy = { retries: options.retireBusyRetries, delayMs: options.retireBusyDelayMs };
     this.outbox = Outbox.load(this.parentId);
   }
@@ -274,6 +278,9 @@ export class Watcher {
       entry.lastStatus = 'unknown';
     });
     removeChildFiles(child.id);
+    if (hostOf(child) !== LOCAL_HOST && this.cleanupRemote) {
+      this.cleanupRemote(child).catch((error: unknown) => this.log(`could not remove ${child.name}'s files on machine ${hostOf(child)}: ${(error as Error).message}`));
+    }
     this.offer(child, 'exited', this.describeExit(child, code));
     void this.retire(child.id);
   }

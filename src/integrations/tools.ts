@@ -2,6 +2,7 @@
 // MCP channel server register exactly the same names and schemas.
 import os from 'node:os';
 import type { HerdrClient } from '../core/herdr-client.ts';
+import { BLANK_SCREEN, shownScreen } from '../core/screen.ts';
 import { spawnChild, type RegisterRemote, type SpawnOptions } from '../core/spawn.ts';
 import { agentKinds, harnessFor, harnessNamed, locateTranscript } from '../core/harnesses/index.ts';
 import { GRANT_DEPTH_TOOL, REQUEST_DEPTH_TOOL, ceilingOf, childCeiling, describeDepth, grantDepth, raiseTree, requestDepth } from '../core/depth.ts';
@@ -580,7 +581,7 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
   if (name === 'agent_read') {
     const lines = typeof args['lines'] === 'number' ? (args['lines'] as number) : undefined;
     // Pane feature: agent_read with lines, a screen the parent asked to see.
-    if (lines) return (await herdr.paneRead({ paneId: child.paneId, source: 'recent_unwrapped', lines })).trim();
+    if (lines) return shownScreen(await herdr.paneRead({ paneId: child.paneId, source: 'recent_unwrapped', lines }));
     if (hostOf(child) !== LOCAL_HOST) return readRemoteChild(ctx, child, herdr);
     // A working directory that is gone, or a retirement, comes first, in one line.
     const note = goneCwdLine(child, ctx.retireOps ?? realRetireOps()) ?? (child.retireOutcome ? retireLine(child) : undefined);
@@ -608,8 +609,8 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
   if (name === 'agent_stop') {
     if (!args['force'] && (child.lastStatus === 'working' || child.lastStatus === 'blocked')) {
       // Pane feature: agent_stop shows the parent what the busy child is doing.
-      const tail = await herdr.paneRead({ paneId: child.paneId, source: 'recent_unwrapped', lines: 20 }).catch(() => '');
-      return `${child.name} is ${child.lastStatus}, so agent_stop refused to close it. Pass force to close it anyway.\n${tail.trim()}`;
+      const tail = shownScreen(await herdr.paneRead({ paneId: child.paneId, source: 'recent_unwrapped', lines: 20 }).catch(() => BLANK_SCREEN));
+      return `${child.name} is ${child.lastStatus}, so agent_stop refused to close it. Pass force to close it anyway.\n${tail}`;
     }
     // The stop retires the child: the intent is written before the tab closes,
     // and the daemon removes the worktree after it, never the child. Issue #143.
@@ -665,7 +666,7 @@ async function readLocalChild(ctx: ToolContext, child: ChildRecord, herdr: Herdr
     if (pending) {
       if (!pending.withScreen) return pending.note;
       // Pane feature: agent_read for a child whose store holds no answer yet.
-      const screen = (await herdr.paneRead({ paneId: child.paneId, source: 'recent_unwrapped', lines: 40 }).catch(() => '')).trim();
+      const screen = shownScreen(await herdr.paneRead({ paneId: child.paneId, source: 'recent_unwrapped', lines: 40 }).catch(() => BLANK_SCREEN));
       return screen ? `${pending.note}\n${screen}` : pending.note;
     }
   }
@@ -673,7 +674,7 @@ async function readLocalChild(ctx: ToolContext, child: ChildRecord, herdr: Herdr
   const message = transcript ? lastAssistantMessage(transcript) : undefined;
   if (message) return message;
   // Pane feature: agent_read for a child whose transcript holds no message yet.
-  return (await herdr.paneRead({ paneId: child.paneId, source: 'recent_unwrapped', lines: 40 })).trim();
+  return shownScreen(await herdr.paneRead({ paneId: child.paneId, source: 'recent_unwrapped', lines: 40 }));
 }
 
 /**
@@ -746,8 +747,8 @@ async function readRemoteChild(ctx: ToolContext, child: ChildRecord, herdr: Herd
   if (child.lastReport) return `${why} Its last report, ${child.lastReport.status} at ${child.lastReport.at}:\n${child.lastReport.text}`;
   if (!child.exitedAt) {
     // Pane feature: agent_read on a remote child with no transcript and no report.
-    const screen = await herdr.paneRead({ paneId: child.paneId, source: 'recent_unwrapped', lines: 40 }).catch(() => '');
-    if (screen.trim()) return screen.trim();
+    const screen = shownScreen(await herdr.paneRead({ paneId: child.paneId, source: 'recent_unwrapped', lines: 40 }).catch(() => BLANK_SCREEN));
+    if (screen) return screen;
   }
   return `${why} It never reported${child.exitedAt ? ', and it has exited, so there is no screen to read' : ''}.`;
 }

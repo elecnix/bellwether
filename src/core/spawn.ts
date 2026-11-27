@@ -3,6 +3,7 @@
 // to start the harness in the tab's root pane, then watch the new pane.
 import os from 'node:os';
 import { HerdrApiError, type HerdrClient } from './herdr-client.ts';
+import { BLANK_SCREEN } from './screen.ts';
 import { LOCAL_HOST } from './machine.ts';
 import { newChildId } from './outbox.ts';
 import { PI_EXTENSION_ENV } from './pi-extension.ts';
@@ -371,7 +372,7 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
         // TODO(api): herdr's status does not name the dialog that holds a
         // pane, and a harness may record nothing of such a dialog. A status that
         // named the dialog, or a harness event for it, would retire this read.
-        const screen = entry.startup?.refuse?.length ? await client.paneRead({ paneId: tab.paneId, source: 'visible', lines: 40 }, signal).catch(() => '') : '';
+        const screen = entry.startup?.refuse?.length ? (await client.paneRead({ paneId: tab.paneId, source: 'visible', lines: 40 }, signal).catch(() => BLANK_SCREEN)).content : '';
         const refused = entry.startup && screen ? detectRefused(screen, entry.startup) : undefined;
         const tail = `The brief stays at ${briefFile} for inspection, and the pane is closed.`;
         if (refused) throw new StartupDialogRefused(`${child.name} was not started: ${entry.startup?.harness} stopped on ${refused.name}, which Bellwether never answers: ${refused.why} ${tail}`, refused.id);
@@ -664,7 +665,7 @@ export async function startHarness(client: HerdrClient, params: HarnessStart, si
     });
   // Pane feature: a start that failed quotes the harness's own lines to the
   // parent that asked for the spawn, so it reads why without opening the pane.
-  const quote = async (): Promise<string | undefined> => startupQuote(await client.paneRead({ paneId: params.paneId, source: 'visible', lines: 40 }, signal).catch(() => ''), params.kind, params.fatal);
+  const quote = async (): Promise<string | undefined> => startupQuote((await client.paneRead({ paneId: params.paneId, source: 'visible', lines: 40 }, signal).catch(() => BLANK_SCREEN)).content, params.kind, params.fatal);
   const exited = async (when: string): Promise<HarnessStartFailed> => {
     const said = await quote();
     return new HarnessStartFailed(`${params.kind} in pane ${params.paneId} exited ${when}${said ? `, and printed: ${said}` : ', and printed nothing Bellwether could read'}`);
@@ -713,7 +714,7 @@ export async function startHarness(client: HerdrClient, params: HarnessStart, si
           // the error, stays at its prompt, and herdr calls it idle. An
           // extension event for a model pi cannot authenticate, or an exit
           // status, would retire this read.
-          const screen = await client.paneRead({ paneId: params.paneId, source: 'visible', lines: 40 }, signal).catch(() => '');
+          const screen = (await client.paneRead({ paneId: params.paneId, source: 'visible', lines: 40 }, signal).catch(() => BLANK_SCREEN)).content;
           const line = fatalLine(screen, params.fatal);
           if (line) throw new HarnessStartFailed(`${params.kind} in pane ${params.paneId} stopped at startup without taking its prompt, and printed: ${line}`);
           break;

@@ -33,6 +33,7 @@ import { Watcher } from '../../src/core/watcher.ts';
 import { runBellwetherTool } from '../../src/integrations/tools.ts';
 import { daemonsUnder, stopDaemonsUnder } from '../fixtures/daemons.ts';
 import { hasHerdr, startLab } from './herdr-lab.ts';
+import { shownScreen } from '../../src/core/screen.ts';
 
 const probe = await probeOpenCode();
 const skip =
@@ -134,7 +135,7 @@ test('the OpenCode drill: a real OpenCode 2 gets its brief, reports to its paren
   // The brief arrived and the report went through the child's MCP server: the
   // parent's spool holds a done report with the word only the brief holds.
   const report = await until(() => spooled(parentId, child.id), 'the parent_report in the parent\'s spool', 180_000).catch(async (error: unknown) => {
-    console.log(`pane:\n${await herdr.paneRead({ paneId: child.paneId, source: 'recent_unwrapped', lines: 40 }).catch(() => '')}`);
+    console.log(`pane:\n${await herdr.paneRead({ paneId: child.paneId, source: 'recent_unwrapped', lines: 40 }).then(shownScreen).catch(() => '')}`);
     throw error;
   });
   assert.equal(report.status, 'done');

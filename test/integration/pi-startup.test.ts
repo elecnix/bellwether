@@ -16,6 +16,7 @@ import { spawnChild } from '../../src/core/spawn.ts';
 import { Watcher } from '../../src/core/watcher.ts';
 import type { OutboxEntry, ParentRecord } from '../../src/core/types.ts';
 import { harnessStart, startFakeHerdr, type FakeHerdr, type RecordedRequest } from '../fixtures/fake-herdr.ts';
+import { paneReadAnswer } from '../fixtures/ghost-screens.ts';
 
 const PANE = 'w1:p1';
 const SHELL_PID = 4100;
@@ -43,7 +44,7 @@ class PiPane {
       return { result: { type: 'ok' } };
     }
     if (request.method === 'pane.process_info') return { result: { type: 'pane_process_info', process_info: { pane_id: PANE, shell_pid: SHELL_PID, foreground_process_group_id: this.foreground } } };
-    if (request.method === 'pane.read') return { result: { type: 'pane_read', read: { pane_id: PANE, source: request.params['source'], format: 'text', text: this.screen } } };
+    if (request.method === 'pane.read') return { result: paneReadAnswer(request.params, this.screen, PANE) };
     if (request.method === 'agent.get') return { result: { type: 'agent_info', agent: this.detected ? { pane_id: PANE, agent: 'pi', agent_status: this.status, name: null } : { pane_id: PANE, agent_status: 'unknown', launch_pending: true } } };
     if (request.method === 'pane.list') return { result: { type: 'pane_list', panes: [{ pane_id: PANE }] } };
     return undefined;

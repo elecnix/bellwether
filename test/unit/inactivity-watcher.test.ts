@@ -14,6 +14,7 @@ import { emptyParent, readParent, saveParent } from '../../src/core/registry.ts'
 import { Watcher } from '../../src/core/watcher.ts';
 import type { OutboxEntry } from '../../src/core/types.ts';
 import { typedLaunchStub } from '../fixtures/typed-launch.ts';
+import { parseScreen } from '../../src/core/screen.ts';
 
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'bellwether-inactivity-watch-'));
 process.env['BELLWETHER_HOME'] = home;
@@ -35,7 +36,7 @@ function stubClient() {
     subscribe: launch.subscribe,
     request: async (method: string) => (method === 'pane.list' ? { panes: [] } : {}),
     snapshot: async () => ({}),
-    paneRead: async () => stub.screen,
+    paneRead: async () => parseScreen(stub.screen, 'ansi'),
   };
   return stub;
 }

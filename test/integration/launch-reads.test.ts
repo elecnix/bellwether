@@ -21,6 +21,7 @@ import { Watcher } from '../../src/core/watcher.ts';
 import type { OutboxEntry, ParentRecord } from '../../src/core/types.ts';
 import { harnessStart, startFakeHerdr, type FakeHerdr, type RecordedRequest } from '../fixtures/fake-herdr.ts';
 import { CHANNEL_ACCEPT_SELECTED, CLAUDE_PROMPT, DANGEROUS_RM_QUESTION, OUTSIDE_READ_QUESTION, TRUST_NO_SELECTED, TRUST_YES_SELECTED, UNKNOWN_STARTUP_QUESTION } from '../fixtures/claude-screens.ts';
+import { paneReadAnswer } from '../fixtures/ghost-screens.ts';
 
 const PANE = 'w1:p1';
 const SESSION = '7a1f00c2-5b8e-4c51-9d0e-1f2a3b4c5d6e';
@@ -113,7 +114,7 @@ class ClaudePane {
 
   respond = (request: RecordedRequest): { result: unknown } | undefined => {
     if (request.method === 'tab.create') this.cwd = String(request.params['cwd'] ?? '');
-    if (request.method === 'pane.read') return { result: { type: 'pane_read', read: { pane_id: PANE, source: request.params['source'], format: 'text', text: this.text() } } };
+    if (request.method === 'pane.read') return { result: paneReadAnswer(request.params, this.text(), PANE) };
     if (request.method === 'agent.get') return { result: { type: 'agent_info', agent: this.agentInfo() } };
     if (request.method === 'session.snapshot') return { result: { type: 'session_snapshot', snapshot: { panes: [], agents: [this.agentInfo()] } } };
     if (request.method === 'pane.list') return { result: { type: 'pane_list', panes: [{ pane_id: PANE }] } };

@@ -16,6 +16,7 @@ import { Watcher } from '../../src/core/watcher.ts';
 import type { OutboxEntry, ParentRecord } from '../../src/core/types.ts';
 import { startFakeHerdr, type FakeHerdr, type RecordedRequest, harnessStart } from '../fixtures/fake-herdr.ts';
 import { CHANNEL_ACCEPT_SELECTED, CHANNEL_FIVE_EXIT_SELECTED, CLAUDE_PROMPT, PERMISSION_QUESTION, TRUST_NO_SELECTED, TRUST_YES_SELECTED } from '../fixtures/claude-screens.ts';
+import { paneReadAnswer } from '../fixtures/ghost-screens.ts';
 
 const PANE = 'w1:p1';
 const SESSION = '2ec67aeb-f5b3-4cdc-bedf-eab67f3462ab';
@@ -52,7 +53,7 @@ class ClaudePane {
   }
 
   respond = (request: RecordedRequest): { result: unknown } | undefined => {
-    if (request.method === 'pane.read') return { result: { type: 'pane_read', read: { pane_id: PANE, source: request.params['source'], format: 'text', text: TEXT[this.screen] } } };
+    if (request.method === 'pane.read') return { result: paneReadAnswer(request.params, TEXT[this.screen], PANE) };
     if (request.method === 'agent.get') return { result: { type: 'agent_info', agent: this.agentInfo() } };
     if (request.method === 'session.snapshot') return { result: { type: 'session_snapshot', snapshot: { panes: [], agents: [this.agentInfo()] } } };
     if (request.method === 'pane.list') return { result: { type: 'pane_list', panes: [{ pane_id: PANE }] } };
@@ -95,6 +96,14 @@ class ClaudePane {
     this.status = status;
     this.seq += 1;
     this.fake.send({ event: 'pane_agent_status_changed', data: { pane_id: PANE, workspace_id: 'w1', agent: 'claude', agent_status: status } });
+  }
+}
+
+async function until(what: string, check: () => boolean, timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!check()) {
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+    await sleep(5);
   }
 }
 
@@ -241,7 +250,11 @@ test('a question the operator owns is still published as blocked', async () => {
     await sleep(60);
     pane.screen = 'permission';
     pane.setStatus('blocked');
-    await sleep(300);
+    // Wait for the event itself: a fixed sleep raced the settle time and the
+    // screen read on a loaded CI runner. The pause after it lets a second
+    // blocked event show up if one would.
+    await until('the blocked event', () => r.published.some((entry) => entry.event === 'blocked'));
+    await sleep(150);
     assert.deepEqual(pane.keys, []);
     const blocked = r.published.filter((entry) => entry.event === 'blocked');
     assert.equal(blocked.length, 1);

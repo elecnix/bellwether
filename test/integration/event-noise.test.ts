@@ -16,6 +16,7 @@ import { writeReport } from '../../src/core/report.ts';
 import { Watcher } from '../../src/core/watcher.ts';
 import type { ChildRecord, OutboxEntry } from '../../src/core/types.ts';
 import { startFakeHerdr, type FakeHerdr, type RecordedRequest } from '../fixtures/fake-herdr.ts';
+import { paneReadAnswer } from '../fixtures/ghost-screens.ts';
 
 const PANE = 'w1:p1';
 const LIMITS = { idleMs: 40, blockedMs: 20, stuckMs: 60_000 };
@@ -31,7 +32,7 @@ class Pane {
     this.seq = seq;
   }
   respond = (request: RecordedRequest): { result: unknown } | undefined => {
-    if (request.method === 'pane.read') return { result: { type: 'pane_read', read: { pane_id: PANE, source: request.params['source'], format: 'text', text: this.screen } } };
+    if (request.method === 'pane.read') return { result: paneReadAnswer(request.params, this.screen, PANE) };
     if (request.method === 'agent.get') return { result: { type: 'agent_info', agent: this.info() } };
     if (request.method === 'agent.list') return { result: { type: 'agent_list', agents: [this.info()] } };
     if (request.method === 'session.snapshot') return { result: { type: 'session_snapshot', snapshot: { panes: [], agents: [this.info()] } } };

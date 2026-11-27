@@ -19,6 +19,7 @@ import { startDaemon, type ServiceFactory } from '../../src/daemon/server.ts';
 import { runBellwetherTool, type ToolContext } from '../../src/integrations/tools.ts';
 import { CLAUDE_PROMPT, PERMISSION_QUESTION } from '../fixtures/claude-screens.ts';
 import { startFakeHerdr, type FakeHerdr, type RecordedRequest } from '../fixtures/fake-herdr.ts';
+import { paneReadAnswer } from '../fixtures/ghost-screens.ts';
 
 const PANE = 'w1:p1';
 /** herdr methods that put input into a pane. None may appear on the watcher's path. */
@@ -36,7 +37,7 @@ class Pane {
     this.screen = screen;
   }
   respond = (request: RecordedRequest): { result: unknown } | undefined => {
-    if (request.method === 'pane.read') return { result: { type: 'pane_read', read: { pane_id: PANE, source: request.params['source'], format: 'text', text: this.screen } } };
+    if (request.method === 'pane.read') return { result: paneReadAnswer(request.params, this.screen, PANE) };
     if (request.method === 'agent.get') return { result: { type: 'agent_info', agent: this.info() } };
     if (request.method === 'session.snapshot') return { result: { type: 'session_snapshot', snapshot: { panes: [], agents: [this.info()] } } };
     if (request.method === 'pane.list') return { result: { type: 'pane_list', panes: [{ pane_id: PANE }] } };

@@ -26,6 +26,7 @@ import { stopDaemonsUnder } from '../fixtures/daemons.ts';
 import { startFakeHerdr, type FakeHerdr, type RecordedRequest } from '../fixtures/fake-herdr.ts';
 import { installFakeSsh, type FakeSsh } from '../fixtures/fake-ssh.ts';
 import { LIVE_HOME } from '../fixtures/isolation.ts';
+import { paneReadAnswer } from '../fixtures/ghost-screens.ts';
 
 const PARENT_ID = 'claude-code-the-parent';
 const PANE = 'w1:p5';
@@ -43,7 +44,7 @@ class FarPane {
     if (request.method === 'agent.list') return { result: { type: 'agent_list', agents: [this.info(), this.info('w1:p6', 'watched', 'sess-other')] } };
     if (request.method === 'session.snapshot') return { result: { type: 'session_snapshot', snapshot: { panes: [], agents: [this.info()] } } };
     if (request.method === 'pane.list') return { result: { type: 'pane_list', panes: [this.bare(PANE), this.bare('w1:p4'), this.bare('w1:p6')] } };
-    if (request.method === 'pane.read') return { result: { type: 'pane_read', read: { pane_id: PANE, source: request.params['source'], format: 'text', text: 'far screen' } } };
+    if (request.method === 'pane.read') return { result: paneReadAnswer(request.params, 'far screen', PANE) };
     return undefined;
   };
   private bare(paneId: string): Record<string, unknown> {

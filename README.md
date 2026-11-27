@@ -8,7 +8,7 @@ The MVP covers Pi and Claude Code, each as a parent and as a child.
 
 A parent session runs an adapter: a Pi extension, or a Claude Code MCP channel server. Both are clients of one local daemon that runs the Bellwether core. The daemon starts on demand from the first session that needs it, and one daemon serves every session on the machine. When a session resumes, it receives the events it missed. With nothing left to watch, the daemon exits.
 
-- **Daemon.** One per machine, on a socket under the Bellwether home. A lock file and a version handshake keep a second client from starting a second daemon. When a client is newer than the daemon it found, the client sends a drain request and the old daemon exits once no call is in flight. `bellwether daemon` runs it in the foreground when you want to watch it.
+- **Daemon.** One per machine, on a socket under the Bellwether home. It is the only process that holds state: the registry, the outbox and the herdr subscriptions. An adapter keeps none of that. It starts without the identity variables of the session that launched it, so its own environment never decides who a call came from. A lock file and a version handshake keep a second client from starting a second daemon. When a client is newer than the daemon it found, the client sends a drain request and the old daemon exits once no call is in flight. `bellwether daemon` runs it in the foreground when you want to watch it.
 - **herdr client.** Newline-delimited JSON on the herdr socket, one connection per request and one held open for the subscription. The subscription checks the `subscription_started` acknowledgement and buffers any event that arrives with it.
 - **Registry.** One JSON file per parent session, under `~/.bellwether/parents/`, written by the daemon. Each child record stores its name, kind, pane, tab, start time, last status, last `completion_seq` and transcript path. Bellwether writes the record before it asks herdr for anything, so a crash mid-spawn still says what it asked herdr for.
 - **Watcher.** It subscribes to `pane.agent_status_changed` for each child pane, plus `pane.exited`, `pane.closed` and `pane.agent_detected`. On connect it subscribes first, then reads a snapshot on a second connection, then reconciles. A dropped subscription reconnects with backoff and takes a fresh snapshot, because herdr does not replay events.
@@ -45,9 +45,11 @@ The inactivity threshold defaults to 5 minutes. `agent_spawn` takes `inactive_mi
 | `agent_read` | any session | returns a child's last assistant message, or its screen when you pass `lines` |
 | `agent_send` | any session | prompts a child, or sends keys when herdr refuses a blocked one |
 | `agent_stop` | any session | closes a child's tab, refusing a working child unless you pass `force` |
-| `parent_report` | a child whose environment carries `BELLWETHER_PARENT` | sends `done`, `needs-input` or `progress` to the parent |
+| `parent_report` | a child Bellwether started or resumed on this machine | sends `done`, `needs-input` or `progress` to the parent that holds the child's record |
 
 Bellwether sends input only to panes that belong to this parent: the ones it started, resumed or adopted.
+
+Each adapter sends its session's identity with every tool call: the herdr pane it runs in, and the child id its spawn gave it. The daemon matches that identity against the child records it keeps, so a `parent_report` reaches the parent whose registry lists the child, whichever client process made the call. Adapters read the parent from the daemon's records, never from an environment variable. When no record matches, the error gives the pane and the path of the MCP config file the spawn should have written.
 
 A child on another machine runs on that machine's herdr. Bellwether reaches it the way `herdr --machine` does, through `herdr remote-api-bridge` over SSH to the saved profile's target, so the profile must exist in `herdr machine list` and SSH must log in without a prompt. That child's `parent_report` writes to its own machine's disk, which the parent never reads, so Bellwether follows it through herdr status alone.
 
@@ -80,6 +82,10 @@ claude --dangerously-load-development-channels plugin:bellwether@bellwether
 
 The plugin runs `bin/bellwether-mcp.js` as an MCP server and enables it as a channel, and that declaration is what delivers child events. Load the server as a plain MCP server and the tools arrive, with events waiting in the outbox.
 
+The plugin is for a parent session, one you start yourself. You don't set anything up for a child: `agent_spawn` and `agent_resume` start each Claude Code child with its own server, passed as `--mcp-config=~/.bellwether/mcp/<child id>.json`. The file has mode 0600 and lists one server, which runs this package's channel entry point with `--child <child id>`. Bellwether deletes it when the child exits or the spawn fails. A child on another machine doesn't get a file, because the daemon on that machine doesn't store a record of it.
+
+You don't need a `mcpServers` entry in your Claude Code settings for children. A user-level `bellwether` entry is harmless, and children don't use it. For the tools in a session you start by hand, install the plugin above.
+
 The server speaks MCP over stdio, so each log line goes to stderr and stdout carries only the protocol. It exits when stdin closes, which keeps a leftover process from showing the session as listening.
 
 ### Check the install
@@ -92,7 +98,7 @@ It reports the herdr socket, the herdr API version, the Pi extension path, the M
 
 ## Environment
 
-A child started by `agent_spawn` receives these variables in its tab:
+A child started by `agent_spawn` receives these variables in its tab, for its own scripts and for the `bellwether report` command. The MCP server identifies its child with `--child` instead, and the daemon looks up the parent in its records.
 
 | Variable | Meaning |
 | -- | -- |

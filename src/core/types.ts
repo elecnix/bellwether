@@ -146,3 +146,14 @@ export interface SpoolReport {
   at: string;
   seq: number;
 }
+
+/**
+ * Who made a daemon call: the herdr pane the calling session runs in, and the
+ * child id its spawn handed it. The daemon checks both against the child
+ * records it holds, so a call is routed by those records and never by the
+ * environment of whichever process started the daemon.
+ */
+export interface CallerIdentity {
+  paneId?: string;
+  childId?: string;
+}

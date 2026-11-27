@@ -9,6 +9,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { after, before, test } from 'node:test';
+import { SESSION_IDENTITY } from '../../src/daemon/client.ts';
 import { daemonsUnder, stopDaemonsUnder } from '../fixtures/daemons.ts';
 
 const root = path.resolve(import.meta.dirname, '../..');
@@ -19,7 +20,7 @@ let installed = '';
 /** The environment for a command run from the installed package, cut off from the live herdr and daemon. */
 function isolatedEnv(): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env };
-  for (const name of ['HERDR_ENV', 'HERDR_PANE_ID', 'HERDR_SOCKET_PATH', 'HERDR_SESSION', 'BELLWETHER_PARENT']) {
+  for (const name of ['HERDR_ENV', 'HERDR_PANE_ID', 'HERDR_SOCKET_PATH', 'HERDR_SESSION', 'BELLWETHER_DAEMON_SOCKET', ...SESSION_IDENTITY]) {
     delete env[name];
   }
   env['BELLWETHER_HOME'] = path.join(scratch, 'home');

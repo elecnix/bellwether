@@ -31,6 +31,24 @@ interface Connection {
   buffer: string;
 }
 
+/**
+ * The variables that name one session. The daemon serves every session on the
+ * machine, so it starts without the identity of whichever session started it.
+ */
+export const SESSION_IDENTITY = ['BELLWETHER_PARENT', 'BELLWETHER_CHILD', 'BELLWETHER_CHILD_NAME', 'BELLWETHER_DEPTH', 'BELLWETHER_HARNESS', 'HERDR_PANE_ID', 'CLAUDE_CODE_SESSION_ID'] as const;
+
+/** The environment a daemon starts with: the caller's, less any session identity. */
+export function daemonEnv(env: NodeJS.ProcessEnv, home: string): NodeJS.ProcessEnv {
+  const next: NodeJS.ProcessEnv = { ...env, BELLWETHER_HOME: home };
+  for (const key of SESSION_IDENTITY) delete next[key];
+  return next;
+}
+
+/** The daemon socket a client uses when none is given: the one under its home. */
+export function defaultDaemonSocket(home: string): string {
+  return path.join(home, 'daemon.sock');
+}
+
 export class DaemonClient {
   private connection: Connection | undefined;
   private readonly waiting = new Map<string, { resolve: (text: string) => void; reject: (error: Error) => void }>();
@@ -69,7 +87,7 @@ export class DaemonClient {
 
   static async connect(parent: ParentHello, options: ConnectOptions = {}): Promise<DaemonClient> {
     const home = options.home ?? process.env['BELLWETHER_HOME'] ?? path.join(os.homedir(), '.bellwether');
-    const socketPath = options.socketPath ?? path.join(home, 'daemon.sock');
+    const socketPath = options.socketPath ?? defaultDaemonSocket(home);
     const client = new DaemonClient(parent, home, socketPath, options);
     const hello = await client.establish();
     return Object.assign(client, { parentId: hello.parentId, pid: hello.pid });
@@ -109,7 +127,10 @@ export class DaemonClient {
     if (this.stopped) throw new Error('the daemon client is closed');
     await this.ensure();
     const id = `c${++this.sequence}`;
-    const line = formatRequest({ type: 'call', id, tool: name, args });
+    // The caller identity travels with every call, so the daemon routes by its
+    // own records whichever client process asked.
+    const caller = { ...(this.parent.paneId ? { paneId: this.parent.paneId } : {}), ...(this.parent.childId ? { childId: this.parent.childId } : {}) };
+    const line = formatRequest({ type: 'call', id, tool: name, args, caller });
     return new Promise<string>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.waiting.delete(id);
@@ -334,7 +355,7 @@ export class DaemonClient {
       const child = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', entry, '--socket', this.socketPath], {
         detached: true,
         stdio: 'ignore',
-        env: { ...process.env, BELLWETHER_HOME: this.home },
+        env: daemonEnv(process.env, this.home),
       });
       child.unref();
       try {

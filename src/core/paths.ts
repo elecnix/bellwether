@@ -27,6 +27,15 @@ export function promptPath(childId: string): string {
   return path.join(promptsDir(), `${slug(childId)}.md`);
 }
 
+/** Each Claude Code child's MCP configuration, passed with --mcp-config. */
+export function mcpDir(): string {
+  return path.join(bellwetherHome(), 'mcp');
+}
+
+export function mcpConfigPath(childId: string): string {
+  return path.join(mcpDir(), `${slug(childId)}.json`);
+}
+
 /** One registry file per parent session, so a resumed parent reads the same file. */
 export function parentId(harness: string, session: string): string {
   return `${harness}-${slug(session)}`;

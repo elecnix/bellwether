@@ -8,6 +8,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { HerdrClient } from '../../src/core/herdr-client.ts';
 import { LOCAL_HOST } from '../../src/core/machine.ts';
+import { mcpConfigPath } from '../../src/core/paths.ts';
 import { emptyParent, readParent, saveParent, upsertChild } from '../../src/core/registry.ts';
 import { Watcher } from '../../src/core/watcher.ts';
 import type { ChildRecord, OutboxEntry } from '../../src/core/types.ts';
@@ -112,6 +113,14 @@ test('a resumed child comes back with the same session and id, and takes a promp
   const briefFile = pointer.slice(1);
   assert.equal(fs.readFileSync(briefFile, 'utf8'), prompt);
   assert.equal(fs.statSync(briefFile).mode & 0o777, 0o600);
+
+  // A resumed Claude child gets its own MCP server again, named by the same child id.
+  const mcpFile = mcpConfigPath('child-worker');
+  assert.ok(args.includes(`--mcp-config=${mcpFile}`), `no --mcp-config=${mcpFile} in ${JSON.stringify(args)}`);
+  const server = (JSON.parse(fs.readFileSync(mcpFile, 'utf8')) as { mcpServers: Record<string, { args: string[] }> }).mcpServers['bellwether'];
+  assert.deepEqual(server?.args.slice(-2), ['--child', 'child-worker']);
+  const create = local.fake.requests.find((request) => request.method === 'tab.create');
+  assert.equal((create?.params['env'] as Record<string, string>)['BELLWETHER_CHILD'], 'child-worker', 'the tab and the MCP file agree on the child');
 
   // The resumed Claude child paints the channel dialog, and the resume answers it.
   assert.ok(holdDuringStart && Date.parse(holdDuringStart) > Date.now(), 'the watcher holds the child while its dialog is answered');
@@ -258,6 +267,11 @@ test('a spawn on a machine records the host, targets that machine, and resumes t
   const create = remote.fake.requests.find((request) => request.method === 'tab.create');
   assert.equal(create?.params['workspace_id'], null, 'the local workspace id is not sent to another machine');
   assert.equal(local.fake.requests.some((request) => request.method === 'tab.create' || request.method === 'agent.start'), false, 'nothing starts locally');
+  // The daemon on that machine holds no record of this child, so a server
+  // there could not resolve it. The child gets no MCP config, and no file is left here.
+  const remoteArgs = remote.fake.requests.find((request) => request.method === 'agent.start')?.params['args'] as string[];
+  assert.equal(remoteArgs.some((arg) => arg.startsWith('--mcp-config')), false, `a remote child got ${JSON.stringify(remoteArgs)}`);
+  assert.equal(fs.existsSync(mcpConfigPath(child?.id ?? '?')), false);
 
   // The watcher follows the child on its own machine.
   const watcher = new Watcher({ client: local.client, clientFor: ctx.clientFor, parentId: id, tickMs: 50, onEntries: () => {} });
@@ -314,6 +328,7 @@ test('a resume herdr refuses leaves the exited child as it was, and no brief beh
   assert.ok(child?.exitedAt);
   assert.equal(child?.startingUntil, undefined);
   assert.equal(fs.existsSync(path.join(process.env['BELLWETHER_HOME'] ?? '', 'prompts', 'child-worker.md')), false);
+  assert.equal(fs.existsSync(mcpConfigPath('child-worker')), false, 'a failed resume removes its MCP config');
   assert.equal(fake.requests.filter((request) => request.method === 'tab.close').length, 1, 'the new tab is closed');
 
   // A session no child ran leaves no record at all.

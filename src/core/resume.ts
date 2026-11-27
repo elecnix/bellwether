@@ -4,11 +4,12 @@
 // child's outbox entries and receipts are keyed by that id, so they continue.
 import path from 'node:path';
 import type { HerdrClient, HerdrPane } from './herdr-client.ts';
-import { removeBrief, writeBrief } from './brief.ts';
+import { writeBrief } from './brief.ts';
+import { removeChildFiles } from './mcp-config.ts';
 import { LOCAL_HOST } from './machine.ts';
 import { newChildId } from './outbox.ts';
 import { readParent, removeChild, updateChild, upsertChild } from './registry.ts';
-import { STARTUP_HOLD_MS, STARTUP_TIMEOUT_MS, childArgs, childEnv, harnessOf, herdrLink, startWithRetry } from './spawn.ts';
+import { STARTUP_HOLD_MS, STARTUP_TIMEOUT_MS, childArgs, childEnv, childMcpConfig, harnessOf, herdrLink, startWithRetry } from './spawn.ts';
 import { watchStartup, type StartupDialog, type StartupWatch } from './startup-dialogs.ts';
 import { resolveTranscript, sessionFrom } from './transcript.ts';
 import type { ChildRecord, ParentRecord } from './types.ts';
@@ -147,7 +148,7 @@ export async function resumeChild(client: HerdrClient, parent: ParentRecord, tar
   upsertChild(parent.id, child);
 
   const restore = (): void => {
-    removeBrief(child.id);
+    removeChildFiles(child.id);
     // A resume of a session no child ran made the record, so a failure drops
     // it, as a failed spawn does: the parent hears nothing of a child that never ran.
     if (!previous) {
@@ -170,6 +171,8 @@ export async function resumeChild(client: HerdrClient, parent: ParentRecord, tar
   let startup: StartupWatch | undefined;
   try {
     const briefFile = options.prompt ? writeBrief(child.id, options.prompt) : undefined;
+    // The same child id as before, so the server resolves to the same record.
+    const mcpConfigFile = childMcpConfig({ id: child.id, kind, host: child.host });
     const tab = await client.tabCreate({ workspaceId, cwd: child.cwd, label: child.name, env: childEnv(parent, child), focus: options.focus ?? false }, signal);
     tabId = tab.tabId ?? tab.paneId;
     if (!tab.paneId) throw new Error('herdr created no pane for the resumed tab');
@@ -186,7 +189,7 @@ export async function resumeChild(client: HerdrClient, parent: ParentRecord, tar
     upsertChild(parent.id, child);
 
     // 3. Start the harness on the session.
-    await startWithRetry(client, { name: child.name, kind, paneId: tab.paneId, args: childArgs(kind, { kind, name: child.name, model: options.model, args: [...args, ...(options.args ?? [])] }, briefFile) }, signal);
+    await startWithRetry(client, { name: child.name, kind, paneId: tab.paneId, args: childArgs(kind, { kind, name: child.name, model: options.model, args: [...args, ...(options.args ?? [])] }, briefFile, mcpConfigFile) }, signal);
   } catch (error) {
     startup?.close();
     if (tabId) await client.tabClose(tabId).catch(() => {});

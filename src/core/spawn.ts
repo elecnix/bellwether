@@ -5,8 +5,9 @@ import os from 'node:os';
 import { HerdrApiError, type HerdrClient } from './herdr-client.ts';
 import { LOCAL_HOST } from './machine.ts';
 import { newChildId } from './outbox.ts';
-import { briefArgument, removeBrief, writeBrief } from './brief.ts';
+import { briefArgument, writeBrief } from './brief.ts';
 import { resolveInactiveMs } from './inactivity.ts';
+import { removeChildFiles, writeMcpConfig } from './mcp-config.ts';
 import { removeChild, updateChild, upsertChild } from './registry.ts';
 import { watchStartup, type StartupDialog, type StartupWatch } from './startup-dialogs.ts';
 import { resolveTranscript, sessionFrom } from './transcript.ts';
@@ -71,11 +72,14 @@ export const STARTUP_TIMEOUT_MS = 30_000;
 /**
  * The arguments a child harness starts with. The brief is never one of them:
  * `briefFile` names the private file that holds it, and the harness gets a
- * one-line pointer to that file.
+ * one-line pointer to that file. `mcpConfigFile` names a Claude Code child's
+ * own Bellwether server.
  */
-export function childArgs(kind: string, options: SpawnOptions, briefFile?: string): string[] {
+export function childArgs(kind: string, options: SpawnOptions, briefFile?: string, mcpConfigFile?: string): string[] {
   const args: string[] = [];
   if (options.model) args.push('--model', options.model);
+  // --mcp-config is a list flag too, so it takes the equals form for the same reason.
+  if (kind === 'claude' && mcpConfigFile) args.push(`--mcp-config=${mcpConfigFile}`);
   // Claude Code reads this flag as a list and keeps taking values until the
   // next flag, so the two-argument form swallowed the prompt that follows it.
   // The equals form pins the flag to one value.
@@ -120,6 +124,7 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
   let startup: StartupWatch | undefined;
   try {
     const briefFile = options.prompt ? writeBrief(child.id, options.prompt) : undefined;
+    const mcpConfigFile = childMcpConfig(child);
 
     // 2. The tab carries the environment the child needs to find its parent.
     const env = childEnv(parent, child);
@@ -144,7 +149,7 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
     // 3. Start the harness in the tab's root pane. A tab answers tab.create
     // before its shell is at a prompt, so herdr refuses the start with
     // agent_pane_busy until the shell is ready.
-    await startWithRetry(client, { name: child.name, kind: options.kind, paneId: tab.paneId, args: childArgs(options.kind, options, briefFile) }, signal);
+    await startWithRetry(client, { name: child.name, kind: options.kind, paneId: tab.paneId, args: childArgs(options.kind, options, briefFile, mcpConfigFile) }, signal);
   } catch (error) {
     startup?.close();
     await abandon(client, parent.id, child.id, tabId, hooks);
@@ -210,8 +215,19 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
 async function abandon(client: HerdrClient, parentId: string, childId: string, tabId: string | undefined, hooks: SpawnHooks): Promise<void> {
   removeChild(parentId, childId);
   hooks.forget?.(childId);
-  removeBrief(childId);
+  removeChildFiles(childId);
   if (tabId) await client.tabClose(tabId).catch(() => {});
+}
+
+/**
+ * Write a Claude Code child's MCP configuration, when its server can resolve
+ * the child. A server talks to the daemon on its own machine, and only this
+ * machine's daemon holds the child record, so a child on another machine gets
+ * none.
+ */
+export function childMcpConfig(child: Pick<ChildRecord, 'id' | 'kind' | 'host'>): string | undefined {
+  if (child.kind !== 'claude' || (child.host ?? LOCAL_HOST) !== LOCAL_HOST) return undefined;
+  return writeMcpConfig(child.id);
 }
 
 /** The environment a child's tab carries, so the child can find its parent. */

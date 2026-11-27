@@ -26,6 +26,16 @@ test('a call carries its id, tool and arguments', () => {
   assert.deepEqual(parsed, { type: 'call', id: 'c1', tool: 'agent_list', args: {} });
 });
 
+test('a call carries the identity of the session that made it', () => {
+  const parsed = parseRequest(JSON.stringify({ type: 'call', id: 'c2', tool: 'parent_report', args: {}, caller: { childId: 'kid-1', paneId: 'w1:p4', extra: 'dropped' } }));
+  assert.deepEqual(parsed, { type: 'call', id: 'c2', tool: 'parent_report', args: {}, caller: { childId: 'kid-1', paneId: 'w1:p4' } });
+});
+
+test('a hello keeps the child id a spawned session names', () => {
+  const parsed = parseRequest(JSON.stringify({ ...hello, parent: { ...hello.parent, childId: 'kid-1' } }));
+  assert.equal(parsed.type === 'hello' ? parsed.parent.childId : undefined, 'kid-1');
+});
+
 test('a receipt carries its ids', () => {
   const parsed = parseRequest(JSON.stringify({ type: 'receipt', receipts: ['bw-1', 'bw-2'] }));
   assert.deepEqual(parsed, { type: 'receipt', receipts: ['bw-1', 'bw-2'] });

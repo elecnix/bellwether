@@ -7,12 +7,12 @@ import { machineClients } from '../core/machine.ts';
 import { emptyParent, parentId, readParent, saveParent } from '../core/registry.ts';
 import { Watcher } from '../core/watcher.ts';
 import { runBellwetherTool, type ToolContext } from '../integrations/tools.ts';
-import type { OutboxEntry } from '../core/types.ts';
+import type { CallerIdentity, OutboxEntry } from '../core/types.ts';
 import type { ParentHello } from './protocol.ts';
 
 export interface ParentService {
-  /** Run one Bellwether tool for a client, and return its text. */
-  tool(name: string, args: Record<string, unknown>): Promise<string>;
+  /** Run one Bellwether tool for a client, and return its text. `caller` says who asked. */
+  tool(name: string, args: Record<string, unknown>, caller: CallerIdentity): Promise<string>;
   /** Mark receipts read, which settles their outbox entries. */
   markRead(receipts: string[]): void;
   /** Subscribe to new events. One handler per service, set by the daemon. */
@@ -41,7 +41,7 @@ export function createHerdrService(parent: ParentHello, id: string): ParentServi
   const paneWatches = new Set<{ close: () => void }>();
   watcher.start();
   return {
-    tool: (name, args) => runBellwetherTool(context, name, args),
+    tool: (name, args, caller) => runBellwetherTool(context, name, args, caller),
     markRead: (receipts) => {
       for (const receipt of receipts) watcher.markRead(receipt);
     },

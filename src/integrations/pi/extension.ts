@@ -90,6 +90,7 @@ export default function bellwether(pi: PiApi): void {
         workspaceId: process.env['HERDR_WORKSPACE_ID'],
         depth: depthFromEnv(),
         herdrSocket: resolveSocketPath(),
+        childId: process.env['BELLWETHER_CHILD'],
       }, { log: (message) => console.error('[bellwether]', message) });
       daemon.onEvents(onEntries);
       const missed = await daemon.pending();

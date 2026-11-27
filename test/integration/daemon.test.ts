@@ -11,11 +11,11 @@ import test from 'node:test';
 import { DaemonClient } from '../../src/daemon/client.ts';
 import { DAEMON_PROTOCOL } from '../../src/daemon/protocol.ts';
 import { startDaemon, type ParentService, type ServiceFactory } from '../../src/daemon/server.ts';
-import type { OutboxEntry } from '../../src/core/types.ts';
+import type { CallerIdentity, OutboxEntry } from '../../src/core/types.ts';
 
 interface FakeService extends ParentService {
   emit(entries: OutboxEntry[]): void;
-  calls: { tool: string; args: Record<string, unknown> }[];
+  calls: { tool: string; args: Record<string, unknown>; caller?: CallerIdentity }[];
   read: string[];
   stopped: boolean;
 }
@@ -35,8 +35,8 @@ function fakeFactory(): { factory: ServiceFactory; services: FakeService[]; emit
       read: [],
       stopped: false,
       pending: () => [...pending],
-      async tool(name, args) {
-        service.calls.push({ tool: name, args });
+      async tool(name, args, caller) {
+        service.calls.push({ tool: name, args, caller });
         if (name === 'agent_list') return 'two children';
         throw new Error(`no tool ${name}`);
       },
@@ -112,6 +112,18 @@ test('a tool call returns its text, and a failure returns its message', async ()
   assert.equal(await client.tool('agent_list', {}), 'two children');
   await assert.rejects(() => client.tool('agent_stop', { child: 'one' }), /no tool agent_stop/);
   assert.deepEqual(fake.services[0]?.calls.map((call) => call.tool), ['agent_list', 'agent_stop']);
+  await client.close();
+  await daemon.close();
+  space.cleanup();
+});
+
+test('every call carries the caller identity from the client hello', async () => {
+  const space = workspace();
+  const fake = fakeFactory();
+  const daemon = await startDaemon({ socketPath: space.socket, factory: fake.factory });
+  const client = await DaemonClient.connect({ ...parent('child-session'), paneId: 'w1:p4', childId: 'kid-1' }, { home: space.home, spawn: false });
+  await client.tool('agent_list', {});
+  assert.deepEqual(fake.services[0]?.calls[0]?.caller, { childId: 'kid-1', paneId: 'w1:p4' });
   await client.close();
   await daemon.close();
   space.cleanup();

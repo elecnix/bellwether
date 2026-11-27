@@ -70,3 +70,45 @@ export const PERMISSION_QUESTION = ` Bash command
  ❯ 1. Yes
    2. No, and tell Claude what to do differently (esc)
 `;
+
+// The two questions below are built from the dialog strings in Claude Code
+// 2.1.332's build (its title, question and option labels), laid out as its
+// permission dialogs draw: a tool header, the call, the reason, the question
+// and the numbered options with the first one selected.
+
+/** Auto mode's question about a file-tool read outside the working directories. */
+export const OUTSIDE_READ_QUESTION = ` Read file
+
+   Read(/var/tmp/example-other-repo/eslint.config.js)
+
+ Read outside the working directories
+ Auto mode and the sandbox read outside the working directories without asking. Yes or No answers for this read; the rest is for later reads.
+
+ Allow this read outside the working directories?
+ ❯ 1. Yes, and keep allowing any reads outside the working directories
+   2. No, and block reads outside the working directories from now on
+   3. No, and ask again next time
+   4. Yes, but ask again next time
+`;
+
+/** A shell command Claude Code could not prove free of a dangerous rm, which it asks a person to approve. */
+export const DANGEROUS_RM_QUESTION = ` Bash command
+
+   python3 - <<'EOF' > config.toml.new && mv config.toml.new config.toml
+
+ Dangerous rm operation not ruled out — the shell may read this command differently than it was parsed
+
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. No, and tell Claude what to do differently (esc)
+`;
+
+/** A startup question no entry in Claude Code's set names. */
+export const UNKNOWN_STARTUP_QUESTION = ` Example settings migration
+
+ Claude Code found settings from an earlier example release.
+
+ Import them into this session?
+ ❯ 1. Yes, import them
+   2. No, start fresh
+`;

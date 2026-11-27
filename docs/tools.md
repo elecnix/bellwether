@@ -127,7 +127,7 @@ Each event below starts a new turn for the parent. herdr reports the state, and 
 | -- | -- | -- |
 | report | The child calls `parent_report`. | none |
 | idle | herdr reports `idle` or `done` for a new turn, no `done` or `needs-input` report covered that turn, and no dialog is open. The text is the turn's last message. | 5 s |
-| blocked | The child waits on a dialog. herdr reports `blocked`, or a pi child says a dialog is open. When herdr reports `idle`, the screen can also show one. Claude Code's startup questions don't count, because Bellwether answers them. | 3 s |
+| blocked | The child waits on a dialog. herdr reports `blocked`, or a pi child says a dialog is open. When herdr reports `idle`, the screen can also show one. Claude Code's startup questions don't count, nor its read and dangerous-rm questions in a child Bellwether started, because Bellwether answers them. | 3 s |
 | stuck | herdr reports `working` or `unknown`, and the child has been quiet past the threshold. | 10 min |
 | inactive | No status change, output, new turn or report for the child's inactivity threshold. | none |
 | exited | The pane exits or closes, or the harness ends and leaves its pane open. | none |
@@ -156,7 +156,26 @@ For the same child, a newer event replaces an older unread one, except for a rep
 
 ### A child waiting on a dialog
 
-A `blocked` event names the dialog in one line of at most 100 characters, such as `Bash command: Do you want to proceed?`, so a parent can tell a trust question from a permission question. `agent_read` shows the whole screen. Bellwether never answers the dialog: approving a permission question is the operator's decision. To answer it, the parent sends keys with `agent_send`, or a person types in the pane.
+A `blocked` event names the dialog in one line of at most 100 characters, such as `Bash command: Do you want to proceed?`, so a parent can tell a trust question from a permission question. `agent_read` shows the whole screen. Bellwether never approves a permission: that is the operator's decision. To answer such a dialog, the parent sends keys with `agent_send`, or a person types in the pane.
+
+### Questions Bellwether answers for a child it started
+
+A Claude Code child starts with its reads settled. Its settings file lists the Bellwether home, which holds its brief, as a directory the session may read beside its working directory: `permissions.additionalDirectories` for the file tools, and `sandbox.filesystem.allowRead` for sandboxed shell commands. So the child never asks whether it may read its own brief, on any machine. Claude Code adds the operator's own settings to these lists, so a machine can let a child read more, but none can take the home away. The operator's home and other checkouts stay outside the list.
+
+While the child works, Claude Code can still ask either of these, and Bellwether picks a No for it:
+
+| Question | Answer | Why |
+| -- | -- | -- |
+| `Allow this read outside the working directories?` | `No, and ask again next time` | The read is beyond what the launch gave the child. The other No would save a block into the operator's settings, and both Yes answers grant the read. |
+| A shell command under `Dangerous rm operation not ruled out` | `No, and tell Claude what to do differently` | Claude Code's parser could not rule out a dangerous rm. Only a person approves such a command, never Bellwether. |
+
+A declined read doesn't end in a page. The child hears No and finds another way or ends its turn. If it reaches for the same path again, Bellwether declines it again and counts it. So a brief that needs a path outside the floor has to say so at launch. `agent_spawn` takes `reads`, a list of absolute paths the child reads beside its worktree and the Bellwether home. A path is a directory with everything under it, or one file. Its launch settings list each one, and a resume keeps them. `agent_restart` takes the same `reads` for a child that already runs, replacing its list on the same session, and `[]` clears it. Bellwether refuses the filesystem root, the operator's home and any directory above it, and a path written with `~`. It also refuses `reads` for a harness whose launch takes no read set.
+
+The answer goes on the child's record under `decisions`. Each entry keeps the question as the screen asked it and the option chosen. It also keeps the keys sent, in order, with the time and the part of Bellwether that answered. Each entry has an `outcome`. Both questions above record `declined`, and a declined read also keeps the `path` that the dialog showed. No `blocked` event goes out. The parent's next event about the child names the answer under its first line. A declined read leads with the path and with the field that widens the set: `Bellwether declined builder (w1:p3)'s read of /srv/other/eslint.config.js: …. If the brief needs that path, widen the child's read set rather than send the instruction again: agent_restart with reads ["/srv/other"] keeps its session, and agent_spawn takes the same field.` The second decline of one path adds `This is the second time Bellwether declined that path for it, so the brief needs it.` A declined command reads like this: `Bellwether declined for builder (w1:p3): the dangerous-rm question, "Do you want to proceed?", answered "No, and tell Claude what to do differently" (keys 2). It declined the shell command, which Claude Code could not prove safe and asks a person to approve. The child was told No and goes on without it; tell it another way with agent_send.` The entries live in the parent's registry, not in the worktree, so retirement leaves them in place. When the parent hasn't heard of a decline yet, the child's `exited` event carries it. A spawn's reply lists any answer it gave during the start. Claude Code tells the child that the answer was No, and the parent can suggest another way with `agent_send`.
+
+A startup question that Bellwether doesn't know fails the spawn within a second. The error quotes the question, and Bellwether closes the tab and removes the record, as for any failed spawn. When a question that matches no entry comes while the child works, the parent gets a `blocked` event, as before.
+
+Bellwether never answers a dialog in an adopted child's pane. Someone else started that session under settings Bellwether didn't choose, and a parent types only into panes it started. The parent gets a `blocked` event for each of its dialogs, including the two above.
 
 herdr reports `idle` for a harness that waits on a dialog it never reported, so Bellwether checks three sources before it sends `idle`:
 

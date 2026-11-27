@@ -184,7 +184,8 @@ test('a Claude Code spawn gives the child its own settings, whose Notification h
     // One hook, on Notification, for the dialog types only. No PermissionRequest
     // or PreToolUse hook, which could answer a permission question.
     const settings = JSON.parse(fs.readFileSync(file, 'utf8')) as { hooks: Record<string, { matcher: string; hooks: { type: string; command: string }[] }[]> };
-    assert.deepEqual(Object.keys(settings), ['hooks']);
+    // Beside the hook, the read set the launch decides: the Bellwether home, which holds the brief.
+    assert.deepEqual(Object.keys(settings).sort(), ['hooks', 'permissions', 'sandbox']);
     assert.deepEqual(Object.keys(settings.hooks), ['Notification']);
     const [entry] = settings.hooks['Notification'] ?? [];
     assert.ok(entry);

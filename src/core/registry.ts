@@ -5,7 +5,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { parentId, parentsDir, registryPath, slug } from './paths.ts';
-import { REGISTRY_SCHEMA, type ChildRecord, type Harness, type ParentRecord } from './types.ts';
+import { readsSuggestion } from './reads.ts';
+import { REGISTRY_SCHEMA, type ChildRecord, type DialogDecision, type Harness, type ParentRecord } from './types.ts';
 
 /** The host of a child started before the registry recorded one. */
 const LOCAL_HOST = 'local';
@@ -113,6 +114,58 @@ export function updateChild(id: string, childId: string, change: (child: ChildRe
     updated = child;
   });
   return updated;
+}
+
+/**
+ * Add the dialogs Bellwether answered to a child's record. `told` marks them
+ * as already given to the parent, as a spawn's reply does; otherwise the
+ * watcher puts them in the parent's next event about the child.
+ */
+export function recordDecisions(id: string, childId: string, decisions: readonly DialogDecision[], told = false): void {
+  if (!decisions.length) return;
+  updateChild(id, childId, (child) => {
+    child.decisions = [...(child.decisions ?? []), ...decisions.map((decision) => ({ ...decision, ...(told ? { told: true } : {}) }))];
+  });
+}
+
+/**
+ * Take the decisions the parent has not heard of, and mark them told. The
+ * earlier ones come back too, so the text can count a read declined again.
+ */
+export function takeUntoldDecisions(id: string, childId: string): { taken: DialogDecision[]; earlier: DialogDecision[] } {
+  let taken: DialogDecision[] = [];
+  let earlier: DialogDecision[] = [];
+  updateChild(id, childId, (child) => {
+    earlier = (child.decisions ?? []).filter((decision) => decision.told).map((decision) => ({ ...decision }));
+    taken = (child.decisions ?? []).filter((decision) => !decision.told);
+    for (const decision of taken) decision.told = true;
+  });
+  return { taken: taken.map(({ told: _told, ...decision }) => decision), earlier };
+}
+
+/**
+ * One paragraph per answered dialog, for the parent. A declined read says
+ * so first, names the path, counts how often that path was declined, and
+ * names the field that widens the child's read set, so the parent widens it
+ * rather than repeat an instruction that meets the same No.
+ */
+export function describeDecisions(name: string, decisions: readonly DialogDecision[], earlier: readonly DialogDecision[] = []): string {
+  const seen = [...earlier];
+  return decisions
+    .map((decision) => {
+      seen.push(decision);
+      const keys = `keys ${decision.keys.join(', ')}`;
+      if (decision.outcome !== 'declined') return `Bellwether answered ${decision.name} for ${name}, "${decision.question}", with "${decision.answer}" (${keys}): it ${decision.decided}.`;
+      if (!decision.path) return `Bellwether declined for ${name}: ${decision.name}, "${decision.question}", answered "${decision.answer}" (${keys}). It ${decision.decided}. The child was told No and goes on without it; tell it another way with agent_send.`;
+      const times = seen.filter((entry) => entry.outcome === 'declined' && entry.path === decision.path).length;
+      const again = times > 1 ? ` This is the ${ordinal(times)} time Bellwether declined that path for it, so the brief needs it.` : '';
+      return `Bellwether declined ${name}'s read of ${decision.path}: ${decision.name}, answered "${decision.answer}" (${keys}). It ${decision.decided}.${again} If the brief needs that path, widen the child's read set rather than send the instruction again: agent_restart with reads ["${readsSuggestion(decision.path)}"] keeps its session, and agent_spawn takes the same field.`;
+    })
+    .join('\n');
+}
+
+function ordinal(n: number): string {
+  return ['zeroth', 'first', 'second', 'third', 'fourth', 'fifth'][n] ?? `${n}th`;
 }
 
 export function childById(record: ParentRecord, childId: string): ChildRecord | undefined {

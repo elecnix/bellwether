@@ -12,7 +12,7 @@ import { emptyParent, readParent, saveParent, updateChild } from '../../src/core
 import { childOfCaller } from '../../src/core/report.ts';
 import { RETIRE_TOOL, retireLogPath } from '../../src/core/retire.ts';
 import { Watcher } from '../../src/core/watcher.ts';
-import type { ChildRecord } from '../../src/core/types.ts';
+import type { ChildRecord, DialogDecision } from '../../src/core/types.ts';
 import { runBellwetherTool, toolsFor, type ToolContext } from '../../src/integrations/tools.ts';
 import { startFakeHerdr, type FakeHerdr } from '../fixtures/fake-herdr.ts';
 import { fakeGit, type FakeGit } from '../fixtures/fake-git.ts';
@@ -567,4 +567,39 @@ test('a retired child and a session adopted later in the same pane id agree on t
   // The adopted session gets parent_report but never request_retirement, and asking anyway writes nothing.
   await assert.rejects(runBellwetherTool(w.ctx(watcher), RETIRE_TOOL, {}, { paneId: PANE }), /carries no BELLWETHER_CHILD/);
   assert.equal(readParent(adopter.id)?.children[0]?.retireRequestedAt, undefined);
+});
+
+test('a read declined just before retirement reaches the parent with the exit, and the retired record keeps it', async (t) => {
+  // The watcher declined a read, and the child asked to be retired before any event carried the decline.
+  const declined: DialogDecision = {
+    dialog: 'outside-read',
+    name: 'the question about a read outside the working directories',
+    question: 'Allow this read outside the working directories?',
+    answer: 'No, and ask again next time',
+    decided: 'declined the read, which is outside the directories its launch allowed, and saved nothing to the settings',
+    keys: ['3'],
+    at: new Date().toISOString(),
+    by: 'watcher',
+    outcome: 'declined',
+    path: '/srv/example-other/eslint.config.js',
+  };
+  const w = await world(t, { decisions: [declined] });
+  w.git.merged.add(`${REPO}:feat/x`);
+  const { watcher } = await requested(w);
+
+  w.exit();
+  await until('the outcome', () => w.child().retireOutcome);
+  await watcher.retirements();
+  assert.equal(w.child().retireOutcome, 'removed');
+  assert.equal(w.git.worktrees.has(WORKTREE), false, 'the worktree is gone');
+
+  // The exit event carries the decline, once.
+  const exited = await until('the exit event', () => watcher.outboxEntries().find((entry) => entry.event === 'exited'));
+  assert.match(exited.text, /Bellwether declined feat-x \([^)]*\)'s read of \/srv\/example-other\/eslint\.config\.js/);
+  // The record outlives the worktree: the decision is still there, marked told.
+  const kept = w.child().decisions;
+  assert.equal(kept?.length, 1);
+  assert.equal(kept?.[0]?.outcome, 'declined');
+  assert.equal(kept?.[0]?.path, '/srv/example-other/eslint.config.js');
+  assert.equal(kept?.[0]?.told, true);
 });

@@ -14,14 +14,14 @@ import { resolveInactiveMs } from './inactivity.ts';
 import { removeChildFiles } from './mcp-config.ts';
 import { argValue } from './args.ts';
 import { requireHarness, spawnRefusal, type ChildFiles, type HarnessEntry, type HarnessHooks } from './harnesses/index.ts';
-import { removeChild, updateChild, upsertChild } from './registry.ts';
+import { recordDecisions, removeChild, updateChild, upsertChild } from './registry.ts';
 import { detectRefused, StartupDialogRefused, watchStartup, type StartupDialog, type StartupWatch } from './startup-dialogs.ts';
 import { agentNameOf, sessionFrom } from './transcript.ts';
 import { fatalLine, ForegroundTracker, HarnessStartFailed, processInfoOf, startupQuote, type StartOutcome } from './start-check.ts';
 import type { RemoteRegistration } from './remote.ts';
 import { BARE, RoutesFileError, bareLaunch, launchLine, readRoutes, resolveRoute, routeConfig, routeLaunch, type RouteConfig, type RouteLaunch, type RoutesFile } from './routes.ts';
 import { openChildTab, parseWorkspaces, placeChild, undoChildTab, type ChildTab, type WorkspaceEntry } from './workspace.ts';
-import type { ChildRecord, ChildRoute, ModelPair, ParentRecord } from './types.ts';
+import type { ChildRecord, ChildRoute, DialogDecision, ModelPair, ParentRecord } from './types.ts';
 
 /** How deep a Bellwether child may spawn. The design starts at 2. */
 export { DEFAULT_MAX_DEPTH } from './depth.ts';
@@ -50,6 +50,8 @@ export interface SpawnOptions {
   focus?: boolean;
   /** Minutes of quiet before the child counts as stuck. */
   stuckMinutes?: number;
+  /** Paths the child reads beside its working directory and the Bellwether home, checked by `checkReads`. */
+  reads?: string[];
   /**
    * Minutes of no observable activity before the parent is told. Defaults to
    * five and is clamped to one minute through twenty-four hours. It cannot
@@ -92,6 +94,8 @@ export interface SpawnResult {
   link: string;
   /** The startup dialogs the spawn answered, in order. */
   answered?: StartupDialog[];
+  /** The answers that decided something, which the reply gives the parent. They are on the record, marked told. */
+  decisions?: DialogDecision[];
   /** Why the spawn could not confirm the child took its brief, for the spawn reply. */
   startNote?: string;
 }
@@ -225,6 +229,11 @@ export async function childStartFiles(parent: ParentRecord, child: ChildRecord, 
   };
 }
 
+/** Why a child of this harness cannot take `reads`. */
+export function readsRefusal(entry: Pick<HarnessEntry, 'label'>, name: string): string {
+  return `${name} was not started: reads lists paths for the child's launch settings, and a ${entry.label} child's launch takes no read set. Drop reads, or name the paths in the brief.`;
+}
+
 /**
  * Refuse a spawn of a kind whose child could not report, or whose harness
  * says it cannot work here, before anything is written.
@@ -232,6 +241,7 @@ export async function childStartFiles(parent: ParentRecord, child: ChildRecord, 
 async function checkHarness(entry: HarnessEntry, options: SpawnOptions, model: string | undefined, hooks: HarnessHooks, herdr: HerdrClient): Promise<void> {
   const refused = spawnRefusal(entry, options.name);
   if (refused) throw new Error(refused);
+  if (options.reads?.length && !entry.launchReads) throw new Error(readsRefusal(entry, options.name));
   await entry.preflight?.({ name: options.name, cwd: options.cwd, model, host: options.host ?? LOCAL_HOST, herdr, args: options.args ?? [] }, hooks);
 }
 
@@ -286,6 +296,7 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
     depth,
     maxDepth,
     stuckMs: options.stuckMinutes === undefined ? undefined : Math.max(1_000, Math.round(options.stuckMinutes * 60_000)),
+    ...(options.reads?.length ? { reads: options.reads } : {}),
     inactiveMs: resolveInactiveMs(options.inactiveMinutes),
     // The record names the brief's file, so a resume can tell whether the child read it.
     ...(options.prompt ? { briefs: [{ n: 1, file: promptPath(id), at: now }] } : {}),
@@ -381,6 +392,7 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
   if (startup) {
     try {
       answered = await startup.answer();
+      recordDecisions(parent.id, child.id, startup.decisions, true);
     } catch (error) {
       startup.close();
       await abandon(client, parent.id, child, opened, hooks, registered);
@@ -440,8 +452,9 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
 
   const note = modelNote(child);
   const harnessNote = entry.spawnNote?.(child, options.args ?? []);
+  const decisions = startup?.decisions.length ? startup.decisions : undefined;
   const startNote = started.confirmed ? undefined : unconfirmedNote(child, entry.label, started.waitedMs);
-  return { child, link: herdrLink('pane', child.paneId), answered, ...(note ? { modelNote: note } : {}), ...(harnessNote ? { harnessNote } : {}), ...(envNote ? { envNote } : {}), ...(startNote ? { startNote } : {}) };
+  return { child, link: herdrLink('pane', child.paneId), answered, ...(decisions ? { decisions } : {}), ...(note ? { modelNote: note } : {}), ...(harnessNote ? { harnessNote } : {}), ...(envNote ? { envNote } : {}), ...(startNote ? { startNote } : {}) };
 }
 
 /** What a spawn says of a child that was running but had not shown herdr a status when the wait ended. */
@@ -518,6 +531,11 @@ export interface RouteChange {
   keyFile?: string;
   /** The pi provider for a bare pi start. */
   provider?: string;
+  /**
+   * The child's read set beside its working directory and the Bellwether
+   * home, replacing the one it had. An empty list clears it. Undefined keeps it.
+   */
+  reads?: string[];
 }
 
 /** How a resumed or restarted child starts. */

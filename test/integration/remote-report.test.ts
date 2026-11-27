@@ -579,14 +579,18 @@ test("a spawn on another machine registers the child there and starts it with th
   assert.equal(readParent(parent.id)?.children[0]?.host, 'child-box');
 });
 
-test('a spawn on another machine whose registration fails still starts, and says the child cannot report', async (t) => {
+test('a Claude Code spawn on another machine whose registration fails is refused, because no server there would carry its child id', async (t) => {
   const w = world(t);
   w.ssh.plan(['refuse']);
   const parent = saveParent(emptyParent('pi', 'spawner-fail', '/work'));
   const herdr = await idleHerdr(t);
   const ops = remoteOps(machines);
-  const { reportWarning } = await spawnChild(new HerdrClient({ socketPath: herdr.socketPath }), parent, { kind: 'claude', name: 'unregistered', host: 'child-box', startupTimeoutMs: 2_000, redrawMs: 10 }, undefined, { registerRemote: (entry) => ops.register(parent, entry) });
-  assert.match(reportWarning ?? '', /could not be registered on machine child-box.*cannot call parent_report.*255/);
+  await assert.rejects(
+    spawnChild(new HerdrClient({ socketPath: herdr.socketPath }), parent, { kind: 'claude', name: 'unregistered', host: 'child-box', startupTimeoutMs: 2_000, redrawMs: 10 }, undefined, { registerRemote: (entry) => ops.register(parent, entry) }),
+    /unregistered was not started on machine child-box: Bellwether could not register it there: .*255.*no Bellwether server that carries its child id.*parent_report would reach no parent/s,
+  );
+  assert.equal(readParent(parent.id)?.children.length, 0, 'the record goes with the refusal');
+  assert.equal(herdr.requests.some((request) => request.method === 'tab.create'), false, 'no tab opens for a child that could not report');
 });
 
 test('a pi spawn on another machine starts with the extension that machine resolves', async (t) => {

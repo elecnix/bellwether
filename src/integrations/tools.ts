@@ -21,6 +21,7 @@ import { parseWorkspaces, releaseWorkspace, workspaceColumn, workspaceName } fro
 import { moveEndpoints, type EndpointFor } from '../core/move-endpoint.ts';
 import type { Watcher } from '../core/watcher.ts';
 import type { CallerIdentity, ChildRecord, RelayHostState, ReportStatus } from '../core/types.ts';
+import { FEATURES, featureNamed, serves, type DaemonOffer, type Feature } from '../daemon/features.ts';
 
 export interface ToolContext {
   /** The parent's own herdr. */
@@ -239,6 +240,38 @@ export const retireTools: ToolDefinition[] = [
  */
 export function toolsFor(env: { parent?: string; child?: string }): ToolDefinition[] {
   return [...parentTools, ...(env.parent || env.child ? childTools : []), ...(env.child ? retireTools : [])];
+}
+
+/** Who a session is, as its hello tells the daemon: the parent its environment names, and the child id its spawn gave it. */
+export interface ToolScope {
+  reportsTo?: string;
+  childId?: string;
+}
+
+/**
+ * The tools a daemon serves a session: the list for the session's identity,
+ * each one a tool in the feature table. The daemon sends this list in its
+ * hello, and the adapter offers it unchanged, so the daemon alone decides
+ * which tools a session has, and a newer daemon brings its tools to every
+ * session connected to it.
+ */
+export function servedTools(scope: ToolScope, features: readonly Feature[] = FEATURES): ToolDefinition[] {
+  const named = new Set(features.filter((feature) => feature.kind === 'tool').map((feature) => feature.name));
+  return toolsFor({ parent: scope.reportsTo, child: scope.childId }).filter((tool) => named.has(tool.name));
+}
+
+/**
+ * The tools an adapter offers when its daemon predates the served list: its
+ * own list for the session, less each tool the daemon does not serve, so the
+ * model is never offered a tool whose call the daemon would refuse.
+ */
+export function fallbackTools(scope: ToolScope, offer: DaemonOffer | undefined): ToolDefinition[] {
+  const own = toolsFor({ parent: scope.reportsTo, child: scope.childId });
+  if (!offer) return own;
+  return own.filter((tool) => {
+    const feature = featureNamed(tool.name);
+    return !feature || serves(offer, feature);
+  });
 }
 
 /** A tool this install does not have. The daemon answers it with code unknown_tool, which a newer client names. */

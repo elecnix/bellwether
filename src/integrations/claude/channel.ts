@@ -20,7 +20,7 @@ import { maxDepthFromEnv } from '../../core/report.ts';
 import { byEventTime, lateNote } from '../../core/notice.ts';
 import type { OutboxEntry } from '../../core/types.ts';
 import { BELLWETHER_VERSION } from '../../core/version.ts';
-import { toolsFor } from '../tools.ts';
+import { fallbackTools } from '../tools.ts';
 import { ReceiptScan, claudeConfigDir } from './transcript.ts';
 
 const log = (...args: unknown[]): void => console.error('[bellwether]', ...args);
@@ -50,12 +50,12 @@ function argument(argv: string[], flag: string): string | undefined {
 // other way may still sit in a child's pane, so it passes the id its tab
 // carries, and the daemon checks either one against the record it holds.
 const childId = argument(process.argv.slice(2), '--child') ?? process.env['BELLWETHER_CHILD'];
-const tools = toolsFor({ parent: process.env['BELLWETHER_PARENT'], child: childId });
+const reportsTo = process.env['BELLWETHER_PARENT'] || undefined;
 
 const mcp = new Server(
   { name: 'bellwether', version: BELLWETHER_VERSION },
   {
-    capabilities: { experimental: { 'claude/channel': {} }, tools: {} },
+    capabilities: { experimental: { 'claude/channel': {} }, tools: { listChanged: true } },
     instructions: [
       'Events from this channel are Bellwether child-agent changes: a child reported, went idle, blocked on a dialog, stalled, or exited.',
       'Each event names the child and carries its receipt. Read more with agent_read, and reply with agent_send.',
@@ -65,9 +65,18 @@ const mcp = new Server(
   },
 );
 
-mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
-  tools: tools.map(({ name, description, schema }) => ({ name, description, inputSchema: schema })),
-}));
+// The daemon decides the tools, from its feature table, and sends them in its
+// hello. Until it answers, or when it cannot be reached, the server offers
+// this install's own list, whose calls then say why the daemon is missing.
+// A reconnect to a newer daemon brings its tools without a restart: the
+// server tells Claude Code the list changed, and Claude Code asks again.
+/** The list this server answered before the daemon did, when Claude Code asked that early. */
+let answeredEarly: string | undefined;
+mcp.setRequestHandler(ListToolsRequestSchema, async () => {
+  const tools = daemon ? daemon.tools() : fallbackTools({ reportsTo, childId }, undefined);
+  if (!daemon) answeredEarly = JSON.stringify(tools);
+  return { tools: tools.map(({ name, description, schema }) => ({ name, description, inputSchema: schema })) };
+});
 
 let daemon: DaemonClient | undefined;
 let connectFailure = 'Bellwether is not running: the daemon did not start for this session.';
@@ -252,14 +261,22 @@ ready = (async () => {
       herdrSocket: resolveSocketPath(),
       childId,
       ...(maxDepth === undefined ? {} : { maxDepth }),
+      ...(reportsTo ? { reportsTo } : {}),
     }, { log });
     daemon.onEvents((entries) => schedule(entries));
+    daemon.onTools((served) => {
+      log('tools changed:', served.map((tool) => tool.name).join(', '));
+      void mcp.sendToolListChanged().catch((error: Error) => log('tool list notice failed:', error.message));
+    });
   } catch (error) {
     connectFailure = `Bellwether could not reach its daemon: ${(error as Error).message}`;
     log(connectFailure);
   }
 })();
 await ready;
+// A list Claude Code asked for before the daemon answered was this install's
+// own; when the daemon's differs, Claude Code asks again.
+if (daemon && answeredEarly !== undefined && answeredEarly !== JSON.stringify(daemon.tools())) void mcp.sendToolListChanged().catch((error: Error) => log('tool list notice failed:', error.message));
 announcePending();
 setInterval(scanReceipts, SCAN_MS).unref?.();
 watchParentPane();

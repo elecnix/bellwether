@@ -357,7 +357,7 @@ async function restartChildLocked(client: HerdrClient, parentId: string, childId
   try {
     // The same start files a spawn and a resume give it: a Claude Code
     // child's own MCP configuration, and the extension a pi child loads.
-    const { mcpConfigFile, claudeSettingsFile, piExtension } = await childStartFiles(child, undefined, undefined, hooks.piExtension);
+    const { mcpConfigFile, claudeSettingsFile, toolSource, piExtension } = await childStartFiles(child, undefined, undefined, hooks.piExtension);
     // Closing the old tab closed a workspace Bellwether made for the child
     // when it was the last tab there, so the child gets a new one of its own.
     const placement = await returnPlacement(client, child, workspaceId);
@@ -369,6 +369,7 @@ async function restartChildLocked(client: HerdrClient, parentId: string, childId
     // The record names the new pane before the harness starts, as a spawn does.
     updateChild(parentId, child.id, (entry) => {
       entry.paneId = newPane;
+      if (toolSource) entry.toolSource = toolSource;
       if (tab.tabId) entry.tabId = tab.tabId;
       if (tab.workspaceId) entry.workspaceId = tab.workspaceId;
       if (tab.workspaceLabel) entry.workspaceLabel = tab.workspaceLabel;

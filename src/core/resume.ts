@@ -220,6 +220,7 @@ export async function resumeChild(client: HerdrClient, parent: ParentRecord, tar
     const { briefFile, mcpConfigFile, claudeSettingsFile, piExtension } = files;
     registered = files.registered;
     reportWarning = files.warning;
+    if (files.toolSource) child.toolSource = files.toolSource;
     const placement = await returnPlacement(client, child, fallback, signal);
     const tab = await openChildTab(client, placement, { cwd: child.cwd, label: child.name, env: childEnv(parent, child, piExtension), focus: options.focus ?? false }, signal);
     opened = tab;

@@ -29,6 +29,12 @@ A machine can run sessions from two installs at once, such as a checkout and a p
 
 On a machine you reach by SSH, the upgrade works the same way. When a parent's daemon connects, `bellwether relay-bridge` runs from that machine's install and hands over that machine's daemon if it is older.
 
+## Tool lists across versions
+
+A session's tool list comes from the daemon. The hello lists the tools, built from its feature table, and the session's adapter offers that list to the model. A session connected to an older adapter still gets each tool a newer daemon serves, such as `agent_move` and `agent_restart`, once that daemon answers.
+
+Claude Code asks for the list again when the server says it changed. The pi extension takes each new tool into the running session. Neither needs a restart. A daemon from before the list leaves the choice to the adapter, which offers its own tools less each one that daemon does not serve.
+
 ## How to read doctor's upgrade status
 
 `bellwether doctor` reports, for the machine it runs on:
@@ -42,6 +48,7 @@ On a machine you reach by SSH, the upgrade works the same way. When a parent's d
 - each connected session once, with the version, build and protocol of its adapter. Doctor tells sessions apart by their harness session id. A connection without one counts by its parent id. A Claude Code session whose plugin and per-child server both connect shows once, with the number of connections. For a session on code other than the daemon's, doctor lists the live children that would lose their parent if the session ended, and the unread events that wait for it.
 - how this install and the running daemon pair up. Doctor gives the protocol each one speaks and the protocol they share. It lists each tool and request the daemon lacks, with the protocol and release that brought it. It also lists each tool the daemon serves that this install doesn't offer. Each list says which side gains by updating.
 - for each remote machine the relay connects to: its daemon's release, and the tools that machine gains by updating
+- one `tools` line for each harness. The line shows the server or extension that gives a session started by hand its Bellwether tools, and what a spawned child gets instead. For Claude Code, it lists each plugin or server the spawn keeps out of a child, and how. A session started by hand with two Bellwether servers gets a warning, because Bellwether can't remove one for you. For pi, a copy in pi's settings without the stand-down guard fails the line.
 - what `agent_move` would find on each machine. This check stops after 4 seconds, so a machine whose SSH doesn't connect shows as not answering instead of holding doctor for SSH's own timeout.
 
 Its last daemon line says one of five things:

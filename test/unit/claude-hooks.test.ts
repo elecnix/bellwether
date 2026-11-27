@@ -31,9 +31,18 @@ test('a notification that is not a dialog, another hook event, or text that is n
 
 test('the settings hold one Notification hook, and its command quotes every argument', () => {
   const settings = claudeChildSettings("example-it's");
-  assert.deepEqual(Object.keys(settings.hooks), ['Notification']);
-  assert.equal(settings.hooks.Notification[0]?.matcher, DIALOG_NOTIFICATIONS.join('|'));
+  assert.deepEqual(Object.keys(settings?.hooks ?? {}), ['Notification']);
+  assert.equal(settings?.hooks?.Notification[0]?.matcher, DIALOG_NOTIFICATIONS.join('|'));
   assert.ok(hookCommand("example-it's").endsWith(`'claude-hook' '--child' 'example-it'\\''s'`), hookCommand("example-it's"));
+});
+
+test('one settings file holds both parts a child needs, and a child that needs neither gets none', () => {
+  const both = claudeChildSettings('example-child', { hook: true, disablePlugins: ['bellwether@example-market'] });
+  assert.deepEqual(Object.keys(both ?? {}).sort(), ['enabledPlugins', 'hooks']);
+  assert.deepEqual(both?.enabledPlugins, { 'bellwether@example-market': false });
+  // A child on another machine gets no hook, and only the plugin part.
+  assert.deepEqual(claudeChildSettings('example-child', { hook: false, disablePlugins: ['bellwether@example-market'] }), { enabledPlugins: { 'bellwether@example-market': false } });
+  assert.equal(claudeChildSettings('example-child', { hook: false }), undefined);
 });
 
 test('a hook dialog holds while herdr calls the child idle or blocked, and ends when it works or leaves blocked', () => {

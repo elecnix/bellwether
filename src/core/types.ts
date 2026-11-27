@@ -1,3 +1,4 @@
+import type { ToolSource } from './tool-source.ts';
 /** The lifecycle states herdr reports for an agent in a pane. */
 export type AgentStatus = 'idle' | 'working' | 'blocked' | 'done' | 'unknown';
 
@@ -117,6 +118,12 @@ export interface ChildRecord {
    * session that has not had its first turn. Cleared once the file is found.
    */
   transcriptMissing?: string;
+  /**
+   * Which server gives a Claude Code child its Bellwether tools, and each
+   * other Bellwether server its environment held that the spawn kept out.
+   * Written at each start, so a resume or restart says what that start chose.
+   */
+  toolSource?: ToolSource;
   /**
    * The harness session, recorded as soon as herdr reports it and kept after
    * the child exits, so a retired child can still be resumed.

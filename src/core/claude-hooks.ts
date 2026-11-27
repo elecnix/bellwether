@@ -54,22 +54,51 @@ export function hookCommand(childId: string): string {
   return [process.execPath, '--disable-warning=ExperimentalWarning', cliEntry(), HOOK_COMMAND, '--child', childId].map(shellQuote).join(' ');
 }
 
-/** The settings one Claude Code child starts with. */
-export function claudeChildSettings(childId: string): { hooks: { Notification: { matcher: string; hooks: { type: 'command'; command: string; timeout: number }[] }[] } } {
-  return {
-    hooks: {
-      Notification: [{ matcher: DIALOG_NOTIFICATIONS.join('|'), hooks: [{ type: 'command', command: hookCommand(childId), timeout: HOOK_TIMEOUT_S }] }],
-    },
-  };
+/**
+ * What one child's settings file holds. This module is the file's one
+ * writer: a new part is a field here and a few lines in claudeChildSettings,
+ * never a second function that writes the same path.
+ */
+export interface ClaudeSettingsParts {
+  /**
+   * The Notification hook that reports the child's dialogs. Only a local
+   * child gets it: the hook tells the daemon on the child's own machine, and
+   * only a local child's record lives there.
+   */
+  hook: boolean;
+  /** Plugins to turn off for this child, by `name@marketplace`: a Bellwether plugin that would add a second set of tools. */
+  disablePlugins?: readonly string[];
 }
 
-/** Write the child's settings with mode 0600 in a 0700 directory, and return the path. */
-export function writeClaudeSettings(childId: string): string {
+export interface ClaudeChildSettings {
+  hooks?: { Notification: { matcher: string; hooks: { type: 'command'; command: string; timeout: number }[] }[] };
+  enabledPlugins?: Record<string, false>;
+}
+
+/** The settings one Claude Code child starts with, or undefined when it needs none. */
+export function claudeChildSettings(childId: string, parts: ClaudeSettingsParts = { hook: true }): ClaudeChildSettings | undefined {
+  const settings: ClaudeChildSettings = {};
+  if (parts.hook) settings.hooks = { Notification: [{ matcher: DIALOG_NOTIFICATIONS.join('|'), hooks: [{ type: 'command', command: hookCommand(childId), timeout: HOOK_TIMEOUT_S }] }] };
+  if (parts.disablePlugins?.length) settings.enabledPlugins = Object.fromEntries(parts.disablePlugins.map((id) => [id, false] as const));
+  return Object.keys(settings).length ? settings : undefined;
+}
+
+/**
+ * Write the child's settings with mode 0600 in a 0700 directory, and return
+ * the path. A child that needs no settings gets no file, and a file an earlier
+ * start left for it goes.
+ */
+export function writeClaudeSettings(childId: string, parts: ClaudeSettingsParts = { hook: true }): string | undefined {
+  const settings = claudeChildSettings(childId, parts);
+  if (!settings) {
+    removeClaudeSettings(childId);
+    return undefined;
+  }
   const dir = claudeSettingsDir();
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   fs.chmodSync(dir, 0o700);
   const file = claudeSettingsPath(childId);
-  fs.writeFileSync(file, `${JSON.stringify(claudeChildSettings(childId), null, 2)}\n`, { mode: 0o600 });
+  fs.writeFileSync(file, `${JSON.stringify(settings, null, 2)}\n`, { mode: 0o600 });
   fs.chmodSync(file, 0o600);
   return file;
 }

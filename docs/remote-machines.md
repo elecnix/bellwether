@@ -74,9 +74,13 @@ On either machine, a failing `bellwether` command prints `bellwether <command>: 
 
 ## Reports that do not arrive
 
-When registration fails for a child with no brief, the child still starts, and herdr status still follows it. The spawn's reply says why the child can't report.
+When registration fails for a child with no brief, a codex, opencode or cline child still starts, and herdr status still follows it. The spawn's reply says why the child can't report.
 
-A pi spawn fails instead, because without that machine's extension path the child would have no tools.
+Without that machine's extension path, a pi child would have no tools, so its spawn fails instead.
+
+Claude Code spawns fail too.
+
+Only the server that registration writes holds the child's id, so a Bellwether plugin or server the machine loads by itself would send the child's `parent_report` to no parent.
 
 Outages leave each new report in the relay outbox on the child's machine. A new connection starts by sending the reports that wait for its parents, so a report from an outage arrives once the parent's daemon reconnects. Under `~/.bellwether/relay/children/`, the relay record counts waiting reports as `unforwarded`, and `bellwether doctor` on the child's machine counts them too.
 

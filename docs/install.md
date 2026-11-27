@@ -34,7 +34,11 @@ A marketplace install still needs the flag. An organization can put the plugin o
 
 Without the flag, tools still work, but child events wait in the outbox and no turn starts.
 
-Install the plugin for the sessions you start yourself. A Claude Code child that Bellwether starts gets its own MCP server from the spawn, so it works without a plugin or an `mcpServers` entry in your settings. Children ignore a `bellwether` entry that is already there.
+Install the plugin for the sessions you start yourself. A Claude Code child that Bellwether starts gets its own MCP server from the spawn, so it works without a plugin or an `mcpServers` entry in your settings.
+
+Bellwether gives each Claude Code child one set of tools, from its own server, which is the only server that holds its child id. The spawn turns the Bellwether plugin off for that child alone, in the settings file it passes with `--settings`.
+
+In your user, local or project scope, a Bellwether server loses its name to the child's own config. A server under another name gets a stand-in that doesn't offer any tools. Your settings files stay as they are. The child's record says which servers the spawn kept out, and `bellwether doctor` prints a `tools claude-code` line that says the same for this machine.
 
 A Claude Code child prints `server:bellwether · no MCP server configured with that name` under its channel banner. The line is wrong, because Claude Code has loaded the server. Claude Code checks a `server:` channel against the servers in its settings files only, and a child's server comes from `--mcp-config`, which that check doesn't read. `parent_report` and the other tools work in that child, and the parent gets its events. Bellwether can't remove the line without writing the child's server into your Claude Code settings, which it never does. The defect is Claude Code's, reported as [anthropics/claude-code#100865](https://github.com/anthropics/claude-code/issues/100865). To see it outside Bellwether, run `claude --mcp-config=cfg.json --dangerously-load-development-channels=server:probe` with a stdio server named `probe` in `cfg.json`: the line appears. Declare the same server in the folder's `.mcp.json` instead, and it doesn't.
 

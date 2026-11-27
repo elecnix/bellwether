@@ -103,6 +103,8 @@ export class Watcher {
   private readonly startChecked = new Set<string>();
   /** Retirements in flight, so an exit event and a start never clean the same child at once. */
   private readonly retiring = new Map<string, Promise<void>>();
+  /** Children with a notice that came while their cleanup ran, so it runs once more after. */
+  private readonly retireAgain = new Set<string>();
   private readonly outbox: Outbox;
   private readonly states = new Map<string, ClassifierState>();
   private readonly screenReadAt = new Map<string, number>();
@@ -166,7 +168,17 @@ export class Watcher {
 
   /** Wait for the retirements in flight, for a test or a drain. */
   async retirements(): Promise<void> {
-    await Promise.all([...this.retiring.values()]);
+    while (this.retiring.size) await Promise.all([...this.retiring.values()]);
+  }
+
+  /**
+   * Start the cleanup of a child that agent_stop closed. The stop marks the
+   * child exited itself, so the pane_closed that follows finds the exit
+   * already recorded. Both start the cleanup, and whichever comes first does
+   * the work. A child that never asked to be retired is left as it is.
+   */
+  childStopped(childId: string): void {
+    void this.retire(childId);
   }
 
   /**
@@ -175,7 +187,13 @@ export class Watcher {
    */
   private retire(childId: string): Promise<void> {
     const running = this.retiring.get(childId);
-    if (running) return running;
+    if (running) {
+      // The running pass may have found the pane still listed and left the
+      // work pending. This notice can be the one that says the pane is gone,
+      // so look once more after it. A finished retirement makes that a no-op.
+      this.retireAgain.add(childId);
+      return running;
+    }
     const job = reapChild(this.parentId, childId, {
       ops: this.retireOps,
       paneOrTabLive: (child) => this.paneOrTabLive(child),
@@ -185,7 +203,10 @@ export class Watcher {
     })
       .then(() => undefined)
       .catch((error: unknown) => this.log(`retirement of ${childId} failed: ${String(error)}`))
-      .finally(() => this.retiring.delete(childId));
+      .finally(() => {
+        this.retiring.delete(childId);
+        if (this.retireAgain.delete(childId)) void this.retire(childId);
+      });
     this.retiring.set(childId, job);
     return job;
   }
@@ -416,9 +437,15 @@ export class Watcher {
 
   private markExited(child: ChildRecord, code: number | undefined, ended?: 'in-pane'): void {
     // One exit can arrive twice: the reconcile after a subscribe finds the pane
-    // gone, and the pane_closed event for it lands too. The record decides, so
-    // the exit is offered, the workspace released and retirement started once.
-    if (readParent(this.parentId)?.children.find((entry) => entry.id === child.id)?.exitedAt) return;
+    // gone, and the pane_closed event for it lands too. agent_stop also marks
+    // the exit before herdr's event arrives. The record decides, so the exit is
+    // offered and the workspace released once. Retirement starts either way:
+    // agent_stop starts it too, retire() runs one pass at a time, and the
+    // cleanup skips a child whose outcome is already recorded.
+    if (readParent(this.parentId)?.children.find((entry) => entry.id === child.id)?.exitedAt) {
+      void this.retire(child.id);
+      return;
+    }
     // A child that exits between two looks wrote its file after the last one,
     // so look once more. The session and transcript stay on the record, so a
     // retired child can still be read and resumed.

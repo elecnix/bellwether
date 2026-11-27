@@ -4,7 +4,8 @@ import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { approvalNotice, bumpFormula, compareVersions, installNotice, prBody, protocolOf, release, ReleaseError, SITE_TIMEOUT_MS, staleSiteMessage, type ReleaseDeps, type RunOptions, type RunResult } from '../../scripts/release.ts';
+import { FEATURES, type Feature } from '../../src/daemon/features.ts';
+import { approvalNotice, bumpFormula, compareVersions, featureLine, installNotice, prBody, protocolOf, release, ReleaseError, SITE_TIMEOUT_MS, staleSiteMessage, type ReleaseDeps, type RunOptions, type RunResult } from '../../scripts/release.ts';
 import { bylineOpening, SITE_URL } from '../../scripts/site-version.ts';
 
 const TARBALL = 'https://registry.npmjs.org/@elecnix/bellwether/-/bellwether-0.1.4.tgz';
@@ -32,6 +33,8 @@ interface World {
   installedVersion?: string;
   /** The version each read of the deployed site names, in order; the last one repeats. */
   site: string[];
+  /** The feature table in the release tree's `src/daemon/features.ts`. */
+  treeFeatures: Feature[];
 }
 
 /** A documentation page as the pages workflow deploys it, with the byline that names `version`. */
@@ -53,10 +56,12 @@ async function harness(overrides: Partial<World> = {}) {
     ciConclusion: 'success',
     formulaOnMain: FORMULA,
     site: ['0.1.4'],
+    treeFeatures: [],
     ...overrides,
   };
   const calls: string[] = [];
   const logs: string[] = [];
+  const bodies: string[] = [];
   let sleeps = 0;
   const siteReads: string[] = [];
   const ok = (stdout = ''): RunResult => ({ code: 0, stdout, stderr: '' });
@@ -80,7 +85,7 @@ async function harness(overrides: Partial<World> = {}) {
       return ok();
     }
     if (line === 'git rev-parse --show-toplevel') return ok(`${top}\n`);
-    if (line === 'git show origin/main:package.json') return ok(JSON.stringify({ version: world.mainVersion }));
+    if (line === 'git show origin/main:package.json') return ok(JSON.stringify({ type: 'module', version: world.mainVersion }));
     if (line.startsWith('git log -1')) return ok('c0ffee\n');
     if (line === 'git rev-parse origin/main') return ok('abc1234def\n');
     if (line.startsWith('git status --porcelain')) return ok(world.dirty);
@@ -89,17 +94,18 @@ async function harness(overrides: Partial<World> = {}) {
       const tree = args.find((arg) => arg.includes('release-'))!;
       await mkdir(path.join(tree, 'src/daemon'), { recursive: true });
       await writeFile(path.join(tree, 'src/daemon/protocol.ts'), 'export const DAEMON_PROTOCOL = 3;\n');
-      await writeFile(path.join(tree, 'package.json'), JSON.stringify({ version: world.mainVersion }));
+      await writeFile(path.join(tree, 'src/daemon/features.ts'), `export const FEATURES = ${JSON.stringify(world.treeFeatures)};\n`);
+      await writeFile(path.join(tree, 'package.json'), JSON.stringify({ type: 'module', version: world.mainVersion }));
       await mkdir(path.join(tree, '.claude-plugin'), { recursive: true });
       await writeFile(path.join(tree, '.claude-plugin/plugin.json'), `${JSON.stringify({ name: 'bellwether', version: world.mainVersion }, null, 2)}\n`);
       return ok();
     }
     if (line.startsWith('npm version')) {
-      await writeFile(path.join(options.cwd!, 'package.json'), JSON.stringify({ version: args[1] }));
+      await writeFile(path.join(options.cwd!, 'package.json'), JSON.stringify({ type: 'module', version: args[1] }));
       return ok();
     }
     if (line.startsWith('git checkout')) {
-      await writeFile(path.join(options.cwd!, 'package.json'), JSON.stringify({ version: world.mainVersion }));
+      await writeFile(path.join(options.cwd!, 'package.json'), JSON.stringify({ type: 'module', version: world.mainVersion }));
       return ok();
     }
     if (line.startsWith('gh run list')) return ok(JSON.stringify([{ databaseId: 7, status: 'completed', conclusion: world.ciConclusion }]));
@@ -108,6 +114,7 @@ async function harness(overrides: Partial<World> = {}) {
       return ok(JSON.stringify(world.prs.filter((pr) => pr.url.includes(head.startsWith('release/') ? 'bellwether/' : 'homebrew-tap/'))));
     }
     if (line.startsWith('gh pr create -R elecnix/bellwether')) {
+      bodies.push(await readFile(args[args.indexOf('--body-file') + 1]!, 'utf8'));
       world.prs.push({ number: 40, state: 'OPEN', url: 'https://github.com/elecnix/bellwether/pull/40' });
       return ok('https://github.com/elecnix/bellwether/pull/40\n');
     }
@@ -150,7 +157,7 @@ async function harness(overrides: Partial<World> = {}) {
     log: (line) => logs.push(line),
     cwd: top,
   };
-  return { deps, world, calls, logs, root, siteReads, sleeps: () => sleeps };
+  return { deps, world, calls, logs, bodies, root, siteReads, sleeps: () => sleeps };
 }
 
 test('a version that is not three numbers is refused before any command runs', async () => {
@@ -290,14 +297,50 @@ test('versions compare by number, and the protocol is read from either source fo
 });
 
 test('the pull request body says whether the protocol moves', () => {
-  assert.match(prBody('0.1.4', '0.1.3', { from: 2, to: 3 }), /moves from 2 to 3/);
-  assert.match(prBody('0.1.4', '0.1.3', undefined), /stays the same/);
+  assert.match(prBody('0.1.4', '0.1.3', { from: 2, to: 3 }, FEATURES), /moves from 2 to 3/);
+  assert.match(prBody('0.1.4', '0.1.3', undefined, FEATURES), /stays the same/);
+});
+
+test('the pull request body lists every feature that features.ts records under the released version', () => {
+  const versions = [...new Set(FEATURES.map((feature) => feature.version))];
+  assert.ok(versions.includes('0.1.6'), 'features.ts records the ancestry request under 0.1.6');
+  for (const version of versions) {
+    const body = prBody(version, undefined, undefined, FEATURES);
+    for (const feature of FEATURES) {
+      const line = featureLine(feature);
+      assert.match(line, new RegExp(`\`${feature.name.split(/[.=]/).pop()!.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\``), `the line for ${feature.name} names it`);
+      assert.ok(line.includes(feature.summary), `the line for ${feature.name} carries its summary`);
+      if (feature.version === version) assert.ok(body.includes(line), `the ${version} body omits ${feature.name}:\n${body}`);
+      else assert.ok(!body.includes(line), `the ${version} body lists ${feature.name}, which ${feature.version} brought:\n${body}`);
+    }
+  }
+  assert.match(prBody('0.1.6', '0.1.5', undefined, FEATURES), /^- The `ancestry` request\. /m);
+});
+
+test('a feature added for a release appears in its body, and a release without one says so', () => {
+  const base: Feature[] = [{ name: 'hello', kind: 'request', protocol: 2, version: '0.1.3', summary: 'A session opens its connection.' }];
+  const added: Feature = { name: 'example_tool', kind: 'tool', protocol: 4, version: '0.1.4', summary: 'A parent asks for an example.' };
+  const kind: Feature = { name: 'agent_spawn.kind=example', kind: 'argument', protocol: 4, version: '0.1.4', summary: 'Starts an Example child.' };
+  const without = prBody('0.1.4', '0.1.3', undefined, base);
+  assert.doesNotMatch(without, /example/);
+  assert.match(without, /doesn't record a new tool, request, notice or argument under 0\.1\.4/);
+  const body = prBody('0.1.4', '0.1.3', undefined, [...base, added, kind]);
+  assert.match(body, /^- The `example_tool` tool\. A parent asks for an example\.$/m);
+  assert.match(body, /^- The `example` kind of `agent_spawn`\. Starts an Example child\.$/m);
+  assert.doesNotMatch(body, /`hello`/, 'a feature from an earlier release stays out');
+  assert.doesNotMatch(body, /doesn't record/);
+});
+
+test('the release pull request lists the features recorded in the tree it releases', async () => {
+  const h = await harness({ treeFeatures: [{ name: 'example_tool', kind: 'tool', protocol: 3, version: '0.1.4', summary: 'A parent asks for an example.' }] });
+  await release({ version: '0.1.4' }, h.deps);
+  assert.match(h.bodies[0]!, /^- The `example_tool` tool\. A parent asks for an example\.$/m, h.bodies[0]);
 });
 
 test('each release message points at a docs file that exists, never at the README', async () => {
   const { readFile } = await import('node:fs/promises');
   const messages = [
-    prBody('0.1.4', '0.1.3', { from: 2, to: 3 }),
+    prBody('0.1.4', '0.1.3', { from: 2, to: 3 }, FEATURES),
     approvalNotice({ from: 2, to: 3 }),
     installNotice('0.1.4', 'the tap formula already points at 0.1.4'),
   ];

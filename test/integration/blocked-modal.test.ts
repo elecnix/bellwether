@@ -12,7 +12,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { HerdrClient } from '../../src/core/herdr-client.ts';
 import { PROMPT_NOTICE, notePromptForCaller } from '../../src/core/report.ts';
-import { emptyParent, readParent, saveParent } from '../../src/core/registry.ts';
+import { emptyParent, readParent, saveParent, updateChild } from '../../src/core/registry.ts';
 import { Watcher } from '../../src/core/watcher.ts';
 import type { ChildRecord, OutboxEntry } from '../../src/core/types.ts';
 import { startDaemon, type ServiceFactory } from '../../src/daemon/server.ts';
@@ -62,11 +62,11 @@ interface Rig {
   stop(): Promise<void>;
 }
 
-async function rig(pane: Pane, shape: Pick<ChildRecord, 'kind' | 'harness' | 'lastStatus'>, before?: (rig: Pick<Rig, 'parentId' | 'child'>) => void): Promise<Rig> {
+async function rig(pane: Pane, shape: Pick<ChildRecord, 'kind' | 'harness' | 'lastStatus'>, before?: (rig: Pick<Rig, 'parentId' | 'child'>) => void, herdrDelayMs = 0): Promise<Rig> {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'bellwether-modal-'));
   const previous = process.env['BELLWETHER_HOME'];
   process.env['BELLWETHER_HOME'] = home;
-  const fake = await startFakeHerdr({ respond: pane.respond });
+  const fake = await startFakeHerdr({ respond: pane.respond, delayMs: herdrDelayMs });
   pane.fake = fake;
   const now = new Date().toISOString();
   const child: ChildRecord = { id: 'c0ffee01', name: 'kid', paneId: PANE, tabId: 'w1:t1', host: 'local', startedAt: now, statusChangedAt: now, lastBusyAt: now, depth: 1, ...shape };
@@ -389,6 +389,26 @@ test('limit 1, a dialog the screen check does not recognise: a free-text box wit
     await sleep(200);
     assert.deepEqual(r.published.map((entry) => entry.event), ['idle']);
     assert.equal(r.record()?.prompt, undefined);
+    assertNoInput(r);
+  } finally {
+    await r.stop();
+  }
+});
+
+test('a dialog on the record raises one blocked event while herdr answers more slowly than the watcher ticks', async () => {
+  // The watcher's first pass waits on herdr for the child's session, and its
+  // ticks keep running meanwhile. One pass must finish before the next starts,
+  // or the first one resumes from the state it read before the wait and raises
+  // the dialog again. A loaded machine left a 15 ms tick waiting this way.
+  const r = await rig(new Pane('idle', PERMISSION_QUESTION), { kind: 'claude', harness: 'claude-code', lastStatus: 'idle' }, ({ parentId, child }) => {
+    updateChild(parentId, child.id, (entry) => {
+      entry.prompt = { line: PERMISSION_LINE, source: 'claude-code', kind: 'permission_prompt', since: new Date().toISOString() };
+    });
+  }, 200);
+  try {
+    await until('the blocked event', () => r.published.length > 0);
+    await sleep(600);
+    assert.deepEqual(r.published.map((entry) => entry.event), ['blocked']);
     assertNoInput(r);
   } finally {
     await r.stop();

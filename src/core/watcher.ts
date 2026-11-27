@@ -116,6 +116,9 @@ export class Watcher {
   /** When a host that failed may be tried again, so a dead machine is not dialled every tick. */
   private readonly retryAt = new Map<string, { at: number; delay: number }>();
   private ticker: NodeJS.Timeout | undefined;
+  /** The classifier pass that runs now, and the one that waits for it. */
+  private evaluating: Promise<void> | undefined;
+  private nextEvaluation: Promise<void> | undefined;
   private reconnecting = false;
   private spoolOffset = 0;
   private stopped = true;
@@ -627,10 +630,35 @@ export class Watcher {
   }
 
   /**
+   * Run one classifier pass, or join the pass that waits for the running one.
+   * A pass reads each child's state, waits on herdr or the disk, then stores
+   * the state it computed. The ticker and every herdr event start a pass, so
+   * without this two passes would read the same state, and the slower one
+   * would raise its event again and store an older state over the newer one.
+   * A caller that arrives during a pass gets the next one, which reads the
+   * registry after the running pass has stored what it found.
+   */
+  private evaluate(): Promise<void> {
+    if (!this.evaluating) {
+      this.evaluating = this.evaluateOnce().finally(() => {
+        this.evaluating = undefined;
+      });
+      return this.evaluating;
+    }
+    this.nextEvaluation ??= this.evaluating
+      .catch(() => {})
+      .then(() => {
+        this.nextEvaluation = undefined;
+        return this.evaluate();
+      });
+    return this.nextEvaluation;
+  }
+
+  /**
    * One classifier pass over every child. It reads the registry itself, so a
    * caller can never hand it a stale copy.
    */
-  private async evaluate(): Promise<void> {
+  private async evaluateOnce(): Promise<void> {
     const record = readParent(this.parentId);
     if (!record) return;
     const now = this.now();

@@ -14,6 +14,8 @@ Every session with Bellwether gets these tools, in Pi and in Claude Code alike.
 | `agent_restart` | any session | closes a child's or a session's pane and reopens the same session in a new one, or restarts the caller when it omits the target |
 | `parent_report` | a child Bellwether started or resumed | sends `done`, `needs-input` or `progress` to its parent |
 | `request_retirement` | a child Bellwether started | asks the daemon to remove the child's worktree and branch once herdr reports its pane gone |
+| `agent_request_depth` | a child Bellwether started or resumed | asks its parent for a deeper ceiling, and returns at once with a request id |
+| `agent_grant_depth` | any session | answers a child's depth request: grants levels, or refuses with 0 |
 
 A parent sends input only to the panes it started, resumed or adopted.
 
@@ -38,6 +40,19 @@ A child on another machine gets its workspace on that machine, because `"new"` c
 Bellwether closes only a workspace it created, and only once no tab remains in it. herdr closes a workspace with its last tab, so the close covers a herdr that leaves an empty one. A workspace that still has another tab remains open, and so does any workspace a person made, even an empty one. A restart or resume of a child whose workspace herdr has closed opens a new one under the same label.
 
 `agent_list` has a `workspace` column, and `bellwether doctor` names the workspace of each live child. Both mark a workspace Bellwether made for the child with `[made for it]`.
+
+## Depth
+
+Depth limits how far a tree of children can grow. Each child has a ceiling: the deepest generation its own descendants may be at. Picture a child at depth 2 with a ceiling of 2. It can't spawn, because the spawn would put its child at depth 3. The depth-0 session sets the tree's ceiling through `max_depth` on its spawns, which defaults to 2. Sessions below depth 0 hand their own ceiling to their spawns, and that ceiling caps any higher `max_depth` they pass along.
+
+A child that needs more depth calls `agent_request_depth` with the number of levels and one sentence describing the work. Calling it returns a request id at once, and the child continues at its current depth. Parents receive the request as a `needs-input` report and answer with `agent_grant_depth`. Either answer reaches the child as a message.
+
+- Granting a request raises the child's ceiling to its depth plus the levels granted.
+- Beyond the parent's own ceiling, a grant becomes a new request to the grandparent. That request identifies the child that asked and gives its reason. An ancestor with room can grant it, and that answer passes down to every child on the chain.
+- Over the whole tree, the depth-0 session's ceiling is the limit. Anything above it gets an immediate refusal, which states the ceiling and says that only the person can raise it.
+- A refusal doesn't need a reason. Refused children get two options: do the work with fewer children, or ask the person.
+
+The child record stores each grant, recording the granter, the time, the number of levels and the reason. `agent_list` shows each child's depth and ceiling, along with its open requests and grants. Requests don't work across machines. A child whose parent runs on another machine gets a refusal with the same two options.
 
 ## Events a parent receives
 

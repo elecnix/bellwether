@@ -99,6 +99,17 @@ export interface ChildRecord {
   stateChangeSeq?: number;
   /** How many Bellwether generations deep this child is. */
   depth: number;
+  /**
+   * The child's ceiling: the deepest generation its own descendants may sit
+   * at, so it spawns only while its depth plus one is at most this. Set by
+   * the spawn and raised by a depth grant. A record from before ceilings
+   * were kept has none, and counts as the default.
+   */
+  maxDepth?: number;
+  /** Every depth request the child made, open or settled. */
+  depthRequests?: DepthRequest[];
+  /** Every raise of the ceiling: who granted it, when, how far and why. */
+  depthGrants?: DepthGrant[];
   /** The last report the child sent, and when. */
   lastReport?: { status: ReportStatus; text: string; at: string; seq: number };
   /**
@@ -185,6 +196,46 @@ export interface ChildRecord {
   retireReason?: string;
 }
 
+/**
+ * A child's request for a deeper ceiling, kept on its record in its parent's
+ * registry. A request the parent could not grant from its own ceiling goes on
+ * to the grandparent as a request of its own, which names this one in
+ * `onBehalfOf`, so the answer settles both.
+ */
+export interface DepthRequest {
+  id: string;
+  /** How many generations below the child it asked for. */
+  levels: number;
+  /** The ceiling asked for: the child's depth plus levels. */
+  ceiling: number;
+  /** The child's sentence naming the work that needs the levels. */
+  reason: string;
+  at: string;
+  state: 'pending' | 'forwarded' | 'granted' | 'refused';
+  /** For a forwarded request, the id of the request it became upstream. */
+  forwardedAs?: string;
+  /** For a request made on a child's behalf: where that child's own request waits. */
+  onBehalfOf?: { parentId: string; childId: string; requestId: string; name: string };
+  decidedAt?: string;
+  decidedBy?: string;
+  /** For a refusal, what the child was told. */
+  refusal?: string;
+}
+
+/** One raise of a child's ceiling, for the audit trail agent_list shows. */
+export interface DepthGrant {
+  at: string;
+  /** The session that granted it, by name. */
+  by: string;
+  requestId: string;
+  /** Generations below the child that the new ceiling allows. */
+  levels: number;
+  from: number;
+  to: number;
+  /** The reason as given. */
+  reason: string;
+}
+
 /** The worktree and branch a child asked to have removed once it is gone. */
 export interface RetireIntent {
   /** The worktree root. */
@@ -215,6 +266,15 @@ export interface ParentRecord {
   paneId?: string;
   workspaceId?: string;
   depth: number;
+  /**
+   * For the depth-0 session, the tree's ceiling, raised by max_depth on its
+   * spawns. For any other session, the ceiling its spawn put in its
+   * environment, which counts only when its parent's registry is on another
+   * machine.
+   */
+  maxDepth?: number;
+  /** The child id this session has in its parent's registry, from its hello. */
+  childId?: string;
   children: ChildRecord[];
   /** How far into the child spool this parent has read, so a restart resumes. */
   spoolOffset?: number;

@@ -34,6 +34,8 @@ export const FEATURES: readonly Feature[] = [
   // 0.1.5, protocol 4: the relay turned round, and doctor lists sessions.
   ...['relay-subscribe', 'relay-ack', 'relay-read', 'relay-status', 'sessions'].map((name) => ({ name, kind: 'request' as const, protocol: 4, version: '0.1.5' })),
   ...['agent_restart', 'agent_move'].map((name) => ({ name, kind: 'tool' as const, protocol: 4, version: '0.1.5' })),
+  // A child at its depth ceiling asks for more, and a parent grants or refuses.
+  ...['agent_request_depth', 'agent_grant_depth'].map((name) => ({ name, kind: 'tool' as const, protocol: 4, version: '0.1.5' })),
   // A pi child's extension reports an open dialog; an older daemon refuses it, and the extension ignores the refusal.
   { name: 'child_prompt', kind: 'notice', protocol: 4, version: '0.1.5' },
   // An older daemon would start the child in the parent's workspace and say nothing.

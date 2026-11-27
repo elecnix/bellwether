@@ -2,10 +2,11 @@
 // MCP channel server register exactly the same names and schemas.
 import os from 'node:os';
 import type { HerdrClient } from '../core/herdr-client.ts';
-import { AGENT_KINDS, DEFAULT_MAX_DEPTH, spawnChild, type RegisterRemote, type SpawnOptions } from '../core/spawn.ts';
+import { AGENT_KINDS, spawnChild, type RegisterRemote, type SpawnOptions } from '../core/spawn.ts';
+import { GRANT_DEPTH_TOOL, REQUEST_DEPTH_TOOL, ceilingOf, childCeiling, describeDepth, grantDepth, raiseTree, requestDepth } from '../core/depth.ts';
 import { removeChildFiles } from '../core/mcp-config.ts';
 import { PROMPT_NOTICE, notePromptForCaller, reportForCaller } from '../core/report.ts';
-import { childById, readParent, updateChild } from '../core/registry.ts';
+import { childById, mutateParent, readParent, updateChild } from '../core/registry.ts';
 import { adoptPane } from '../core/adopt.ts';
 import { LOCAL_HOST, hostOf, knownHosts, type ClientFor } from '../core/machine.ts';
 import { spawnResume } from '../core/spawn-resume.ts';
@@ -77,7 +78,7 @@ export const parentTools: ToolDefinition[] = [
         focus: { type: 'boolean', description: 'Move your view to the new tab. Defaults to false, so the child does not steal focus.' },
         stuck_minutes: { type: 'number', description: 'How long the child may be quiet before it counts as stuck. Defaults to 10.' },
         inactive_minutes: { type: 'number', description: 'How long the child may show no activity of any kind, blocked included, before you are told. Defaults to 5. Clamped to between 1 and 1440. It cannot be turned off.' },
-        max_depth: { type: 'number', description: 'How deep children may spawn children. Defaults to 2. A child in a workspace of its own counts the same depth as any other.' },
+        max_depth: { type: 'number', description: 'The deepest generation the child\'s own descendants may reach: with 2, your child may spawn children but they may not. Defaults to 2. From the session at the top of the tree, it also sets the tree\'s ceiling, which no grant goes past. From any other session, it is held to your own ceiling. A child in a workspace of its own counts the same depth as any other.' },
         machine: { type: 'string', description: `${MACHINE_DESCRIPTION} With resume, a known child always goes back to its own machine.` },
         workspace: { type: 'string', description: 'The herdr workspace for the child\'s tab. "new" creates a workspace for the child, on the child\'s machine, and starts the child in its first tab; the child\'s own children then open there too, so its subtree stays out of your workspace, and Bellwether closes that workspace once nothing is left in it. An existing workspace\'s id or label puts the child there, on the child\'s machine, and Bellwether never closes it; a name that matches nothing is refused. Omit it to open the child in your own workspace, as before.' },
         workspace_label: { type: 'string', description: 'The label of the workspace that workspace "new" creates. Defaults to the child\'s name.' },
@@ -126,6 +127,20 @@ export const parentTools: ToolDefinition[] = [
         keys: { type: 'array', items: { type: 'string' }, description: 'Key presses to send instead of a prompt, named as ctrl+c or enter.' },
       },
       required: ['child'],
+    },
+  },
+  {
+    name: GRANT_DEPTH_TOOL,
+    description: `Answer a child's ${REQUEST_DEPTH_TOOL}, which reaches you as a report: grant levels to raise its ceiling to its depth plus levels, or pass 0 to refuse, with no reason needed. Either way the child is told. A grant past your own ceiling goes on to your own parent with a line saying who asks and why, and lands when that parent grants; nobody can grant past the ceiling the top of the tree was given. Every grant goes on the child's record, with who granted it, when, how far and why, and agent_list shows it.`,
+    schema: {
+      type: 'object',
+      properties: {
+        child: { type: 'string', description: 'The child\'s name, its pane id, or the id agent_spawn returned.' },
+        levels: { type: 'number', description: 'How many generations below the child to allow: 1 lets it spawn children, 2 lets those spawn too. 0 refuses.' },
+        request: { type: 'string', description: 'The request id the report named. Defaults to the child\'s newest open request.' },
+        reason: { type: 'string', description: 'Why, for the record, when you grant without a request. Defaults to the child\'s own reason.' },
+      },
+      required: ['child', 'levels'],
     },
   },
   {
@@ -180,6 +195,18 @@ export const childTools: ToolDefinition[] = [
         text: { type: 'string', description: 'What to tell the parent. For done, the result. For needs-input, the question and the options you weighed.' },
       },
       required: ['status', 'text'],
+    },
+  },
+  {
+    name: REQUEST_DEPTH_TOOL,
+    description: 'Ask your parent for a deeper ceiling, when agent_spawn refuses because the tree is as deep as it may go. The call returns at once with a request id: it is not a wait, so carry on with what you can do at your current depth. Your parent grants or refuses, or passes the request up the chain when it lacks the room, and you get a message with the answer either way.',
+    schema: {
+      type: 'object',
+      properties: {
+        levels: { type: 'number', description: 'How many generations below you the work needs: 1 to spawn children, 2 for them to spawn too.' },
+        reason: { type: 'string', description: 'One sentence naming the work that needs the levels.' },
+      },
+      required: ['levels', 'reason'],
     },
   },
 ];
@@ -261,7 +288,7 @@ function describeChild(child: ChildRecord, watcher: Watcher, relayState?: ToolCo
   const state = `${child.exitedAt ? `exited${child.exitCode === undefined ? '' : ` (${child.exitCode})`}` : child.lastStatus}${restart}${retire}`;
   const name = child.agentName ? `${child.name} (${child.agentName})` : child.name;
   const kind = child.model ? `${child.kind} (${child.model.provider}/${child.model.id})` : child.kind;
-  return `${name}\t${kind}\t${state}\t${age}s\t${hostColumn(child, relayState)}\t${workspaceColumn(child)}\t${child.paneId}\tunread ${unread}\t${child.cwd ?? ''}`;
+  return `${name}\t${kind}\t${state}\t${age}s\t${hostColumn(child, relayState)}\t${workspaceColumn(child)}\t${child.paneId}\t${child.depth}/${ceilingOf(child)}\tunread ${unread}\t${child.cwd ?? ''}`;
 }
 
 /**
@@ -283,6 +310,12 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
   if (name === PROMPT_NOTICE) {
     // Sent by a pi child's extension, never offered to a model.
     return notePromptForCaller(caller, { open: args['open'] === true, title: optionalString(args['title']), kind: optionalString(args['kind']) });
+  }
+
+  if (name === REQUEST_DEPTH_TOOL) {
+    // Routed by the caller's identity and this daemon's records, like parent_report.
+    const levels = typeof args['levels'] === 'number' ? (args['levels'] as number) : Number.NaN;
+    return requestDepth(caller, levels, optionalString(args['reason']) ?? '');
   }
 
   if (name === RETIRE_TOOL) {
@@ -327,6 +360,8 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
   }
 
   if (name === 'agent_spawn') {
+    const asked = typeof args['max_depth'] === 'number' ? (args['max_depth'] as number) : undefined;
+    const depth = childCeiling(record, asked, caller);
     const options: SpawnOptions = {
       kind: optionalString(args['kind']) ?? 'pi',
       name: optionalString(args['name']) ?? '',
@@ -339,7 +374,8 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
       focus: args['focus'] === true,
       stuckMinutes: typeof args['stuck_minutes'] === 'number' ? (args['stuck_minutes'] as number) : undefined,
       inactiveMinutes: typeof args['inactive_minutes'] === 'number' ? (args['inactive_minutes'] as number) : undefined,
-      maxDepth: typeof args['max_depth'] === 'number' ? (args['max_depth'] as number) : DEFAULT_MAX_DEPTH,
+      maxDepth: depth.ceiling,
+      spawnerCeiling: depth.spawnerCeiling,
       host: optionalString(args['machine']) ?? LOCAL_HOST,
       workspace: optionalString(args['workspace']),
       workspaceLabel: optionalString(args['workspace_label']),
@@ -354,9 +390,15 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
       cleanupRemote: remoteCleanup(ctx),
       localWorkspaces: async () => parseWorkspaces(await ctx.client.workspaceList()),
     });
+    // The depth-0 session's max_depth is the tree's ceiling, raised only by its own spawns.
+    const tree = raiseTree(record, asked);
+    if (tree !== undefined) mutateParent(record.id, (entry) => {
+      entry.maxDepth = tree;
+    });
     const where = child.host === LOCAL_HOST ? '' : ` on machine ${child.host}`;
     const room = child.ownsWorkspace ? `, in workspace ${workspaceName(child)}, which Bellwether created for it` : options.workspace && child.workspaceId ? `, in workspace ${workspaceName(child)}` : '';
     const lines = [`${child.name} started as a ${child.kind} agent${where} in pane ${child.paneId}, tab ${child.tabId ?? child.paneId}${room}.`, `Bellwether watches it, and your next turn starts when it changes state.`, `herdr link: ${link}`];
+    if (depth.note) lines.push(depth.note);
     if (modelNote) lines.push(modelNote);
     if (reportWarning) lines.push(reportWarning);
     return lines.join('\n');
@@ -375,8 +417,9 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
 
   if (name === 'agent_list') {
     if (!record.children.length) return 'No children yet. Start one with agent_spawn.';
-    const header = 'name\tkind\tstate\tage\thost\tworkspace\tpane\tunread\tcwd';
-    return [header, ...record.children.map((child) => describeChild(child, ctx.watcher, ctx.relayState))].join('\n');
+    const header = 'name\tkind\tstate\tage\thost\tworkspace\tpane\tdepth\tunread\tcwd';
+    const depth = record.children.flatMap((child) => describeDepth(child));
+    return [header, ...record.children.map((child) => describeChild(child, ctx.watcher, ctx.relayState)), ...(depth.length ? ['', 'Depth requests and grants:', ...depth] : [])].join('\n');
   }
 
   if (name === 'agent_move') {
@@ -425,6 +468,11 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
     if (message) return message;
     // Pane feature: agent_read for a child whose transcript holds no message yet.
     return (await herdr.paneRead({ paneId: child.paneId, source: 'recent_unwrapped', lines: 40 })).trim();
+  }
+
+  if (name === GRANT_DEPTH_TOOL) {
+    const levels = typeof args['levels'] === 'number' ? (args['levels'] as number) : Number.NaN;
+    return grantDepth(ctx.parentId, caller, { child, levels, requestId: optionalString(args['request']), reason: optionalString(args['reason']) }, (target, text) => tellChild(ctx, target, text));
   }
 
   if (name === 'agent_send') {
@@ -485,6 +533,20 @@ function transcriptFromSession(parentId: string, child: ChildRecord): string | u
     delete entry.transcriptMissing;
   });
   return found.path;
+}
+
+/**
+ * Give a child the answer to its depth request through herdr's agent.prompt,
+ * as agent_send does. The answer comes from the chain above it, which its own
+ * parent started. A child that has gone keeps the answer on its record.
+ */
+async function tellChild(ctx: ToolContext, child: ChildRecord, text: string): Promise<void> {
+  if (child.exitedAt || !child.paneId) return;
+  try {
+    await promptChild(await clientFor(ctx, hostOf(child)), child, text);
+  } catch (error) {
+    ctx.log?.(`depth: could not tell ${child.name} in pane ${child.paneId}: ${(error as Error).message}`);
+  }
 }
 
 function registrar(ctx: ToolContext, record: { id: string }): RegisterRemote | undefined {

@@ -142,7 +142,7 @@ test('agent_list names each child\'s workspace, and marks one Bellwether made fo
   saveParent(parent);
   const text = await runBellwetherTool({ client: w.client, parentId: w.parentId, watcher: w.watcher() }, 'agent_list', {});
   const [header, roomy, plain] = text.split('\n');
-  assert.equal(header, 'name\tkind\tstate\tage\thost\tworkspace\tpane\tunread\tcwd');
+  assert.equal(header, 'name\tkind\tstate\tage\thost\tworkspace\tpane\tdepth\tunread\tcwd');
   assert.equal(roomy?.split('\t')[5], 'w5 (roomy) [made for it]');
   assert.equal(plain?.split('\t')[5], 'w1');
 });

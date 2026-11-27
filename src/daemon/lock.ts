@@ -10,7 +10,7 @@ export interface LockRecord {
   pid: number;
   startedAt: number;
   protocol: number;
-  /** The package version of the daemon that holds the lock. A lock from before 0.1.4 has none. */
+  /** The package version of the daemon that holds the lock. A lock from before 0.1.5 has none. */
   version?: string;
   socket: string;
 }

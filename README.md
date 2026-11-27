@@ -150,9 +150,9 @@ It reports the installed version and daemon protocol, the herdr socket, the herd
 Every version goes through npm's staged publishing, so the operator's one-time code approves it. `npm run release` does everything else, and you run it twice:
 
 ```sh
-npm run release -- 0.1.4    # gates, version bump, release PR, merge, stage, review
+npm run release -- 0.1.5    # gates, version bump, release PR, merge, stage, review
 npx -y npm@12 stage approve <stage id> --otp <code>    # the person, with their code
-npm run release -- 0.1.4    # the Homebrew formula: bump, tap CI, merge
+npm run release -- 0.1.5    # the Homebrew formula: bump, tap CI, merge
 ```
 
 Each run reads where the release stands, then takes it one stage further:

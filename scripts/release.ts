@@ -1,6 +1,6 @@
 // Release Bellwether from this machine, up to the one step a person must take.
 //
-//   npm run release -- 0.1.4
+//   npm run release -- 0.1.5
 //
 // Each run reads where the release stands and carries it one stage further, so a
 // second run after an interruption continues from the stage that stopped:

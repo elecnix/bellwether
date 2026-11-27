@@ -184,7 +184,7 @@ async function doctor(): Promise<number> {
   console.log(`  ${daemonLive ? 'ok   ' : 'info '} daemon: ${daemonLive ? 'running' : 'idle, starts on demand'} (${daemonSocket})`);
   if (daemonLive) {
     const lock = readLock(bellwetherHome());
-    const running = `${lock?.version ?? 'a version older than 0.1.4'} on protocol ${lock?.protocol ?? 'unknown'}`;
+    const running = `${lock?.version ?? 'a version older than 0.1.5'} on protocol ${lock?.protocol ?? 'unknown'}`;
     if (lock?.version === BELLWETHER_VERSION && lock.protocol === DAEMON_PROTOCOL) {
       console.log(`  ok    daemon version: ${running}`);
     } else {
@@ -258,7 +258,7 @@ async function main(): Promise<number> {
       console.log(`no daemon answers on ${socketPath}; the next session starts one from its own install`);
       return 0;
     }
-    console.log(`drained the daemon ${lock?.version ?? 'from before 0.1.4'} on protocol ${lock?.protocol ?? 'unknown'} (pid ${lock?.pid ?? 'unknown'}); the next session call starts the daemon from that session's install`);
+    console.log(`drained the daemon ${lock?.version ?? 'from before 0.1.5'} on protocol ${lock?.protocol ?? 'unknown'} (pid ${lock?.pid ?? 'unknown'}); the next session call starts the daemon from that session's install`);
     return 0;
   }
 

@@ -270,3 +270,17 @@ test('the session survives the child exiting', async () => {
     await r.stop();
   }
 });
+
+test('the startup hold ends as activity, so the inactivity clock starts when the answers do', async () => {
+  const pane = new ClaudePane('trust-no');
+  const r = await rig(pane);
+  try {
+    // A slow redraw makes the answers take real time, so the hold has a length to measure.
+    const { child } = await spawnChild(r.client, r.parent, { kind: 'claude', name: 'kid', prompt: 'go', redrawMs: 150, startupTimeoutMs: 5_000 });
+    const record = readParent(r.parent.id)?.children.find((entry) => entry.id === child.id);
+    assert.ok(record);
+    assert.ok(Date.parse(record.lastBusyAt) - Date.parse(record.startedAt) >= 100, 'the activity time moved past the spawn time');
+  } finally {
+    await r.stop();
+  }
+});

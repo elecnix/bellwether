@@ -54,6 +54,7 @@ export const parentTools: ToolDefinition[] = [
         args: { type: 'array', items: { type: 'string' }, description: 'Extra arguments for the child harness, passed through unchanged and appended last.' },
         focus: { type: 'boolean', description: 'Move your view to the new tab. Defaults to false, so the child does not steal focus.' },
         stuck_minutes: { type: 'number', description: 'How long the child may be quiet before it counts as stuck. Defaults to 10.' },
+        inactive_minutes: { type: 'number', description: 'How long the child may show no activity of any kind, blocked included, before you are told. Defaults to 5. Clamped to between 1 and 1440. It cannot be turned off.' },
         max_depth: { type: 'number', description: 'How deep children may spawn children. Defaults to 2.' },
         machine: { type: 'string', description: MACHINE_DESCRIPTION },
       },
@@ -189,6 +190,7 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
       args: Array.isArray(args['args']) ? (args['args'] as string[]) : undefined,
       focus: args['focus'] === true,
       stuckMinutes: typeof args['stuck_minutes'] === 'number' ? (args['stuck_minutes'] as number) : undefined,
+      inactiveMinutes: typeof args['inactive_minutes'] === 'number' ? (args['inactive_minutes'] as number) : undefined,
       maxDepth: typeof args['max_depth'] === 'number' ? (args['max_depth'] as number) : DEFAULT_MAX_DEPTH,
       host: optionalString(args['machine']) ?? LOCAL_HOST,
     };

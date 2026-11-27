@@ -1,13 +1,15 @@
 // The classifier: turns herdr states into child events, with a settle time for
 // each. It is a pure function of (state, clock, observation) so tier 1 can run
 // it against a fake clock without a socket.
-import type { AgentStatus, ChildEventKind } from './types.ts';
+import { DEFAULT_INACTIVE_MS, inactiveMsOf } from './inactivity.ts';
+import type { AgentStatus, ChildEventKind, ChildRecord } from './types.ts';
 
 /** Starting values. The lab tunes these; they are not measurements. */
 export const DEFAULT_LIMITS: SettleLimits = {
   idleMs: 5_000,
   blockedMs: 3_000,
   stuckMs: 10 * 60_000,
+  inactiveMs: DEFAULT_INACTIVE_MS,
 };
 
 export interface SettleLimits {
@@ -17,6 +19,12 @@ export interface SettleLimits {
   blockedMs: number;
   /** How long a working child may be quiet before it is stuck. */
   stuckMs: number;
+  /**
+   * How long a child may show no activity of any kind before it is reported.
+   * Optional so limits written before this existed still compile; absent means
+   * the default, and limitsFor always sets it on the watcher's path.
+   */
+  inactiveMs?: number;
 }
 
 /** The per-child clock the classifier keeps between observations. */
@@ -34,6 +42,13 @@ export interface ClassifierState {
   firedStuckSince?: number;
   /** Set once the blocked event fired, so the dialog is reported once. */
   firedBlocked?: boolean;
+  /**
+   * The lastActivityAt of the quiet period that already fired its inactive
+   * event. A period ends only when new activity moves lastActivityAt past it.
+   */
+  firedInactiveFor?: number;
+  /** The last observable activity: a status change, a new turn, output, or a report. */
+  lastActivityAt: number;
 }
 
 export interface Observation {
@@ -43,8 +58,36 @@ export interface Observation {
   busy?: boolean;
 }
 
-export function initialState(status: AgentStatus, now: number): ClassifierState {
-  return { status, statusSince: now, lastBusyAt: now };
+export interface InitialSeed {
+  /** When the child last showed activity, from the registry after a restart. */
+  activityAt?: number;
+  /** The quiet period whose inactive event already went out, from the registry. */
+  firedInactiveFor?: number;
+}
+
+export function initialState(status: AgentStatus, now: number, seed: InitialSeed = {}): ClassifierState {
+  const activityAt = seed.activityAt ?? now;
+  return { status, statusSince: now, lastBusyAt: now, lastActivityAt: activityAt, firedInactiveFor: seed.firedInactiveFor };
+}
+
+/** The limits one child is judged by: the base, with the child's own thresholds. */
+export function limitsFor(child: ChildRecord, base: SettleLimits): SettleLimits {
+  const limits: SettleLimits = { ...base, inactiveMs: inactiveMsOf(child) };
+  return child.stuckMs === undefined ? limits : { ...limits, stuckMs: child.stuckMs };
+}
+
+/**
+ * The state a child starts from, recovered from its registry record. A parent
+ * that restarts resumes the same quiet period instead of a fresh one, and does
+ * not send the inactive event again for a period it already reported.
+ */
+export function seedFor(child: ChildRecord, now: number): ClassifierState {
+  const activityAt = Math.max(Date.parse(child.lastBusyAt), Date.parse(child.statusChangedAt));
+  const fired = child.inactiveNotifiedFor === undefined ? NaN : Date.parse(child.inactiveNotifiedFor);
+  return initialState(child.lastStatus, now, {
+    activityAt: Number.isFinite(activityAt) ? activityAt : now,
+    firedInactiveFor: Number.isFinite(fired) ? fired : undefined,
+  });
 }
 
 export function isReady(status: AgentStatus): boolean {
@@ -57,6 +100,10 @@ export function isReady(status: AgentStatus): boolean {
  */
 export function advance(state: ClassifierState, observation: Observation, now: number, limits: SettleLimits = DEFAULT_LIMITS): { state: ClassifierState; event?: ChildEventKind } {
   const next: ClassifierState = { ...state };
+  const seqMoved = observation.completionSeq !== undefined && observation.completionSeq !== state.completionSeq;
+  if (observation.status !== state.status || seqMoved || observation.busy) {
+    next.lastActivityAt = now;
+  }
   if (observation.status !== state.status) {
     next.status = observation.status;
     next.statusSince = now;
@@ -64,7 +111,7 @@ export function advance(state: ClassifierState, observation: Observation, now: n
     next.firedBlocked = undefined;
   }
   const becameReady = isReady(observation.status) && !isReady(state.status);
-  if (observation.completionSeq !== undefined && observation.completionSeq !== state.completionSeq) {
+  if (seqMoved) {
     next.completionSeq = observation.completionSeq;
     next.statusSince = now;
   } else if (observation.completionSeq === undefined && becameReady) {
@@ -99,10 +146,16 @@ export function advance(state: ClassifierState, observation: Observation, now: n
   if ((next.status === 'working' || next.status === 'unknown') && next.firedStuckSince !== next.lastBusyAt && now - next.lastBusyAt >= limits.stuckMs) {
     return { state: { ...next, firedStuckSince: next.lastBusyAt }, event: 'stuck' };
   }
+  // Inactivity is checked last, so it never displaces a more specific event
+  // from the same pass. Whatever it defers fires on a later pass, because
+  // nothing here consumes the inactivity clock until it fires.
+  if (now - next.lastActivityAt >= (limits.inactiveMs ?? DEFAULT_INACTIVE_MS) && (next.firedInactiveFor === undefined || next.lastActivityAt > next.firedInactiveFor)) {
+    return { state: { ...next, firedInactiveFor: next.lastActivityAt }, event: 'inactive' };
+  }
   return { state: next };
 }
 
 /** Mark the newest turn as covered by a report, so no idle event follows it. */
 export function markReported(state: ClassifierState, now: number): ClassifierState {
-  return { ...state, reportedFor: state.completionSeq, lastBusyAt: now, statusSince: now };
+  return { ...state, reportedFor: state.completionSeq, lastBusyAt: now, lastActivityAt: now, statusSince: now };
 }

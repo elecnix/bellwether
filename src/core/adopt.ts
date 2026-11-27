@@ -9,6 +9,7 @@ import { upsertChild, watcherOfPane } from './registry.ts';
 import { AGENT_KINDS, harnessOf, herdrLink } from './spawn.ts';
 import { resolveTranscript } from './transcript.ts';
 import type { ChildRecord, ParentRecord } from './types.ts';
+import { resolveInactiveMs } from './inactivity.ts';
 
 export interface AdoptOptions {
   /** A pane id, or the name of a live agent, on the host. */
@@ -70,6 +71,7 @@ export async function adoptPane(client: HerdrClient, parent: ParentRecord, optio
     lastBusyAt: now,
     depth: parent.depth + 1,
     stuckMs: options.stuckMinutes === undefined ? undefined : Math.max(1_000, Math.round(options.stuckMinutes * 60_000)),
+    inactiveMs: resolveInactiveMs(undefined),
   };
   upsertChild(parent.id, child);
   return { child, link: herdrLink('pane', child.paneId), already: false };

@@ -2,7 +2,7 @@
 export type AgentStatus = 'idle' | 'working' | 'blocked' | 'done' | 'unknown';
 
 /** What the parent is told about a child. */
-export type ChildEventKind = 'report' | 'idle' | 'blocked' | 'stuck' | 'exited';
+export type ChildEventKind = 'report' | 'idle' | 'blocked' | 'stuck' | 'inactive' | 'exited';
 
 /** The three things a child can report through parent_report. */
 export type ReportStatus = 'done' | 'needs-input' | 'progress';
@@ -81,6 +81,10 @@ export interface ChildRecord {
    * child for good.
    */
   startingUntil?: string;
+  /** This child's inactivity threshold in milliseconds. Set at spawn; the default when absent. */
+  inactiveMs?: number;
+  /** The quiet period whose inactive event already went out, as an ISO time. Survives a restart. */
+  inactiveNotifiedFor?: string;
   /** Set once the child is gone, so its events stop. */
   exitedAt?: string;
   exitCode?: number;

@@ -6,6 +6,7 @@ import { HerdrApiError, type HerdrClient } from './herdr-client.ts';
 import { LOCAL_HOST } from './machine.ts';
 import { newChildId } from './outbox.ts';
 import { briefArgument, removeBrief, writeBrief } from './brief.ts';
+import { resolveInactiveMs } from './inactivity.ts';
 import { removeChild, updateChild, upsertChild } from './registry.ts';
 import { watchStartup, type StartupDialog, type StartupWatch } from './startup-dialogs.ts';
 import { resolveTranscript, sessionFrom } from './transcript.ts';
@@ -33,6 +34,12 @@ export interface SpawnOptions {
   focus?: boolean;
   /** Minutes of quiet before the child counts as stuck. */
   stuckMinutes?: number;
+  /**
+   * Minutes of no observable activity before the parent is told. Defaults to
+   * five and is clamped to one minute through twenty-four hours. It cannot
+   * switch the notification off.
+   */
+  inactiveMinutes?: number;
   /** The workspace to open the tab in. Defaults to the parent's own. */
   workspaceId?: string;
   /** How deep a child may itself spawn. */
@@ -104,6 +111,7 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
     lastBusyAt: now,
     depth,
     stuckMs: options.stuckMinutes === undefined ? undefined : Math.max(1_000, Math.round(options.stuckMinutes * 60_000)),
+    inactiveMs: resolveInactiveMs(options.inactiveMinutes),
   };
   // 1. The record lands before herdr is asked for anything.
   upsertChild(parent.id, child);
@@ -185,6 +193,9 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
     if (child.transcript) entry.transcript = child.transcript;
     if (entry.lastStatus !== child.lastStatus) entry.statusChangedAt = new Date().toISOString();
     entry.lastStatus = child.lastStatus;
+    // The hold ends with the answers, which are activity. The inactivity clock
+    // starts here, not at spawn time, so a long dialog does not eat the window.
+    if (startup) entry.lastBusyAt = new Date().toISOString();
     delete entry.startingUntil;
   });
 

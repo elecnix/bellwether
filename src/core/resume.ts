@@ -12,6 +12,7 @@ import { STARTUP_HOLD_MS, STARTUP_TIMEOUT_MS, childArgs, childEnv, harnessOf, he
 import { watchStartup, type StartupDialog, type StartupWatch } from './startup-dialogs.ts';
 import { resolveTranscript, sessionFrom } from './transcript.ts';
 import type { ChildRecord, ParentRecord } from './types.ts';
+import { resolveInactiveMs } from './inactivity.ts';
 
 /** A harness session, as herdr names it: an id, or the path of its file. */
 export interface HarnessSession {
@@ -129,6 +130,7 @@ export async function resumeChild(client: HerdrClient, parent: ParentRecord, tar
         statusChangedAt: now,
         lastBusyAt: now,
         depth: parent.depth + 1,
+        inactiveMs: resolveInactiveMs(undefined),
       };
   const previous = existing ? { paneId: existing.paneId, tabId: existing.tabId, exitedAt: existing.exitedAt ?? now, exitCode: existing.exitCode } : undefined;
 

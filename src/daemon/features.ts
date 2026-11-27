@@ -12,8 +12,13 @@
 
 export interface Feature {
   name: string;
-  /** A tool a model calls, a request on the wire, or a notice an adapter sends as a call that no model sees. */
-  kind: 'tool' | 'request' | 'notice';
+  /**
+   * A tool a model calls, a request on the wire, a notice an adapter sends as
+   * a call that no model sees, or an argument of a tool, named `tool.argument`.
+   * An older daemon ignores an argument it does not know rather than refusing
+   * it, so the client checks an argument before it sends the call.
+   */
+  kind: 'tool' | 'request' | 'notice' | 'argument';
   /** The first protocol whose daemons serve it. */
   protocol: number;
   /** The first release that served it. */
@@ -33,7 +38,22 @@ export const FEATURES: readonly Feature[] = [
   ...['agent_request_depth', 'agent_grant_depth'].map((name) => ({ name, kind: 'tool' as const, protocol: 4, version: '0.1.5' })),
   // A pi child's extension reports an open dialog; an older daemon refuses it, and the extension ignores the refusal.
   { name: 'child_prompt', kind: 'notice', protocol: 4, version: '0.1.5' },
+  // An older daemon would start the child in the parent's workspace and say nothing.
+  ...['agent_spawn.workspace', 'agent_spawn.workspace_label'].map((name) => ({ name, kind: 'argument' as const, protocol: 4, version: '0.1.5' })),
 ];
+
+/**
+ * The first argument of a call that the daemon would ignore, because it
+ * predates it, or undefined when the daemon serves every argument passed.
+ */
+export function unservedArgument(daemon: DaemonOffer, tool: string, args: Record<string, unknown>): string | undefined {
+  for (const [key, value] of Object.entries(args)) {
+    if (value === undefined || value === null || value === '') continue;
+    const feature = featureNamed(`${tool}.${key}`);
+    if (feature && !serves(daemon, feature)) return feature.name;
+  }
+  return undefined;
+}
 
 /** What a client knows of the daemon it reached. */
 export interface DaemonOffer {

@@ -21,6 +21,7 @@ import { spoolPath } from './paths.ts';
 import { realRetireOps, reapChild, retirementPending, type RetireOps } from './retire.ts';
 import { isMoving } from './move-plan.ts';
 import type { AgentStatus, ChildEventKind, ChildRecord, OutboxEntry, RelayHostState, SpoolReport } from './types.ts';
+import { releaseWorkspace } from './workspace.ts';
 
 /** herdr's status for a pane, or the child's last known status. */
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -331,7 +332,24 @@ export class Watcher {
   /** The tab of a child whose harness already ended was closed: forget the pane, and say nothing. */
   private closeQuietly(child: ChildRecord): void {
     removeChildFiles(child.id);
+    void this.releaseWorkspace(child);
     void this.retire(child.id);
+  }
+
+  /**
+   * Close the workspace Bellwether made for a child once nothing is left in
+   * it. A tab kept open on the child's last screen, another child, or a
+   * person's shell keeps it, and a workspace Bellwether did not make is never
+   * touched.
+   */
+  private async releaseWorkspace(child: ChildRecord): Promise<void> {
+    if (!child.ownsWorkspace) return;
+    try {
+      const outcome = await releaseWorkspace(await this.clientFor(hostOf(child)), child);
+      if (outcome === 'closed') this.log(`closed workspace ${child.workspaceId}, which Bellwether made for ${child.name} and which nothing else used`);
+    } catch (error) {
+      this.log(`could not check ${child.name}'s workspace ${child.workspaceId}: ${(error as Error).message}`);
+    }
   }
 
   private markExited(child: ChildRecord, code: number | undefined, ended?: 'in-pane'): void {
@@ -354,6 +372,7 @@ export class Watcher {
       this.cleanupRemote(child).catch((error: unknown) => this.log(`could not remove ${child.name}'s files on machine ${hostOf(child)}: ${(error as Error).message}`));
     }
     this.offer(child, 'exited', this.describeExit(child, code, beforeStart));
+    void this.releaseWorkspace(child);
     void this.retire(child.id);
   }
 

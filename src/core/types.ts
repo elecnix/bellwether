@@ -54,7 +54,16 @@ export interface ChildRecord {
   harness: Harness | 'other';
   paneId: string;
   tabId?: string;
+  /** The herdr workspace that holds the child's tab, on the child's machine. */
   workspaceId?: string;
+  /** That workspace's label, when the spawn knew it. */
+  workspaceLabel?: string;
+  /**
+   * Set when Bellwether created the workspace for this child, with
+   * `workspace: "new"`. Only such a workspace is ever closed, and only once
+   * it holds no tab.
+   */
+  ownsWorkspace?: boolean;
   /**
    * The herdr server the child runs on: `local` for this machine's, or the
    * label of a saved herdr machine. Pane ids are scoped to one server, so

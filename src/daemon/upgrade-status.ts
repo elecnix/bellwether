@@ -68,12 +68,14 @@ export function describePairing(installed: { version: string; protocol: number; 
   lines.push(info(`pairing on ${where}: this install speaks protocol ${installed.protocol}, the daemon ${daemon.protocol}${daemon.version ? ` (Bellwether ${daemon.version})` : ''}; they speak ${served ? `protocol ${spoken}` : 'no common protocol, so the daemon refuses this install'}`));
   if (!served) return lines;
   const tools = missingFrom(daemon, 'tool');
-  const requests = missingFrom(daemon).filter((feature) => feature.kind !== 'tool');
+  const requests = missingFrom(daemon).filter((feature) => feature.kind !== 'tool' && feature.kind !== 'argument');
+  const args = missingFrom(daemon, 'argument');
   if (tools.length) lines.push(info(`degraded on ${where}: the daemon refuses ${namedFeatures(tools)} by name; every other tool works. Upgrading the daemon there gains them, when convenient.`));
   if (requests.length) lines.push(info(`degraded on ${where}: the daemon lacks the ${namedFeatures(requests)} request${requests.length === 1 ? '' : 's'}.`));
+  if (args.length) lines.push(info(`degraded on ${where}: the daemon does not read ${namedFeatures(args)}, so this install refuses a call that passes ${args.length === 1 ? 'it' : 'one'} rather than let the daemon ignore it.`));
   const extra = unknownTo(daemon);
   if (extra.length) lines.push(info(`behind on ${where}: the daemon serves ${extra.join(', ')}, which this install does not offer. Updating this install gains ${extra.length === 1 ? 'it' : 'them'}, when convenient.`));
-  if (!tools.length && !requests.length && !extra.length) lines.push(ok(`pairing on ${where}: nothing is degraded, and neither side gains anything by updating`));
+  if (!tools.length && !requests.length && !args.length && !extra.length) lines.push(ok(`pairing on ${where}: nothing is degraded, and neither side gains anything by updating`));
   return lines;
 }
 

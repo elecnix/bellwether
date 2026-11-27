@@ -42,7 +42,7 @@ export interface ChildRecord {
   host: string;
   /** How the child came under this parent. An older record means spawn. */
   origin?: 'spawn' | 'adopt' | 'resume';
-  /** When the child was last brought back with agent_resume. */
+  /** When the child was last brought back by a spawn with a resume target. */
   resumedAt?: string;
   cwd?: string;
   startedAt: string;

@@ -50,7 +50,7 @@ export function childOfCaller(caller: CallerIdentity): { parent: ParentRecord; c
       const child = parent.children.find((entry) => entry.id === caller.childId);
       if (!child) continue;
       if (caller.paneId && child.paneId && child.paneId !== caller.paneId) {
-        throw new Error(`parent_report was called for child ${child.id}, whose record holds pane ${child.paneId}, from pane ${caller.paneId}. One of the two is stale, so nothing was reported. Resume the child with agent_resume, which writes a new MCP config for its new pane.`);
+        throw new Error(`parent_report was called for child ${child.id}, whose record holds pane ${child.paneId}, from pane ${caller.paneId}. One of the two is stale, so nothing was reported. Resume the child with agent_spawn and resume, which writes a new MCP config for its new pane.`);
       }
       return { parent, child };
     }

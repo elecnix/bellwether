@@ -1,5 +1,5 @@
-// Bringing a child back. A child that exited keeps its record, so agent_resume
-// opens a new tab on the host the child ran on, starts the harness with its
+// Bringing a child back. A child that exited keeps its record, so a spawn with
+// a resume target (see spawn-resume.ts) opens a new tab on the host the child ran on, starts the harness with its
 // session's resume flag, and puts the new pane under the same child id. The
 // child's outbox entries and receipts are keyed by that id, so they continue.
 import path from 'node:path';
@@ -39,11 +39,11 @@ export function sessionOf(child: Pick<ChildRecord, 'harness' | 'transcript' | 's
 export function resumeArgs(kind: string, session: HarnessSession): string[] {
   if (kind === 'claude') return ['--resume', session.kind === 'path' ? path.basename(session.value, '.jsonl') : session.value];
   if (kind === 'pi') return ['--session', session.value];
-  throw new Error(`Bellwether cannot resume a ${kind} agent: only claude and pi have a resume flag it knows.`);
+  throw new Error(`Bellwether cannot resume a ${kind} agent: only claude and pi have a resume flag it knows. Call agent_spawn without resume to start a fresh ${kind} child.`);
 }
 
 /** Whether a live pane holds this session. Pi may report the path where a caller gave the id. */
-function holdsSession(pane: HerdrPane, session: HarnessSession): boolean {
+export function holdsSession(pane: HerdrPane, session: HarnessSession): boolean {
   const live = pane.agentSessionId;
   if (!live) return false;
   if (live === session.value) return true;
@@ -102,7 +102,7 @@ export async function resumeChild(client: HerdrClient, parent: ParentRecord, tar
   resumeArgs(kind, { value: '', kind: 'id' });
   const session = target.session ?? (existing ? sessionOf(existing) : undefined);
   if (!session) {
-    throw new Error(existing ? `${existing.name} has no recorded session, so there is nothing to resume. Pass session with the id to resume.` : 'agent_resume needs a child of this session or a session id.');
+    throw new Error(existing ? `${existing.name} has no recorded session, so there is nothing to resume. Pass resume with the session id and kind to reopen it as a new child.` : 'A resume needs a child of this session or a session id.');
   }
   const args = resumeArgs(kind, session);
 
@@ -110,10 +110,10 @@ export async function resumeChild(client: HerdrClient, parent: ParentRecord, tar
   const panes = await client.agentList(signal);
   if (existing && !existing.exitedAt) {
     const pane = panes.find((entry) => entry.paneId === existing.paneId);
-    if (pane?.agent) throw new Error(`${existing.name} is still alive in pane ${existing.paneId}, so agent_resume refused to start a second copy. Talk to it with agent_send.`);
+    if (pane?.agent) throw new Error(`${existing.name} is still alive in pane ${existing.paneId}, so Bellwether refused to start a second copy. Talk to it with agent_send.`);
   }
   const holder = panes.find((pane) => holdsSession(pane, session));
-  if (holder) throw new Error(`Session ${session.value} is still alive in pane ${holder.paneId}${holder.name ? ` (${holder.name})` : ''}, so agent_resume refused to start a second copy.`);
+  if (holder) throw new Error(`Session ${session.value} is still alive in pane ${holder.paneId}${holder.name ? ` (${holder.name})` : ''}, so Bellwether refused to start a second copy.`);
 
   const child: ChildRecord = existing
     ? { ...existing }

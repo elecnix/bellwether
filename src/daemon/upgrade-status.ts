@@ -192,7 +192,9 @@ export function describeVersions(input: UpgradeInput, running: boolean, daemon?:
   const buildText = namesCommit(build) ? `build ${build}` : daemon ? 'naming no commit, because it predates build ids' : 'with a build it cannot report';
   const entry = input.lock?.entry;
   const origin = input.lock?.origin === 'checkout' ? 'a git checkout' : 'an installed package';
-  const entryText = !entry ? 'from an entry point its lock does not name, because the daemon that wrote it predates that field' : installed.entry && entry === installed.entry ? `from this install's entry point, ${entry}` : `from ${entry} (${origin})`;
+  // A lock with a version but no entry point comes from a daemon that `bellwether daemon` started in the foreground, which records none.
+  const unnamed = input.lock?.version ? `started by hand with bellwether daemon on ${input.lock.socket || 'a socket its lock does not name'}, so its lock names no entry point` : 'from an entry point its lock does not name, because the daemon that wrote it predates that field';
+  const entryText = !entry ? unnamed : installed.entry && entry === installed.entry ? `from this install's entry point, ${entry}` : `from ${entry} (${origin})`;
   const theirs = `the running daemon, pid ${input.lock?.pid}, is ${version ?? 'a release older than 0.1.5'} on protocol ${protocol}, ${buildText}, ${entryText}`;
   const order = version ? compareVersions(version, installed.version) : -1;
   const newer = order !== undefined && (order > 0 || (order === 0 && protocol > installed.protocol));

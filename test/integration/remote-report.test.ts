@@ -473,6 +473,25 @@ test('a far end that fails before it answers the relay names its error line and 
   assert.doesNotMatch(error, /Node\.js v/);
 });
 
+test('a link lost with only a Node warning on stderr names the ssh exit as the cause, not the warning', async (t) => {
+  const w = world(t);
+  parentHolds(w, 'c-warned');
+  // What a far Node prints before ssh drops: a warning from a program that would have worked, then exit 255.
+  const warned = path.join(w.root, 'warned-ssh');
+  fs.writeFileSync(warned, [
+    '#!/bin/sh',
+    "echo '(node:3263) ExperimentalWarning: SQLite is an experimental feature and might change at any time' >&2",
+    "echo '(Use `node --trace-warnings ...` to show where the warning was created)' >&2",
+    'exit 255',
+    '',
+  ].join('\n'), { mode: 0o755 });
+  const { links: relayLinks } = await parentDaemon(w, links(w, { ssh: warned }));
+  await until(() => relayLinks.state('child-box')?.status === 'reconnecting', 'the link to fail');
+  const error = relayLinks.state('child-box')?.lastError ?? '';
+  assert.match(error, /^ssh child-box exited with 255: it printed only a Node warning, which is not the cause: \(node:3263\) ExperimentalWarning/);
+  assert.doesNotMatch(error, /trace-warnings/);
+});
+
 test('a report for a child this machine holds is served here and never spooled for a remote parent', async (t) => {
   const w = world(t, 'child');
   await childDaemon(w);

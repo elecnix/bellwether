@@ -74,3 +74,29 @@ test('--version prints the version and the commit, without asking a daemon that 
   }
   assert.equal(connections, 0, 'the version came from the build, not from the daemon');
 });
+
+test('drain --socket describes the lock beside that socket, not the one in BELLWETHER_HOME, and names the lock it read', async (t) => {
+  const space = isolate(t, 'bellwether-drain-');
+  fs.mkdirSync(space.home, { recursive: true });
+  // The home holds the lock of an older daemon, which is not the one being drained.
+  fs.writeFileSync(path.join(space.home, 'daemon.lock'), `${JSON.stringify({ pid: 1, startedAt: 1, protocol: 3, socket: path.join(space.home, 'daemon.sock') })}\n`);
+  const other = path.join(space.root, 'x');
+  fs.mkdirSync(other);
+  const socket = path.join(other, 'daemon.sock');
+  const lock = path.join(other, 'daemon.lock');
+  fs.writeFileSync(lock, `${JSON.stringify({ pid: process.pid, startedAt: Date.now(), protocol: 4, version: '0.1.5', socket })}\n`);
+  // A daemon on that socket: it answers the drain, lets go of its lock and stops listening.
+  const server = net.createServer((client) => {
+    client.on('data', () => {
+      client.end(`${JSON.stringify({ type: 'drained', id: '' })}\n`);
+      fs.rmSync(lock, { force: true });
+      server.close();
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(socket, resolve));
+  t.after(() => new Promise<void>((resolve) => (server.listening ? server.close(() => resolve()) : resolve())));
+  const result = await run(['drain', '--socket', socket], { ...process.env });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, new RegExp(`drained the daemon 0\\.1\\.5 on protocol 4 \\(pid ${process.pid}\\), as its lock ${lock.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} records`));
+  assert.doesNotMatch(result.stdout, /before 0\.1\.5|unknown/);
+});

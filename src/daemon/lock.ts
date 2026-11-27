@@ -120,16 +120,3 @@ export function release(home: string, pid = process.pid): void {
   if (held && held.pid !== pid) return;
   fs.rmSync(lockPath(home), { force: true });
 }
-
-/**
- * The doctor line that says which copy of Bellwether the running daemon is,
- * and whether it is the copy this command would start.
- */
-export function describeDaemonEntry(lock: LockRecord | undefined, ownEntry: string): string {
-  if (!lock?.entry) return 'info  daemon entry: not recorded, because the daemon predates 0.1.5. The next session started from this install hands it over.';
-  const own = canonicalEntry(ownEntry);
-  const origin = lock.origin === 'checkout' ? 'a git checkout' : 'an installed package';
-  if (lock.entry === own) return `ok    daemon entry: ${lock.entry} (${origin}), the one this command runs`;
-  const mine = originOf(own) === 'checkout' ? 'a git checkout' : 'an installed package';
-  return `info  daemon entry: ${lock.entry} (${origin}), not this command's ${own} (${mine}). A daemon from a newer release replaces an older one when its next session starts; between two copies of one release, run bellwether drain from the copy you want.`;
-}

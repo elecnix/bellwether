@@ -75,6 +75,8 @@ export interface SshOptions {
   input?: string;
   /** The most output to accept, in bytes. A session bundle needs far more than a report. Default 8 MiB. */
   maxBuffer?: number;
+  /** Stops ssh when it aborts, so a caller with a deadline does not wait for ssh's own timeout. */
+  signal?: AbortSignal;
 }
 
 /**
@@ -85,9 +87,10 @@ export interface SshOptions {
 export function runRemoteBellwether(target: string, args: string[], options: SshOptions = {}): Promise<SshResult> {
   return new Promise<SshResult>((settle) => {
     const resolve = (result: SshResult): void => settle(result.code === 0 ? { ...result, command: args } : keepLog(target, { ...result, command: args }));
-    const child = execFile(options.ssh ?? 'ssh', sshArgv(target, args), { timeout: options.timeoutMs ?? 30_000, maxBuffer: options.maxBuffer ?? 8 * 1024 * 1024, encoding: 'utf8' }, (error, stdout, stderr) => {
+    const child = execFile(options.ssh ?? 'ssh', sshArgv(target, args), { timeout: options.timeoutMs ?? 30_000, maxBuffer: options.maxBuffer ?? 8 * 1024 * 1024, encoding: 'utf8', ...(options.signal ? { signal: options.signal } : {}) }, (error, stdout, stderr) => {
       if (!error) return resolve({ code: 0, stdout, stderr });
       const fault = error as NodeJS.ErrnoException & { code?: number | string; killed?: boolean };
+      if (fault.name === 'AbortError') return resolve({ code: 124, stdout, stderr: `${stderr}\nssh to ${target} stopped at the caller's deadline`.trim() });
       if (fault.code === 'ENOENT') return resolve({ code: 127, stdout, stderr: `ssh is not installed: ${fault.message}` });
       if (fault.killed) return resolve({ code: 124, stdout, stderr: `${stderr}\nssh to ${target} timed out after ${options.timeoutMs ?? 30_000} ms`.trim() });
       resolve({ code: typeof fault.code === 'number' ? fault.code : 1, stdout, stderr: stderr || fault.message });

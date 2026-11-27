@@ -1,6 +1,6 @@
 # Bellwether test brief: tier 3, the lab
 
-Tier 1 is `test/unit/`. Tier 2 is `test/integration/fake-socket.test.ts`. This is tier 3. Read `bellwether-design.html`, especially "Lab isolation" and "Producing each event in the lab".
+Tier 1 lives in `test/unit/`, and tier 2 lives in `test/integration/fake-socket.test.ts`. This brief covers tier 3, so read `bellwether-design.html`, especially "Lab isolation" and "Producing each event in the lab".
 
 ## What tier 3 covers
 
@@ -20,6 +20,7 @@ A real, isolated herdr server with real Pi and Claude processes and scripted mod
 - Run `herdr --session bw-<random> server`, so the socket is `<XDG_CONFIG_HOME>/herdr/sessions/bw-<random>/herdr.sock`.
 - Refuse to start when the resolved socket is `~/.config/herdr/herdr.sock`. Assert it before binding.
 - Shutdown calls `server.stop`, then checks with `ps -p <pid> -o lstart=,command=` that no process with that start time remains. Delete the temp root only after that check passes.
+- Remove every provider key, token and cloud credential before a case runs, and print one line naming them. A person keeps one by naming it in `BELLWETHER_LAB_KEYS`, and a lab pane receives it only when the case passes the name to `startLab({ keys })`.
 - `BW_LAB_KEEP=1` leaves the temp root and prints the attach command.
 
 ## The models
@@ -41,13 +42,13 @@ The probe branch already wrote a scripted Anthropic server and a channel stub un
 
 Lower the idle settle and the stuck threshold through the spawn options for the lab. Do not edit the defaults in `src/core/classifier.ts`.
 
-## The rule that decides a pass
+## Pass criteria
 
-A test passes only when the parent's transcript contains the receipt followed by a new assistant message, and the outbox marks the entry read. A sent notification proves nothing on its own.
+A test passes only when the parent's transcript contains the receipt followed by a new assistant message, and the outbox marks the entry read. Delivery alone does not prove that a turn started.
 
 ## Rules
 
-- Skip the whole file, with a clear reason, when `herdr` is not on `PATH`, so CI stays green on a runner without it.
+- Skip the whole file, with a clear reason, when `herdr` is not on `PATH`, so CI still passes on a runner without it.
 - One server per file where you can. Give every test a timeout well under the job's.
 - `npm run typecheck` and `npm test` must pass before you push.
 - Node's built-in `node:test` and `node:assert`. No new dependencies.

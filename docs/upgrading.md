@@ -1,8 +1,8 @@
 # Upgrading
 
-Bellwether reaches a machine through three installs: the `bellwether` command, the Pi extension and the Claude Code plugin. Each one updates on its own, and none needs a restart.
+Bellwether reaches a machine through three installs: the `bellwether` command, the Pi extension and the Claude Code plugin. Each one updates on its own. None needs a restart.
 
-A session that starts after the upgrade runs the new code. A session that started before it keeps working until it ends on its own. The machine finishes the upgrade by itself.
+A session that starts after the upgrade runs the new code, while a session that started before it keeps working until it ends on its own, so nobody has to coordinate the switch across a busy machine. The upgrade finishes itself.
 
 ## What you run on each machine
 
@@ -70,7 +70,7 @@ A change to the wire between sessions and the daemon is additive whenever it can
 A session and a daemon of different releases work out what they share, so neither side has to restart for the other:
 
 - The session always sends hello first, and the daemon's reply tells it whether the two can talk.
-- When the daemon is older and stays, because the session can't start daemons or can't order the two releases, the session speaks the daemon's protocol. A tool the daemon lacks fails with its name, such as "`agent_move` needs protocol 4 (Bellwether 0.1.5); this daemon serves protocol 3 (Bellwether 0.1.4). Upgrade the machine holding the daemon when convenient." Every other tool keeps working.
+- When the session can't start daemons or can't order the two releases, an older daemon stays and the session speaks its protocol. A tool the daemon lacks fails with its name, such as `` "`agent_move` needs protocol 4 (Bellwether 0.1.5); this daemon serves protocol 3 (Bellwether 0.1.4). Upgrade the machine holding the daemon when convenient." `` Everything else works as before.
 - The session logs a reply it doesn't know, such as a new push or a new field, once and ignores it.
 
 The daemon serves every protocol back to the last change that removed a request or changed its meaning. A change that only adds leaves that floor in place.

@@ -11,9 +11,9 @@
 //
 // The model is the lab's scripted Responses endpoint, named in a config.toml
 // in the lab's own Codex home, so the case makes no call outside this machine
-// and needs no credentials. The lab's environment drops every variable whose
-// name ends in _API_KEY or _AUTH_TOKEN before herdr starts, so the pane and
-// Codex inherit none. It skips without herdr and without a codex on PATH, so
+// and needs no credentials. A lab run removes every provider key, token and
+// cloud credential (test/lab/credentials.ts) before this file starts, so the
+// pane and Codex inherit none. It skips without herdr and without a codex on PATH, so
 // CI stays green.
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';

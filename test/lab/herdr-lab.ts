@@ -8,6 +8,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
+import { isCredential, KEEP_VARIABLE } from './credentials.ts';
 
 const run = promisify(execFile);
 
@@ -49,11 +50,22 @@ export interface Lab {
 export interface LabOptions {
   /** Keep the temp root and print the attach command, instead of cleaning up. */
   keep?: boolean;
+  /**
+   * Credentials the lab's panes receive, by name. The lab run has already
+   * removed every credential the person did not name in BELLWETHER_LAB_KEYS,
+   * and the panes get none of the kept ones unless the case lists it here.
+   */
+  keys?: readonly string[];
 }
 
-function labEnvironment(root: string): NodeJS.ProcessEnv {
+/**
+ * The environment of the lab's herdr server, which every lab pane inherits.
+ * It holds no provider key, token or cloud credential apart from those in
+ * `keys`, and a key the case asks for that the run did not keep fails here.
+ */
+export function labEnvironment(root: string, base: NodeJS.ProcessEnv = process.env, keys: readonly string[] = []): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {
-    ...process.env,
+    ...base,
     HOME: root,
     XDG_CONFIG_HOME: path.join(root, 'config'),
     XDG_STATE_HOME: path.join(root, 'state'),
@@ -61,10 +73,12 @@ function labEnvironment(root: string): NodeJS.ProcessEnv {
     HERDR_CONFIG_PATH: path.join(root, 'config', 'herdr', 'config.toml'),
     SHELL: '/bin/sh',
   };
-  // A provider key from the operator's shell would let a harness in a lab pane
-  // pick a real provider over the scripted one, and spend the operator's
-  // account. A lab reaches no real provider.
-  for (const key of Object.keys(env)) if (/_API_KEY$|_AUTH_TOKEN$/.test(key)) delete env[key];
+  for (const name of keys) {
+    if (!base[name]) throw new Error(`this lab case needs ${name}: export it and run the lab with ${KEEP_VARIABLE}=${name}`);
+  }
+  // A lab reaches no real provider, and a harness in a pane would spend the
+  // account of any key it found.
+  for (const name of Object.keys(env)) if (isCredential(name) && !keys.includes(name)) delete env[name];
   // Values inherited from a pane point at the live server.
   delete env['HERDR_ENV'];
   delete env['HERDR_PANE_ID'];
@@ -97,7 +111,7 @@ export async function startLab(options: LabOptions = {}): Promise<Lab> {
   const base = fs.existsSync('/tmp') ? '/tmp' : os.tmpdir();
   const root = fs.mkdtempSync(path.join(base, 'bw-lab-'));
   const session = `bw-${Math.random().toString(36).slice(2, 10)}`;
-  const env = labEnvironment(root);
+  const env = labEnvironment(root, process.env, options.keys);
   const socketPath = path.join(String(env['XDG_CONFIG_HOME']), 'herdr', 'sessions', session, 'herdr.sock');
   assertNotLiveSocket(socketPath);
 

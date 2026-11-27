@@ -37,11 +37,11 @@ A child record keeps the session file that herdr reports for a pi child, includi
 
 ## Workspaces
 
-A child opens in your own herdr workspace unless the spawn sets `workspace` to another one. The value `"new"` asks herdr for a workspace of the child's own, labelled with the child's name, or with `workspace_label` when you pass one. The child runs in that workspace's first tab, so no empty shell sits beside it. Its own children open in that workspace too. Each session's children default to its own workspace, so a whole subtree stays out of yours.
+A child opens in your own herdr workspace unless the spawn sets `workspace` to another one. The value `"new"` asks herdr for a workspace of the child's own, labelled with the child's name, or with `workspace_label` when you pass one. The child runs in that workspace's first tab, so no empty shell sits beside it.
 
-Any other value identifies an existing workspace, by id and then by label. A name that doesn't match any workspace fails the spawn before Bellwether writes anything, and the error lists the workspaces there. A label that two workspaces share fails the same way. `"new"` always means a new workspace, even where an existing workspace has the label `new`.
+Its own children open in that workspace too. Each session's children default to its own workspace, so a whole subtree stays out of yours.
 
-A child on another machine gets its workspace on that machine, because `"new"` creates it through that machine's herdr. A workspace id from this machine means nothing there. Passing one fails the spawn. The error identifies the workspace on this machine and lists the ones on the child's machine.
+Any other value identifies an existing workspace, by id and then by label. A name that doesn't match any workspace fails the spawn before Bellwether writes anything, and the error lists the workspaces there. A label that two workspaces share fails the same way. `"new"` always means a new workspace, even where an existing workspace has the label `new`. A child on another machine gets its workspace on that machine, because `"new"` creates it through that machine's herdr. A workspace id from this machine means nothing there. Passing one fails the spawn. The error identifies the workspace on this machine and lists the ones on the child's machine.
 
 `max_depth` counts the same in a new workspace as anywhere else.
 

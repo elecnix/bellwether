@@ -30,7 +30,7 @@ The scripts live in `scripts/` and run under plain `node`, because Node 22.18 st
 
 > Does a channel notification start a turn in an idle Claude session, and what happens to one sent during a turn? The channels doc says Claude Code groups it into the next turn. tuicommander's doc says it can't start a later turn.
 
-The session ran with the development channel flag against the scripted Messages server, so every turn shows up as one logged request.
+This session ran with the development channel flag against the scripted Messages server, so every turn shows up as one logged request.
 
 ```sh
 herdr --session bw-probe tab create --workspace w1 --cwd /tmp/bw-probe/q1 --label q1-claude \
@@ -66,7 +66,7 @@ node scripts/channel-probe.ts --phase idle --session bw-probe --pane w1:p5 \
 {"at":"2026-11-05T06:15:03.966Z","ms":21282,"source":"summary","message":"what the model was shown, per turn","baseTurns":0,"turns":[{"turn":1,"at":"2026-11-05T06:14:42.935Z","channels":["PROBE-A3 idle wake, single line"]}],"suggestionRequests":0,"assistantMessages":4,"status":{"agent_status":"idle","completion_seq":null,"revision":1}}
 ```
 
-The request behind that turn, from the server's own log:
+Here is the request behind that turn, from the server's own log:
 
 ```sh
 jq -c 'select(.path|startswith("/v1/messages")) | {at, msgs:(.body.messages|length)}' /tmp/bw-probe/req-q1c.jsonl
@@ -76,7 +76,7 @@ jq -c 'select(.path|startswith("/v1/messages")) | {at, msgs:(.body.messages|leng
 {"at":"2026-11-05T06:14:42.935Z","msgs":2}
 ```
 
-The channel block Claude read:
+Claude read this channel block:
 
 ```text
 <channel source="bellwether" source="bellwether" probe="phase0">
@@ -86,7 +86,7 @@ PROBE-A3 idle wake, single line
 
 **Verdict: a channel notification starts a turn in an idle Claude session.** The request arrived 141 ms after the probe wrote the line, and the turn finished in 424 ms with nobody asked and no timer waited out. So the Claude adapter can wake an idle parent with a channel notification alone, and one wake path is enough.
 
-**The notification sent during a turn: probed.** The scripted server ran with `HOLD_UNTIL` and `HOLD_EACH=1`, so it answered a request only once a release file existed and removed the file afterwards. That keeps one turn unanswered while a second notification goes in.
+**The notification sent during a turn: probed.** A scripted server ran with `HOLD_UNTIL` and `HOLD_EACH=1`, so it answered a request only once a release file existed and removed the file afterwards. That keeps one turn unanswered while a second notification goes in.
 
 ```sh
 (PORT=8788 LOG=/tmp/bw-probe/req-during2.jsonl HOLD_UNTIL=/tmp/bw-probe/release \
@@ -121,7 +121,7 @@ jq -c 'select(.path|startswith("/v1/messages")) | {at, msgs:(.body.messages|leng
 {"at":"2026-11-05T06:23:46.938Z","msgs":16,"suggestion":true}
 ```
 
-A second run sent three notifications while a turn was held open, and one follow-up turn received all three:
+In a second run the probe sent three notifications during an open turn, and one follow-up turn received all three:
 
 ```sh
 node scripts/channel-probe.ts --phase during --burst 3 --session bw-probe --pane w1:p5 \
@@ -139,7 +139,7 @@ node scripts/channel-probe.ts --phase during --burst 3 --session bw-probe --pane
 {"at":"2026-11-05T06:22:13.546Z","ms":66200,"source":"summary","turns":[{"turn":1,"channels":["PROBE-A3 idle wake, single line","PROBE-E1 first turn"]},{"turn":2,"channels":["PROBE-A3 idle wake, single line","PROBE-E2 mid-turn #1","PROBE-E2 mid-turn #2","PROBE-E2 mid-turn #3"]}],"assistantMessages":5}
 ```
 
-**Verdict: a notification sent during a turn waits, then starts its own turn.** It never interrupts the turn in flight: turn 1 read its own line and no later one, and turn 2 read the mid-turn line. Notifications sent together still produced one turn, not three, so Claude Code merges a burst into one next turn. The Claude adapter can send one notice per child event and let Claude Code group them, with no merge step of its own and no notice lost.
+**Verdict: a notification sent during a turn waits, then starts its own turn.** It never interrupts the turn in flight. Turn 1 read its own line and no later one, and turn 2 read the mid-turn line. Notifications sent together still produced one turn, not three, so Claude Code merges a burst into one next turn. The Claude adapter can send one notice per child event and let Claude Code group them, because Claude Code does the merging and doesn't drop a notice.
 
 ## 2. Both development channels in one `claude` command
 
@@ -278,7 +278,7 @@ ANTHROPIC_API_KEY=probe-key
 
 > Does herdr 0.9.5 report completion_seq for Claude, whose status comes from screen detection, and for Pi, whose status comes from its integration?
 
-The question hid a trap. herdr carries `completion_seq` on `AgentInfo`, which answers `agent.list`, `agent.get` and `api snapshot` under `.agents`. The pane projections, `pane.list`, `pane.get` and `.panes` in the snapshot, use `PaneInfo`, and `PaneInfo` has no such field at all:
+A trap hid in that question: herdr carries `completion_seq` on `AgentInfo`, which answers `agent.list`, `agent.get` and `api snapshot` under `.agents`. The pane projections, `pane.list`, `pane.get` and `.panes` in the snapshot, use `PaneInfo`, and `PaneInfo` has no such field at all:
 
 ```sh
 python3 -c "
@@ -294,7 +294,7 @@ PaneInfo has completion_seq: False
 AgentInfo has completion_seq: True
 ```
 
-Read `pane.list` and the answer looks like null everywhere. Read `agent.list` and both harnesses report a number. One read of each, at the same moment:
+Reading `pane.list` makes the answer look like null everywhere, while `agent.list` shows both harnesses reporting a number. One read of each, at the same moment:
 
 ```sh
 herdr --session bw-probe agent list |
@@ -317,7 +317,7 @@ herdr --session bw-probe pane list |
 {"pane_id":"w1:p9","harness":"pi","agent_status":"done","completion_seq":null,"state_change_seq":null}
 ```
 
-**Pi: probed.** A real Pi 1.5.0 session in its own pane took one prompt. The subscription delivered two events, and the second one includes the number:
+**Pi: probed.** One prompt went to a real Pi 1.5.0 session in its own pane. The subscription delivered two events, and the second one includes the number:
 
 ```sh
 herdr --session bw-probe agent start q5pi --kind pi --pane w1:p9 -- --model ollama-cloud/deepseek-v4-flash
@@ -342,9 +342,9 @@ node scripts/herdr-watch.ts --session bw-probe --pane w1:p5 --seconds 75
 {"at":"06:29:52.797","source":"event","agent_status":"done","completion_seq":25,"state_change_seq":25,"revision":1}
 ```
 
-The numbers only move when herdr sees a transition. A Claude turn that finishes under a second, or runs while the scripted server answers instantly, can leave `completion_seq` where it was, because screen detection never caught `working` at all. The 30-second held turn is what makes the Claude reading trustworthy.
+Numbers only move when herdr sees a transition. Any Claude turn that finishes under a second, or runs while the scripted server answers instantly, can leave `completion_seq` where it was, because screen detection never caught `working` at all. Holding the turn for 30 seconds is what makes the Claude reading trustworthy.
 
-**Verdict: herdr 0.9.5 reports `completion_seq` for both harnesses, and only on the agent projection.** Bellwether reads it from the projection that lacks it: `watcher.ts` takes it from `pane.list` and from `snapshot['panes']`, and both are `PaneInfo`. The fix is to read `agent.list`, `agent.get` or `snapshot['agents']`, and to keep `state_change_seq` beside `completionSeq` in the child record, because the two move together and a stalled `state_change_seq` is the cheapest evidence that detection missed a turn.
+**Verdict: herdr 0.9.5 reports `completion_seq` for both harnesses, and only on the agent projection.** Today Bellwether reads it from the projection that lacks it: `watcher.ts` takes it from `pane.list` and from `snapshot['panes']`, and both are `PaneInfo`. To fix this, read `agent.list`, `agent.get` or `snapshot['agents']`, and to keep `state_change_seq` beside `completionSeq` in the child record, because the two move together and a stalled `state_change_seq` is the cheapest evidence that detection missed a turn.
 
 ## 6. Claude Code's startup questions under herdr
 

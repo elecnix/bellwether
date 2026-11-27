@@ -57,6 +57,8 @@ npm test               # tier 1 unit, then tier 2 and 3 integration
 npm run doctor         # bellwether doctor against the live herdr
 ```
 
+`BELLWETHER_TEST_CONCURRENCY` sets how many integration files run at once, and the default is 4. A laptop that also runs agents should not have fifteen Node processes competing with them: four files take 37 s at a 532 MiB peak, where fifteen take 22 s at 1 GiB and two take 67 s at 347 MiB.
+
 The documentation site on GitHub Pages comes from `README.md` and the topic files under `docs/`. `npm run site` writes it to `_site/`, and the `pages` workflow deploys it from `main`. A new topic file reaches the site once it has an entry in `PAGES` in `scripts/build-site.ts`.
 
 A release ends only when the deployed site's byline shows the released version, and `npm run release` checks it. Locally, `npm run site` fails on a page whose byline shows a version other than the one in `package.json`.

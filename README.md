@@ -62,7 +62,7 @@ pi install npm:@elecnix/bellwether
 
 For Claude Code, run `claude plugin marketplace update elecnix-plugins`, then `claude plugin update bellwether@elecnix-plugins`.
 
-Then start your next session as usual. It replaces the daemon with one from the new install, and the sessions already open keep working until they end on their own:
+Then start your next session by hand. It replaces the daemon with one from the new install, and the sessions already open keep working until they end. On a machine where a daemon starts every session, run `bellwether relay-bridge < /dev/null` from the new install instead, because a daemon's own children never replace it:
 
 ```sh
 bellwether doctor                        # says upgrade: finished once every session runs the new install

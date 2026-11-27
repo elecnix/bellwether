@@ -256,14 +256,14 @@ test("a parent with two children hears, in the one alert, that the other exists 
 
   const quiet = new Date(Date.now() - 12 * 60_000 - 5_000).toISOString();
   services[0]!.children = [
-    { childId: 'c1', name: 'c1', state: 'idle', since: new Date().toISOString() },
-    { childId: 'c2', name: 'c2', state: 'blocked', since: quiet },
+    { childId: 'c1', state: 'idle', since: new Date().toISOString() },
+    { childId: 'c2', state: 'blocked', since: quiet },
   ];
   services[0]!.offer(event('c1', 'idle', new Date().toISOString(), 'c1 finished its turn.'));
   await until(() => pi.sent.length === 1);
   const lines = pi.sent[0]!.content.split('\n');
   assert.equal(lines.filter((line) => line.startsWith('children ')).length, 1, 'one roster line');
-  assert.ok(lines.includes('children 2: c2 blocked 12m'), pi.sent[0]!.content);
+  assert.ok(lines.includes('children 2: 1 blocked 12m'), pi.sent[0]!.content);
 });
 
 test('a parent with one child receives the same text as before the roster', async (t) => {
@@ -278,7 +278,7 @@ test('a parent with one child receives the same text as before the roster', asyn
   t.after(() => pi.fire('session_shutdown', {}, ctx));
   await until(() => services.length === 1 && daemon.connections() === 1);
 
-  services[0]!.children = [{ childId: 'solo', name: 'solo', state: 'idle', since: new Date().toISOString() }];
+  services[0]!.children = [{ childId: 'solo', state: 'idle', since: new Date().toISOString() }];
   const offered = services[0]!.offer(event('solo', 'idle', new Date().toISOString(), 'solo finished its turn.'));
   await until(() => pi.sent.length === 1);
   assert.equal(pi.sent[0]!.content, `[bellwether]\nsolo (w1:p1) idle, a pi agent — receipt ${offered.receipt}\nsolo finished its turn.\n\nRead more with agent_read. Reply with agent_send.`);

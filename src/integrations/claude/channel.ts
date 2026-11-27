@@ -197,7 +197,7 @@ async function flush(): Promise<void> {
   if (!daemon) return;
   const fresh = byEventTime(daemon.unread().filter((entry) => !entry.read && !sent.has(entry.receipt)));
   // One roster line per flush, on its last notification, leaving out every child the flush names.
-  const roster = rosterLine(daemon.roster(), fresh.map((entry) => entry.childId), Date.now());
+  const roster = rosterLine(fresh.length ? daemon.takeRoster() : undefined, fresh.map((entry) => entry.childId), Date.now());
   for (const entry of fresh) {
     try {
       await push(entry, entry === fresh.at(-1) ? roster : '');

@@ -130,6 +130,9 @@ test('doctor says an older daemon is handed over by the next session, with no re
   assert.match(text, /the running daemon, pid 4242, is a release older than 0\.1\.5 on protocol 3, with a build it cannot report/);
   assert.match(text, /A session started from this install hands it over, because the running daemon is a release older than 0\.1\.5 on protocol 3/);
   assert.match(text, /upgrade: in progress, because the daemon runs an older release/);
+  // A daemon's own children never hand it over, so the line names the command that does, not a schedule.
+  assert.match(text, /A child that daemon starts runs the daemon's own adapter and never hands it over\. Run bellwether relay-bridge < \/dev\/null from this install to hand it over now; it ends no session\./);
+  assert.doesNotMatch(text, /on their own/);
   assert.match(text, /a daemon older than 0\.1\.5 cannot/);
 });
 

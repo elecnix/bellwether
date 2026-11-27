@@ -457,6 +457,8 @@ export interface ParentRecord {
   restartRequestedAt?: string;
   /** When the daemon last started a new pane for this session. */
   restartedAt?: string;
+  /** The roster line this parent last received with an alert, without its age, and when (issue #146). */
+  rosterSent?: { at: string; line: string };
   updatedAt: string;
 }
 

@@ -153,6 +153,33 @@ test('a child event arrives as a channel notification with its receipt', async (
   }
 });
 
+// Issue #146: the registry holds a second child, and the event about the first carries one line about it.
+test('a channel event carries one roster line about the parent\'s other live child, built from the registry', async () => {
+  const room = lab();
+  seed(room, entry('bw-roster000001'));
+  const quiet = new Date(Date.now() - 40 * 60_000 - 5_000).toISOString();
+  const record = emptyParent('claude-code', session, room.cwd, { host: 'local' });
+  const child = (id: string, name: string, pane: string, lastStatus: string, extra: Record<string, unknown> = {}) => ({ id, name, kind: 'pi', harness: 'pi', host: 'local', paneId: pane, depth: 1, startedAt: quiet, lastStatus, statusChangedAt: quiet, lastBusyAt: quiet, ...extra });
+  record.children = [
+    child('child-1', 'builder', 'w1:p2', 'idle'),
+    child('child-2', 'reviewer', 'w1:p3', 'idle'),
+    child('child-3', 'gone', 'w1:p4', 'idle', { exitedAt: quiet }),
+  ] as unknown as typeof record.children;
+  fs.mkdirSync(room.parents, { recursive: true });
+  fs.writeFileSync(path.join(room.parents, `${slug(record.id)}.json`), `${JSON.stringify(record, null, 2)}\n`);
+  const { client, notifications } = await connect(room.env);
+  try {
+    const pushed = await until('the channel notification', () => notifications.find((each) => entryMethod(each) === 'notifications/claude/channel'));
+    const content = (pushed.params as { content: string }).content;
+    const lines = content.split('\n');
+    assert.deepEqual(lines.filter((line) => line.startsWith('children ')), ['children 2: reviewer idle 40m'], content);
+    assert.ok(content.endsWith('All tests pass.\n\nchildren 2: reviewer idle 40m\n\nRead more with agent_read. Reply with agent_send.'), content);
+  } finally {
+    await client.close();
+    await closeLab(room);
+  }
+});
+
 function entryMethod(notification: { method: string }): string {
   return notification.method;
 }

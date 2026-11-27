@@ -12,6 +12,7 @@ import { Outbox } from '../../src/core/outbox.ts';
 import { outboxPath } from '../../src/core/paths.ts';
 import { startDaemon, type ParentService, type ServiceFactory } from '../../src/daemon/server.ts';
 import type { OutboxEntry } from '../../src/core/types.ts';
+import type { RosterChild } from '../../src/core/roster.ts';
 
 type Handler = (event: unknown, ctx: unknown) => unknown;
 
@@ -43,6 +44,8 @@ function context(session: string, entries: unknown[] = []): unknown {
 
 interface OutboxService extends ParentService {
   offer(entry: Omit<OutboxEntry, 'receipt' | 'read'>): OutboxEntry;
+  /** The parent's children as the registry holds them, which the daemon sends with each push. */
+  children: RosterChild[];
 }
 
 /** One service per parent, keeping its events in the real outbox file. */
@@ -52,6 +55,8 @@ function outboxFactory(): { factory: ServiceFactory; services: OutboxService[] }
     const outbox = Outbox.load(id);
     let handler: ((entries: OutboxEntry[]) => void) | undefined;
     const service: OutboxService = {
+      children: [],
+      roster: () => service.children,
       offer(entry) {
         const offered = outbox.offer(entry);
         outbox.save(id);
@@ -234,4 +239,47 @@ test('a resumed pi session does not repeat an event its own history shows delive
   await until(() => onDisk(daemon.parents()[0]!, offered.receipt)?.read === true);
   await settle(300);
   assert.equal(resumed.sent.length, 0);
+});
+
+// Issue #146: an alert carries one line about the parent's other children.
+test("a parent with two children hears, in the one alert, that the other exists and what it is doing", async (t) => {
+  const root = home(t);
+  const { factory, services } = outboxFactory();
+  const daemon = await startDaemon({ socketPath: path.join(root, 'daemon.sock'), home: root, factory });
+  t.after(() => daemon.close());
+  const pi = fakePi();
+  (await loadExtension())(pi);
+  const ctx = context('two-children');
+  await pi.fire('session_start', {}, ctx);
+  t.after(() => pi.fire('session_shutdown', {}, ctx));
+  await until(() => services.length === 1 && daemon.connections() === 1);
+
+  const quiet = new Date(Date.now() - 12 * 60_000 - 5_000).toISOString();
+  services[0]!.children = [
+    { childId: 'c1', name: 'c1', state: 'idle', since: new Date().toISOString() },
+    { childId: 'c2', name: 'c2', state: 'blocked', since: quiet },
+  ];
+  services[0]!.offer(event('c1', 'idle', new Date().toISOString(), 'c1 finished its turn.'));
+  await until(() => pi.sent.length === 1);
+  const lines = pi.sent[0]!.content.split('\n');
+  assert.equal(lines.filter((line) => line.startsWith('children ')).length, 1, 'one roster line');
+  assert.ok(lines.includes('children 2: c2 blocked 12m'), pi.sent[0]!.content);
+});
+
+test('a parent with one child receives the same text as before the roster', async (t) => {
+  const root = home(t);
+  const { factory, services } = outboxFactory();
+  const daemon = await startDaemon({ socketPath: path.join(root, 'daemon.sock'), home: root, factory });
+  t.after(() => daemon.close());
+  const pi = fakePi();
+  (await loadExtension())(pi);
+  const ctx = context('one-child');
+  await pi.fire('session_start', {}, ctx);
+  t.after(() => pi.fire('session_shutdown', {}, ctx));
+  await until(() => services.length === 1 && daemon.connections() === 1);
+
+  services[0]!.children = [{ childId: 'solo', name: 'solo', state: 'idle', since: new Date().toISOString() }];
+  const offered = services[0]!.offer(event('solo', 'idle', new Date().toISOString(), 'solo finished its turn.'));
+  await until(() => pi.sent.length === 1);
+  assert.equal(pi.sent[0]!.content, `[bellwether]\nsolo (w1:p1) idle, a pi agent — receipt ${offered.receipt}\nsolo finished its turn.\n\nRead more with agent_read. Reply with agent_send.`);
 });

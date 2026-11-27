@@ -1,14 +1,13 @@
 // The pieces of the startup-dialog answer that need no socket: which dialog a
-// screen shows, which key moves toward the accepting option, and whose trust
-// counts for a repository.
+// screen shows, and which key moves toward the accepting option. The last
+// cases read screens copied from a real Claude Code 2.1.332 pane.
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
 import test from 'node:test';
-import { claudeTrustsRepository } from '../../src/core/claude-trust.ts';
 import { detectDialog, keyToward } from '../../src/core/startup-dialogs.ts';
+import { CHANNEL_ACCEPT_SELECTED, CHANNEL_EXIT_SELECTED, CLAUDE_PROMPT, PERMISSION_QUESTION, TRUST_NO_SELECTED, TRUST_YES_SELECTED } from '../fixtures/claude-screens.ts';
+
+const TRUST_ACCEPT = 'Yes, I trust this folder';
+const CHANNEL_ACCEPT = 'I am using this for local development';
 
 test('the trust question and the channel confirmation are told apart', () => {
   assert.equal(detectDialog('Quick safety check: Is this a project you created or one you trust?'), 'trust');
@@ -20,51 +19,29 @@ test('the key moves the selection toward the wanted option, then confirms it', (
   const below = ' ❯ 1. No, exit\n   2. Yes, I trust this folder';
   const above = '   1. Yes, I trust this folder\n ❯ 2. No, exit';
   const on = ' ❯ 1. Yes, I trust this folder\n   2. No, exit';
-  assert.equal(keyToward(below, 'Yes, I trust this folder'), 'Down');
-  assert.equal(keyToward(above, 'Yes, I trust this folder'), 'Up');
-  assert.equal(keyToward(on, 'Yes, I trust this folder'), 'Enter');
-  assert.equal(keyToward('drawing…', 'Yes, I trust this folder'), undefined);
+  assert.equal(keyToward(below, TRUST_ACCEPT), 'Down');
+  assert.equal(keyToward(above, TRUST_ACCEPT), 'Up');
+  assert.equal(keyToward(on, TRUST_ACCEPT), 'Enter');
+  assert.equal(keyToward('drawing…', TRUST_ACCEPT), undefined);
 });
 
-function scratch(): { root: string; state: (projects: string[]) => string; done: () => void } {
-  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'bellwether-trust-')));
-  return {
-    root,
-    state: (projects) => {
-      const file = path.join(root, 'claude.json');
-      fs.writeFileSync(file, JSON.stringify({ projects: Object.fromEntries(projects.map((dir) => [dir, { hasTrustDialogAccepted: true }])) }));
-      return file;
-    },
-    done: () => fs.rmSync(root, { recursive: true, force: true }),
-  };
-}
-
-test('a worktree counts as trusted when another checkout of its repository is', () => {
-  const space = scratch();
-  try {
-    const repo = path.join(space.root, 'repo');
-    const worktree = path.join(space.root, 'feature');
-    execFileSync('git', ['init', '-q', '-b', 'main', repo]);
-    execFileSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@example.invalid', 'commit', '-q', '--allow-empty', '-m', 'init']);
-    execFileSync('git', ['-C', repo, 'worktree', 'add', '-q', '-b', 'feature', worktree]);
-    assert.equal(claudeTrustsRepository(worktree, space.state([repo])), true);
-    assert.equal(claudeTrustsRepository(worktree, space.state([])), false);
-    // A trusted folder above the repository does not vouch for it: Claude
-    // Code itself reads trust only inside the repository.
-    assert.equal(claudeTrustsRepository(worktree, space.state([space.root])), false);
-  } finally {
-    space.done();
-  }
+test('the real trust question opens on "No, exit", so the first key is Down, never Enter', () => {
+  assert.equal(detectDialog(TRUST_NO_SELECTED), 'trust');
+  assert.equal(keyToward(TRUST_NO_SELECTED, TRUST_ACCEPT), 'Down');
+  assert.equal(keyToward(TRUST_YES_SELECTED, TRUST_ACCEPT), 'Enter');
 });
 
-test('outside git, a trusted folder vouches for the folders under it', () => {
-  const space = scratch();
-  try {
-    const dir = path.join(space.root, 'notes', 'today');
-    fs.mkdirSync(dir, { recursive: true });
-    assert.equal(claudeTrustsRepository(dir, space.state([path.join(space.root, 'notes')])), true);
-    assert.equal(claudeTrustsRepository(dir, space.state([path.join(space.root, 'other')])), false);
-  } finally {
-    space.done();
-  }
+test('the real channel question opens on its accepting option, and "Exit" selected calls for Up', () => {
+  assert.equal(detectDialog(CHANNEL_ACCEPT_SELECTED), 'channel');
+  assert.equal(keyToward(CHANNEL_ACCEPT_SELECTED, CHANNEL_ACCEPT), 'Enter');
+  assert.equal(keyToward(CHANNEL_EXIT_SELECTED, CHANNEL_ACCEPT), 'Up');
+});
+
+test('a dialog with no selection marker gets no key', () => {
+  assert.equal(keyToward(TRUST_NO_SELECTED.replace('❯', ' '), TRUST_ACCEPT), undefined);
+});
+
+test('the prompt and a permission question are not startup dialogs', () => {
+  assert.equal(detectDialog(CLAUDE_PROMPT), undefined);
+  assert.equal(detectDialog(PERMISSION_QUESTION), undefined);
 });

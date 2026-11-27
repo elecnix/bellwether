@@ -44,7 +44,7 @@ export function createHerdrService(parent: ParentHello, id: string): ParentServi
     onEvents: (next) => {
       handler = next;
     },
-    pending: () => watcher.outboxEntries().filter((entry) => !entry.read).map((entry) => ({ ...entry, deliveredAt: undefined })),
+    pending: () => watcher.pendingEntries().map((entry) => ({ ...entry, deliveredAt: undefined })),
     watchPane: (paneId, handler) => {
       const controller = new AbortController();
       const watch = { close: () => controller.abort() };

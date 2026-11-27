@@ -11,6 +11,16 @@ export type ReportStatus = 'done' | 'needs-input' | 'progress';
 export type Harness = 'pi' | 'claude-code';
 
 /**
+ * The harness session herdr reports for a pane: `kind` is `id` for Claude Code,
+ * whose value `claude --resume` takes, and `path` for Pi, whose value is the
+ * session file.
+ */
+export interface ChildSession {
+  kind: string;
+  value: string;
+}
+
+/**
  * One child of a parent session. The record is written before herdr creates
  * anything, so a crash still leaves a trace of what was asked for.
  */
@@ -31,8 +41,15 @@ export interface ChildRecord {
   statusChangedAt: string;
   /** herdr's completion_seq for the last finished turn. */
   completionSeq?: number;
-  /** The child's transcript file, when its harness keeps one. */
+  /** The child's transcript file, when its harness keeps one. Kept after exit. */
   transcript?: string;
+  /**
+   * The harness session, recorded as soon as herdr reports it and kept after
+   * the child exits, so a retired child can still be resumed.
+   */
+  session?: ChildSession;
+  /** herdr's state_change_seq for the newest status Bellwether has read. */
+  stateChangeSeq?: number;
   /** How many Bellwether generations deep this child is. */
   depth: number;
   /** The last report the child sent, and when. */
@@ -86,6 +103,15 @@ export interface OutboxEntry {
   at: string;
   deliveredAt?: string;
   read: boolean;
+  /** The herdr status this entry describes, for the state events. */
+  status?: AgentStatus;
+  /** herdr's state_change_seq for that status, when herdr reported one. */
+  stateChangeSeq?: number;
+  /**
+   * Set when a newer state made this entry stale before it was read. A
+   * superseded entry counts as read and is never delivered again.
+   */
+  supersededBy?: string;
 }
 
 /** One report a child wrote to its parent's spool file. */

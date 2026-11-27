@@ -136,6 +136,26 @@ test('an event reaches every client of the parent, and a receipt marks it read',
   space.cleanup();
 });
 
+test('an entry the daemon settled arrives read, and the client drops it rather than resending it', async () => {
+  const space = workspace();
+  const fake = fakeFactory();
+  const daemon = await startDaemon({ socketPath: space.socket, factory: fake.factory });
+  const client = await DaemonClient.connect(parent(), { home: space.home, spawn: false });
+  const seen: OutboxEntry[][] = [];
+  client.onEvents((entries) => seen.push(entries));
+  const blocked = entry('c1', 'blocked');
+  fake.emit([blocked]);
+  await until(() => client.unread().length === 1);
+  // The child moved on before the parent read the dialog.
+  fake.emit([{ ...blocked, read: true, supersededBy: 'state:working' }, entry('c2', 'idle')]);
+  await until(() => seen.length === 2);
+  assert.deepEqual(client.unread().map((item) => item.receipt), ['bw-c2-idle']);
+  assert.deepEqual(seen[1]?.map((item) => item.receipt), ['bw-c2-idle']);
+  await client.close();
+  await daemon.close();
+  space.cleanup();
+});
+
 test('a client that reconnects receives what it missed', async () => {
   const space = workspace();
   const fake = fakeFactory();

@@ -6,7 +6,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { outboxPath } from './paths.ts';
-import type { ChildEventKind, OutboxEntry } from './types.ts';
+import type { ChildRecord, OutboxEntry } from './types.ts';
 
 export function newReceipt(): string {
   return `bw-${crypto.randomBytes(6).toString('hex')}`;
@@ -16,8 +16,30 @@ export function newChildId(): string {
   return crypto.randomBytes(8).toString('hex');
 }
 
+/**
+ * Whether a newer state has made an unread entry stale. A blocked entry is
+ * stale once the child has left the blocked state, which is how a dialog that
+ * someone already answered stopped being reported minutes later. A stuck entry
+ * is stale once the child moves. When herdr reported a state_change_seq for
+ * both, the child's must also be the newer one. A report, an idle event and an
+ * exit carry what the child said or did, so they are never dropped.
+ */
+export function isSuperseded(entry: OutboxEntry, child: ChildRecord | undefined): boolean {
+  if (!child || entry.read) return false;
+  const newer = entry.stateChangeSeq === undefined || child.stateChangeSeq === undefined || child.stateChangeSeq > entry.stateChangeSeq;
+  if (entry.event === 'blocked') return Boolean(child.exitedAt) || (child.lastStatus !== 'blocked' && newer);
+  if (entry.event === 'stuck') {
+    if (child.exitedAt) return true;
+    const moved = Date.parse(child.lastBusyAt) > Date.parse(entry.at);
+    return moved || (child.lastStatus !== 'working' && child.lastStatus !== 'unknown' && newer);
+  }
+  return false;
+}
+
 export class Outbox {
   private entries: OutboxEntry[] = [];
+  /** Entries settled without a receipt since the last takeSettled. */
+  private settled: OutboxEntry[] = [];
 
   private constructor(entries: OutboxEntry[]) {
     this.entries = entries;
@@ -42,14 +64,44 @@ export class Outbox {
 
   /**
    * Offer an event for a child. A newer event replaces an older unread one, so
-   * a child that goes quiet then blocked produces one message, not two.
+   * a child that goes quiet then blocked produces one message, not two. The
+   * older entry keeps its receipt and is settled as superseded, so a client
+   * that already holds it learns to drop it rather than send it again.
    */
   offer(entry: Omit<OutboxEntry, 'receipt' | 'read'>): OutboxEntry {
-    const existing = this.entries.find((candidate) => candidate.childId === entry.childId && !candidate.read);
     const next: OutboxEntry = { ...entry, receipt: newReceipt(), read: false };
-    if (existing) Object.assign(existing, next);
-    else this.entries.push(next);
-    return existing ?? next;
+    for (const existing of this.entries) {
+      if (existing.childId !== entry.childId || existing.read) continue;
+      this.settle(existing, next.receipt);
+    }
+    this.entries.push(next);
+    return next;
+  }
+
+  /**
+   * Settle every unread entry a newer child state has made stale. Called at
+   * delivery, so a queued entry is checked against the child as it is now.
+   */
+  settleSuperseded(children: readonly ChildRecord[]): OutboxEntry[] {
+    const settled: OutboxEntry[] = [];
+    for (const entry of this.entries) {
+      const child = children.find((candidate) => candidate.id === entry.childId);
+      if (!isSuperseded(entry, child)) continue;
+      this.settle(entry, `state:${child?.exitedAt ? 'exited' : child?.lastStatus ?? 'unknown'}`);
+      settled.push(entry);
+    }
+    return settled;
+  }
+
+  /** The entries settled without a receipt since the last call, once each. */
+  takeSettled(): OutboxEntry[] {
+    return this.settled.splice(0);
+  }
+
+  private settle(entry: OutboxEntry, by: string): void {
+    entry.read = true;
+    entry.supersededBy = by;
+    this.settled.push(entry);
   }
 
   add(entry: OutboxEntry): void {
@@ -74,6 +126,7 @@ export class Outbox {
   drop(childId: string): boolean {
     const before = this.entries.length;
     this.entries = this.entries.filter((entry) => entry.childId !== childId);
+    this.settled = this.settled.filter((entry) => entry.childId !== childId);
     return this.entries.length !== before;
   }
 

@@ -6,8 +6,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { Outbox, newChildId, newReceipt } from '../../src/core/outbox.ts';
-import type { OutboxEntry } from '../../src/core/types.ts';
+import { Outbox, isSuperseded, newChildId, newReceipt } from '../../src/core/outbox.ts';
+import type { ChildRecord, OutboxEntry } from '../../src/core/types.ts';
 
 function scratch(): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bellwether-outbox-'));
@@ -22,11 +22,17 @@ function offer(childId: string, event: OutboxEntry['event'], text = 'text'): Omi
 test('a newer event replaces the older unread entry for the same child', () => {
   const root = scratch();
   const outbox = Outbox.load('parent-one');
-  outbox.offer(offer('c1', 'idle'));
-  outbox.offer(offer('c1', 'blocked'));
+  const first = outbox.offer(offer('c1', 'idle'));
+  const second = outbox.offer(offer('c1', 'blocked'));
   assert.equal(outbox.pending().length, 1);
   assert.equal(outbox.pending()[0]?.event, 'blocked');
-  assert.equal(outbox.all().length, 1);
+  // The older entry keeps its receipt and is settled, so a client holding it
+  // can be told to drop it.
+  const settled = outbox.takeSettled();
+  assert.deepEqual(settled.map((entry) => entry.receipt), [first.receipt]);
+  assert.equal(settled[0]?.read, true);
+  assert.equal(settled[0]?.supersededBy, second.receipt);
+  assert.deepEqual(outbox.takeSettled(), []);
   fs.rmSync(root, { recursive: true, force: true });
 });
 
@@ -102,4 +108,55 @@ test('dropping a child removes its entries and keeps the others', () => {
   assert.deepEqual(outbox.pending().map((entry) => entry.childId), ['c2']);
   assert.equal(outbox.drop('ghost'), false);
   fs.rmSync(root, { recursive: true, force: true });
+});
+
+function child(overrides: Partial<ChildRecord> = {}): ChildRecord {
+  const at = new Date(0).toISOString();
+  return { id: 'c1', name: 'c1', kind: 'claude', harness: 'claude-code', paneId: 'w1:p1', startedAt: at, lastStatus: 'blocked', statusChangedAt: at, lastBusyAt: at, depth: 1, ...overrides };
+}
+
+function queuedBlocked(stateChangeSeq?: number): Omit<OutboxEntry, 'receipt' | 'read'> {
+  return { ...offer('c1', 'blocked', 'The dialog: trust this folder?'), at: new Date(1_000).toISOString(), status: 'blocked', stateChangeSeq };
+}
+
+test('a queued blocked entry whose child has moved on is settled, not delivered', () => {
+  const root = scratch();
+  const outbox = Outbox.load('parent-eight');
+  const queued = outbox.offer(queuedBlocked(7));
+  outbox.takeSettled();
+  // Someone answered the dialog: herdr now reports the child working, at a
+  // newer state_change_seq.
+  const moved = child({ lastStatus: 'working', statusChangedAt: new Date(2_000).toISOString(), stateChangeSeq: 8 });
+  const settled = outbox.settleSuperseded([moved]);
+  assert.deepEqual(settled.map((entry) => entry.receipt), [queued.receipt]);
+  assert.equal(outbox.pending().length, 0);
+  assert.equal(outbox.takeSettled()[0]?.read, true);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('a queued blocked entry stays while its child is still blocked', () => {
+  const root = scratch();
+  const outbox = Outbox.load('parent-nine');
+  outbox.offer(queuedBlocked(7));
+  assert.deepEqual(outbox.settleSuperseded([child({ stateChangeSeq: 7 })]), []);
+  assert.equal(outbox.pending().length, 1);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('a state_change_seq that has not advanced does not supersede, even with another status', () => {
+  const entry: OutboxEntry = { ...queuedBlocked(9), receipt: 'bw-1', read: false };
+  assert.equal(isSuperseded(entry, child({ lastStatus: 'working', stateChangeSeq: 9 })), false);
+  assert.equal(isSuperseded(entry, child({ lastStatus: 'working', stateChangeSeq: 10 })), true);
+  // Without a seq on either side, the status alone decides.
+  assert.equal(isSuperseded({ ...entry, stateChangeSeq: undefined }, child({ lastStatus: 'idle' })), true);
+});
+
+test('a stuck entry is superseded once the child moves, and a report or idle entry never is', () => {
+  const stuck: OutboxEntry = { ...offer('c1', 'stuck'), at: new Date(1_000).toISOString(), receipt: 'bw-2', read: false };
+  assert.equal(isSuperseded(stuck, child({ lastStatus: 'working', lastBusyAt: new Date(500).toISOString() })), false);
+  assert.equal(isSuperseded(stuck, child({ lastStatus: 'working', lastBusyAt: new Date(2_000).toISOString() })), true);
+  const idle: OutboxEntry = { ...offer('c1', 'idle'), receipt: 'bw-3', read: false };
+  const report: OutboxEntry = { ...offer('c1', 'report'), receipt: 'bw-4', read: false };
+  assert.equal(isSuperseded(idle, child({ lastStatus: 'working' })), false);
+  assert.equal(isSuperseded(report, child({ lastStatus: 'working' })), false);
 });

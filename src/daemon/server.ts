@@ -6,7 +6,10 @@
 import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
-import { DAEMON_PROTOCOL, MAX_DAEMON_FRAME_BYTES, ProtocolError, formatReply, parseRequest, type DaemonReply, type ParentHello } from './protocol.ts';
+import { DAEMON_PROTOCOL, MAX_DAEMON_FRAME_BYTES, MIN_CLIENT_PROTOCOL, ProtocolError, acceptsClientProtocol, formatReply, parseRequest, type DaemonReply, type ParentHello, type SessionInfo } from './protocol.ts';
+import { DRAIN_GRACE_MS, drainDecision } from './handover.ts';
+import { BELLWETHER_VERSION } from '../core/version.ts';
+import { readParent } from '../core/registry.ts';
 import { defaultServiceFactory, parentIdOf, type ParentService, type ServiceFactory } from './service.ts';
 import { acquire, isAlive, readLock, release } from './lock.ts';
 import { RelayOutbox } from './relay.ts';
@@ -38,6 +41,8 @@ export interface DaemonOptions {
   links?: RelayLinks;
   /** The entry point this daemon process runs, which the lock records. The process entry passes its own file. */
   entry?: string;
+  /** How long a drain waits for calls in flight before it closes anyway. Default 60 s. */
+  drainGraceMs?: number;
 }
 
 export interface Daemon {
@@ -52,11 +57,22 @@ export interface Daemon {
   whenClosed(): Promise<void>;
   /** The state of every connection to a remote host. */
   relay(): RelayHostState[];
+  /** Whether a drain has started, so the daemon takes no new call and closes once its calls finish. */
+  readonly draining: boolean;
 }
 
 interface Session {
   parentId: string;
   service: ParentService;
+}
+
+/** What a hello told the daemon about the session on one connection. */
+interface Attached {
+  parentId: string;
+  parent: ParentHello;
+  client: string;
+  protocol: number;
+  connectedAt: string;
 }
 
 /**
@@ -85,8 +101,15 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
   const subscribers = new Map<string, Set<net.Socket>>();
   const sockets = new Set<net.Socket>();
   const paneWatches = new Map<net.Socket, (() => void)[]>();
+  const attached = new Map<net.Socket, Attached>();
+  const relaySockets = new Set<net.Socket>();
+  const startedAt = new Date(now()).toISOString();
+  const drainGraceMs = options.drainGraceMs ?? DRAIN_GRACE_MS;
   let lastActivity = now();
   let closed = false;
+  let inFlight = 0;
+  let drainingSince: number | undefined;
+  let drainTimer: NodeJS.Timeout | undefined;
   let closing: Promise<void> | undefined;
   let closeResolve: () => void = () => {};
   const closedPromise = new Promise<void>((resolve) => {
@@ -95,6 +118,8 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
 
   const forgetSocket = (socket: net.Socket): void => {
     sockets.delete(socket);
+    attached.delete(socket);
+    relaySockets.delete(socket);
     for (const stop of paneWatches.get(socket) ?? []) stop();
     paneWatches.delete(socket);
     for (const [parentId, set] of subscribers) {
@@ -127,7 +152,8 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
   const close = async (): Promise<void> => {
     if (closing) return closing;
     closed = true;
-    const serverClosed = new Promise<void>((resolve) => server.close(() => resolve()));
+    if (drainTimer) clearInterval(drainTimer);
+    const serverClosed = new Promise<void>((resolve) => (server.listening ? server.close(() => resolve()) : resolve()));
     for (const stops of paneWatches.values()) for (const stop of stops) stop();
     paneWatches.clear();
     for (const socket of sockets) socket.destroy();
@@ -153,6 +179,43 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
     }
   }, idleCheckMs);
   idle.unref?.();
+
+  /**
+   * Start a drain: stop taking connections at once, so the next daemon can
+   * start as soon as this one lets go of the lock, and close once the calls
+   * in flight have answered. A connected session keeps its socket until then,
+   * so a spawn halfway through still gets its reply.
+   */
+  const drain = (): void => {
+    if (closed || drainingSince !== undefined) return;
+    drainingSince = now();
+    log(`drain: ${inFlight} call(s) in flight; closing once they answer, or after ${Math.round(drainGraceMs / 1000)} s`);
+    server.close();
+    const check = (): void => {
+      if (drainDecision({ inFlight, drainingSince: drainingSince ?? now(), now: now(), graceMs: drainGraceMs }) === 'close') void close();
+    };
+    drainTimer = setInterval(check, 20);
+    drainTimer.unref?.();
+    check();
+  };
+
+  const sessionInfo = (entry: Attached): SessionInfo => {
+    const record = readParent(entry.parentId);
+    const service = services.get(entry.parentId);
+    const info: SessionInfo = {
+      parentId: entry.parentId,
+      harness: entry.parent.harness,
+      session: entry.parent.session,
+      client: entry.client,
+      protocol: entry.protocol,
+      connectedAt: entry.connectedAt,
+      liveChildren: record ? record.children.filter((child) => !child.exitedAt).length : 0,
+      unread: service ? service.pending().length : 0,
+    };
+    if (entry.parent.childId) info.childId = entry.parent.childId;
+    if (entry.parent.paneId) info.paneId = entry.parent.paneId;
+    return info;
+  };
 
   /**
    * A report posted without a session, from `bellwether report`. A parent
@@ -238,18 +301,36 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
         reply({ type: 'error', code: fault.code, message: fault.message, ...(fault.code === 'protocol_mismatch' ? { protocol: DAEMON_PROTOCOL } : {}) });
         return;
       }
+      if (request.type === 'sessions') {
+        reply({
+          type: 'sessions',
+          id: request.id,
+          daemon: { pid, version: BELLWETHER_VERSION, protocol: DAEMON_PROTOCOL, minClientProtocol: MIN_CLIENT_PROTOCOL, startedAt, draining: drainingSince !== undefined },
+          sessions: [...attached.values()].map(sessionInfo),
+          relaySubscribers: relaySockets.size,
+        });
+        return;
+      }
       if (request.type === 'report') {
+        if (drainingSince !== undefined) {
+          reply({ type: 'result', id: request.id, error: 'the daemon is handing over to a newer one; send the report again in a moment', retry: true });
+          return;
+        }
+        inFlight += 1;
         try {
           const outcome = await postReport(request.report);
           reply({ type: 'result', id: request.id, text: outcome.text, duplicate: outcome.duplicate });
         } catch (error) {
           reply({ type: 'result', id: request.id, error: (error as Error).message });
+        } finally {
+          inFlight -= 1;
         }
         return;
       }
       if (request.type === 'relay-subscribe') {
         // A parent's daemon on another machine, through a bridge. A second subscribe replaces the first.
         relaySubscription?.();
+        relaySockets.add(socket);
         const parentIds = new Set(request.parentIds);
         const waiting = outbox.waiting(parentIds).length;
         reply({ type: 'relay-hello', protocol: DAEMON_PROTOCOL, pid, waiting });
@@ -276,8 +357,9 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
         return;
       }
       if (request.type === 'hello') {
-        if (request.protocol !== DAEMON_PROTOCOL) {
-          reply({ type: 'error', code: 'protocol_mismatch', message: 'the client spoke another protocol', protocol: DAEMON_PROTOCOL });
+        // The previous protocol is served too, so a session that predates a hand-over keeps working.
+        if (!acceptsClientProtocol(request.protocol)) {
+          reply({ type: 'error', code: 'protocol_mismatch', message: `the client spoke protocol ${request.protocol}, and this daemon serves ${MIN_CLIENT_PROTOCOL} to ${DAEMON_PROTOCOL}`, protocol: DAEMON_PROTOCOL });
           socket.end();
           return;
         }
@@ -285,7 +367,8 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
         const set = subscribers.get(session.parentId) ?? new Set<net.Socket>();
         set.add(socket);
         subscribers.set(session.parentId, set);
-        reply({ type: 'hello', protocol: DAEMON_PROTOCOL, parentId: session.parentId, pid, pending: session.service.pending() });
+        attached.set(socket, { parentId: session.parentId, parent: request.parent, client: request.client, protocol: request.protocol, connectedAt: new Date(now()).toISOString() });
+        reply({ type: 'hello', protocol: DAEMON_PROTOCOL, parentId: session.parentId, pid, pending: session.service.pending(), version: BELLWETHER_VERSION });
         return;
       }
       if (request.type === 'bye') {
@@ -302,10 +385,9 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
         return;
       }
       if (request.type === 'drain') {
-        log('drain: closing after the current calls');
         reply({ type: 'closed' });
         socket.end();
-        void close();
+        drain();
         return;
       }
       if (!session) {
@@ -324,6 +406,11 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
         return;
       }
       if (request.type === 'call') {
+        if (drainingSince !== undefined) {
+          reply({ type: 'result', id: request.id, error: 'the daemon is handing over to a newer one; call the tool again in a moment', retry: true });
+          return;
+        }
+        inFlight += 1;
         try {
           const relayed = request.tool === 'parent_report' ? await relayCall(request.args, request.caller ?? {}) : undefined;
           const text = relayed ?? (await session.service.tool(request.tool, request.args, request.caller ?? {}));
@@ -332,6 +419,8 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
           links.sync();
         } catch (error) {
           reply({ type: 'result', id: request.id, error: (error as Error).message });
+        } finally {
+          inFlight -= 1;
         }
       }
     };
@@ -366,6 +455,9 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
     connections: () => sockets.size,
     whenClosed: () => closedPromise,
     relay: () => links.states(),
+    get draining() {
+      return drainingSince !== undefined;
+    },
   };
 }
 

@@ -40,6 +40,13 @@ export interface RelayRecord {
   adopted?: boolean;
   /** The harness session herdr reported in the pane at the adoption, so a claim on a pane that now runs another session counts as stale. */
   session?: string;
+  /**
+   * Messages from the parent that the child's session took here and its
+   * model has not read, with their text, so a session that reconnects to
+   * this machine's daemon takes them again. Each goes once its read crosses
+   * back to the parent's daemon.
+   */
+  messages?: { id: string; text: string; from: string; at: string }[];
 }
 
 /** One report waiting for the parent's daemon to collect it. */
@@ -52,6 +59,8 @@ export interface ForwardEntry {
   at: string;
   /** Set when the parent's daemon refused the report, which no resend can fix. */
   refused?: string;
+  /** Set on an entry that carries no report but the read of a parent's message: its id. */
+  messageRead?: string;
 }
 
 /** A receipt that names one report, so a retried forward is accepted once. */

@@ -47,6 +47,20 @@ When the machine is unreachable, the reply says so and returns the child's last 
 
 A resume goes back to the machine where the child last ran. To change that machine, call `agent_move`. [moving.md](moving.md) describes it.
 
+## Messages to a child there
+
+`agent_send` to a `claude`, `pi` or `omp` child on another machine puts the message in the child's session, as it does on this machine. Over the connection it already holds for reports, the parent's daemon sends `relay-message`. The daemon on the child's machine pushes the message to the child's own Bellwether server or extension there, and its result says whether the session took it.
+
+Wherever the child runs, the timing matches: a busy child takes the message after the tool calls in flight and before its next model call, while an idle one starts a turn on it.
+
+Until the child's model reads the message, its text stays on the child's relay record on that machine. A session that reconnects to that daemon takes it again. The read then waits in that machine's relay outbox, as a report does, and the parent's daemon takes it once and acknowledges it. `agent_list` shows the message as read from then on.
+
+herdr on that machine types the message into the far pane instead, with the reason on the record, in these cases:
+
+- That machine runs a Bellwether that predates `relay-message`. Its daemon answers `unknown_type`, and the reason gives the release that brings the request.
+- The connection to that machine is down.
+- The child's session there never connected to that machine's daemon with an inbox, or it didn't take the message within 5 seconds.
+
 ## Adopting an agent on another machine
 
 `agent_adopt` takes a pane on another machine. Name the machine with `machine`, or write the target as `machine:pane`, as in `child-box:w1:p5` or `child-box:first-mate`. The parent's daemon reads the pane from that machine's herdr, through the same `herdr remote-api-bridge` connection that watches a child it spawned there. It then sends `relay-adopt` over its relay connection to that machine, and the daemon there records the adoption as a relay record with the pane, the harness session and `adopted: true`.

@@ -10,7 +10,6 @@
 import crypto from 'node:crypto';
 import { HerdrApiError, type HerdrClient } from './herdr-client.ts';
 import { harnessFor } from './harnesses/index.ts';
-import { LOCAL_HOST, hostOf } from './machine.ts';
 import { updateChild } from './registry.ts';
 import type { ChildMessage, ChildRecord } from './types.ts';
 import type { InboxMessage } from '../daemon/protocol.ts';
@@ -20,8 +19,12 @@ export type { InboxMessage } from '../daemon/protocol.ts';
 /** What the child's session said to a message: it holds it, or why it could not take it. */
 export type InboxAnswer = { delivered: true; via: string } | { delivered: false; reason: string };
 
-/** The daemon's way into a child's own session, through the Bellwether adapter connected for it. */
-export type Inbox = (child: ChildRecord, message: InboxMessage) => Promise<InboxAnswer>;
+/**
+ * The daemon's way into a child's own session, through the Bellwether adapter
+ * connected for it: on this machine, or through the daemon on the child's
+ * machine over the relay.
+ */
+export type Inbox = (parentId: string, child: ChildRecord, message: InboxMessage) => Promise<InboxAnswer>;
 
 /** How many messages a child record keeps. */
 const KEPT = 20;
@@ -70,8 +73,6 @@ export function sessionPathRefusal(child: Pick<ChildRecord, 'kind' | 'host' | 'l
   // dialog and answers it with keys. A session message would wait behind the
   // dialog without saying so.
   if (child.lastStatus === 'blocked') return 'it is blocked on a dialog, and herdr shows that dialog in place of the message';
-  const host = hostOf(child);
-  if (host !== LOCAL_HOST) return `it runs on machine ${host}, and its session connects to the Bellwether daemon there, which this daemon reaches only to collect reports`;
   if (!inbox) return 'no Bellwether daemon carries this call, so no session connection is at hand';
   return undefined;
 }
@@ -91,7 +92,7 @@ export async function messageChild(input: MessageInput): Promise<MessageOutcome>
   if (!refusal && input.inbox) {
     // Recorded before the push, so a read that comes back at once finds it.
     remember(parentId, child.id, { id, at, path: 'session', preview: preview(text), text, from: input.from });
-    const answer = await input.inbox(child, { id, from: input.from, text, at }).catch((error: unknown): InboxAnswer => ({ delivered: false, reason: (error as Error).message }));
+    const answer = await input.inbox(parentId, child, { id, from: input.from, text, at }).catch((error: unknown): InboxAnswer => ({ delivered: false, reason: (error as Error).message }));
     if (answer.delivered) {
       const message: ChildMessage = { id, at, path: 'session', via: answer.via, preview: preview(text), text, from: input.from };
       updateChild(parentId, child.id, (entry) => {
@@ -119,11 +120,10 @@ async function typeInto(input: MessageInput, id: string, at: string, reason: str
   try {
     // TODO(api): a harness inbound path retires this for the harnesses that
     // have none yet: a message request in Codex's and Cline's MCP clients, or
-    // OpenCode's and Kilo's session message API reached from the daemon, and
-    // a relay request that carries a message to a child on another machine.
+    // OpenCode's and Kilo's session message API reached from the daemon.
     await herdr.agentPrompt(child.paneId, text);
     remember(parentId, child.id, message);
-    return { message, text: `Prompted ${child.name}: herdr typed message ${id} into its pane, because ${reason}.` };
+    return { message, text: `Prompted ${child.name}: herdr typed message ${id} into its pane, because ${reason.replace(/\.$/, '')}.` };
   } catch (error) {
     if (error instanceof HerdrApiError && child.lastStatus === 'blocked') {
       const refused: ChildMessage = { ...message, undelivered: 'herdr refused the prompt, because the child is blocked on a dialog' };

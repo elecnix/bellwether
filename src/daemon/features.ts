@@ -163,6 +163,7 @@ export const BEHAVIORS: readonly Behavior[] = [
   { version: '0.1.7', prs: [153, 154], summary: "An alert can end with one line that counts the parent's other live children by state, sent only when it changed and at most once in 10 minutes." },
   { version: '0.1.8', prs: [158], summary: 'A suggestion that a harness draws faint in its input box no longer reads as typed text: `agent_read` and `idle` events leave it out and say whether the box holds a suggestion, a draft or nothing.' },
   { version: '0.1.8', prs: [161], summary: 'A dialog that dims the options it has not selected counts as a dialog again, so the parent hears `blocked` rather than `idle`, and the startup answerer can select a dimmed accepting option.' },
+  { version: '0.1.8', prs: [163], summary: "The spawn reads a startup dialog's options from the block under the dialog's own line, so a shell prompt that starts with `❯` above it never passes for the selected option." },
 ];
 
 /**

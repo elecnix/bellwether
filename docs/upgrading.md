@@ -60,13 +60,31 @@ A parent's machine and a child's machine each run their own install. Protocol 4 
 
 ## A build npm hasn't published
 
-To run a commit ahead of the next release, install a tarball packed from it. Never install from a git URL such as `npm install -g github:elecnix/bellwether#main`.
+To run a commit ahead of the next release, build it in a checkout. npm takes a tarball packed from that checkout, and pi takes the checkout directory itself. Never install from a git URL such as `npm install -g github:elecnix/bellwether#main`.
 
 Every npm tested in [#57](https://github.com/elecnix/bellwether/issues/57) fails that command, and uninstalling first doesn't help. npm leaves the installed package as it was.
 
 ```sh
 git clone --depth 1 https://github.com/elecnix/bellwether.git && cd bellwether
 npm ci && npm run build && npm install -g "$(npm pack --silent)"
+```
+
+For the Pi extension, run `pi install /path/to/bellwether`, naming the built checkout. pi loads a local package only from a directory.
+
+Never give pi the tarball. `pi install ./elecnix-bellwether-0.1.4.tgz` accepts the path and writes it into `~/.pi/agent/settings.json`, and the next session start then fails with `Failed to load extension ".../elecnix-bellwether-0.1.4.tgz": Unknown file extension ".tgz"`. That session doesn't load any Bellwether extension at all, so it has no Bellwether tools and hears no events from its children.
+
+To repair a settings entry that points at a tarball, remove it with `pi remove`. Pass the source exactly as `pi list` prints it. Then install the checkout you packed the tarball from, and restart the session:
+
+```sh
+pi remove /path/to/elecnix-bellwether-0.1.4.tgz
+pi install /path/to/bellwether
+```
+
+To confirm that the checkout and the tarball contain the same build, unpack the tarball and compare the two `dist/` directories. The `diff` prints nothing when they match:
+
+```sh
+mkdir /tmp/bw-dist && tar -xzf elecnix-bellwether-0.1.4.tgz -C /tmp/bw-dist
+diff -rq /tmp/bw-dist/package/dist /path/to/bellwether/dist
 ```
 
 A build like this has the version number of the release it follows. A daemon with that same number doesn't hand over to it, so run `bellwether drain` after the install to start the build's daemon.

@@ -20,6 +20,7 @@ Prose in Markdown files runs through Vale. The rules are the `ai-tells`, `ai-tel
 - **Never poll herdr for status.** Status arrives on `events.subscribe`. The only timers are the classifier's settle times and the stuck threshold.
 - **Subscribe before the snapshot.** herdr does not replay events, so a subscription opened after a snapshot misses whatever happened between the two.
 - **Write the registry record before `tab.create`.** A crash mid-spawn must still leave a trace.
+- **Pass the brief through a file.** Each spawn writes it to `~/.bellwether/prompts/<child id>.md` with mode 0600, and the harness gets one line that points at it. herdr refuses an argument with a line break, and a command line shows in `ps`. A spawn that fails removes its record, its brief and its tab, so the parent hears nothing about a child that never ran.
 - **Send input only to panes this parent started.** A parent must never type into a pane it does not own.
 - **Wake the parent through its harness.** `pi.sendMessage(..., {triggerTurn: true, deliverAs: 'followUp'})` for Pi, `notifications/claude/channel` for Claude Code. Never type into the parent's own pane.
 - **A receipt marks an event read.** Sending a notification does not prove a turn started.

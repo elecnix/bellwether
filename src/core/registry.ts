@@ -80,6 +80,13 @@ export function upsertChild(id: string, child: ChildRecord): ParentRecord | unde
   });
 }
 
+/** Drop a child's record, for a spawn that never produced a running child. */
+export function removeChild(id: string, childId: string): ParentRecord | undefined {
+  return mutateParent(id, (record) => {
+    record.children = record.children.filter((entry) => entry.id !== childId);
+  });
+}
+
 export function updateChild(id: string, childId: string, change: (child: ChildRecord) => void): ChildRecord | undefined {
   let updated: ChildRecord | undefined;
   mutateParent(id, (record) => {

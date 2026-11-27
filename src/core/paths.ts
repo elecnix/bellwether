@@ -18,6 +18,15 @@ export function spoolDir(): string {
   return path.join(bellwetherHome(), 'spool');
 }
 
+/** Each child's brief, kept off the command line. */
+export function promptsDir(): string {
+  return path.join(bellwetherHome(), 'prompts');
+}
+
+export function promptPath(childId: string): string {
+  return path.join(promptsDir(), `${slug(childId)}.md`);
+}
+
 /** One registry file per parent session, so a resumed parent reads the same file. */
 export function parentId(harness: string, session: string): string {
   return `${harness}-${slug(session)}`;

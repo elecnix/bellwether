@@ -12,6 +12,7 @@ import { DEFAULT_LIMITS, advance, initialState, markReported, type ClassifierSta
 import { Outbox } from './outbox.ts';
 import { mutateParent, readParent, updateChild } from './registry.ts';
 import { resolveTranscript, sessionValueFrom } from './transcript.ts';
+import { removeBrief } from './brief.ts';
 import { childLabel } from './label.ts';
 import { spoolPath } from './paths.ts';
 import type { AgentStatus, ChildEventKind, ChildRecord, OutboxEntry, SpoolReport } from './types.ts';
@@ -106,6 +107,16 @@ export class Watcher {
     this.outbox.save(this.parentId);
   }
 
+  /** Forget a child whose spawn failed: no state, and no event left to send. */
+  forget(childId: string): void {
+    this.states.delete(childId);
+    this.screenReadAt.delete(childId);
+    this.transcriptSizes.delete(childId);
+    this.transcriptLookAt.delete(childId);
+    this.lastScreen.delete(childId);
+    if (this.outbox.drop(childId)) this.outbox.save(this.parentId);
+  }
+
   /** Record that a receipt has been sent to the parent, so a burst is sent once. */
   markDelivered(receipt: string): void {
     this.outbox.markDelivered(receipt);
@@ -164,6 +175,7 @@ export class Watcher {
       entry.exitCode = code;
       entry.lastStatus = 'unknown';
     });
+    removeBrief(child.id);
     this.offer(child, 'exited', this.describeExit(child, code));
   }
 

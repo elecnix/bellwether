@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { writeBrief } from '../../src/core/brief.ts';
 import { HerdrClient } from '../../src/core/herdr-client.ts';
 import { emptyParent, saveParent } from '../../src/core/registry.ts';
 import { Watcher } from '../../src/core/watcher.ts';
@@ -27,7 +28,7 @@ function child(id: string, name: string, paneId: string): ChildRecord {
   return { id, name, kind: 'claude', harness: 'claude-code', paneId, startedAt: long, lastStatus: 'working', statusChangedAt: long, lastBusyAt: long, depth: 1 };
 }
 
-test('an event names the child by its pane, so two children with one name read apart', async () => {
+test('an exit names the child by its pane, and removes its brief', async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'bellwether-watcher-'));
   const previous = process.env['BELLWETHER_HOME'];
   process.env['BELLWETHER_HOME'] = home;
@@ -36,6 +37,7 @@ test('an event names the child by its pane, so two children with one name read a
   // The fake herdr lists no panes, so both children count as gone.
   parent.children.push(child('aaaa1111', 'npm-publish', 'w74:pJ'), child('bbbb2222', 'npm-publish', 'w74:pK'));
   saveParent(parent);
+  const briefs = parent.children.map((entry) => writeBrief(entry.id, 'the brief'));
   let entries: OutboxEntry[] = [];
   const watcher = new Watcher({ client: new HerdrClient({ socketPath: herdr.socketPath }), parentId: parent.id, onEntries: (next) => (entries = next), tickMs: 60_000 });
   try {
@@ -43,6 +45,8 @@ test('an event names the child by its pane, so two children with one name read a
     await until('two exit events', () => (entries.length === 2 ? entries : undefined));
     const firstLines = entries.map((entry) => entry.text.split('\n')[0]).sort();
     assert.deepEqual(firstLines, ['npm-publish (w74:pJ) exited.', 'npm-publish (w74:pK) exited.']);
+    // A child that exits takes its brief with it.
+    assert.deepEqual(briefs.filter((file) => fs.existsSync(file)), []);
   } finally {
     watcher.stop();
     await herdr.stop();

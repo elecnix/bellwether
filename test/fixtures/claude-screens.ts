@@ -1,7 +1,7 @@
 // Claude Code's startup screens, copied from a real Claude Code 2.1.332 pane
 // that herdr read with `pane.read --source visible`. The probe that captured
 // them is described in docs/probes.md, section 6.
-export const TRUST_NO_SELECTED = `nicolas@host:/var/tmp/bw-dlg-kamEEq$ claude --dangerously-load-development-channels=server:bellwether --model haiku
+export const TRUST_NO_SELECTED = `user@host:/var/tmp/bw-dlg-kamEEq$ claude --dangerously-load-development-channels=server:bellwether --model haiku
 ───────────────────────────────────────────────────────────────────────────────
  Accessing workspace:
 
@@ -22,7 +22,7 @@ export const TRUST_NO_SELECTED = `nicolas@host:/var/tmp/bw-dlg-kamEEq$ claude --
 
 export const TRUST_YES_SELECTED = TRUST_NO_SELECTED.replace(' ❯ No, exit\n   Yes, I trust this folder', '   No, exit\n ❯ Yes, I trust this folder');
 
-export const CHANNEL_ACCEPT_SELECTED = `nicolas@host:/var/tmp/bw-dlg-kamEEq$ claude --dangerously-load-development-channels=server:bellwether --model haiku
+export const CHANNEL_ACCEPT_SELECTED = `user@host:/var/tmp/bw-dlg-kamEEq$ claude --dangerously-load-development-channels=server:bellwether --model haiku
 ───────────────────────────────────────────────────────────────────────────────
   WARNING: Loading development channels
 

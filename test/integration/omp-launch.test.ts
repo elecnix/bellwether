@@ -21,7 +21,7 @@ import { Watcher } from '../../src/core/watcher.ts';
 import { FEATURES } from '../../src/daemon/features.ts';
 import { runBellwetherTool, type ToolContext } from '../../src/integrations/tools.ts';
 import type { RecordedRequest } from '../fixtures/fake-herdr.ts';
-import { startFakeHerdr, type FakeHerdr } from '../fixtures/fake-herdr.ts';
+import { startFakeHerdr, type FakeHerdr, harnessStarts, harnessStart } from '../fixtures/fake-herdr.ts';
 import { fakeWorld, type FakeWorld } from '../fixtures/fake-world.ts';
 import { isolate } from '../fixtures/isolated.ts';
 
@@ -61,9 +61,9 @@ async function room(t: test.TestContext, state: IntegrationState = 'current'): P
 }
 
 function startArgs(fake: FakeHerdr): string[] {
-  const start = fake.requests.find((request) => request.method === 'agent.start');
+  const start = harnessStarts(fake)[0];
   assert.ok(start, 'herdr was never asked to start the agent');
-  return start.params['args'] as string[];
+  return start.args as string[];
 }
 
 function tabEnv(fake: FakeHerdr): Record<string, string> {
@@ -79,7 +79,7 @@ function record(parentId: string, childId: string): ChildRecord | undefined {
 /** Nothing was written and herdr opened nothing. */
 function assertNothingStarted(space: Room): void {
   assert.deepEqual(readParent(space.parentId)?.children, []);
-  assert.equal(space.fake.requests.some((request) => request.method === 'tab.create' || request.method === 'agent.start'), false, 'herdr was asked for a tab');
+  assert.equal(space.fake.requests.some((request) => request.method === 'tab.create' || harnessStart(request) !== undefined), false, 'herdr was asked for a tab');
   const prompts = path.join(space.home, 'prompts');
   assert.deepEqual(fs.existsSync(prompts) ? fs.readdirSync(prompts) : [], []);
 }
@@ -120,8 +120,8 @@ test('an omp spawn loads the pi extension with -e, points omp at the brief with 
   const { child } = await spawnChild(space.client, readParent(space.parentId)!, { kind: 'omp', name: 'omp-drill', prompt: 'report back', cwd: space.cwd, model: 'example-provider/example-model' });
   const extension = piExtensionEntry();
   assert.deepEqual(startArgs(space.fake), ['--model', 'example-provider/example-model', '-e', extension, `@${promptPath(child.id)}`]);
-  const start = space.fake.requests.find((request) => request.method === 'agent.start');
-  assert.equal(start?.params['kind'], 'omp', 'herdr starts the kind its omp integration reports');
+  const start = harnessStarts(space.fake)[0];
+  assert.equal(start?.kind, 'omp', 'herdr starts the kind its omp integration reports');
   assert.equal(fs.readFileSync(promptPath(child.id), 'utf8'), 'report back');
   const env = tabEnv(space.fake);
   assert.equal(env[PI_EXTENSION_ENV], extension, 'a second copy of the extension stands down');
@@ -139,7 +139,7 @@ test('an omp spawn loads the pi extension with -e, points omp at the brief with 
 test('an omp spawn accepts an outdated herdr integration, which still reports the session', async (t) => {
   const space = await room(t, 'outdated');
   await spawnChild(space.client, readParent(space.parentId)!, { kind: 'omp', name: 'omp-drill', prompt: 'report back', cwd: space.cwd });
-  assert.ok(space.fake.requests.some((request) => request.method === 'agent.start'));
+  assert.ok(space.fake.requests.some((request) => harnessStart(request) !== undefined));
 });
 
 for (const state of ['not_installed', 'absent', 'unknown-method'] as const) {

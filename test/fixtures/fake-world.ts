@@ -48,13 +48,20 @@ export interface FakeWorld {
   emit: (frame: unknown) => void;
   /** Called on every agent.start, before the world answers it. */
   onStart?: (pane: FakePane) => void;
+  /**
+   * Shell functions the panes' startup files define, by name, each with the
+   * arguments it puts in front of its caller's, as an operator's `claude`
+   * wrapper adds development channels. A line that names one bare, which is
+   * what herdr's agent.start types, runs the function; `command` skips it.
+   */
+  shellFunctions: Map<string, string[]>;
   /** Put a pane in the world, with or without an agent. */
   add(pane: Partial<FakePane> & { pane_id: string }): FakePane;
   /** An answer in the fake socket's `respond` shape, or undefined for the default. */
   respond(request: RecordedRequest): { result: unknown } | { error: { code: string; message: string } } | undefined;
 }
 
-const HARNESSES = new Set(['claude', 'pi', 'codex', 'opencode', 'kilo', 'cline', 'fake-agent']);
+const HARNESSES = new Set(['claude', 'pi', 'codex', 'opencode', 'kilo', 'cline', 'omp', 'fake-agent']);
 
 /**
  * Split a line into words as a POSIX shell does for the forms a launch line
@@ -125,8 +132,10 @@ export function fakeWorld(workspace = 'w1'): FakeWorld {
       pane.agent_status = 'idle';
     }
   };
+  const shellFunctions = new Map<string, string[]>();
   return {
     panes,
+    shellFunctions,
     emit: () => {},
     add,
     respond(request) {
@@ -162,15 +171,18 @@ export function fakeWorld(workspace = 'w1'): FakeWorld {
         case 'agent.start': {
           const pane = panes.get(String(params['pane_id']));
           if (!pane) return { error: { code: 'pane_not_found', message: 'no such pane' } };
+          const kind = String(params['kind']);
           const args = Array.isArray(params['args']) ? (params['args'] as string[]) : [];
           pane.name = String(params['name']);
-          start(this, pane, String(params['kind']), args);
+          // herdr types the kind's bare name at the shell prompt, so a function of that name runs.
+          start(this, pane, kind, [...(shellFunctions.get(kind) ?? []), ...args]);
           return { type: 'agent_started' };
         }
         case 'pane.send_input': {
           // A line typed at the shell prompt: the shell splits it into words,
           // and the first harness name among them is the program herdr detects
-          // behind whatever launcher runs it.
+          // behind whatever launcher runs it. A bare start types the harness
+          // behind the shell's `command`, which is no launcher.
           const pane = panes.get(String(params['pane_id']));
           if (!pane) return { error: { code: 'pane_not_found', message: 'no such pane' } };
           const text = typeof params['text'] === 'string' ? params['text'] : '';
@@ -179,12 +191,17 @@ export function fakeWorld(workspace = 'w1'): FakeWorld {
           const words = shellWords(text);
           const assignments: string[] = [];
           while (words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0] as string)) assignments.push(words.shift() as string);
-          const at = words.findIndex((word, index) => index > 0 && HARNESSES.has(word));
+          // Any harness the registry holds, including one a test defines, can follow `command`.
+          const bare = words[0] === 'command' && Boolean(words[1]);
+          const wrapped = !bare && shellFunctions.has(words[0] ?? '') && HARNESSES.has(words[0] ?? '');
+          const at = bare ? 1 : wrapped ? 0 : words.findIndex((word, index) => index > 0 && HARNESSES.has(word));
           if (at < 0) return { type: 'ok' };
           pane.typed = text;
           pane.assignments = assignments;
-          pane.launcher = words.slice(0, at);
-          start(this, pane, words[at] as string, words.slice(at + 1));
+          pane.launcher = bare || wrapped ? undefined : words.slice(0, at);
+          if (bare) pane.name = undefined;
+          const harness = words[at] as string;
+          start(this, pane, harness, [...(wrapped ? (shellFunctions.get(harness) ?? []) : []), ...words.slice(at + 1)]);
           setTimeout(() => this.emit({ event: 'pane_agent_detected', data: { pane_id: pane.pane_id, agent: pane.agent, workspace_id: pane.workspace_id } }), 20);
           return { type: 'ok' };
         }
@@ -201,7 +218,8 @@ export function fakeWorld(workspace = 'w1'): FakeWorld {
         case 'agent.send_keys': {
           const pane = panes.get(String(params['target']));
           const keys = Array.isArray(params['keys']) ? (params['keys'] as string[]) : [];
-          if (pane?.screen === CHANNEL_DIALOG && keys.includes('Enter')) {
+          // The cursor starts on option 1, so Enter or the digit 1 accepts.
+          if (pane?.screen === CHANNEL_DIALOG && (keys.includes('Enter') || keys.includes('1'))) {
             pane.screen = READY;
             status(this, pane, 'idle');
           }

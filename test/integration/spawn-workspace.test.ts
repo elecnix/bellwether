@@ -12,7 +12,7 @@ import { emptyParent, readParent, saveParent } from '../../src/core/registry.ts'
 import { spawnChild } from '../../src/core/spawn.ts';
 import { parseWorkspaces } from '../../src/core/workspace.ts';
 import type { ParentRecord } from '../../src/core/types.ts';
-import { startFakeHerdr, type FakeHerdr, type FakeHerdrOptions, type RecordedRequest } from '../fixtures/fake-herdr.ts';
+import { startFakeHerdr, type FakeHerdr, type FakeHerdrOptions, type RecordedRequest, harnessStarts, harnessStart } from '../fixtures/fake-herdr.ts';
 import { FAKE_KIND } from '../fixtures/fake-harness.ts';
 
 const WORKSPACES = [
@@ -90,8 +90,8 @@ test('workspace "new" creates a workspace labelled after the child, starts the c
     assert.equal(create.params['label'], 'big-job');
     assert.equal((create.params['env'] as Record<string, string>)['BELLWETHER_CHILD'], child.id, 'the root pane carries the child environment');
     assert.ok(!methods(space.herdr).includes('tab.create'), 'a second tab was opened beside the root pane');
-    const start = space.herdr.requests.find((request) => request.method === 'agent.start');
-    assert.equal(start?.params['pane_id'], 'w20:p1', 'the child did not start in the root pane');
+    const start = harnessStarts(space.herdr)[0];
+    assert.equal(start?.paneId, 'w20:p1', 'the child did not start in the root pane');
     // The shape the operator sees: one tab in the new workspace, and it holds the child.
     assert.deepEqual(state.tabs.get('w20'), ['w20:t1']);
     assert.equal(child.tabId, 'w20:t1');
@@ -146,7 +146,7 @@ test('a workspace that matches nothing, or two by label, is refused by name befo
     await assert.rejects(spawnChild(space.client, space.parent, { kind: FAKE_KIND, name: 'helper', workspace: 'twin' }), /2 workspaces on this machine are labelled twin \(w8, w9\)\. Name one by its id\./);
     await assert.rejects(spawnChild(space.client, space.parent, { kind: FAKE_KIND, name: 'helper', workspace: 'w7', workspaceLabel: 'x' }), /workspace_label names a new workspace/);
     assert.deepEqual(readParent(space.parent.id)?.children, []);
-    assert.ok(!methods(space.herdr).some((method) => method === 'tab.create' || method === 'workspace.create' || method === 'agent.start'));
+    assert.ok(!methods(space.herdr).some((method) => method === 'tab.create' || method === 'workspace.create' || method === 'agent.start' || method === 'pane.send_input'));
   } finally {
     await space.close();
   }
@@ -179,7 +179,7 @@ test('a spawn at max_depth is refused in a new workspace as anywhere else, befor
 
 test('a spawn that fails in a new workspace closes that workspace, and one that fails in a named workspace closes only its own tab', async () => {
   const refuse = (inner: FakeHerdrOptions): FakeHerdrOptions => ({
-    respond: (request) => (request.method === 'agent.start' ? { error: { code: 'agent_start_failed', message: 'no such harness' } } : inner.respond?.(request)),
+    respond: (request) => (harnessStart(request) !== undefined ? { error: { code: 'agent_start_failed', message: 'no such harness' } } : inner.respond?.(request)),
   });
   const state = herdrState();
   const space = await room(refuse(state.options));

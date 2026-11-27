@@ -51,6 +51,11 @@ test('the version is read through the colour codes OpenCode prints, and only 2.x
   }
   // An opencode this daemon cannot see is left to the store check after the start.
   assert.doesNotThrow(() => requireOpenCodeV2({ missing: 'no opencode on PATH' }, 'oc'));
+  // One that answers without a version, as the 2.0 preview's `vlocal` does, is refused with what it printed.
+  assert.throws(
+    () => requireOpenCodeV2({ unreadable: 'opencode2 vlocal', binary: '/opt/bin/opencode' }, 'oc'),
+    (error: Error) => error.message.startsWith('oc was not started') && error.message.includes('/opt/bin/opencode') && error.message.includes('"opencode2 vlocal"') && error.message.includes('OpenCode 2'),
+  );
 });
 
 test('the store is OPENCODE_DB when set, relative to the data directory, or opencode.db there', () => {

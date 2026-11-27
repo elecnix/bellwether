@@ -86,7 +86,10 @@ export function openCodeDbPath(env: NodeJS.ProcessEnv = process.env): string {
 }
 
 /** What `opencode --version` said on this machine, or why it could not be asked. */
-export type OpenCodeProbe = { version: string; binary: string; missing?: undefined } | { missing: string; version?: undefined };
+export type OpenCodeProbe =
+  | { version: string; binary: string; missing?: undefined; unreadable?: undefined }
+  | { missing: string; version?: undefined; unreadable?: undefined }
+  | { unreadable: string; binary: string; version?: undefined; missing?: undefined };
 
 /** The version in OpenCode's `--version` output, which carries colour codes on a terminal. */
 export function parseOpenCodeVersion(text: string): string | undefined {
@@ -116,9 +119,10 @@ export function probeOpenCode(env: NodeJS.ProcessEnv = process.env): Promise<Ope
   if (!binary) return Promise.resolve({ missing: `no opencode on the daemon's PATH` });
   return new Promise((resolve) => {
     execFile(binary, ['--version'], { timeout: 15_000, env: { ...env, NO_COLOR: '1' } }, (error, stdout, stderr) => {
-      const version = parseOpenCodeVersion(`${stdout}\n${stderr}`);
+      const printed = `${stdout}\n${stderr}`;
+      const version = parseOpenCodeVersion(printed);
       if (version) resolve({ version, binary });
-      else resolve({ missing: `${binary} --version printed no version${error ? ` (${error.message})` : ''}` });
+      else resolve({ unreadable: (printed.replace(/\u001b\[[0-9;]*m/g, '').trim() || error?.message || 'nothing').slice(0, 200), binary });
     });
   });
 }
@@ -134,12 +138,14 @@ function needs(): string {
 
 /**
  * Refuse an OpenCode that is not version 2, naming what was found and what is
- * needed. An opencode the daemon cannot see is not refused here, because the
- * tab's shell may have another PATH: the store check after the start reads
- * the version the child's own server records on its session.
+ * needed, and one whose version output names no version, such as the 2.0
+ * preview's `vlocal`. An opencode the daemon cannot see is not refused here,
+ * because the tab's shell may have another PATH: the store check after the
+ * start reads the version the child's own server records on its session.
  */
 export function requireOpenCodeV2(probe: OpenCodeProbe, name: string): void {
   if (probe.missing !== undefined) return;
+  if (probe.unreadable !== undefined) throw new Error(`${name} was not started: ${probe.binary} --version printed "${probe.unreadable}", which names no version, and ${needs()}. Install it with \`npm install -g ${OPENCODE_PACKAGE}\`, or put an OpenCode 2 first on PATH.`);
   if (majorOf(probe.version) === OPENCODE_MAJOR) return;
   throw new Error(`${name} was not started: ${probe.binary} is OpenCode ${probe.version}, and ${needs()}. Install it with \`npm install -g ${OPENCODE_PACKAGE}\`, or put an OpenCode 2 first on PATH.`);
 }

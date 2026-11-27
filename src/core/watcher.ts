@@ -13,7 +13,7 @@ import { LOCAL_HOST, hostOf, type ClientFor } from './machine.ts';
 import { Outbox } from './outbox.ts';
 import { mutateParent, readParent, updateChild } from './registry.ts';
 import { DIALOG_NAMES, detectDialog, watchStartup } from './startup-dialogs.ts';
-import { lastAssistantMessage, locateTranscript, sessionFrom } from './transcript.ts';
+import { agentNameOf, lastAssistantMessage, locateTranscript, piSessionModel, sessionFrom } from './transcript.ts';
 import { removeChildFiles } from './mcp-config.ts';
 import { childLabel } from './label.ts';
 import { spoolPath } from './paths.ts';
@@ -371,6 +371,10 @@ export class Watcher {
         } else if (stateSeq !== undefined) entry.stateChangeSeq = stateSeq;
         entry.lastStatus = status;
       });
+      // A pi child can reach herdr's detection after the spawn looked, and
+      // after the agent_detected event, so a status change of a child with no
+      // session is when to ask herdr for it.
+      if (!child.session) await this.learnAgent(host, child, event.data);
       // Read the registry again rather than reusing the copy taken above,
       // which still holds the status from before this event.
       await this.evaluate();
@@ -380,6 +384,31 @@ export class Watcher {
       const signal = this.controller?.signal;
       if (signal) await this.reconcile(await this.clientFor(host), (record?.children ?? []).filter((entry) => hostOf(entry) === host), signal);
     }
+  }
+
+  /**
+   * Record the session and the harness's own name for a child herdr knows by
+   * now: from the event when it carries them, otherwise from one agent.get.
+   * A local child's transcript is looked up with the session.
+   */
+  private async learnAgent(host: string, child: ChildRecord, data: Record<string, unknown>): Promise<void> {
+    let agent = data;
+    if (!sessionFrom(agent['agent_session'])) {
+      try {
+        const result = await (await this.clientFor(host)).request('agent.get', { target: child.paneId }, { signal: this.controller?.signal });
+        agent = isRecord(result) && isRecord(result['agent']) ? result['agent'] : isRecord(result) ? result : {};
+      } catch {
+        return;
+      }
+    }
+    const session = sessionFrom(agent['agent_session']);
+    const agentName = agentNameOf(agent, child.name);
+    if (!session && !agentName) return;
+    updateChild(this.parentId, child.id, (entry) => {
+      if (session) entry.session = session;
+      if (agentName) entry.agentName = agentName;
+    });
+    if (session && host === LOCAL_HOST && !child.transcript) this.recordTranscript({ ...child, session }, session.value);
   }
 
   private dropLink(host: string): void {
@@ -419,7 +448,9 @@ export class Watcher {
       const stateSeq = typeof pane['state_change_seq'] === 'number' ? (pane['state_change_seq'] as number) : undefined;
       const session = sessionFrom(pane['agent_session']);
       const sessionChanged = session !== undefined && (session.value !== child.session?.value || session.kind !== child.session?.kind);
-      if (status !== child.lastStatus || (seq !== undefined && seq !== child.completionSeq) || (stateSeq !== undefined && stateSeq !== child.stateChangeSeq) || sessionChanged) {
+      const agentName = agentNameOf(pane, child.name);
+      const nameChanged = agentName !== undefined && agentName !== child.agentName;
+      if (status !== child.lastStatus || (seq !== undefined && seq !== child.completionSeq) || (stateSeq !== undefined && stateSeq !== child.stateChangeSeq) || sessionChanged || nameChanged) {
         updateChild(this.parentId, child.id, (entry) => {
           const at = new Date().toISOString();
           if (entry.lastStatus !== status) entry.statusChangedAt = at;
@@ -430,7 +461,10 @@ export class Watcher {
           if (seq !== undefined) entry.completionSeq = seq;
           if (stateSeq !== undefined) entry.stateChangeSeq = stateSeq;
           if (session) entry.session = session;
+          if (agentName) entry.agentName = agentName;
         });
+        // A new session is a new file to read, and for pi the session is the file.
+        if (session && sessionChanged && hostOf(child) === LOCAL_HOST) this.recordTranscript({ ...child, transcript: undefined }, session.value);
       }
     }
     await this.evaluate();
@@ -574,9 +608,12 @@ export class Watcher {
   private recordTranscript(child: ChildRecord, session: string): string | undefined {
     const found = locateTranscript(child.harness, session, child.cwd);
     if (found.path) {
+      // A pi child started on pi's default names it in its session file.
+      const model = child.kind === 'pi' && !child.model ? piSessionModel(found.path) : undefined;
       updateChild(this.parentId, child.id, (entry) => {
         entry.transcript = found.path;
         delete entry.transcriptMissing;
+        if (model && !entry.model) entry.model = { ...model, source: 'session' };
       });
       return found.path;
     }

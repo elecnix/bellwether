@@ -1,7 +1,7 @@
 // A root of its own for one test case. The preload in isolation.ts already
 // gives the test process a Bellwether home and daemon socket away from the live
 // ones; this goes one step further for a case that writes registries or reads
-// transcripts. HOME, XDG_CONFIG_HOME, BELLWETHER_HOME and
+// transcripts. HOME, XDG_CONFIG_HOME, PI_CODING_AGENT_DIR, BELLWETHER_HOME and
 // BELLWETHER_DAEMON_SOCKET move under the case's own root, and every herdr
 // variable an outer session sets is removed. assertIsolated fails the case
 // when the herdr socket still resolves to the live one, which the preload does
@@ -18,7 +18,7 @@ import { LIVE_SOCKET } from './isolation.ts';
 export const LIVE_HERDR_SOCKET = path.join(os.userInfo().homedir, '.config', 'herdr', 'herdr.sock');
 
 const HERDR_VARIABLES = ['HERDR_ENV', 'HERDR_PANE_ID', 'HERDR_SOCKET_PATH', 'HERDR_SESSION'];
-const OWNED = ['HOME', 'BELLWETHER_HOME', 'BELLWETHER_DAEMON_SOCKET', 'XDG_CONFIG_HOME', ...HERDR_VARIABLES];
+const OWNED = ['HOME', 'BELLWETHER_HOME', 'BELLWETHER_DAEMON_SOCKET', 'XDG_CONFIG_HOME', 'PI_CODING_AGENT_DIR', ...HERDR_VARIABLES];
 
 /** Throw when the herdr or daemon socket this process would use is a live one, or sits outside `root`. */
 export function assertIsolated(root: string): void {
@@ -43,6 +43,7 @@ export function isolate(t: { after: (fn: () => void) => void }, prefix = 'bellwe
   const home = path.join(root, '.bellwether');
   process.env['HOME'] = root;
   process.env['XDG_CONFIG_HOME'] = path.join(root, '.config');
+  process.env['PI_CODING_AGENT_DIR'] = path.join(root, '.pi', 'agent');
   process.env['BELLWETHER_HOME'] = home;
   process.env['BELLWETHER_DAEMON_SOCKET'] = path.join(home, 'daemon.sock');
   t.after(() => {

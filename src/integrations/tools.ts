@@ -12,7 +12,7 @@ import { spawnResume } from '../core/spawn-resume.ts';
 import { promptChild } from '../core/send.ts';
 import { RETIRE_TOOL, realRetireOps, requestRetirement, type RetireOps } from '../core/retire.ts';
 import type { RemoteOps } from '../core/remote.ts';
-import { lastAssistantMessage } from '../core/transcript.ts';
+import { lastAssistantMessage, locateTranscript } from '../core/transcript.ts';
 import type { Watcher } from '../core/watcher.ts';
 import type { CallerIdentity, ChildRecord, RelayHostState, ReportStatus } from '../core/types.ts';
 
@@ -59,7 +59,8 @@ export const parentTools: ToolDefinition[] = [
         name: { type: 'string', description: 'A short handle for the child, unique in this session. Used as the herdr agent name and the tab label. Required without resume.' },
         cwd: { type: 'string', description: 'The directory to start the child in. Use an absolute path, ideally a git worktree of its own.' },
         prompt: { type: 'string', description: 'The first message the child receives, or with resume the message for the earlier child. The whole prompt, not a path. Line breaks and any length are fine: Bellwether hands a new or resumed child the prompt through a private file.' },
-        model: { type: 'string', description: 'The model or tier to pass to the child harness.' },
+        model: { type: 'string', description: 'The model or tier to pass to the child harness. A pi child needs provider with it; with neither, a pi child runs on the provider and model of this session.' },
+        provider: { type: 'string', description: 'The pi provider for model. Pass both or neither.' },
         args: { type: 'array', items: { type: 'string' }, description: 'Extra arguments for the child harness, passed through unchanged and appended last.' },
         focus: { type: 'boolean', description: 'Move your view to the new tab. Defaults to false, so the child does not steal focus.' },
         stuck_minutes: { type: 'number', description: 'How long the child may be quiet before it counts as stuck. Defaults to 10.' },
@@ -170,8 +171,18 @@ export function toolSchema(name: string): Record<string, unknown> | undefined {
   return [...parentTools, ...childTools, ...retireTools].find((tool) => tool.name === name)?.schema;
 }
 
+/**
+ * The child a tool call names: by child id, by the name the parent gave it or
+ * by pane, and failing those by the name the harness gave itself. Two children
+ * that answer to the harness name are refused, never guessed between.
+ */
 function resolve(record: ReturnType<typeof readParent>, child: string): ChildRecord | undefined {
-  return record ? childById(record, child) : undefined;
+  if (!record) return undefined;
+  const direct = childById(record, child);
+  if (direct) return direct;
+  const named = record.children.filter((entry) => entry.agentName === child);
+  if (named.length > 1) throw new Error(`"${child}" is the name ${named.map((entry) => entry.name).join(' and ')} each gave themselves. Name the child by the name you gave it, or by its pane.`);
+  return named[0];
 }
 
 /** A child's host, with a warning when the daemon is not hearing from that machine. */
@@ -189,7 +200,9 @@ function describeChild(child: ChildRecord, watcher: Watcher, relayState?: ToolCo
   const age = Math.max(0, Math.round((Date.now() - Date.parse(child.startedAt)) / 1000));
   const retire = child.retireOutcome === 'removed' ? ', retired' : child.retireOutcome === 'refused' ? ', retirement refused' : child.retireRequestedAt ? ', retirement requested' : '';
   const state = `${child.exitedAt ? `exited${child.exitCode === undefined ? '' : ` (${child.exitCode})`}` : child.lastStatus}${retire}`;
-  return `${child.name}\t${child.kind}\t${state}\t${age}s\t${hostColumn(child, relayState)}\t${child.paneId}\tunread ${unread}\t${child.cwd ?? ''}`;
+  const name = child.agentName ? `${child.name} (${child.agentName})` : child.name;
+  const kind = child.model ? `${child.kind} (${child.model.provider}/${child.model.id})` : child.kind;
+  return `${name}\t${kind}\t${state}\t${age}s\t${hostColumn(child, relayState)}\t${child.paneId}\tunread ${unread}\t${child.cwd ?? ''}`;
 }
 
 /**
@@ -249,6 +262,8 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
       cwd: optionalString(args['cwd']),
       prompt: optionalString(args['prompt']),
       model: optionalString(args['model']),
+      provider: optionalString(args['provider']),
+      parentModel: caller.model,
       args: Array.isArray(args['args']) ? (args['args'] as string[]) : undefined,
       focus: args['focus'] === true,
       stuckMinutes: typeof args['stuck_minutes'] === 'number' ? (args['stuck_minutes'] as number) : undefined,
@@ -260,9 +275,10 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
     if (!options.name) throw new Error('agent_spawn needs a name for a new child, or resume to message an earlier one.');
     // Resolve the machine before anything is written, so a typo leaves no record.
     const client = await clientFor(ctx, options.host ?? LOCAL_HOST);
-    const { child, link, reportWarning } = await spawnChild(client, record, options, undefined, { forget: (childId) => ctx.watcher.forget(childId), registerRemote: registrar(ctx, record), cleanupRemote: remoteCleanup(ctx) });
+    const { child, link, reportWarning, modelNote } = await spawnChild(client, record, options, undefined, { forget: (childId) => ctx.watcher.forget(childId), registerRemote: registrar(ctx, record), cleanupRemote: remoteCleanup(ctx) });
     const where = child.host === LOCAL_HOST ? '' : ` on machine ${child.host}`;
     const lines = [`${child.name} started as a ${child.kind} agent${where} in pane ${child.paneId}, tab ${child.tabId ?? child.paneId}.`, `Bellwether watches it, and your next turn starts when it changes state.`, `herdr link: ${link}`];
+    if (modelNote) lines.push(modelNote);
     if (reportWarning) lines.push(reportWarning);
     return lines.join('\n');
   }
@@ -296,7 +312,8 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
     // Pane feature: agent_read with lines, a screen the parent asked to see.
     if (lines) return (await herdr.paneRead({ paneId: child.paneId, source: 'recent_unwrapped', lines })).trim();
     if (hostOf(child) !== LOCAL_HOST) return readRemoteChild(ctx, child, herdr);
-    const message = child.transcript ? lastAssistantMessage(child.transcript) : undefined;
+    const transcript = child.transcript ?? transcriptFromSession(ctx.parentId, child);
+    const message = transcript ? lastAssistantMessage(transcript) : undefined;
     if (message) return message;
     // Pane feature: agent_read for a child whose transcript holds no message yet.
     return (await herdr.paneRead({ paneId: child.paneId, source: 'recent_unwrapped', lines: 40 })).trim();
@@ -332,6 +349,21 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
   }
 
   throw new Error(`Bellwether has no tool named ${name}`);
+}
+
+/**
+ * A local child's transcript, found from its session when the record holds
+ * none yet: a pi session is the file itself. What is found goes on the record.
+ */
+function transcriptFromSession(parentId: string, child: ChildRecord): string | undefined {
+  if (!child.session) return undefined;
+  const found = locateTranscript(child.harness, child.session.value, child.cwd);
+  if (!found.path) return undefined;
+  updateChild(parentId, child.id, (entry) => {
+    entry.transcript = found.path;
+    delete entry.transcriptMissing;
+  });
+  return found.path;
 }
 
 function registrar(ctx: ToolContext, record: { id: string }): RegisterRemote | undefined {

@@ -15,6 +15,7 @@ import test from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import { HerdrClient } from '../../src/core/herdr-client.ts';
 import { relayChildPath, relayOutboxDir, spoolPath } from '../../src/core/paths.ts';
+import { PI_EXTENSION_ENV, piExtensionEntry } from '../../src/core/pi-extension.ts';
 import { emptyParent, readParent, saveParent, upsertChild } from '../../src/core/registry.ts';
 import { RELAY_SCHEMA, listForwards, readRelayRecord, saveForward, saveRelayRecord, type RelayRecord } from '../../src/core/relay-records.ts';
 import { remoteOps } from '../../src/core/remote.ts';
@@ -506,11 +507,40 @@ test('a spawn on another machine whose registration fails still starts, and says
   const w = world(t);
   w.ssh.plan(['refuse']);
   const parent = saveParent(emptyParent('pi', 'spawner-fail', '/work'));
+  const herdr = await idleHerdr(t);
+  const ops = remoteOps(machines);
+  const { reportWarning } = await spawnChild(new HerdrClient({ socketPath: herdr.socketPath }), parent, { kind: 'claude', name: 'unregistered', host: 'child-box', startupTimeoutMs: 2_000, redrawMs: 10 }, undefined, { registerRemote: (entry) => ops.register(parent, entry) });
+  assert.match(reportWarning ?? '', /could not be registered on machine child-box.*cannot call parent_report.*255/);
+});
+
+test('a pi spawn on another machine starts with the extension that machine resolves', async (t) => {
+  const w = world(t);
+  const parent = saveParent(emptyParent('pi', 'pi-spawner', '/work', { workspaceId: 'w1' }));
   const herdr = await startFakeHerdr();
   t.after(() => herdr.stop());
   const ops = remoteOps(machines);
-  const { reportWarning } = await spawnChild(new HerdrClient({ socketPath: herdr.socketPath }), parent, { kind: 'pi', name: 'unregistered', host: 'child-box' }, undefined, { registerRemote: (entry) => ops.register(parent, entry) });
-  assert.match(reportWarning ?? '', /could not be registered on machine child-box.*cannot call parent_report.*255/);
+  const { child, reportWarning } = await spawnChild(new HerdrClient({ socketPath: herdr.socketPath }), parent, { kind: 'pi', name: 'far-pi', host: 'child-box', prompt: 'report back' }, undefined, { registerRemote: (entry, text) => ops.register(parent, entry, text) });
+  assert.equal(reportWarning, undefined);
+  assert.deepEqual(w.ssh.remoteCalls()[0]?.argv.slice(0, 6), ['relay-register', '--child', child.id, '--name', 'far-pi', '--kind']);
+  // The fake machine runs this checkout's CLI, so its package resolves the same file.
+  assert.deepEqual(startArgs(herdr).slice(0, 2), ['-e', piExtensionEntry()]);
+  const create = herdr.requests.find((request) => request.method === 'tab.create');
+  assert.equal((create?.params['env'] as Record<string, string>)[PI_EXTENSION_ENV], piExtensionEntry());
+});
+
+test('a pi spawn on another machine whose registration fails starts nothing, since no extension path is known', async (t) => {
+  const w = world(t);
+  w.ssh.plan(['refuse']);
+  const parent = saveParent(emptyParent('pi', 'pi-spawner-fail', '/work'));
+  const herdr = await startFakeHerdr();
+  t.after(() => herdr.stop());
+  const ops = remoteOps(machines);
+  await assert.rejects(
+    spawnChild(new HerdrClient({ socketPath: herdr.socketPath }), parent, { kind: 'pi', name: 'unregistered', host: 'child-box' }, undefined, { registerRemote: (entry) => ops.register(parent, entry) }),
+    /child-box.*pi extension.*255/s,
+  );
+  assert.deepEqual(readParent(parent.id)?.children, []);
+  assert.equal(herdr.requests.some((request) => request.method === 'tab.create'), false);
 });
 
 /** A fake herdr whose new pane goes idle after the start, so a Claude Code spawn gets past its dialog wait. */

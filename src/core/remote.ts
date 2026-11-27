@@ -17,6 +17,8 @@ export interface RemoteRegistration {
   mcpConfig?: string;
   /** The brief's path there, when the spawn sent one. */
   brief?: string;
+  /** The pi extension of the package there, for a pi child. */
+  piExtension?: string;
 }
 
 export interface RemoteOps {
@@ -33,7 +35,12 @@ export function registerFlags(parent: Pick<ParentRecord, 'id'>, child: Pick<Chil
   return ['relay-register', '--child', child.id, '--name', child.name, '--kind', child.kind, '--parent', parent.id, ...(child.cwd ? ['--cwd', child.cwd] : []), ...(withBrief ? ['--brief-stdin', 'yes'] : [])];
 }
 
-function parseRegistration(target: string, stdout: string): RemoteRegistration {
+/**
+ * What `bellwether relay-register` printed on the child's machine. A pi child
+ * loads the extension that machine names, and a Bellwether there that predates
+ * it names none, so the child would start with no tools: that is refused.
+ */
+export function parseRegistration(target: string, stdout: string, kind?: string): RemoteRegistration {
   const line = stdout.trim().split('\n').filter(Boolean).pop() ?? '';
   let parsed: Record<string, unknown>;
   try {
@@ -45,6 +52,8 @@ function parseRegistration(target: string, stdout: string): RemoteRegistration {
   const registration: RemoteRegistration = {};
   if (text('mcpConfig')) registration.mcpConfig = text('mcpConfig');
   if (text('brief')) registration.brief = text('brief');
+  if (text('piExtension')) registration.piExtension = text('piExtension');
+  if (kind === 'pi' && !registration.piExtension) throw new Error(`bellwether relay-register on ${target} named no pi extension. Upgrade @elecnix/bellwether on ${target}.`);
   return registration;
 }
 
@@ -64,7 +73,7 @@ export function remoteOps(resolve: MachineResolver = resolveMachine, options: Ss
         const upgrade = /unknown argument --brief-stdin/.test(result.stderr) ? ` Upgrade @elecnix/bellwether on ${profile.target}.` : '';
         throw new Error(`${describeFailure(profile.target, result)}${upgrade}`);
       }
-      const registration = parseRegistration(profile.target, result.stdout);
+      const registration = parseRegistration(profile.target, result.stdout, child.kind);
       if (withBrief && !registration.brief) throw new Error(`bellwether relay-register on ${profile.target} wrote no brief. Upgrade @elecnix/bellwether on that machine.`);
       return registration;
     },

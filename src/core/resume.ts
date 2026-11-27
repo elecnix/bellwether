@@ -77,6 +77,8 @@ export interface ResumeOptions {
   registerRemote?: RegisterRemote;
   /** Remove what the registration wrote on the child's machine, for a resume that failed after it. */
   cleanupRemote?: (child: ChildRecord) => Promise<void>;
+  /** Where this package's pi extension is. Tests point it at a missing file. */
+  piExtension?: () => string;
 }
 
 export interface ResumeResult {
@@ -184,11 +186,11 @@ export async function resumeChild(client: HerdrClient, parent: ParentRecord, tar
   try {
     // The same child id as before, so the server resolves to the same record.
     // A child on another machine gets its brief there, or the resume fails.
-    const files = await childStartFiles({ ...child, kind }, options.prompt || undefined, options.registerRemote);
-    const { briefFile, mcpConfigFile } = files;
+    const files = await childStartFiles({ ...child, kind }, options.prompt || undefined, options.registerRemote, options.piExtension);
+    const { briefFile, mcpConfigFile, piExtension } = files;
     registered = files.registered;
     reportWarning = files.warning;
-    const tab = await client.tabCreate({ workspaceId, cwd: child.cwd, label: child.name, env: childEnv(parent, child), focus: options.focus ?? false }, signal);
+    const tab = await client.tabCreate({ workspaceId, cwd: child.cwd, label: child.name, env: childEnv(parent, child, piExtension), focus: options.focus ?? false }, signal);
     tabId = tab.tabId ?? tab.paneId;
     if (!tab.paneId) throw new Error('herdr created no pane for the resumed tab');
     child.tabId = tab.tabId;
@@ -204,7 +206,7 @@ export async function resumeChild(client: HerdrClient, parent: ParentRecord, tar
     upsertChild(parent.id, child);
 
     // 3. Start the harness on the session.
-    await startWithRetry(client, { name: child.name, kind, paneId: tab.paneId, args: childArgs(kind, { kind, name: child.name, model: options.model, args: [...args, ...(options.args ?? [])] }, briefFile, mcpConfigFile) }, signal);
+    await startWithRetry(client, { name: child.name, kind, paneId: tab.paneId, args: childArgs(kind, { kind, name: child.name, model: options.model, args: [...args, ...(options.args ?? [])] }, { briefFile, mcpConfigFile, piExtension }) }, signal);
   } catch (error) {
     startup?.close();
     if (tabId) await client.tabClose(tabId).catch(() => {});

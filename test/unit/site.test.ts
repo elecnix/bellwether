@@ -1,9 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, readdirSync } from 'node:fs';
+import { cpSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildSite, PAGES } from '../../scripts/build-site.ts';
+import { bylineVersion } from '../../scripts/site-version.ts';
 
 const out = mkdtempSync(join(tmpdir(), 'bellwether-site-'));
 const built = buildSite({ outDir: out });
@@ -105,4 +106,18 @@ test('the rail stands 88px clear of the column, and the column keeps its 980px',
   assert.match(wrap, /grid-template-columns: 236px minmax\(0, 980px\);/);
   assert.match(wrap, /gap: 88px;/);
   assert.match(wrap, /max-width: 1336px;/);
+});
+
+test('each page byline names the version in package.json, which the release reads back from the deployed site', () => {
+  const { version } = JSON.parse(readFileSync(join(import.meta.dirname, '../../package.json'), 'utf8')) as { version: string };
+  for (const { output } of PAGES) assert.equal(bylineVersion(page(output)), version, output);
+});
+
+test('a build whose pages lose the byline fails instead of publishing a site the release cannot check', () => {
+  const repo = join(import.meta.dirname, '../..');
+  const root = mkdtempSync(join(tmpdir(), 'bellwether-site-root-'));
+  for (const part of ['package.json', 'README.md', 'docs', 'site']) cpSync(join(repo, part), join(root, part), { recursive: true });
+  const template = join(root, 'site/template.html');
+  writeFileSync(template, readFileSync(template, 'utf8').replace('{{content}}', ''));
+  assert.throws(() => buildSite({ outDir: join(root, '_site'), root }), /index\.html: the byline names no version, not \d+\.\d+\.\d+ from package\.json/);
 });

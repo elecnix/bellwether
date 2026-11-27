@@ -51,6 +51,8 @@ npm run doctor         # bellwether doctor against the live herdr
 
 The documentation site on GitHub Pages comes from `README.md` and the topic files under `docs/`. `npm run site` writes it to `_site/`, and the `pages` workflow deploys it from `main`. A new topic file reaches the site once it has an entry in `PAGES` in `scripts/build-site.ts`.
 
+A release ends only when the deployed site's byline shows the released version, and `npm run release` checks it. Locally, `npm run site` fails on a page whose byline shows a version other than the one in `package.json`.
+
 Prose in Markdown files runs through Vale. The rules are the `ai-tells`, `ai-tells-experimental` and `noslop` packs. Read `/Users/nicolas/.agents/skills/vale-prose-rules/SKILL.md` before writing docs, a pull request body or a ticket.
 
 ## Rules that are not style

@@ -5,12 +5,18 @@ Maintainers use this page. npm's staged publishing carries every version, so the
 ```sh
 npm run release -- 0.1.5    # gates, version bump, release PR, merge, stage, review
 npx -y npm@12 stage approve <stage id> --otp <code>    # the person, with their code
-npm run release -- 0.1.5    # the Homebrew formula: bump, tap CI, merge
+npm run release -- 0.1.5    # the Homebrew formula and the documentation site
 ```
 
 Each run reads where the release stands, then takes it one stage further:
 
 1. Once npm serves the version, the script bumps `Formula/bellwether.rb` in `elecnix/homebrew-tap`. It downloads the tarball and writes the new `url` and `sha256` on a `bellwether-<version>` branch through the GitHub API. Then it opens the pull request and merges it once the tap's CI passes. The script leaves a formula alone when the formula already points at the version, or when the version is older than npm's `latest`.
+
+   Next, it reads [the documentation site](https://elecnix.github.io/bellwether/) until the byline on its first page shows the version. The `pages` workflow deploys the site from `main`, which carries the version since the release pull request merged. It reads the page every 30 seconds for up to 15 minutes, because a deploy takes about two minutes and GitHub Pages lets a CDN serve a cached copy for ten more.
+
+   When the site still shows another version after 15 minutes, the run fails. Its error gives the URL, the version on the page and the version released. Re-run the `pages` workflow, or run `npm run site` and inspect `_site/index.html`, then run the release again.
+
+   On a machine without network access to the site, pass `--skip-site`. The script then prints that it skipped the site, and you open the page and check its byline yourself.
 
 2. With the version staged on npm, the script waits up to 30 minutes while the registry's review shows `validating`, then prints the `stage approve` command. A rejected stage stops it.
 

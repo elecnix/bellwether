@@ -32,12 +32,11 @@ import type { HarnessEntry, HerdrRequester } from './types.ts';
  * The variable that turns off omp's first-run setup wizard. The wizard asks
  * the person to log in and pick a theme before the brief runs, so a child
  * started on a machine where omp has not finished its setup would sit on it.
- * The variable skips the wizard without answering any question in it.
+ * The variable skips the wizard without answering any question in it. On
+ * another machine, relay-register there runs this entry and hands the
+ * variable back for the tab, and a registration that cannot is refused.
  */
 export const OMP_SKIP_SETUP = 'OMP_SKIP_SETUP';
-
-/** Why an omp child on another machine is refused, with the issue that tracks the gap. */
-const OMP_REMOTE_REFUSAL = 'an omp child runs on this machine only for now: a child on another machine gets no extra environment, so OMP_SKIP_SETUP never reaches it and omp would stop at its first-run setup wizard (elecnix/bellwether#96)';
 
 /** The provider and model an omp session file says it starts on: its first `model_change`, as `provider/id`. */
 export function ompSessionModel(file: string): ModelPair | undefined {
@@ -101,8 +100,8 @@ export const omp: HarnessEntry = {
       ...extra,
     ];
   },
+  // herdr on the child's machine is asked, wherever that is.
   async preflight({ name, host, herdr }) {
-    if (host !== LOCAL_HOST) throw new Error(`${name} was not started: ${OMP_REMOTE_REFUSAL}. Omit machine.`);
     await requireOmpIntegration(herdr, name, host);
   },
   session: { from: 'herdr', kind: 'path' },
@@ -114,7 +113,9 @@ export const omp: HarnessEntry = {
       if (!fs.existsSync(entry)) throw new Error(`Bellwether cannot start an omp child: its pi extension ${entry} does not exist, so the child would have no Bellwether tools. Reinstall @elecnix/bellwether on this machine.`);
       return { piExtension: entry, env: { [OMP_SKIP_SETUP]: '1' } };
     },
-    remoteRefusal: OMP_REMOTE_REFUSAL,
+    // On another machine, that machine's package names its extension, and its run of this entry sets the variable.
+    remote: 'piExtension',
+    remoteEnv: [OMP_SKIP_SETUP],
   },
   conversation: {
     // herdr's omp integration reports the session file's path; an id comes only from a session omp does not save.

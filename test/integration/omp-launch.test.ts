@@ -153,11 +153,11 @@ for (const state of ['not_installed', 'absent', 'unknown-method'] as const) {
   });
 }
 
-test('an omp spawn on another machine is refused before anything is written, with the reason', async (t) => {
+test('an omp spawn on another machine that this session cannot register there is refused before anything is written', async (t) => {
   const space = await room(t);
   await assert.rejects(
     spawnChild(space.client, readParent(space.parentId)!, { kind: 'omp', name: 'far', prompt: 'report back', host: 'example-host' }),
-    /far was not started: an omp child runs on this machine only for now: a child on another machine gets no extra environment, so OMP_SKIP_SETUP never reaches it and omp would stop at its first-run setup wizard \(elecnix\/bellwether#96\)\. Omit machine\./,
+    /far was not started on machine example-host: this session cannot register children there, so Bellwether cannot name the omp extension it would load\./,
   );
   assertNothingStarted(space);
 });

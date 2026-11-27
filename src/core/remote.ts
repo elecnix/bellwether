@@ -8,6 +8,7 @@
 // connects to it. Reading the child's last message goes over that same
 // connection, which the daemon's relay links hold.
 import { harnessFor } from './harnesses/index.ts';
+import type { DroppedVariable } from './relay-env.ts';
 import { resolveMachine, type MachineResolver } from './machine.ts';
 import { describeFailure, runRemoteBellwether, type SshOptions } from './ssh.ts';
 import type { ChildRecord, ParentRecord } from './types.ts';
@@ -25,6 +26,14 @@ export interface RemoteRegistration {
   brief?: string;
   /** The pi extension of the package there, for a pi child. */
   piExtension?: string;
+  /**
+   * The variables the harness entry gave the child's tab there, less those
+   * that belong to one machine. An install from before it handed them back
+   * leaves it out, which differs from an empty set.
+   */
+  env?: Record<string, string>;
+  /** The variables the registration left out, by name and reason, never by value. */
+  envDropped?: DroppedVariable[];
   /** The Bellwether version there. An install from before it said leaves it out. */
   version?: string;
   /** The build there, its commit. An install from before builds were named leaves it out. */
@@ -68,11 +77,24 @@ export function parseRegistration(target: string, stdout: string, kind?: string)
   if (text('piExtension')) registration.piExtension = text('piExtension');
   if (text('version')) registration.version = text('version');
   if (text('build')) registration.build = text('build');
+  const env = parsed['env'];
+  if (typeof env === 'object' && env !== null && !Array.isArray(env)) registration.env = Object.fromEntries(Object.entries(env).filter((pair): pair is [string, string] => typeof pair[1] === 'string'));
+  const dropped = parsed['envDropped'];
+  if (Array.isArray(dropped)) registration.envDropped = dropped.filter((entry): entry is DroppedVariable => typeof entry?.name === 'string' && typeof entry?.why === 'string').map(({ name, why }) => ({ name, why }));
   // Only the per-child server carries the child id, so a child without what its harness needs could not report.
   const needs = harnessFor(kind)?.reports;
   const remote = needs && needs.via !== 'none' ? needs.remote : undefined;
   if (remote === 'mcpConfig' && !registration.mcpConfig) throw new Error(`bellwether relay-register on ${target}, ${installedThere(registration)}, wrote no MCP config for the child. Upgrade @elecnix/bellwether on ${target}.`);
   if (remote === 'piExtension' && !registration.piExtension) throw new Error(`bellwether relay-register on ${target}, ${installedThere(registration)}, named no ${harnessFor(kind)?.label} extension. Upgrade @elecnix/bellwether on ${target}.`);
+  // A child whose tab lacks a variable its harness needs would half-start, as omp stops at its setup wizard without OMP_SKIP_SETUP.
+  const needed = needs && needs.via !== 'none' ? (needs.remoteEnv ?? []) : [];
+  const missing = needed.filter((name) => registration.env?.[name] === undefined);
+  if (missing.length) {
+    const label = harnessFor(kind)?.label;
+    const article = /^[aeiou]/i.test(label ?? '') ? 'an' : 'a';
+    const why = registration.env === undefined ? 'handed back no environment' : `left out ${missing.join(', ')}${registration.envDropped?.length ? ` (${registration.envDropped.filter((entry) => missing.includes(entry.name)).map((entry) => entry.why).join('; ')})` : ''}`;
+    throw new Error(`bellwether relay-register on ${target}, ${installedThere(registration)}, ${why}, and ${article} ${label} child cannot start without ${missing.join(', ')}. ${registration.env === undefined ? `Upgrade @elecnix/bellwether on ${target}.` : `Fix the ${label} entry, which names a variable that machine cannot use.`}`);
+  }
   return registration;
 }
 

@@ -1,0 +1,204 @@
+/* report-page.css: the style for a plan, report or design page Nicolas reads
+   in Chrome, such as ~/design/ci-rebuild-plan.html. Paste it into the page's
+   <style> block. Fonts follow SKILL.md. Colors are oklch tokens with a light
+   set, a dark set for prefers-color-scheme, and a forced [data-theme] set.
+
+   Components:
+     main          centered column, 980px, 16px side gutter
+     .wrap .rail   the optional contents rail beside that column: sticky, open
+                   by default, with a chevron and a theme icon button
+     .byline       date, who asked, which agent drafted it, status,
+                   reading time
+     .lead         the main point, first thing on the page, accent left border
+     .stat         number tiles; .stat h3 is a small uppercase kicker above the
+                   number; .stat.now (red number) and .stat.target (green);
+                   .bar inside a stat draws a four-part share bar
+     .table-wrap   wraps every table so only wide tables scroll sideways
+     th.c          a centred column header, over centred cells (td.c)
+     .flow .box    a left-to-right flow of boxes; .arrow between them;
+                   .box.req marks a required or primary step
+     .decision     a question for Nicolas: panel background, orange border only;
+                   .rec inside it is the recommendation, in green
+     .phase        one implementation step; .exit is its green exit-criterion pill
+     .card         a plain panel: background, 1px frame, 10px radius
+     .marker       a card that needs emphasis: same panel, plus a --hl (2px) left
+                   bar in --accent. Tone modifiers are .marker--good,
+                   .marker--warn and .marker--bad. .marker .id is its kicker
+     .del          a "delete" verdict in a table cell, in red
+     .note         sources and caveats at the end, dim, in a framed panel
+*/
+:root {
+  --text-scale: 1.2;
+  --bg: oklch(98.5% 0.004 260);
+  --panel: oklch(100% 0 0);
+  --ink: oklch(22% 0.02 260);
+  --muted: oklch(48% 0.02 260);
+  --line: oklch(90% 0.01 260);
+  --accent: oklch(55% 0.17 265);
+  --accent-soft: oklch(94% 0.04 265);
+  --good: oklch(52% 0.13 150);
+  --good-soft: oklch(94% 0.05 150);
+  --warn: oklch(58% 0.14 60);
+  --warn-soft: oklch(95% 0.05 75);
+  --bad: oklch(55% 0.18 25);
+  --bad-soft: oklch(95% 0.04 25);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: oklch(18% 0.015 260);
+    --panel: oklch(22% 0.018 260);
+    --ink: oklch(93% 0.01 260);
+    --muted: oklch(70% 0.02 260);
+    --line: oklch(32% 0.02 260);
+    --accent: oklch(72% 0.14 265);
+    --accent-soft: oklch(30% 0.06 265);
+    --good: oklch(74% 0.13 150);
+    --good-soft: oklch(28% 0.05 150);
+    --warn: oklch(78% 0.13 75);
+    --warn-soft: oklch(30% 0.05 75);
+    --bad: oklch(72% 0.15 25);
+    --bad-soft: oklch(30% 0.05 25);
+  }
+}
+:root[data-theme="dark"] {
+  --bg: oklch(18% 0.015 260);
+  --panel: oklch(22% 0.018 260);
+  --ink: oklch(93% 0.01 260);
+  --muted: oklch(70% 0.02 260);
+  --line: oklch(32% 0.02 260);
+  --accent: oklch(72% 0.14 265);
+  --accent-soft: oklch(30% 0.06 265);
+  --good: oklch(74% 0.13 150);
+  --good-soft: oklch(28% 0.05 150);
+  --warn: oklch(78% 0.13 75);
+  --warn-soft: oklch(30% 0.05 75);
+  --bad: oklch(72% 0.15 25);
+  --bad-soft: oklch(30% 0.05 25);
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); --body-text: color-mix(in srgb, var(--muted) 62%, var(--ink)); color: var(--body-text); font-family: "Gill Sans Nova", "Gill Sans MT", "Gill Sans", sans-serif; font-weight: 200; letter-spacing: .02em; font-size: calc(15px * var(--text-scale)); line-height: 1.6; }
+b, strong, h1, h2, h3, h4, th { font-weight: 300; color: var(--ink); }
+main { max-width: 980px; margin: 0 auto; padding: 40px 16px 80px; }
+h1 { font-size: 36px; line-height: 1.2; margin: 0 0 6px; }
+h2 { font-size: 26px; margin: 48px 0 12px; }
+h3 { font-size: 21px; margin: 24px 0 8px; }
+p, li { max-width: 72ch; }
+.byline { color: var(--muted); margin-bottom: 28px; }
+a { color: var(--accent); text-decoration-color: color-mix(in srgb, var(--accent) 45%, transparent); text-underline-offset: 2px; }
+a:hover { text-decoration-color: var(--accent); }
+a:visited { color: var(--accent); }
+code { font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: normal; font-weight: 200; font-size: 0.82em; background: none; border: 1px solid var(--line); padding: 1px 5px; border-radius: 4px; color: color-mix(in srgb, var(--ink) 86%, var(--muted)); overflow-wrap: anywhere; }
+.lead { font-size: 21px; line-height: 1.55; background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--accent); border-radius: 10px; padding: 18px 20px; }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin: 18px 0; }
+.stat { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
+.stat h3 { margin: 0 0 6px; font-size: 15px; font-weight: 300; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+.stat > b { display: block; font-size: 38px; font-weight: 300; line-height: 1.15; font-variant-numeric: tabular-nums; }
+.stat span { color: var(--muted); }
+.stat.now > b { color: var(--bad); }
+.stat.target > b { color: var(--good); }
+.bar { display: flex; height: 10px; border-radius: 5px; overflow: hidden; margin: 10px 0 8px; background: var(--line); }
+.bar i { display: block; height: 100%; }
+.bar .g { background: var(--good); }
+.bar .y { background: var(--warn); }
+.bar .r { background: var(--bad); }
+.bar .u { background: var(--muted); opacity: .45; }
+.table-wrap { overflow-x: auto; margin: 12px 0; }
+table { border-collapse: collapse; width: 100%; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; }
+th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--line); vertical-align: top; font-variant-numeric: tabular-nums; }
+th { color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
+/* An identifier is one token, so a code chip never breaks mid-name. A table
+   that grows past the column scrolls sideways inside .table-wrap. */
+td code, th code { white-space: nowrap; }
+th.c, td.c { text-align: center; }
+tr:last-child td { border-bottom: 0; }
+.flow { display: flex; flex-wrap: nowrap; align-items: stretch; gap: 8px; margin: 16px 0; }
+.box { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; flex: 1 1 0; min-width: 0; overflow-wrap: break-word; }
+.box h4 { margin: 0 0 4px; font-size: 1em; }
+.box p { margin: 0; color: var(--muted); }
+.box.req { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.arrow { align-self: center; flex: none; color: var(--muted); font-size: 18px; }
+/* The row never wraps. A box that falls to its own line reads as a mistake,
+   so boxes shrink to share the row instead. Below 760px the flow stacks
+   deliberately, with each arrow turned to point down. */
+@media (max-width: 760px) {
+  .flow { flex-direction: column; }
+  .arrow { align-self: center; transform: rotate(90deg); }
+}
+.decision { background: var(--panel); border: 1px solid var(--warn); border-radius: 10px; padding: 14px 18px; margin: 14px 0; }
+.decision h3 { margin-top: 0; }
+.rec { font-weight: 300; color: var(--good); }
+.phase { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 18px; margin: 12px 0; }
+.phase h3 { margin-top: 0; }
+.exit { display: inline-block; background: var(--good-soft); color: var(--good); border-radius: 6px; padding: 2px 8px; font-weight: 300; }
+.del { color: var(--bad); }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 18px; }
+.marker { --hl: 2px; background: var(--panel); border: 1px solid var(--line); border-left: var(--hl) solid var(--accent); border-radius: 10px; padding: 14px 18px; margin: 10px 0; }
+.marker--good { border-left-color: var(--good); }
+.marker--warn { border-left-color: var(--warn); }
+.marker--bad { border-left-color: var(--bad); }
+.marker .id { margin: 0 0 4px; color: var(--muted); font-size: 15px; text-transform: uppercase; letter-spacing: .08em; }
+.note { color: var(--muted); background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 18px; margin: 24px 0 0; }
+.note + .note { margin-top: 12px; }
+.note b { color: var(--ink); }
+
+/* ---- contents rail (optional, default open) -------------------------------
+   Wrap <main> and <aside class="rail"> in one <div class="wrap">. The rail is
+   sticky beside the reading column and never scrolls on its own: the page
+   keeps its single vertical scroll. The entry he is reading carries .on, which
+   draws a --hl bar in --accent. Below 1080px the rail sits above the page and
+   starts collapsed. The two buttons are .iconbtn--contents (chevron up while
+   open, down while closed) and .iconbtn--theme (half disc auto, crescent dark,
+   sun light); the page script toggles data-open on .rail and data-theme on
+   <html>.
+   -------------------------------------------------------------------------- */
+.wrap { display: grid; grid-template-columns: 236px minmax(0, 980px); gap: 44px; width: 100%; max-width: 1292px; margin: 0 auto; padding: 0 16px; flex: 1 0 auto; }
+/* main keeps its own 16px gutter, so the column is the same 980px with or
+   without a rail, and the text column tint below still has a margin inside. */
+.wrap > main { width: 100%; min-width: 0; max-width: none; margin: 0; }
+.rail { position: sticky; top: 0; align-self: start; padding: 40px 0 24px; }
+.rail .railhead { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
+.rail .railhead .id { margin: 0; color: var(--muted); font-size: 15px; text-transform: uppercase; letter-spacing: .08em; }
+.rail .railbtns { display: flex; align-items: center; gap: 6px; }
+.rail[data-open="false"] nav { display: none; }
+.rail nav ol { list-style: none; margin: 0; padding: 0; }
+.rail nav a { display: block; padding: 4px 0 4px 10px; border-left: var(--hl, 2px) solid transparent; color: var(--muted); text-decoration: none; line-height: 1.35; font-size: calc(14px * var(--text-scale)); }
+.rail nav a:hover { color: var(--ink); }
+.rail nav a.on { color: var(--ink); border-left-color: var(--accent); }
+.rail nav a.sub { padding-left: 20px; }
+.rail nav a.on.sub { border-left-color: var(--line); }
+.iconbtn { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 0; color: var(--muted); background: none; border: 1px solid var(--line); border-radius: 6px; cursor: pointer; transition: color .15s, border-color .15s; }
+.iconbtn:hover, .iconbtn:focus-visible { color: var(--ink); border-color: var(--muted); }
+.iconbtn svg { display: none; width: 16px; height: 16px; stroke: currentColor; stroke-width: 1.25; fill: none; stroke-linecap: round; stroke-linejoin: round; }
+.iconbtn .ic-fill { fill: currentColor; stroke: none; }
+.iconbtn--theme .ic-auto { display: block; }
+:root[data-theme="dark"] .iconbtn--theme .ic-auto { display: none; }
+:root[data-theme="dark"] .iconbtn--theme .ic-dark { display: block; }
+:root[data-theme="light"] .iconbtn--theme .ic-auto { display: none; }
+:root[data-theme="light"] .iconbtn--theme .ic-light { display: block; }
+/* The chevron keys off data-open="false", the same value that hides the nav,
+   so a rail with no attribute is open and says so. */
+.iconbtn--contents .ic-open { display: block; }
+.rail[data-open="false"] .iconbtn--contents .ic-open { display: none; }
+.rail[data-open="false"] .iconbtn--contents .ic-closed { display: block; }
+@media (max-width: 1080px) {
+  .wrap { grid-template-columns: minmax(0, 1fr); gap: 0; padding: 0; }
+  .wrap > main { padding-top: 8px; }
+  .rail { position: static; padding: 24px 16px 0; }
+}
+@media (max-height: 640px) { .rail { position: static; } }
+
+/* ---- Text column tint. Optional, on by default.
+   The 980px column is one translucent layer, darker than the page in both
+   themes, so a portrait band behind it still shows through. Its sides are a
+   sharp edge and it fills to the bottom of the page. Delete this whole block,
+   down to the end marker, to go back to the plain page background. ---- */
+:root { --col-bg: oklch(92% 0.004 260); --col-alpha: 50%; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) { --col-bg: oklch(12% 0.017 260); }
+}
+:root[data-theme="dark"] { --col-bg: oklch(12% 0.017 260); }
+body { display: flex; flex-direction: column; min-height: 100vh; }
+main { position: relative; isolation: isolate; flex: 1 0 auto; width: 100%; }
+main::before { content: ""; position: absolute; inset: 0; z-index: -1; pointer-events: none;
+  background: color-mix(in oklch, var(--col-bg) var(--col-alpha), transparent); }
+/* ---- end text column tint ---- */

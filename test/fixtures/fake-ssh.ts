@@ -32,7 +32,10 @@ export interface FakeSsh {
   targets(): string[];
   /** Every argv the remote bellwether received, in order, with the target that ran it. */
   remoteCalls(): { target: string; argv: string[] }[];
-  /** The outcomes for the next calls. Calls past the end are ok. */
+  /**
+   * The outcomes for the next calls, replacing any earlier plan, including the
+   * steps it had left. Calls past the end are ok.
+   */
   plan(steps: SshStep[]): void;
   /** Cut every connection still open, as a dead link would: ssh exits 255. Resolves with how many it cut. */
   drop(): Promise<number>;
@@ -56,12 +59,32 @@ const { spawn } = require('node:child_process');
 const dir = __dirname;
 const argv = process.argv.slice(2);
 fs.appendFileSync(path.join(dir, 'ssh-calls.jsonl'), JSON.stringify(argv) + '\\n');
-const planFile = path.join(dir, 'plan.json');
+// The plan file is never written here, only replaced whole by the test, so a
+// call that read an older plan cannot bring it back. A call takes the first
+// step of its plan that no other call has claimed, and claims it by creating
+// a file that only one process can create.
 let step = 'ok';
+let plan = { generation: 0, steps: [] };
 try {
-  const plan = JSON.parse(fs.readFileSync(planFile, 'utf8'));
-  if (plan.length) { step = plan.shift(); fs.writeFileSync(planFile, JSON.stringify(plan)); }
-} catch {}
+  plan = JSON.parse(fs.readFileSync(path.join(dir, 'plan.json'), 'utf8'));
+} catch (error) {
+  if (error.code !== 'ENOENT') throw error;
+}
+// A test that must replace the plan while a call is between reading it and taking its step holds the call here.
+if (process.env.FAKE_SSH_HOLD) {
+  fs.writeFileSync(path.join(process.env.FAKE_SSH_HOLD, 'held'), '');
+  while (!fs.existsSync(path.join(process.env.FAKE_SSH_HOLD, 'release'))) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+}
+for (let at = 0; at < plan.steps.length; at++) {
+  try {
+    fs.closeSync(fs.openSync(path.join(dir, 'claims', plan.generation + '-' + at), 'wx'));
+  } catch (error) {
+    if (error.code === 'EEXIST') continue;
+    throw error;
+  }
+  step = plan.steps[at];
+  break;
+}
 const options = new Set(['-o', '-p', '-i', '-l', '-F']);
 let index = 0;
 while (index < argv.length && argv[index].startsWith('-')) index += options.has(argv[index]) ? 2 : 1;
@@ -158,6 +181,15 @@ export function installFakeSsh(t: { after: (fn: () => void | Promise<void>) => v
   fs.writeFileSync(path.join(dir, 'ssh'), SSH_SCRIPT, { mode: 0o755 });
   fs.writeFileSync(path.join(dir, 'bellwether'), bellwetherShim(), { mode: 0o755 });
   fs.writeFileSync(path.join(dir, 'machines.json'), JSON.stringify(machines));
+  fs.mkdirSync(path.join(dir, 'claims'), { recursive: true });
+  let generation = 0;
+  const plan = (steps: SshStep[]): void => {
+    // A new generation, written to a side file and renamed into place, so a reader sees one whole plan or the other.
+    generation += 1;
+    const file = path.join(dir, 'plan.json');
+    fs.writeFileSync(`${file}.${generation}`, JSON.stringify({ generation, steps }));
+    fs.renameSync(`${file}.${generation}`, file);
+  };
   const previous = process.env['PATH'];
   process.env['PATH'] = `${dir}${path.delimiter}${previous ?? ''}`;
   const drop = async (): Promise<number> => {
@@ -184,7 +216,7 @@ export function installFakeSsh(t: { after: (fn: () => void | Promise<void>) => v
     calls: () => readLines<string[]>(path.join(dir, 'ssh-calls.jsonl')),
     targets: () => readLines<string[]>(path.join(dir, 'ssh-calls.jsonl')).map(targetOf),
     remoteCalls: () => readLines<{ target: string; argv: string[] }>(path.join(dir, 'bellwether-calls.jsonl')),
-    plan: (steps) => fs.writeFileSync(path.join(dir, 'plan.json'), JSON.stringify(steps)),
+    plan,
     drop,
     open: () => livePids(dir).filter(alive).length,
     freeze: async () => {

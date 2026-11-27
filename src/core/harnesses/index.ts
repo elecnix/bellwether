@@ -7,6 +7,7 @@
 import { claude } from './claude.ts';
 import { cline } from './cline.ts';
 import { codex } from './codex.ts';
+import { kilo } from './kilo.ts';
 import { omp } from './omp.ts';
 import { opencode } from './opencode.ts';
 import { pi } from './pi.ts';
@@ -16,7 +17,7 @@ import type { HarnessEntry } from './types.ts';
 export type { HarnessEntry, HarnessHooks, HerdrRequester, HarnessSession, ChildFiles, LaunchInput, VersionProbe } from './types.ts';
 
 /** The entries, in the order agent_spawn lists its kinds. */
-const HARNESSES: HarnessEntry[] = [pi, claude, codex, opencode, cline, omp];
+const HARNESSES: HarnessEntry[] = [pi, claude, codex, opencode, kilo, cline, omp];
 
 /** Every harness Bellwether knows, by its herdr kind. */
 export function harnesses(): readonly HarnessEntry[] {

@@ -161,7 +161,7 @@ test('a spawn that resumes refuses a harness with no resume flag', async (t) => 
   t.after(() => local.fake.stop());
   const id = parent('resume-opencode');
   upsertChild(id, exitedChild('opencode-worker', { kind: 'opencode', harness: 'other' }));
-  await assert.rejects(runBellwetherTool(context(id, local), 'agent_spawn', { resume: 'opencode-worker' }), /cannot resume a opencode agent: only pi and claude and codex and omp have a resume flag it knows\. Call agent_spawn without resume/);
+  await assert.rejects(runBellwetherTool(context(id, local), 'agent_spawn', { resume: 'opencode-worker' }), /cannot resume a opencode agent: only pi and claude and codex and kilo and omp have a resume flag it knows\. Call agent_spawn without resume/);
 });
 
 test('resume takes a session no child ran, as a new child', async (t) => {

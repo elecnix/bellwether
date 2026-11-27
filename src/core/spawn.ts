@@ -7,6 +7,7 @@ import { LOCAL_HOST } from './machine.ts';
 import { newChildId } from './outbox.ts';
 import { PI_EXTENSION_ENV } from './pi-extension.ts';
 import { writeBrief, writeBriefIn } from './brief.ts';
+import { promptPath } from './paths.ts';
 import { DEFAULT_MAX_DEPTH, tooDeep } from './depth.ts';
 import { droppedNote, type DroppedVariable } from './relay-env.ts';
 import { resolveInactiveMs } from './inactivity.ts';
@@ -172,14 +173,19 @@ export interface ChildStartFiles extends ChildFiles {
  * registration, computed there. A child
  * whose brief or tools cannot be set up is not started, because it would run
  * with no task or no way to report: this throws.
+ *
+ * Every brief also lands in this machine's prompts directory under its number
+ * (`promptPath(child.id, briefNumber)`), wherever the harness reads it, so a
+ * person and a later resume find each one the child was given.
  */
-export async function childStartFiles(parent: ParentRecord, child: ChildRecord, prompt: string | undefined, register?: RegisterRemote, piExtension?: () => string, model?: string): Promise<ChildStartFiles> {
+export async function childStartFiles(parent: ParentRecord, child: ChildRecord, prompt: string | undefined, register?: RegisterRemote, piExtension?: () => string, model?: string, briefNumber = 1): Promise<ChildStartFiles> {
   const entry = requireHarness(child.kind);
   const reports = entry.reports;
   if (reports.via === 'none') throw new Error(spawnRefusal(entry, child.name));
   if ((child.host ?? LOCAL_HOST) === LOCAL_HOST) {
     const tools = reports.local(child, { env: childEnv(parent, child), model, piExtension });
-    const briefFile = prompt === undefined ? undefined : entry.brief.where === 'workdir' && child.cwd ? writeBriefIn(child.cwd, child.id, prompt) : writeBrief(child.id, prompt);
+    const history = prompt === undefined ? undefined : writeBrief(child.id, prompt, briefNumber);
+    const briefFile = prompt === undefined ? undefined : entry.brief.where === 'workdir' && child.cwd ? writeBriefIn(child.cwd, child.id, prompt, briefNumber) : history;
     return { ...tools, ...(briefFile ? { briefFile } : {}), registered: false };
   }
   if (!reports.remote) throw new Error(`${child.name} was not started on machine ${child.host}: ${reports.remoteRefusal ?? `Bellwether cannot give a ${entry.kind} child on another machine its tools`}. Omit machine.`);
@@ -197,6 +203,7 @@ export async function childStartFiles(parent: ParentRecord, child: ChildRecord, 
     if (prompt !== undefined) throw new Error(`${child.name} was not started on machine ${child.host}, because its brief could not be copied there: ${(error as Error).message}`);
     throw new Error(withoutIdentity(child, `Bellwether could not register it there: ${(error as Error).message}`));
   }
+  if (prompt !== undefined) writeBrief(child.id, prompt, briefNumber);
   return {
     ...(registration.brief ? { briefFile: registration.brief } : {}),
     ...(reports.remote === 'mcpConfig'
@@ -275,6 +282,8 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
     maxDepth,
     stuckMs: options.stuckMinutes === undefined ? undefined : Math.max(1_000, Math.round(options.stuckMinutes * 60_000)),
     inactiveMs: resolveInactiveMs(options.inactiveMinutes),
+    // The record names the brief's file, so a resume can tell whether the child read it.
+    ...(options.prompt ? { briefs: [{ n: 1, file: promptPath(id), at: now }] } : {}),
     // herdr reports no session for a harness with a store of its own, so the spawn names it.
     // A harness that takes a session id on its launch line gets one minted here.
     ...(store ? { ...(store.mint ? { session: { kind: 'id' as const, value: store.mint() } } : {}), store: store.storePath(harnessHooks, { id }) } : {}),
@@ -309,6 +318,7 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
     child.workspaceId = tab.workspaceId;
     if (tab.workspaceLabel) child.workspaceLabel = tab.workspaceLabel;
     if (tab.ownsWorkspace) child.ownsWorkspace = true;
+    for (const brief of child.briefs ?? []) brief.paneId = tab.paneId;
     // A harness that opens on dialogs the spawn answers, such as Claude Code,
     // has its events held until then, and the status watch opens before the start.
     if (entry.startup) {

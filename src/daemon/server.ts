@@ -16,14 +16,16 @@ import { defaultServiceFactory, parentIdOf, type ParentService, type ServiceFact
 import { acquire, isAlive, readLock, release } from './lock.ts';
 import { RelayOutbox } from './relay.ts';
 import { RelayLinks } from './relay-links.ts';
-import { hostOf } from '../core/machine.ts';
+import { LOCAL_HOST, hostOf } from '../core/machine.ts';
 import { acceptLocalReport, isReportStatus, localParentOf, routeReport, type ReportInput } from '../core/report.ts';
-import { readRelayRecord } from '../core/relay-records.ts';
+import { readRelayRecord, updateRelayRecord } from '../core/relay-records.ts';
 import { claimPane } from '../core/pane-claims.ts';
 import { lastAssistantMessage } from '../core/transcript.ts';
-import { resolveTranscript } from '../core/harnesses/index.ts';
+import { harnessFor, resolveTranscript } from '../core/harnesses/index.ts';
 import type { CallerIdentity, OutboxEntry } from '../core/types.ts';
-import type { RelayHostState, RelayReport, ServedTool } from './protocol.ts';
+import type { InboxMessage, MessageAckRequest, RelayHostState, RelayReport, ServedTool } from './protocol.ts';
+import { unreadSessionMessages, type Inbox, type InboxAnswer } from '../core/send.ts';
+import { updateChild } from '../core/registry.ts';
 import { UnknownTool, servedTools } from '../integrations/tools.ts';
 import { FEATURES } from './features.ts';
 
@@ -61,6 +63,8 @@ export interface DaemonOptions {
   pruneEveryMs?: number | false;
   /** How long after start the first prune waits, so the sessions of a hand-over reconnect first. Default 1 min. */
   pruneDelayMs?: number;
+  /** How long a child's session has to take a parent's message before it is typed instead. Default 5 s. */
+  messageAckMs?: number;
   /** The tools a session gets, by its hello. Default the feature table's tools for its identity; a test passes a newer table. */
   tools?: (parent: ParentHello) => ServedTool[];
 }
@@ -138,7 +142,111 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
     closeResolve = resolve;
   });
 
+  // A parent's message waits here for the child's session to take it.
+  const messageAckMs = options.messageAckMs ?? MESSAGE_ACK_MS;
+  const inboxWaits = new Map<string, { socket: net.Socket; settle: (answer: InboxAnswer) => void }>();
+  /** Messages whose wait ran out, so a late acceptance is logged as a second copy. */
+  const lapsed = new Set<string>();
+
+  /** The newest connection of a child's own session that takes messages. */
+  const inboxSocket = (childId: string): net.Socket | undefined => {
+    let found: net.Socket | undefined;
+    for (const [socket, entry] of attached) if (entry.parent.childId === childId && entry.parent.accepts?.includes('message') && socket.writable) found = socket;
+    return found;
+  };
+
+  /** Put a message in the session of a child whose Bellwether adapter is connected to this daemon. */
+  const sessionInbox = (child: { id: string; name: string; kind: string }, message: InboxMessage): Promise<InboxAnswer> => {
+    const socket = inboxSocket(child.id);
+    if (!socket) return Promise.resolve({ delivered: false, reason: `no session of ${child.name} that takes messages is connected to this machine's Bellwether daemon: its harness has not started its Bellwether ${harnessFor(child.kind)?.inbox.via === 'claude-channel' ? 'channel server' : 'extension'} yet, or that copy predates messages` });
+    return new Promise<InboxAnswer>((resolve) => {
+      const timer = setTimeout(() => {
+        inboxWaits.delete(message.id);
+        lapsed.add(message.id);
+        resolve({ delivered: false, reason: `its session did not take the message within ${Math.round(messageAckMs / 100) / 10} s` });
+      }, messageAckMs);
+      timer.unref?.();
+      inboxWaits.set(message.id, {
+        socket,
+        settle: (answer) => {
+          clearTimeout(timer);
+          inboxWaits.delete(message.id);
+          resolve(answer);
+        },
+      });
+      socket.write(formatReply({ type: 'message', message }));
+    });
+  };
+
+  /**
+   * A parent's message: to the session of a child on this machine, or over
+   * the relay to the daemon on the child's machine, which answers whether
+   * that session took it. A far daemon that predates relay-message, or a
+   * machine out of reach, gives the reason the caller records for typing.
+   */
+  const inbox: Inbox = async (parentId, child, message) => {
+    const host = hostOf(child);
+    if (host === LOCAL_HOST) return sessionInbox(child, message);
+    try {
+      const answer = await links.message(host, parentId, child.id, message);
+      return answer.delivered ? answer : { delivered: false, reason: `machine ${host} answered: ${answer.reason}` };
+    } catch (error) {
+      return { delivered: false, reason: (error as Error).message };
+    }
+  };
+
+  /** Keep a message that crossed from the parent's machine on the child's relay record until its model reads it, or drop it. */
+  const keepRelayMessage = (childId: string, message: InboxMessage | undefined, drop?: string): void => {
+    updateRelayRecord(childId, (record) => {
+      const kept = (record.messages ?? []).filter((entry) => entry.id !== (message?.id ?? drop));
+      if (message) kept.push({ id: message.id, text: message.text, from: message.from, at: message.at });
+      if (kept.length) record.messages = kept.slice(-20);
+      else delete record.messages;
+    });
+  };
+
+  /** Put each message a child's session has not read in front of that session again, after it connects. */
+  const replayMessages = (socket: net.Socket, childId: string): void => {
+    const found = localParentOf(childId);
+    // A child of a parent on another machine keeps its unread messages on its relay record here.
+    const unread: InboxMessage[] = found ? unreadSessionMessages(found.child).map((message) => ({ id: message.id, from: message.from ?? 'your parent', text: message.text ?? '', at: message.at })) : (readRelayRecord(childId)?.messages ?? []);
+    for (const message of unread) if (socket.writable) socket.write(formatReply({ type: 'message', message, replay: true }));
+  };
+
+  /** An adapter's answer about one message. A read lands on the child's record, whichever daemon pushed it. */
+  const messageAck = (socket: net.Socket, ack: MessageAckRequest): void => {
+    const wait = inboxWaits.get(ack.id);
+    if (ack.outcome === 'refused') {
+      wait?.settle({ delivered: false, reason: ack.reason ? `its session refused the message: ${ack.reason}` : 'its session refused the message' });
+      return;
+    }
+    wait?.settle({ delivered: true, via: ack.via ?? 'session' });
+    if (!wait && ack.outcome === 'queued' && lapsed.has(ack.id)) log(`message ${ack.id} reached the child's session after its wait ran out, so the child also has the typed copy`);
+    if (ack.outcome !== 'read') return;
+    const childId = attached.get(socket)?.parent.childId;
+    if (!childId) return;
+    const found = localParentOf(childId);
+    if (!found) {
+      // The parent runs on another machine: the read crosses back in the relay outbox, delivered once like a report.
+      const record = readRelayRecord(childId);
+      if (!record?.messages?.some((entry) => entry.id === ack.id)) return;
+      keepRelayMessage(childId, undefined, ack.id);
+      outbox.messageRead(record, ack.id);
+      return;
+    }
+    updateChild(found.parent.id, childId, (child) => {
+      const message = child.messages?.find((entry) => entry.id === ack.id);
+      if (!message || message.readAt) return;
+      message.readAt = new Date(now()).toISOString();
+      if (ack.via) message.via ??= ack.via;
+      delete message.text;
+      delete message.from;
+    });
+    log(`message ${ack.id} reached the model of child ${childId}`);
+  };
+
   const forgetSocket = (socket: net.Socket): void => {
+    for (const wait of [...inboxWaits.values()]) if (wait.socket === socket) wait.settle({ delivered: false, reason: "its session's connection to the daemon closed before it took the message" });
     sockets.delete(socket);
     attached.delete(socket);
     relaySockets.delete(socket);
@@ -161,7 +269,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
     const id = parentIdOf(parent);
     const existing = services.get(id);
     if (existing) return { parentId: id, service: existing };
-    const service = factory(parent, id, { links, log });
+    const service = factory(parent, id, { links, log, inbox });
     services.set(id, service);
     service.onEvents((entries) => {
       push(id, entries);
@@ -300,6 +408,18 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
     if (route.kind !== 'local') return { refused: `this machine holds no parent ${report.parentId} with child ${report.childId}` };
     // A report the child left on the machine it moved away from still counts.
     if (hostOf(route.child) !== host && route.child.movedFrom?.host !== host) return { refused: `child ${report.childId} runs on machine ${hostOf(route.child)}, not ${host}` };
+    if (report.messageRead) {
+      // Not a report: the child's model read a message this daemon sent over the relay.
+      updateChild(route.parent.id, route.child.id, (child) => {
+        const message = child.messages?.find((entry) => entry.id === report.messageRead);
+        if (!message || message.readAt) return;
+        message.readAt = report.at;
+        delete message.text;
+        delete message.from;
+      });
+      log(`message ${report.messageRead} reached the model of child ${report.childId} on machine ${host}`);
+      return {};
+    }
     const { duplicate } = acceptLocalReport(route.parent, route.child, { parentId: report.parentId, childId: report.childId, receipt: report.receipt, status: report.status, text: report.text });
     if (duplicate) log(`report ${report.receipt} for child ${report.childId} from machine ${host} was already accepted, so the copy was dropped`);
     else log(`report ${report.receipt} from child ${report.childId} on machine ${host} accepted for parent ${report.parentId}`);
@@ -413,6 +533,25 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
         }
         return;
       }
+      if (request.type === 'relay-message') {
+        // A parent's daemon on another machine, for a child this machine holds a relay record for.
+        const record = readRelayRecord(request.childId);
+        if (!record || record.parentId !== request.parentId || record.retiredAt) {
+          reply({ type: 'result', id: request.id, text: JSON.stringify({ delivered: false, reason: `this machine holds no running child ${request.childId} for parent ${request.parentId}` }) });
+          return;
+        }
+        // Kept before the push, so a read that comes back at once finds it.
+        keepRelayMessage(request.childId, request.message);
+        const answer = await sessionInbox({ id: record.childId, name: record.name, kind: record.kind }, request.message);
+        if (!answer.delivered) keepRelayMessage(request.childId, undefined, request.message.id);
+        log(`relay-message ${request.message.id} for child ${request.childId}: ${answer.delivered ? `taken by its session (${answer.via})` : answer.reason}`);
+        reply({ type: 'result', id: request.id, text: JSON.stringify(answer) });
+        return;
+      }
+      if (request.type === 'message-ack') {
+        messageAck(socket, request);
+        return;
+      }
       if (request.type === 'relay-status') {
         reply({ type: 'relay-status', id: request.id, hosts: links.states() });
         return;
@@ -430,6 +569,8 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
         subscribers.set(session.parentId, set);
         attached.set(socket, { parentId: session.parentId, parent: request.parent, client: request.client, ...(request.build ? { build: request.build } : {}), protocol: request.protocol, connectedAt: new Date(now()).toISOString() });
         reply({ type: 'hello', protocol: DAEMON_PROTOCOL, parentId: session.parentId, pid, pending: session.service.pending(), version: BELLWETHER_VERSION, build: BELLWETHER_BUILD_ID, minProtocol: MIN_CLIENT_PROTOCOL, features: SERVED, tools: sessionTools(request.parent) });
+        // A child's session that reconnects, after a hand-over or a restart of its server, takes again what it has not read.
+        if (request.parent.childId && request.parent.accepts?.includes('message')) replayMessages(socket, request.parent.childId);
         return;
       }
       if (request.type === 'bye') {
@@ -521,6 +662,9 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
     },
   };
 }
+
+/** How long a child's session has to take a parent's message, before the daemon types it into the pane instead. */
+export const MESSAGE_ACK_MS = 5_000;
 
 /** Whether something answers on the socket, used to spot a live daemon. */
 export async function canConnect(socketPath: string): Promise<boolean> {

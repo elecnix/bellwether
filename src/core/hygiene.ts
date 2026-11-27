@@ -10,6 +10,7 @@
 // once at start and then hourly, and records the outcome for `doctor`.
 import fs from 'node:fs';
 import path from 'node:path';
+import { keepsBriefs } from './brief-history.ts';
 import { Outbox } from './outbox.ts';
 import { bellwetherHome, claudeSettingsDir, mcpDir, outboxDir, outboxPath, promptsDir, registryPath, relayChildPath, spoolDir, spoolPath } from './paths.ts';
 import { listParents } from './registry.ts';
@@ -119,6 +120,8 @@ export interface ChildFileFacts {
   known: boolean;
   /** This machine carries the child's reports for a parent on another machine. */
   relayed: boolean;
+  /** For a brief: the child's record shows no proof that it read its newest one. */
+  unread?: boolean;
 }
 
 /**
@@ -131,6 +134,7 @@ export interface ChildFileFacts {
 export function childFileVerdict(facts: ChildFileFacts, now: number): Verdict {
   if (facts.live) return { prune: false, reason: 'its child is running' };
   if (facts.relayed) return { prune: false, reason: 'its child runs here for a parent on another machine' };
+  if (facts.unread) return { prune: false, reason: 'its child exited before anything showed it read its newest brief, which a resume hands over' };
   if (facts.known) return { prune: true, reason: 'its child exited' };
   const age = now - facts.mtimeMs;
   if (age < ORPHAN_FILE_GRACE_MS) return { prune: false, reason: `no record names its child yet, and it is ${duration(age)} old` };
@@ -193,13 +197,17 @@ export function childFileFacts(parents: readonly ParentRecord[]): { kind: 'brief
   const children = parents.flatMap((parent) => parent.children);
   const live = new Set(children.filter((child) => !child.exitedAt).map((child) => child.id));
   const known = new Set(children.map((child) => child.id));
+  const unread = new Set(children.filter((child) => keepsBriefs(child)).map((child) => child.id));
   const out: { kind: 'brief' | 'mcp'; file: string; facts: ChildFileFacts }[] = [];
   for (const { kind, dir, extension } of CHILD_FILES) {
-    for (const childId of names(dir(), extension)) {
-      const file = path.join(dir(), `${childId}${extension}`);
+    for (const name of names(dir(), extension)) {
+      // A resume's brief is `<child id>-<n>.md`, beside the spawn's `<child id>.md`.
+      const numbered = kind === 'brief' && !known.has(name) ? /^(.+)-\d+$/.exec(name)?.[1] : undefined;
+      const childId = numbered ?? name;
+      const file = path.join(dir(), `${name}${extension}`);
       const mtimeMs = mtime(file);
       if (mtimeMs === undefined) continue;
-      out.push({ kind, file, facts: { childId, mtimeMs, live: live.has(childId), known: known.has(childId), relayed: fs.existsSync(relayChildPath(childId)) } });
+      out.push({ kind, file, facts: { childId, mtimeMs, live: live.has(childId), known: known.has(childId), relayed: fs.existsSync(relayChildPath(childId)), ...(kind === 'brief' ? { unread: unread.has(childId) } : {}) } });
     }
   }
   return out;

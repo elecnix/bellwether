@@ -671,7 +671,11 @@ test('a spawn on another machine copies the brief there over ssh, and points the
   const remoteBrief = path.join(w.childHome, 'prompts', `${child.id}.md`);
   assert.equal(fs.readFileSync(remoteBrief, 'utf8'), brief, 'the brief arrived whole on the child\'s machine');
   assert.equal(fs.statSync(remoteBrief).mode & 0o777, 0o600);
-  assert.ok(!fs.existsSync(path.join(w.parentHome, 'prompts', `${child.id}.md`)), 'no brief was left on the parent\'s machine');
+  // The parent's machine keeps its own numbered copy, the one a later resume repeats when the child never read it (issue #132).
+  const kept = path.join(w.parentHome, 'prompts', `${child.id}.md`);
+  assert.equal(fs.readFileSync(kept, 'utf8'), brief, 'the parent\'s machine keeps the brief it sent');
+  assert.equal(fs.statSync(kept).mode & 0o777, 0o600);
+  assert.ok(!startArgs(herdr).includes(`@${kept}`), 'the child is never pointed at the parent\'s copy');
   assert.ok(startArgs(herdr).includes(`@${remoteBrief}`), `the child is pointed at the copy that exists where it runs: ${startArgs(herdr).join(' ')}`);
   // The brief never rode on a command line, on either machine.
   for (const argv of w.ssh.calls()) assert.ok(!argv.join(' ').includes('Line one of the task'));
@@ -739,7 +743,7 @@ test("a spawn on another machine writes the brief inside the child's working dir
   assert.equal(fs.statSync(file).mode & 0o777, 0o600);
   assert.ok(startArgs(herdr).includes(`@${file}`), `the child is pointed at the copy in its working directory: ${startArgs(herdr).join(' ')}`);
   assert.ok(!fs.existsSync(path.join(w.childHome, 'prompts', `${child.id}.md`)), 'none went to a home-level directory, outside the child\'s working directory');
-  assert.ok(!fs.existsSync(path.join(w.parentHome, 'prompts', `${child.id}.md`)), "none was left on the parent's machine");
+  assert.equal(fs.readFileSync(path.join(w.parentHome, 'prompts', `${child.id}.md`), 'utf8'), brief, "the parent's machine keeps the brief it sent, for a resume (issue #132)");
   assert.equal(execFileSync('git', ['-C', cwd, 'status', '--porcelain', '--untracked-files=all'], { encoding: 'utf8' }), '', 'the worktree stays clean');
   assert.equal(inHome(w.childHome, () => readRelayRecord(child.id))?.brief, file);
 

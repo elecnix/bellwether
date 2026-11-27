@@ -5,6 +5,11 @@
 // extension's own message, carrying the receipts in its details, in front of
 // the model. A receipt that reaches the model any other way, such as the
 // output of a shell that read the outbox file, is not a delivery.
+//
+// For a child, the extension also takes its parent's messages: the daemon
+// pushes one, and the extension hands it to pi.sendMessage as a steered
+// message, so nothing is typed into the child's pane. It tells the daemon
+// once pi holds it, and again at message_end, when the model has it.
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { DaemonClient } from '../../daemon/client.ts';
@@ -16,7 +21,7 @@ import { byEventTime, lateNote } from '../../core/notice.ts';
 import { PROMPT_NOTICE, maxDepthFromEnv } from '../../core/report.ts';
 import type { OutboxEntry } from '../../core/types.ts';
 import { fallbackTools } from '../tools.ts';
-import type { ServedTool } from '../../daemon/protocol.ts';
+import type { InboxMessage, ServedTool } from '../../daemon/protocol.ts';
 
 // The parts of pi's ExtensionAPI this extension uses.
 interface PiContext {
@@ -64,6 +69,29 @@ function depthFromEnv(): number {
 }
 
 const CUSTOM_TYPE = 'bellwether';
+/** A parent's message to this session, which pi records under its own type. */
+const MESSAGE_TYPE = 'bellwether-message';
+/** The extension's path's name, which the daemon records as how a message reached the session. */
+const VIA = 'pi-message';
+
+/** The message id one of this extension's parent messages carries, or none for any other message. */
+function messageIdOf(message: { customType?: string; details?: unknown } | undefined): string | undefined {
+  if (!message || message.customType !== MESSAGE_TYPE) return undefined;
+  const id = (message.details as { message?: unknown } | undefined)?.message;
+  return typeof id === 'string' ? id : undefined;
+}
+
+/** Parent messages already in the session's history, from this or a previous pi process. */
+function messagesInHistory(ctx: PiContext | undefined): Set<string> {
+  const entries = ctx?.sessionManager.getEntries?.() ?? [];
+  const found = new Set<string>();
+  for (const entry of entries) {
+    const record = entry as { type?: string; customType?: string; details?: unknown };
+    const id = record.type === 'custom_message' ? messageIdOf(record) : undefined;
+    if (id) found.add(id);
+  }
+  return found;
+}
 
 /**
  * One message for a burst of events, so three children changing at once read
@@ -100,7 +128,38 @@ export default function bellwether(pi: PiApi): void {
   // which registers nothing, so each tool and handler exists once.
   if (standDown(fileURLToPath(import.meta.url))) return;
   let daemon: DaemonClient | undefined;
+  let session: PiContext | undefined;
   let burst: NodeJS.Timeout | undefined;
+  // Parent messages this process handed to pi.
+  const tookMessages = new Set<string>();
+
+  /**
+   * Hand a parent's message to pi. The steer has the same effect as typing
+   * into a busy pi: the message lands after the tool calls in flight, before
+   * the next model call, and an idle session starts a turn on it. A replay
+   * after a reconnect is looked for in the session's history first.
+   */
+  const takeMessage = (message: InboxMessage, replay: boolean): void => {
+    if (!daemon) return;
+    if (replay && messagesInHistory(session).has(message.id)) {
+      daemon.messageAck(message.id, 'read', { via: VIA });
+      return;
+    }
+    if (tookMessages.has(message.id)) {
+      daemon.messageAck(message.id, 'queued', { via: VIA });
+      return;
+    }
+    try {
+      pi.sendMessage(
+        { customType: MESSAGE_TYPE, content: `[bellwether] Message ${message.id} from ${message.from}, sent at ${message.at}:\n${message.text}`, display: true, details: { message: message.id } },
+        { triggerTurn: true, deliverAs: 'steer' },
+      );
+      tookMessages.add(message.id);
+      daemon.messageAck(message.id, 'queued', { via: VIA });
+    } catch (error) {
+      daemon.messageAck(message.id, 'refused', { reason: `pi.sendMessage failed: ${(error as Error).message}` });
+    }
+  };
   const pending = new Map<string, OutboxEntry>();
   // Receipts this process has handed to pi, so a replay does not send them twice.
   const sent = new Set<string>();
@@ -154,6 +213,7 @@ export default function bellwether(pi: PiApi): void {
   });
 
   pi.on('session_start', async (_event, ctx) => {
+    session = ctx;
     try {
       daemon = await DaemonClient.connect({
         harness: 'pi',
@@ -167,7 +227,10 @@ export default function bellwether(pi: PiApi): void {
         childId: process.env['BELLWETHER_CHILD'],
         ...(maxDepthFromEnv() === undefined ? {} : { maxDepth: maxDepthFromEnv() }),
         ...(process.env['BELLWETHER_PARENT'] ? { reportsTo: process.env['BELLWETHER_PARENT'] } : {}),
+        // A child takes its parent's messages through this extension.
+        ...(process.env['BELLWETHER_CHILD'] ? { accepts: ['message'] } : {}),
       }, { log: (message) => console.error('[bellwether]', message) });
+      daemon.onMessage(takeMessage);
       register(daemon.tools());
       daemon.onTools(register);
       // A previous pi process for this session may have delivered an event
@@ -200,6 +263,9 @@ export default function bellwether(pi: PiApi): void {
   pi.on('message_end', (event) => {
     const receipts = receiptsOf(event.message);
     if (receipts.length) daemon?.receipts(receipts);
+    // A parent's message is read once pi puts it in front of the model.
+    const id = messageIdOf(event.message);
+    if (id) daemon?.messageAck(id, 'read', { via: VIA });
   });
 
   // The daemon decides the tools, from its feature table, and sends them in

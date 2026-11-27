@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { COVERAGE_RULE, coverage, coverageConfig, lint, PROSE_PATHS, RELEASE_BODIES, releaseBodyAlerts, trackedPages } from '../../scripts/prose.ts';
+import { COVERAGE_RULE, coverage, coverageConfig, lint, PROSE_PATHS, RELEASE_BODIES, releaseBodyAlerts, SIGNATURE_CASES, signatureFindings, trackedPages } from '../../scripts/prose.ts';
 
 const root = path.resolve(import.meta.dirname, '../..');
 
@@ -88,5 +88,46 @@ test('the prose lint reports an alert in a release description', { skip: hasVale
     assert.ok(lint(root).some((alert) => alert.includes('scripts/release.ts prBody: release-body-protocol-stays.md') && alert.includes('SentenceStartRepetition')));
   } finally {
     RELEASE_BODIES['release-body-protocol-stays.md'] = original!;
+  }
+});
+
+// Agents lost pr-body runs to the em dash that starts their signature
+// (issue #138). .vale.ini ignores the signature line, and these cases keep
+// that exception from growing into one for any line with an em dash.
+test('the signature exception accepts each signature form and no em dash in prose', { skip: hasVale ? false : 'vale is not on PATH' }, () => {
+  assert.deepEqual(signatureFindings(root), []);
+});
+
+/** The repository's .vale.ini with its TokenIgnores line replaced, in a scratch file. */
+function withTokenIgnores(line: string): { config: string; cleanup: () => void } {
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'bw-signature-'));
+  const ini = fs.readFileSync(path.join(root, '.vale.ini'), 'utf8');
+  const stylesPath = path.resolve(root, /^\s*StylesPath\s*=\s*(.+?)\s*$/m.exec(ini)![1]!);
+  const config = path.join(scratch, '.vale.ini');
+  fs.writeFileSync(config, ini.replace(/^StylesPath = .*$/m, `StylesPath = ${stylesPath}`).replace(/^TokenIgnores = .*$/m, line));
+  return { config, cleanup: () => fs.rmSync(scratch, { recursive: true, force: true }) };
+}
+
+test('a TokenIgnores that ignores any line starting with an em dash fails the signature cases', { skip: hasVale ? false : 'vale is not on PATH' }, () => {
+  const { config, cleanup } = withTokenIgnores('TokenIgnores = (?m)^—.*$');
+  try {
+    const findings = signatureFindings(root, config);
+    for (const name of ['dash-before-unlinked-name.md', 'dash-before-prose.md', 'dash-before-other-link.md']) {
+      assert.ok(findings.some((finding) => finding.includes(name) && finding.includes('lets an em dash in prose through')), `${name} is reported`);
+    }
+    assert.ok(!findings.some((finding) => finding.includes('dash-in-prose.md')), 'an em dash mid-line still fails');
+  } finally {
+    cleanup();
+  }
+});
+
+test('a .vale.ini without the signature exception fails the signature cases', { skip: hasVale ? false : 'vale is not on PATH' }, () => {
+  const { config, cleanup } = withTokenIgnores('');
+  try {
+    const rejected = Object.entries(SIGNATURE_CASES).filter(([, { passes }]) => passes).map(([name]) => name);
+    const findings = signatureFindings(root, config);
+    for (const name of rejected) assert.ok(findings.some((finding) => finding.includes(name) && finding.includes('rejects a signature')), `${name} is reported`);
+  } finally {
+    cleanup();
   }
 });

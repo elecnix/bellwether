@@ -17,6 +17,20 @@ A second call for the same child can't open a second tab. A lock file per child 
 
 To resume a Claude Code child by hand, run `claude --resume <session id>`. The registry keeps the session id and the transcript path after the child exits.
 
+### Briefs after a resume
+
+If its provider has no key, a harness can exit before it reads its brief. The session then has no copy of the task, so a resume that sent only its own prompt would leave the child without its work. Bellwether keeps every brief a child starts on in a file of its own, and the record lists them as `briefs`.
+
+The spawn's brief is `~/.bellwether/prompts/<child id>.md`. Each resume that brings a prompt writes the next number: `<child id>-2.md`, `<child id>-3.md`, and so on. Resumes never overwrite an earlier brief.
+
+A child on another machine reads its own copy there, and this machine keeps the numbered files for the next resume.
+
+Before it writes, a resume checks the record. Proof that the child read the newest brief is either a report sent after Bellwether wrote that brief, or a finished turn in the pane that started on it. With either one, the child gets only the new prompt. A status or a run time doesn't count, because a harness can run without reading anything.
+
+Without that proof, the new file places the unread brief first and the prompt after it. Resuming with no prompt hands the unread brief over again.
+
+The reply to such a resume gives the path of the file with the first brief. Any brief the child hasn't read stays on disk after the child exits or `agent_stop` closes it, and the prune keeps it too. Once the child has read its newest brief, its exit removes all the briefs, and the session transcript keeps the text.
+
 ## Restarting an agent
 
 `agent_restart` restarts a session and keeps it. Its harness, session id and working directory stay the same, and the conversation continues in a new process. It takes an optional target, and with no target it restarts the session that called it. A target is a child's name, id or pane, or another session by its parent id, session id or pane. Either way the old pane closes before the new one starts, so one process holds the session at a time and you have no old pane to close.
@@ -98,7 +112,7 @@ When none of them is true, the record goes with its outbox and spool, once it ha
 | never had a child | 1 hour | It stores only the session's identity, which the next hello writes again. |
 | had children, all exited | 7 days | A resumed session finds its children by it, and a person resumes an exited child by name. |
 
-Briefs and MCP configurations go once their child exits or a prune removes its record. A spawn writes these files a moment before it saves the record, so a file whose child is missing from every record gets an hour's grace. Files of a child that runs here for a parent on another machine stay until `bellwether relay-cleanup` removes them.
+Briefs and MCP configurations go once their child exits or a prune removes its record. A brief the child never read stays until its record goes, so a resume can still hand it over. A spawn writes these files a moment before it saves the record, so a file whose child is missing from every record gets an hour's grace. Files of a child that runs here for a parent on another machine stay until `bellwether relay-cleanup` removes them.
 
 Logs rotate at 1 MiB: `retire.log`, `move.log` and `restart.log` each move to `<name>.1`, replacing the older copy. Each fresh log starts with one line that names that file, so each log keeps at most 2 MiB.
 

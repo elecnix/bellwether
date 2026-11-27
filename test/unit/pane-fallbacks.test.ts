@@ -16,10 +16,14 @@ const SCANNED = ['src', 'bin'];
 /** The file that defines the wrappers, and so the only one that names the raw methods. */
 const CLIENT = path.join('src', 'core', 'herdr-client.ts');
 
-/** HerdrClient calls that read a pane's screen or type into it. */
-const PANE_CALL = /\.(paneRead|sendKeys|sendInput)\(/;
+/**
+ * HerdrClient calls that read a pane's screen or type into it. agentPrompt
+ * types a parent's message into the child's input box, so it counts too: the
+ * session path in src/core/send.ts is the API, and typing is its fallback.
+ */
+const PANE_CALL = /\.(paneRead|sendKeys|sendInput|agentPrompt)\(/;
 /** herdr methods and subscriptions that read a screen or send input, which only the client may name. */
-const RAW_PANE_METHOD = /['"](pane\.(read|send_text|send_keys|send_input|wait_for_output|output_matched|run|selection\.read)|agent\.(read|send_keys))['"]/;
+const RAW_PANE_METHOD = /['"](pane\.(read|send_text|send_keys|send_input|wait_for_output|output_matched|run|selection\.read)|agent\.(read|send_keys|prompt))['"]/;
 const TODO = /TODO\(api\):\s*(.*)/;
 const FEATURE = /Pane feature:\s*(.*)/;
 /** A TODO shorter than this cannot name an API and what it would replace. */
@@ -71,7 +75,7 @@ function scanSource(file: string, source: string): PaneCall[] {
     const match = PANE_CALL.exec(line);
     if (!match) return;
     // The wrapper definitions themselves, not calls.
-    if (file === CLIENT && /^\s*(async\s+)?(paneRead|sendKeys|sendInput)\(/.test(line)) return;
+    if (file === CLIENT && /^\s*(async\s+)?(paneRead|sendKeys|sendInput|agentPrompt)\(/.test(line)) return;
     const note = annotation(lines, index);
     const todo = TODO.exec(note);
     const feature = FEATURE.exec(note);
@@ -109,6 +113,17 @@ test('the scan flags a new pane keystroke that has no TODO(api) or Pane feature 
     scanSource('src/example.ts', marked).map((call) => call.kind),
     ['fallback'],
   );
+});
+
+test('a parent message typed through agent.prompt needs a TODO(api) comment, because the session path is the API', () => {
+  const source = ['async function tell(herdr) {', '  await herdr.agentPrompt(paneId, text);', '}'].join('\n');
+  assert.deepEqual(
+    scanSource('src/example.ts', source).map((call) => call.kind),
+    ['unmarked'],
+  );
+  const send = scanAll().filter((call) => call.file === path.join('src', 'core', 'send.ts') && call.call === 'agentPrompt');
+  assert.equal(send.length, 1, 'src/core/send.ts types a message in one place, as the session path\'s fallback');
+  assert.equal(send[0]?.kind, 'fallback');
 });
 
 test('a comment above one statement does not cover the next one', () => {

@@ -34,7 +34,7 @@ When the protocol stays the same, sessions reconnect to the new daemon after `be
 
 To run a commit ahead of the next release, build its tarball and install that. Don't install from a git URL. `npm install -g github:elecnix/bellwether#main` fails on an empty prefix: npm builds the clone with config from the global prefix, so the build finds no `tsgo` and exits 127.
 
-Over an existing install, the same command stops earlier with `ENOTEMPTY` on the installed package's directory, and leaves that package as it was. Running `npm uninstall -g` first doesn't help. #57 has the details.
+Over an existing install, the same command stops earlier with `ENOTEMPTY` on the installed package's directory, and leaves that package as it was. Running `npm uninstall -g` first doesn't help. [#57](https://github.com/elecnix/bellwether/issues/57) has the details.
 
 ```sh
 git clone --depth 1 https://github.com/elecnix/bellwether.git && cd bellwether

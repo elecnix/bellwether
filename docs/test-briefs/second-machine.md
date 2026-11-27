@@ -48,7 +48,7 @@ kill -CONT <pid>
 - On PARENT, `pkill -f relay-bridge` ends the ssh client.
 - On CHILD, the noted pid exits within seconds, and the parent's reconnect starts one new bridge with another pid.
 
-A real network failure differs from check 2 in one way. The sshd on CHILD never hears about the failure, so the old bridge lingers until sshd notices the dead TCP connection. With the default `ClientAliveInterval 0`, that takes hours. #55 tracks the lingering bridge, with a heartbeat on the relay stream as the fix.
+A real network failure differs from check 2 in one way. The sshd on CHILD never hears about the failure, so the old bridge lingers until sshd notices the dead TCP connection. With the default `ClientAliveInterval 0`, that takes hours. [#55](https://github.com/elecnix/bellwether/issues/55) tracks the lingering bridge, with a heartbeat on the relay stream as the fix.
 
 ## 4. A far end on the old protocol
 

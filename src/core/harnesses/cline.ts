@@ -1,28 +1,43 @@
-// Cline. herdr detects it, and agent_adopt takes a pane that runs it. By
-// default agent_spawn refuses it: Cline runs every TUI session it can inside
-// one shared background hub, and MCP servers load in the process that runs
-// the session, so a per-child MCP configuration does not stay with its child.
-// A caller who passes `-y` in args gets a child in Cline's benchmark mode,
-// which keeps off the hub, and the spawn reply prints what that mode costs.
-// Facts checked against Cline 3.0.76:
+// Cline. herdr detects it, and agent_adopt takes a pane that runs it. Each
+// child agent_spawn starts runs in Cline's sandbox mode, with a data directory
+// of its own, so its session runs in its own process and never meets Cline's
+// shared background hub. A caller who passes `-y` in args also gets Cline's
+// benchmark mode, and the spawn reply prints what that mode costs. Facts
+// checked against Cline 3.0.76, by reading its published bundle:
 //
-// - `CLINE_MCP_SETTINGS_PATH` names the MCP settings file, and the TUI reads
-//   it. But `cline -i` asks for the "auto" backend, which joins a running hub,
-//   and starts one when none runs. The hub keeps the environment of the
-//   session that started it, and outlives that session. A second child then
-//   loads the first child's server, and the operator's own Cline sessions load
-//   it too. The environment cannot pick the local backend for the TUI.
-// - `-y` forces the local backend and leaves the hub alone, but it is Cline's
+// - `CLINE_MCP_SETTINGS_PATH` names the MCP settings file, and the session
+//   reads it. MCP servers load in the process that runs the session.
+// - `cline -i` asks for the "auto" backend, which joins a running hub and
+//   starts one when none runs. The hub is started with the environment of the
+//   session that started it, keeps running after that session, and has no
+//   idle exit. A second session that joins it loads the first one's servers.
+//   The TUI asks for "auto" by name, so CLINE_SESSION_BACKEND_MODE does not
+//   reach it.
+// - The TUI forces the local backend, which runs the session in its own
+//   process and starts no hub, in two cases: `-y`, and sandbox mode.
+//   `--data-dir <dir>` or CLINE_SANDBOX=1 turns sandbox mode on, and
+//   CLINE_SANDBOX_DATA_DIR names the directory. Sandbox mode keeps the
+//   default act mode, its tools, skills, sub-agents and teams; `-y` is the
 //   benchmark mode: six built-in tools instead of 26, no skills or sub-agents,
-//   and another system prompt. A -y TUI stays up
-//   after its first task and takes a follow-up typed at its prompt.
+//   and another system prompt. A -y TUI stays up after its first task and
+//   takes a follow-up typed at its prompt.
+// - Sandbox mode sets CLINE_DATA_DIR, CLINE_DB_DATA_DIR,
+//   CLINE_SESSION_DATA_DIR, CLINE_TEAM_DATA_DIR, CLINE_PROVIDER_SETTINGS_PATH
+//   and CLINE_HOOKS_LOG_PATH under its directory, whatever the environment
+//   says. It leaves CLINE_DIR (skills, rules, workflows, hooks, plugins),
+//   CLINE_MCP_SETTINGS_PATH and CLINE_GLOBAL_SETTINGS_PATH alone. The provider
+//   settings, sign-ins included, are `<dir>/settings/providers.json`, which
+//   Cline replaces by writing a temporary file and renaming it. So the spawn
+//   links `<dir>/settings` to the operator's settings directory: a sign-in the
+//   child refreshes lands in the operator's own file.
 // - herdr reports no agent_session for Cline, and `--id` only reopens a
 //   session Cline already has. The store is `sessions.db`, in
 //   CLINE_DB_DATA_DIR, else CLINE_DATA_DIR/db, else CLINE_DIR/data/db, else
-//   ~/.cline/data/db. A `sessions` row holds session_id, pid, started_at and
-//   updated_at (ISO, UTC), ended_at, status, cwd, is_subagent, the first
-//   prompt wrapped in `<user_input mode="...">`, and messages_path. The
-//   messages file is JSON: `{ messages: [{ role, content: [{ type, text }] }] }`.
+//   ~/.cline/data/db; a sandboxed child's is `<dir>/db/sessions.db`. A
+//   `sessions` row holds session_id, pid, started_at and updated_at (ISO,
+//   UTC), ended_at, status, cwd, is_subagent, the first prompt wrapped in
+//   `<user_input mode="...">`, and messages_path. The messages file is JSON:
+//   `{ messages: [{ role, content: [{ type, text }] }] }`.
 // - A session the TUI runs records the TUI's pid; one the hub runs records
 //   the hub's.
 import fs from 'node:fs';
@@ -31,7 +46,7 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { LOCAL_HOST } from '../machine.ts';
 import { channelEntry, MCP_SERVER_NAME } from '../mcp-config.ts';
-import { mcpConfigPath, mcpDir } from '../paths.ts';
+import { clineDataDir, mcpConfigPath, mcpDir } from '../paths.ts';
 import type { ChildRecord } from '../types.ts';
 import { briefSentence, modelFlag, noTranscript } from './shared.ts';
 import type { HarnessEntry } from './types.ts';
@@ -39,25 +54,23 @@ import type { HarnessEntry } from './types.ts';
 /** The Cline release these facts were checked against. */
 export const CLINE_CHECKED_AGAINST = '3.0.76';
 
-/** The request on Cline's repository for a per-session MCP configuration and a hub-off switch. */
-export const CLINE_UPSTREAM_REQUEST = 'https://github.com/cline/cline/issues/15881';
-
 /** How long a store lookup waits for the session to show. */
 export const CLINE_SESSION_WAIT_MS = 30_000;
 
-/** The flags that put Cline in its unattended mode, which keeps a session off the shared hub. */
+/** The flags that put Cline in its benchmark mode. */
 export const CLINE_OPT_IN = ['-y', '--yolo'];
 
-/** Why agent_spawn refuses a cline child started the default way: the shared hub, and only the hub. */
-export const CLINE_REFUSAL =
-  'Cline runs each terminal session inside one shared background hub, and MCP servers load in the hub, so a per-child Bellwether server does not stay with its child: ' +
-  "a second child's reports would be credited to the first, the hub a child starts outlives the child, and the operator's own Cline sessions would load the child's server. " +
-  `Cline has no per-session MCP configuration and no switch that keeps a session off the hub (${CLINE_UPSTREAM_REQUEST})`;
+/** What the spawn reply says of a child started the default way: where it runs, and what it shares. */
+export function clineSandboxNote(dataDir: string, settingsDir: string): string {
+  return (
+    `Cline runs this child in Cline's sandbox mode, with its own data directory at ${dataDir}: its session runs in the child's own process, not in Cline's shared hub, so it loads only its own Bellwether server, and it keeps Cline's default mode. ` +
+    `It signs in with your provider settings, through a link to ${settingsDir}. Its session is in its own store, so \`cline history\` does not list it; agent_read does.`
+  );
+}
 
-/** What the spawn reply says when the caller turns on Cline's unattended mode: what -y gives and what it costs, measured on Cline 3.0.76. */
+/** What the spawn reply says when the caller turns on Cline's benchmark mode: what -y costs, measured on Cline 3.0.76. */
 export const CLINE_OPT_IN_NOTE =
-  "Cline runs this child with -y: its session runs in the child's own process, not in Cline's shared hub, so it loads only its own Bellwether server, " +
-  'and it stays up after its first task, so agent_send reaches it. ' +
+  'Cline runs this child with -y, in its own data directory, and it stays up after its first task, so agent_send reaches it. ' +
   "The cost is Cline's benchmark mode: a different system prompt, six built-in tools (read_files, search_codebase, run_commands, fetch_web_content, editor and ask_question) plus its MCP tools, where the default mode offers 26, " +
   'no skills and no sub-agents or teams. Cline\'s own help says of -y: "DANGEROUS: use only in sandboxed environments."';
 
@@ -88,6 +101,56 @@ export function writeClineMcpSettings(childId: string, env: Record<string, strin
   fs.writeFileSync(file, `${JSON.stringify(clineMcpSettings(childId, env), null, 2)}\n`, { mode: 0o600 });
   fs.chmodSync(file, 0o600);
   return file;
+}
+
+/** The provider settings file a Cline session outside sandbox mode reads, by Cline's own rule. */
+export function clineProviderSettingsPath(env: NodeJS.ProcessEnv = process.env): string {
+  const named = env['CLINE_PROVIDER_SETTINGS_PATH']?.trim();
+  if (named) return named;
+  const dataDir = env['CLINE_DATA_DIR']?.trim() || path.join(env['CLINE_DIR']?.trim() || path.join(env['HOME'] || os.homedir(), '.cline'), 'data');
+  return path.join(dataDir, 'settings', 'providers.json');
+}
+
+/**
+ * The directory a sandboxed child's `settings` link points at: the one that
+ * holds the operator's providers.json. Sandbox mode reads
+ * `<dir>/settings/providers.json`, so a file under another name cannot be
+ * reached through the link, and the spawn refuses it by name.
+ */
+export function clineSettingsDir(env: NodeJS.ProcessEnv = process.env): string {
+  const file = clineProviderSettingsPath(env);
+  if (path.basename(file) !== 'providers.json') {
+    throw new Error(
+      `CLINE_PROVIDER_SETTINGS_PATH names ${file}, and a Cline child in sandbox mode reads its provider settings only from a file named providers.json, through a link to the directory that holds it. Rename the file to providers.json, or unset the variable`,
+    );
+  }
+  return path.dirname(file);
+}
+
+/**
+ * Give a sandboxed child its data directory, mode 0700, with `settings`
+ * linked to the operator's settings directory, which is created when Cline
+ * has not written it yet. A link that already points there stays.
+ */
+export function prepareClineDataDir(dataDir: string, settingsDir: string): void {
+  fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
+  fs.chmodSync(dataDir, 0o700);
+  fs.mkdirSync(settingsDir, { recursive: true, mode: 0o700 });
+  const link = path.join(dataDir, 'settings');
+  let current: string | undefined;
+  try {
+    current = fs.readlinkSync(link);
+  } catch {
+    current = undefined;
+  }
+  if (current === settingsDir) return;
+  fs.rmSync(link, { force: true, recursive: false });
+  fs.symlinkSync(settingsDir, link, 'dir');
+}
+
+/** A sandboxed child's data directory, from its store: `<dir>/db/sessions.db`. */
+function dataDirOf(store: string): string {
+  return path.dirname(path.dirname(store));
 }
 
 /** The store Cline writes, by its own rule. */
@@ -272,36 +335,49 @@ export const cline: HarnessEntry = {
   kind: 'cline',
   harness: 'cline',
   label: 'Cline',
-  // An older daemon starts cline without the -y gate.
+  // An older daemon refuses cline without -y, or starts it without a sandbox.
   since: { protocol: 4, version: '0.1.5' },
   // Cline's read_files reads a file outside the working directory without a question.
   brief: { where: 'prompts', argument: briefSentence },
   chosenBy: 'flag',
   launchArgs: ({ model, extra = [], files }) => [...modelFlag(model, extra), '-i', ...(files.briefFile ? [briefSentence(files.briefFile)] : []), ...extra],
   // herdr reports no agent_session for Cline, and `--id` only reopens a session
-  // Cline already has, so the spawn finds the session Cline picked. An adopted
-  // child's session is found in the store by agent_read and the watcher.
+  // Cline already has, so the spawn finds the session Cline picked, in the
+  // child's own data directory. An adopted child's session is found in the
+  // operator's store by agent_read and the watcher.
   session: {
     from: 'store',
-    storePath: (hooks) => hooks.store ?? clineDbPath(),
+    storePath: (hooks, child) => hooks.store ?? path.join(clineDataDir(child.id), 'db', 'sessions.db'),
     async confirm({ store, cwd, briefFile, since }, hooks) {
       return findClineSession({ db: store, cwd, prompt: briefSentence(briefFile), since, waitMs: hooks.waitMs, intervalMs: hooks.intervalMs });
     },
   },
   /**
-   * The default launch is refused for the shared hub, and only `-y` in args
-   * opens the door. A child on another machine is refused, because the store
-   * is read where the child runs.
+   * A child on another machine is refused, because the store is read where
+   * the child runs. So is a provider settings file the sandbox's link cannot
+   * reach.
    */
-  async preflight({ name, host, args }) {
+  async preflight({ name, host }) {
     if (host !== LOCAL_HOST) throw new Error(`${name} was not started: a cline child runs on this machine only for now, because Cline's store is read where it runs. Omit machine.`);
-    if (!clineOptedIn(args)) throw new Error(`${name} was not started: ${CLINE_REFUSAL}.`);
+    try {
+      clineSettingsDir();
+    } catch (error) {
+      throw new Error(`${name} was not started: ${(error as Error).message}.`);
+    }
   },
-  spawnNote: (_child, args) => (clineOptedIn(args) ? CLINE_OPT_IN_NOTE : undefined),
+  spawnNote: (child, args) => {
+    if (clineOptedIn(args)) return CLINE_OPT_IN_NOTE;
+    return child.store ? clineSandboxNote(dataDirOf(child.store), clineSettingsDir()) : undefined;
+  },
   reports: {
     via: 'harness-config',
-    // The child reads its own MCP settings, and writes its session to the store this daemon reads.
-    local: (child, { env }) => ({ env: { CLINE_MCP_SETTINGS_PATH: writeClineMcpSettings(child.id, { ...env }), ...(child.store ? { CLINE_DB_DATA_DIR: path.dirname(child.store) } : {}) } }),
+    // The child runs in sandbox mode in its own data directory, which holds the
+    // store this daemon reads, and reads its own MCP settings.
+    local(child, { env }) {
+      const dataDir = child.store ? dataDirOf(child.store) : clineDataDir(child.id);
+      prepareClineDataDir(dataDir, clineSettingsDir());
+      return { env: { CLINE_SANDBOX: '1', CLINE_SANDBOX_DATA_DIR: dataDir, CLINE_MCP_SETTINGS_PATH: writeClineMcpSettings(child.id, { ...env }) } };
+    },
     remoteRefusal: "a cline child runs on this machine only for now, because Cline's store is read where it runs",
   },
   conversation: {

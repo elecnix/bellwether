@@ -138,8 +138,8 @@ export type SessionSource =
    */
   | {
       from: 'store';
-      /** The store's path on this machine, as the harness itself resolves it. */
-      storePath(hooks: HarnessHooks): string;
+      /** The store's path on this machine, as the harness itself resolves it, for the child about to start. */
+      storePath(hooks: HarnessHooks, child: Pick<ChildRecord, 'id'>): string;
       /** A new session id in the harness's own form, for a harness that takes one on its launch line. */
       mint?(): string;
       /**
@@ -222,7 +222,7 @@ export interface HarnessEntry {
    * caller's own extra arguments, such as what an opt-in flag costs. The
    * reply prints it at the moment the caller turns the flag on.
    */
-  spawnNote?(child: Pick<ChildRecord, 'name' | 'kind'>, args: string[]): string | undefined;
+  spawnNote?(child: Pick<ChildRecord, 'name' | 'kind' | 'store'>, args: string[]): string | undefined;
   /** A line for the spawn reply about which model the child runs on. */
   modelNote?(child: Pick<ChildRecord, 'name' | 'kind' | 'model' | 'host' | 'cwd'>): string | undefined;
 }

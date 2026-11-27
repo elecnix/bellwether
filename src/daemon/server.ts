@@ -9,7 +9,8 @@ import path from 'node:path';
 import { DAEMON_PROTOCOL, MAX_DAEMON_FRAME_BYTES, MIN_CLIENT_PROTOCOL, ProtocolError, acceptsClientProtocol, formatReply, parseRequest, type DaemonReply, type ParentHello, type SessionInfo } from './protocol.ts';
 import { DRAIN_GRACE_MS, drainDecision } from './handover.ts';
 import { BELLWETHER_BUILD_ID, BELLWETHER_VERSION } from '../core/version.ts';
-import { readParent } from '../core/registry.ts';
+import { listParents, readParent } from '../core/registry.ts';
+import { ancestry } from '../core/ancestry.ts';
 import { PRUNE_DELAY_MS, PRUNE_EVERY_MS, pruneState } from '../core/hygiene.ts';
 import { defaultServiceFactory, parentIdOf, type ParentService, type ServiceFactory } from './service.ts';
 import { acquire, isAlive, readLock, release } from './lock.ts';
@@ -351,6 +352,12 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
           sessions: [...attached.values()].map(sessionInfo),
           relaySubscribers: relaySockets.size,
         });
+        return;
+      }
+      if (request.type === 'ancestry') {
+        // A query over the registry this daemon writes, the sessions connected now and the parents it watches.
+        const connected = [...attached.values()].map((entry) => ({ parentId: entry.parentId, connectedAt: entry.connectedAt, ...(entry.parent.childId ? { childId: entry.parent.childId } : {}) }));
+        reply({ type: 'ancestry', id: request.id, answer: ancestry(request.agent, listParents(), { connected, watched: [...services.keys()] }) });
         return;
       }
       if (request.type === 'report') {

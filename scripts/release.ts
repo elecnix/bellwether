@@ -110,7 +110,7 @@ export function approvalNotice(change: ProtocolChange): string {
 
 /** The line printed once the version is on npm. */
 export function installNotice(version: string, formula: string): string {
-  return `${PACKAGE}@${version} is on npm, and ${formula}. Install it on each machine in the order docs/upgrading.md#order-on-each-machine gives.`;
+  return `${PACKAGE}@${version} is on npm, and ${formula}. Install it on each machine with the steps in docs/upgrading.md#what-you-run-on-each-machine.`;
 }
 
 export function prBody(version: string, previous: string | undefined, change: ProtocolChange | undefined): string {
@@ -120,7 +120,7 @@ export function prBody(version: string, previous: string | undefined, change: Pr
     '',
   ];
   if (change) {
-    lines.push(`The daemon protocol moves from ${change.from} to ${change.to}. A session on the new install drains the old daemon at its next call, and a session still on the old install fails its tool calls until it restarts. Before approving, follow [the steps for a protocol change](${DOCS_URL}/releasing.md#a-release-that-changes-the-daemon-protocol). [docs/upgrading.md](${DOCS_URL}/upgrading.md#daemon-protocol-changes) says what each session sees.`);
+    lines.push(`The daemon protocol moves from ${change.from} to ${change.to}. The first session on the new install hands the old daemon over, and a session still on the old install keeps working, because a daemon serves the protocol before its own. A session two protocols behind fails its tool calls until it restarts. Before approving, follow [the steps for a protocol change](${DOCS_URL}/releasing.md#a-release-that-changes-the-daemon-protocol). [docs/upgrading.md](${DOCS_URL}/upgrading.md#daemon-protocol-changes) says what each session sees.`);
   } else {
     lines.push('The daemon protocol stays the same, so a running daemon keeps serving sessions after the upgrade.');
   }

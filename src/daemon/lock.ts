@@ -126,10 +126,10 @@ export function release(home: string, pid = process.pid): void {
  * and whether it is the copy this command would start.
  */
 export function describeDaemonEntry(lock: LockRecord | undefined, ownEntry: string): string {
-  if (!lock?.entry) return 'info  daemon entry: not recorded, because the daemon predates 0.1.5. Run bellwether drain to replace it.';
+  if (!lock?.entry) return 'info  daemon entry: not recorded, because the daemon predates 0.1.5. The next session started from this install hands it over.';
   const own = canonicalEntry(ownEntry);
   const origin = lock.origin === 'checkout' ? 'a git checkout' : 'an installed package';
   if (lock.entry === own) return `ok    daemon entry: ${lock.entry} (${origin}), the one this command runs`;
   const mine = originOf(own) === 'checkout' ? 'a git checkout' : 'an installed package';
-  return `info  daemon entry: ${lock.entry} (${origin}), not this command's ${own} (${mine}). Run bellwether drain from the copy you want, then start a session from it.`;
+  return `info  daemon entry: ${lock.entry} (${origin}), not this command's ${own} (${mine}). A daemon from a newer release replaces an older one when its next session starts; between two copies of one release, run bellwether drain from the copy you want.`;
 }

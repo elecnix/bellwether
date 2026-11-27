@@ -3,7 +3,8 @@
 // starting another. A lock whose pid is gone is stale and is taken over.
 import fs from 'node:fs';
 import path from 'node:path';
-import { BELLWETHER_VERSION } from '../core/version.ts';
+import { fileURLToPath } from 'node:url';
+import { BELLWETHER_BUILD_ID, BELLWETHER_VERSION } from '../core/version.ts';
 import { DAEMON_PROTOCOL } from './protocol.ts';
 
 export interface LockRecord {
@@ -21,6 +22,22 @@ export interface LockRecord {
   entry?: string;
   /** Whether that entry point sits in a git checkout or in an installed package. */
   origin?: DaemonOrigin;
+  /** The build id of the daemon's install, as its hello reports it. A lock from before 0.1.5 has none. */
+  build?: string;
+  /**
+   * True for a daemon that `bellwether daemon` runs in the foreground. Its
+   * entry is the daemon entry point of the same install, the file a client
+   * would have started. A detached daemon leaves the field out.
+   */
+  foreground?: true;
+}
+
+/** How the daemon that takes a lock was started, for the lock to record. */
+export interface LockOrigin {
+  /** The daemon entry point of the install the daemon runs from. */
+  entry?: string;
+  /** Whether `bellwether daemon` runs it in the foreground. */
+  foreground?: boolean;
 }
 
 /** Where a daemon's code comes from: a git working tree, or a package a package manager installed. */
@@ -50,6 +67,9 @@ export function canonicalEntry(entry: string): string {
   }
 }
 
+/** This install's daemon entry point, canonical: main.ts from the sources, main.js from the build. */
+export const DAEMON_ENTRY = canonicalEntry(fileURLToPath(new URL(`./main${path.extname(import.meta.url)}`, import.meta.url)));
+
 export function lockPath(home: string): string {
   return path.join(home, 'daemon.lock');
 }
@@ -64,6 +84,8 @@ export function readLock(home: string): LockRecord | undefined {
     if (typeof record.version === 'string') read.version = record.version;
     if (typeof record.entry === 'string' && record.entry) read.entry = record.entry;
     if (record.origin === 'checkout' || record.origin === 'package') read.origin = record.origin;
+    if (typeof record.build === 'string' && record.build) read.build = record.build;
+    if (record.foreground === true) read.foreground = true;
     return read;
   } catch {
     return undefined;
@@ -84,18 +106,20 @@ export function isAlive(pid: number): boolean {
 export type AcquireResult = { kind: 'acquired' } | { kind: 'held'; record: LockRecord };
 
 /**
- * Take the lock, or report the live daemon that holds it. `entry` is the file
- * the daemon process runs, recorded with where it comes from, so a person can
- * tell an installed daemon from one a checkout started.
+ * Take the lock, or report the live daemon that holds it. The lock records
+ * the version and build of this install, and the entry point the daemon
+ * runs from with where it comes from, so a person can tell an installed
+ * daemon from one a checkout started without asking the daemon.
  */
-export function acquire(home: string, socketPath: string, pid = process.pid, alive = isAlive, entry?: string): AcquireResult {
+export function acquire(home: string, socketPath: string, pid = process.pid, alive = isAlive, started: LockOrigin = {}): AcquireResult {
   fs.mkdirSync(home, { recursive: true });
   const target = lockPath(home);
-  const record: LockRecord = { pid, startedAt: Date.now(), protocol: DAEMON_PROTOCOL, version: BELLWETHER_VERSION, socket: socketPath };
-  if (entry) {
-    record.entry = canonicalEntry(entry);
+  const record: LockRecord = { pid, startedAt: Date.now(), protocol: DAEMON_PROTOCOL, version: BELLWETHER_VERSION, socket: socketPath, build: BELLWETHER_BUILD_ID };
+  if (started.entry) {
+    record.entry = canonicalEntry(started.entry);
     record.origin = originOf(record.entry);
   }
+  if (started.foreground) record.foreground = true;
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
       const fd = fs.openSync(target, 'wx', 0o600);

@@ -29,7 +29,7 @@ import { readMemory, runsOn } from './daemon/relay-links.ts';
 import type { RelayHostState } from './daemon/protocol.ts';
 import { describePiTools, guardlessPiCopies } from './core/pi-extension.ts';
 import { describeClaudeTools, describeToolSource, findAmbientServers } from './core/tool-source.ts';
-import { lockPath, readLock } from './daemon/lock.ts';
+import { DAEMON_ENTRY, lockPath, readLock } from './daemon/lock.ts';
 import { BELLWETHER_BUILD, BELLWETHER_BUILD_ID, BELLWETHER_VERSION, describeBuild } from './core/version.ts';
 import { daemonIsLive, startDaemon } from './daemon/server.ts';
 import type { ChildRecord, OutboxEntry } from './core/types.ts';
@@ -385,7 +385,8 @@ async function main(argv: string[]): Promise<number> {
 
   if (command === 'daemon') {
     const socketPath = str(flags, 'socket') ?? process.env['BELLWETHER_DAEMON_SOCKET'] ?? path.join(bellwetherHome(), 'daemon.sock');
-    const daemon = await startDaemon({ socketPath, home: bellwetherHome(), log: (message) => console.error('[bellwether-daemon]', message) });
+    // The lock names this install's daemon entry point, so doctor can say which install a hand-started daemon runs.
+    const daemon = await startDaemon({ socketPath, home: bellwetherHome(), entry: DAEMON_ENTRY, foreground: true, log: (message) => console.error('[bellwether-daemon]', message) });
     console.error(`[bellwether-daemon] listening on ${socketPath} with pid ${daemon.pid}`);
     const stop = (): void => void daemon.close().then(() => process.exit(0));
     process.on('SIGTERM', stop);

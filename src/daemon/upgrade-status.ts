@@ -5,12 +5,11 @@
 // function of what `gatherUpgrade` read, so a test can hand it any machine.
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { BELLWETHER_BUILD, BELLWETHER_BUILD_ID, BELLWETHER_VERSION, describeBuild } from '../core/version.ts';
 import { daemonSessions, startingMarker } from './client.ts';
 import { compareVersions, decideHandOver, type HandOverDecision } from './handover.ts';
 import { FEATURES, missingFrom, unknownTo, type DaemonOffer, type Feature } from './features.ts';
-import { canonicalEntry, isAlive, readLock, type LockRecord } from './lock.ts';
+import { DAEMON_ENTRY, isAlive, readLock, type LockRecord } from './lock.ts';
 import { DAEMON_PROTOCOL, MIN_CLIENT_PROTOCOL, type RelayHostState, type SessionInfo, type SessionsReply } from './protocol.ts';
 import { canConnect } from './server.ts';
 
@@ -85,9 +84,6 @@ export function describePairing(installed: { version: string; protocol: number; 
   return lines;
 }
 
-/** The daemon entry point this install starts, as a lock records it. From the sources it is main.ts, and from the build main.js. */
-const OWN_ENTRY = canonicalEntry(fileURLToPath(new URL(`./main${path.extname(import.meta.url)}`, import.meta.url)));
-
 /** Read what the report needs from a home and its daemon socket. */
 export async function gatherUpgrade(home: string, socketPath = path.join(home, 'daemon.sock')): Promise<UpgradeInput> {
   const lock = readLock(home);
@@ -100,7 +96,7 @@ export async function gatherUpgrade(home: string, socketPath = path.join(home, '
   }
   for (const name of names) sockets.push({ name, answers: await canConnect(path.join(home, name)) });
   const input: UpgradeInput = {
-    installed: { version: BELLWETHER_VERSION, protocol: DAEMON_PROTOCOL, minClientProtocol: MIN_CLIENT_PROTOCOL, build: BELLWETHER_BUILD_ID, buildLine: describeBuild(BELLWETHER_VERSION, BELLWETHER_BUILD), entry: OWN_ENTRY },
+    installed: { version: BELLWETHER_VERSION, protocol: DAEMON_PROTOCOL, minClientProtocol: MIN_CLIENT_PROTOCOL, build: BELLWETHER_BUILD_ID, buildLine: describeBuild(BELLWETHER_VERSION, BELLWETHER_BUILD), entry: DAEMON_ENTRY },
     lockAlive: Boolean(lock && isAlive(lock.pid)),
     sockets,
     daemonSocket: path.relative(home, socketPath),
@@ -188,13 +184,15 @@ export function describeVersions(input: UpgradeInput, running: boolean, daemon?:
   if (!running) return { line: info(`versions: ${mine}; no daemon runs, so the next session starts one from its own install`), newer: false };
   const version = daemon?.version ?? input.lock?.version;
   const protocol = daemon?.protocol ?? input.lock?.protocol ?? 0;
-  const build = daemon?.build;
-  const buildText = namesCommit(build) ? `build ${build}` : daemon ? 'naming no commit, because it predates build ids' : 'with a build it cannot report';
+  // The daemon's own answer wins; without one, the lock names the build since 0.1.5.
+  const build = daemon?.build ?? input.lock?.build;
+  const buildText = namesCommit(build) ? `build ${build}` : daemon ? 'naming no commit, because it predates build ids' : input.lock?.build ? 'naming no commit in its lock' : 'with a build it cannot report';
   const entry = input.lock?.entry;
   const origin = input.lock?.origin === 'checkout' ? 'a git checkout' : 'an installed package';
-  // A lock with a version but no entry point comes from a daemon that `bellwether daemon` started in the foreground, which records none.
+  // Before this release, `bellwether daemon` wrote a lock with a version and no entry point. That stays true of a lock an older build wrote.
   const unnamed = input.lock?.version ? `started by hand with bellwether daemon on ${input.lock.socket || 'a socket its lock does not name'}, so its lock names no entry point` : 'from an entry point its lock does not name, because the daemon that wrote it predates that field';
-  const entryText = !entry ? unnamed : installed.entry && entry === installed.entry ? `from this install's entry point, ${entry}` : `from ${entry} (${origin})`;
+  const install = !entry ? '' : installed.entry && entry === installed.entry ? `this install's entry point, ${entry}` : `${entry} (${origin})`;
+  const entryText = !entry ? unnamed : input.lock?.foreground ? `started by hand with bellwether daemon on ${input.lock.socket || 'a socket its lock does not name'}, from ${install}` : `from ${install}`;
   const theirs = `the running daemon, pid ${input.lock?.pid}, is ${version ?? 'a release older than 0.1.5'} on protocol ${protocol}, ${buildText}, ${entryText}`;
   const order = version ? compareVersions(version, installed.version) : -1;
   const newer = order !== undefined && (order > 0 || (order === 0 && protocol > installed.protocol));

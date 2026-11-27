@@ -9,7 +9,10 @@ import net from 'node:net';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { setTimeout as delay } from 'node:timers/promises';
 import { MOVE_CHECK_BUDGET_MS } from '../../src/core/move-endpoint.ts';
+import { BELLWETHER_BUILD_ID, BELLWETHER_VERSION } from '../../src/core/version.ts';
+import { DAEMON_ENTRY, originOf, readLock } from '../../src/daemon/lock.ts';
 import { startFakeHerdr } from '../fixtures/fake-herdr.ts';
 import { isolate } from '../fixtures/isolated.ts';
 
@@ -100,3 +103,39 @@ test('drain --socket describes the lock beside that socket, not the one in BELLW
   assert.match(result.stdout, new RegExp(`drained the daemon 0\\.1\\.5 on protocol 4 \\(pid ${process.pid}\\), as its lock ${lock.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} records`));
   assert.doesNotMatch(result.stdout, /before 0\.1\.5|unknown/);
 });
+
+test('bellwether daemon in the foreground writes its entry point, version and build into its lock, and doctor names that install', async (t) => {
+  const space = isolate(t, 'bellwether-foreground-');
+  const herdr = await startFakeHerdr();
+  t.after(() => herdr.stop());
+  const env: NodeJS.ProcessEnv = { ...process.env, PATH: `${fakeBin(space.root)}:${path.dirname(process.execPath)}:/usr/bin:/bin`, HERDR_SOCKET_PATH: herdr.socketPath };
+  const socket = path.join(space.home, 'daemon.sock');
+  const daemon = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', CLI, 'daemon'], { env, stdio: ['ignore', 'ignore', 'pipe'] });
+  let stderr = '';
+  daemon.stderr.on('data', (chunk: Buffer) => (stderr += chunk.toString('utf8')));
+  const exited = new Promise<void>((resolve) => daemon.on('close', () => resolve()));
+  t.after(async () => {
+    daemon.kill('SIGTERM');
+    await exited;
+  });
+  const deadline = Date.now() + 10_000;
+  while (!stderr.includes('listening on') && Date.now() < deadline) await delay(20);
+  assert.match(stderr, /listening on/, stderr);
+  const lock = readLock(space.home);
+  assert.ok(lock, 'the daemon wrote its lock');
+  assert.equal(lock.pid, daemon.pid);
+  assert.equal(lock.socket, socket);
+  assert.equal(lock.version, BELLWETHER_VERSION);
+  assert.equal(lock.build, BELLWETHER_BUILD_ID);
+  assert.equal(lock.entry, DAEMON_ENTRY);
+  assert.equal(lock.origin, originOf(DAEMON_ENTRY));
+  assert.equal(lock.foreground, true);
+  const result = await run(['doctor'], env);
+  const versions = result.stdout.split('\n').find((line) => line.includes('versions:')) ?? '';
+  assert.match(versions, new RegExp(`started by hand with bellwether daemon on ${escape(socket)}, from this install's entry point, ${escape(DAEMON_ENTRY)}`), result.stdout);
+  assert.doesNotMatch(versions, /names no entry point|predates/);
+});
+
+function escape(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}

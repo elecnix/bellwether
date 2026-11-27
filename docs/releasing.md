@@ -26,7 +26,11 @@ Each run reads where the release stands, then takes it one stage further:
 
 4. While a pull request from `release/<version>` is open, the script waits for its CI with `gh monitor`. Once every check passes, it squash-merges. A failing check stops it and leaves the pull request open.
 
-5. With none of those in place, the script refuses a checkout with uncommitted changes, and an `origin/main` whose last `ci` run didn't pass. Next, it creates the `release-<version>` worktree from `origin/main` and runs `npm ci`, typecheck, the three test tiers and `doctor`. Then it bumps the version in `package.json` and `package-lock.json` and pushes `release/<version>` with a pull request. From there, it continues as in step 4.
+5. With none of those in place, the script refuses a checkout with uncommitted changes, and an `origin/main` whose last `ci` run didn't pass. Next, it creates the `release-<version>` worktree from `origin/main` and runs `npm ci` and `vale sync`, then typecheck, the three test tiers and `doctor`. Then it bumps the version in `package.json` and `package-lock.json` and pushes `release/<version>` with a pull request. From there, it continues as in step 4.
+
+   A new worktree has no Vale style packs, and the prose gate in the unit tier needs them. `vale sync` fetches the two packages that `.vale.ini` pins, so the gate runs with the rules CI uses. A failed sync stops the run before the tests start, and its error gives the command to run in that worktree.
+
+   Typecheck, tests and `doctor` run by hand in a new worktree need the same step: run `vale sync` there after `npm ci`. Without it, `npm run check:prose` and the prose cases in the unit tier stop with the same command.
 
 Run it again after any stop, whether a failed check, a timeout or a closed terminal, and it resumes from the same stage. The script stops at the `stage approve` command and leaves the code to the person. The script runs on the machine's `gh` and `npm` logins, which need write access to both repositories and publish rights on the package. It doesn't use a token or an Actions secret.
 

@@ -18,7 +18,7 @@ import { spawnChild } from '../../src/core/spawn.ts';
 import { Watcher } from '../../src/core/watcher.ts';
 import { FEATURES, kindFeatures, missingFeatureMessage, unservedArgument } from '../../src/daemon/features.ts';
 import { parentTools, runBellwetherTool, type ToolContext } from '../../src/integrations/tools.ts';
-import { startFakeHerdr, type FakeHerdr } from '../fixtures/fake-herdr.ts';
+import { startFakeHerdr, type FakeHerdr, harnessStarts, harnessStart } from '../fixtures/fake-herdr.ts';
 import { FAKE_KIND, fakeHarness } from '../fixtures/fake-harness.ts';
 import { fakeWorld, type FakeWorld } from '../fixtures/fake-world.ts';
 import { isolate } from '../fixtures/isolated.ts';
@@ -43,9 +43,9 @@ async function room(t: test.TestContext): Promise<Room> {
 }
 
 function startArgs(fake: FakeHerdr): string[] {
-  const start = fake.requests.find((request) => request.method === 'agent.start');
+  const start = harnessStarts(fake)[0];
   assert.ok(start, 'herdr was never asked to start the agent');
-  return start.params['args'] as string[];
+  return start.args as string[];
 }
 
 function context(space: Room): ToolContext {
@@ -70,8 +70,8 @@ test('the fourth entry spawns with its own launch line, MCP config and brief poi
 
   assert.equal(child.harness, 'fake-agent');
   assert.deepEqual(startArgs(space.fake), ['--model', 'example-model', `--mcp-config=${mcpConfigPath(child.id)}`, `Your task is in ${promptPath(child.id)}. Read it, then do what it says.`]);
-  const start = space.fake.requests.find((request) => request.method === 'agent.start');
-  assert.equal(start?.params['kind'], FAKE_KIND);
+  const start = harnessStarts(space.fake)[0];
+  assert.equal(start?.kind, FAKE_KIND);
   // The child's own server carries its child id, so its parent_report reaches this parent.
   const config = JSON.parse(fs.readFileSync(mcpConfigPath(child.id), 'utf8')) as { mcpServers: Record<string, { args: string[] }> };
   assert.ok(Object.values(config.mcpServers).some((server) => server.args.includes(child.id)), 'the MCP config does not name the child');
@@ -105,7 +105,7 @@ test('a harness whose child could not report is refused before the record, the b
   t.after(registerHarness(mute));
   await assert.rejects(spawnChild(space.client, readParent(space.parentId)!, { kind: 'fake-mute', name: 'unheard', prompt: 'report back' }), /unheard was not started: Fake Mute takes no MCP configuration\. A fake-mute child can be adopted with agent_adopt once it runs/);
   assert.deepEqual(readParent(space.parentId)?.children, []);
-  assert.equal(space.fake.requests.some((request) => request.method === 'tab.create' || request.method === 'agent.start'), false);
+  assert.equal(space.fake.requests.some((request) => request.method === 'tab.create' || harnessStart(request) !== undefined), false);
   const prompts = path.join(space.home, 'prompts');
   assert.deepEqual(fs.existsSync(prompts) ? fs.readdirSync(prompts) : [], []);
 });
@@ -125,7 +125,7 @@ test("an entry's preflight sees the caller's extra arguments, and its spawn note
   t.after(registerHarness(gated));
   await assert.rejects(spawnChild(space.client, readParent(space.parentId)!, { kind: 'fake-gated', name: 'closed', prompt: 'x' }), /closed was not started: Fake Gated starts only with --opt-in/);
   assert.deepEqual(readParent(space.parentId)?.children, []);
-  assert.equal(space.fake.requests.some((request) => request.method === 'tab.create' || request.method === 'agent.start'), false);
+  assert.equal(space.fake.requests.some((request) => request.method === 'tab.create' || harnessStart(request) !== undefined), false);
 
   const reply = await runBellwetherTool(context(space), 'agent_spawn', { kind: 'fake-gated', name: 'open', prompt: 'x', args: ['--opt-in'] }, {});
   assert.match(reply, /open started as a fake-gated agent/);
@@ -153,5 +153,5 @@ test("an entry's preflight asks herdr on the child's machine, and its refusal le
   await assert.rejects(spawnChild(space.client, readParent(space.parentId)!, { kind: 'fake-checked', name: 'unchecked', prompt: 'report back' }), /unchecked was not started: herdr lists no fake-checked integration/);
   assert.ok(space.fake.requests.some((request) => request.method === 'integration.list'), 'the preflight reached herdr through the spawn');
   assert.deepEqual(readParent(space.parentId)?.children, []);
-  assert.equal(space.fake.requests.some((request) => request.method === 'tab.create' || request.method === 'agent.start'), false);
+  assert.equal(space.fake.requests.some((request) => request.method === 'tab.create' || harnessStart(request) !== undefined), false);
 });

@@ -41,6 +41,13 @@ export const CHANNEL_ACCEPT_SELECTED = `user@host:/var/tmp/bw-dlg-kamEEq$ claude
 
 export const CHANNEL_EXIT_SELECTED = CHANNEL_ACCEPT_SELECTED.replace('  ❯ 1. I am using this for local development\n    2. Exit', '    1. I am using this for local development\n  ❯ 2. Exit');
 
+/**
+ * The channel question as an operator met it in issue #133: a shell function
+ * added its own development channels, so it lists five, and the selection
+ * sits on "Exit". The channel names other than Bellwether's are synthetic.
+ */
+export const CHANNEL_FIVE_EXIT_SELECTED = CHANNEL_EXIT_SELECTED.replace('Channels: server:your-attention, server:bellwether', 'Channels: server:example-one, server:example-two, server:example-three, server:example-four, server:bellwether');
+
 export const CLAUDE_PROMPT = ` ▐▛███▛█   Claude Code v2.1.332
 ▝▜██████▀  Haiku 5.5 · Claude Ultra
  ▝▝   ▝▝   /var/tmp/bw-dlg-kamEEq

@@ -3,8 +3,8 @@
 // cases read screens copied from a real Claude Code 2.1.332 pane.
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { detectDialog, keyToward } from '../../src/core/startup-dialogs.ts';
-import { CHANNEL_ACCEPT_SELECTED, CHANNEL_EXIT_SELECTED, CLAUDE_PROMPT, PERMISSION_QUESTION, TRUST_NO_SELECTED, TRUST_YES_SELECTED } from '../fixtures/claude-screens.ts';
+import { answerKey, confirms, detectDialog, keyToward } from '../../src/core/startup-dialogs.ts';
+import { CHANNEL_ACCEPT_SELECTED, CHANNEL_EXIT_SELECTED, CHANNEL_FIVE_EXIT_SELECTED, CLAUDE_PROMPT, PERMISSION_QUESTION, TRUST_NO_SELECTED, TRUST_YES_SELECTED } from '../fixtures/claude-screens.ts';
 
 const TRUST_ACCEPT = 'Yes, I trust this folder';
 const CHANNEL_ACCEPT = 'I am using this for local development';
@@ -44,4 +44,19 @@ test('a dialog with no selection marker gets no key', () => {
 test('the prompt and a permission question are not startup dialogs', () => {
   assert.equal(detectDialog(CLAUDE_PROMPT), undefined);
   assert.equal(detectDialog(PERMISSION_QUESTION), undefined);
+});
+
+test('a numbered option is answered with its digit, wherever the cursor is (issue #133)', () => {
+  assert.equal(answerKey(CHANNEL_ACCEPT_SELECTED, CHANNEL_ACCEPT), '1');
+  assert.equal(answerKey(CHANNEL_EXIT_SELECTED, CHANNEL_ACCEPT), '1');
+  assert.equal(answerKey(CHANNEL_FIVE_EXIT_SELECTED, CHANNEL_ACCEPT), '1');
+  assert.equal(confirms('1'), true);
+});
+
+test('an option without a number is walked to with the arrows, and Enter waits for it to be selected', () => {
+  assert.equal(answerKey(TRUST_NO_SELECTED, TRUST_ACCEPT), 'Down');
+  assert.equal(answerKey(TRUST_YES_SELECTED, TRUST_ACCEPT), 'Enter');
+  assert.equal(confirms('Down'), false);
+  // A screen still drawing gets no key at all.
+  assert.equal(answerKey('drawing…', TRUST_ACCEPT), undefined);
 });

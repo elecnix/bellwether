@@ -15,7 +15,7 @@ import { spawnChild } from '../../src/core/spawn.ts';
 import type { ChildRecord } from '../../src/core/types.ts';
 import { Watcher } from '../../src/core/watcher.ts';
 import { runBellwetherTool, type ToolContext } from '../../src/integrations/tools.ts';
-import { startFakeHerdr, type FakeHerdr } from '../fixtures/fake-herdr.ts';
+import { startFakeHerdr, type FakeHerdr, harnessStarts, harnessStart } from '../fixtures/fake-herdr.ts';
 import { fakeWorld, type FakeWorld } from '../fixtures/fake-world.ts';
 import { isolate } from '../fixtures/isolated.ts';
 
@@ -43,9 +43,9 @@ async function room(t: test.TestContext): Promise<Room> {
 }
 
 function startArgs(fake: FakeHerdr): string[] {
-  const start = fake.requests.find((request) => request.method === 'agent.start');
+  const start = harnessStarts(fake)[0];
   assert.ok(start, 'herdr was never asked to start the agent');
-  return start.params['args'] as string[];
+  return start.args as string[];
 }
 
 function record(parentId: string, childId: string): ChildRecord | undefined {
@@ -98,7 +98,7 @@ test('a pi spawn whose extension cannot be found fails, and leaves no tab, recor
     (error: Error) => error.message.includes(missing) && /pi extension/.test(error.message),
   );
   assert.deepEqual(readParent(space.parentId)?.children, []);
-  assert.equal(space.fake.requests.some((request) => request.method === 'tab.create' || request.method === 'agent.start'), false, 'herdr was asked for a tab');
+  assert.equal(space.fake.requests.some((request) => request.method === 'tab.create' || harnessStart(request) !== undefined), false, 'herdr was asked for a tab');
   const prompts = path.join(space.home, 'prompts');
   assert.deepEqual(fs.existsSync(prompts) ? fs.readdirSync(prompts) : [], []);
 });

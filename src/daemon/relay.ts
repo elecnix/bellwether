@@ -123,10 +123,26 @@ export class RelayOutbox {
     return `Reported ${status} to the parent on another machine, as ${record.name}.`;
   }
 
+  /**
+   * The child's model read a parent's message that crossed from the parent's
+   * machine. The read waits in the outbox as any report does, until the
+   * parent's daemon acknowledges it, and goes to each connected one now.
+   */
+  messageRead(record: RelayRecord, messageId: string): void {
+    const entry: ForwardEntry = { receipt: newReportReceipt(), childId: record.childId, parentId: record.parentId, status: 'progress', text: '', at: new Date(this.now()).toISOString(), messageRead: messageId };
+    saveForward(entry);
+    this.settleRecord(entry.childId, false);
+    const listeners = [...this.subscribers].filter((subscriber) => subscriber.parentIds.has(entry.parentId));
+    for (const listener of listeners) listener.send(toReport(entry));
+    this.log(`relay: kept the read of message ${messageId} by child ${record.childId} for parent ${record.parentId}${listeners.length ? ', and sent it' : ', whose daemon is not connected'}`);
+  }
+
   /** Say on the child's relay record how many of its reports wait, and remove the record of a gone child once none does. */
   private settleRecord(childId: string, forwarded: boolean): void {
-    const waiting = this.waiting().filter((entry) => entry.childId === childId).length;
-    if (waiting === 0 && readRelayRecord(childId)?.retiredAt) {
+    const pending = this.waiting().filter((entry) => entry.childId === childId);
+    // A read waits like a report, but it is not one, so the count a person sees leaves it out.
+    const waiting = pending.filter((entry) => !entry.messageRead).length;
+    if (pending.length === 0 && readRelayRecord(childId)?.retiredAt) {
       removeRelayRecord(childId);
       this.log(`relay: removed the record of child ${childId}, which is gone and has no report left to collect`);
       return;
@@ -151,5 +167,5 @@ function overLong(entry: ForwardEntry): string | undefined {
 }
 
 function toReport(entry: ForwardEntry): RelayReport {
-  return { receipt: entry.receipt, childId: entry.childId, parentId: entry.parentId, status: entry.status, text: entry.text, at: entry.at };
+  return { receipt: entry.receipt, childId: entry.childId, parentId: entry.parentId, status: entry.status, text: entry.text, at: entry.at, ...(entry.messageRead ? { messageRead: entry.messageRead } : {}) };
 }

@@ -14,18 +14,19 @@ import { emptyParent, readParent, saveParent } from '../../src/core/registry.ts'
 import { spawnChild } from '../../src/core/spawn.ts';
 import { Watcher } from '../../src/core/watcher.ts';
 import type { OutboxEntry, ParentRecord } from '../../src/core/types.ts';
-import { startFakeHerdr, type FakeHerdr, type RecordedRequest } from '../fixtures/fake-herdr.ts';
-import { CHANNEL_ACCEPT_SELECTED, CLAUDE_PROMPT, PERMISSION_QUESTION, TRUST_NO_SELECTED, TRUST_YES_SELECTED } from '../fixtures/claude-screens.ts';
+import { startFakeHerdr, type FakeHerdr, type RecordedRequest, harnessStart } from '../fixtures/fake-herdr.ts';
+import { CHANNEL_ACCEPT_SELECTED, CHANNEL_FIVE_EXIT_SELECTED, CLAUDE_PROMPT, PERMISSION_QUESTION, TRUST_NO_SELECTED, TRUST_YES_SELECTED } from '../fixtures/claude-screens.ts';
 
 const PANE = 'w1:p1';
 const SESSION = '2ec67aeb-f5b3-4cdc-bedf-eab67f3462ab';
 
-type Screen = 'trust-no' | 'trust-yes' | 'channel' | 'prompt' | 'permission' | 'exited';
+type Screen = 'trust-no' | 'trust-yes' | 'channel' | 'channel-exit' | 'prompt' | 'permission' | 'exited';
 
 const TEXT: Record<Screen, string> = {
   'trust-no': TRUST_NO_SELECTED,
   'trust-yes': TRUST_YES_SELECTED,
   channel: CHANNEL_ACCEPT_SELECTED,
+  'channel-exit': CHANNEL_FIVE_EXIT_SELECTED,
   prompt: CLAUDE_PROMPT,
   permission: PERMISSION_QUESTION,
   exited: '$ ',
@@ -55,7 +56,7 @@ class ClaudePane {
     if (request.method === 'agent.get') return { result: { type: 'agent_info', agent: this.agentInfo() } };
     if (request.method === 'session.snapshot') return { result: { type: 'session_snapshot', snapshot: { panes: [], agents: [this.agentInfo()] } } };
     if (request.method === 'pane.list') return { result: { type: 'pane_list', panes: [{ pane_id: PANE }] } };
-    if (request.method === 'agent.start') {
+    if (harnessStart(request) !== undefined) {
       // herdr answers at once and classifies the pane a moment later.
       const onQuestion = this.screen !== 'prompt';
       setTimeout(() => this.setStatus(onQuestion ? 'blocked' : 'idle'), 5);
@@ -75,11 +76,16 @@ class ClaudePane {
 
   private press(key: string): void {
     this.keys.push({ key, on: this.screen });
-    if (this.options.stubborn && this.screen === 'channel') return;
+    if (this.options.stubborn && (this.screen === 'channel' || this.screen === 'channel-exit')) return;
+    // The trust question has no numbers and ignores a digit, as Claude Code 2.1.318 does.
     if (this.screen === 'trust-no' && key === 'Down') this.screen = 'trust-yes';
     else if (this.screen === 'trust-no' && key === 'Enter') this.screen = 'exited';
     else if (this.screen === 'trust-yes' && key === 'Enter') this.screen = 'channel';
-    else if (this.screen === 'channel' && key === 'Enter') {
+    // The channel question takes the digit of an option wherever its cursor is.
+    else if (this.screen === 'channel' && key === 'Down') this.screen = 'channel-exit';
+    else if (this.screen === 'channel-exit' && key === 'Up') this.screen = 'channel';
+    else if ((this.screen === 'channel-exit' && key === 'Enter') || ((this.screen === 'channel' || this.screen === 'channel-exit') && key === '2')) this.screen = 'exited';
+    else if ((this.screen === 'channel' && key === 'Enter') || ((this.screen === 'channel' || this.screen === 'channel-exit') && key === '1')) {
       this.screen = 'prompt';
       setTimeout(() => this.setStatus('idle'), 5);
     }
@@ -148,8 +154,9 @@ test('a spawn that meets the trust and channel questions reaches the prompt and 
     // The spawn returned with the child past both questions.
     assert.equal(pane.screen, 'prompt');
     assert.equal(child.lastStatus, 'idle');
-    // Down moved off "No, exit" first; Enter never went to it.
-    assert.deepEqual(pane.keys.map(({ key }) => key), ['Down', 'Enter', 'Enter']);
+    // Down moved off "No, exit" first; Enter never went to it. The channel
+    // question took its digit.
+    assert.deepEqual(pane.keys.map(({ key }) => key), ['Down', 'Enter', '1']);
     assert.ok(pane.keys.every(({ key, on }) => !(key === 'Enter' && on === 'trust-no')));
 
     // The registry holds the session and no starting marker.
@@ -162,6 +169,21 @@ test('a spawn that meets the trust and channel questions reaches the prompt and 
     // the parent.
     await sleep(250);
     assert.deepEqual(r.published.map((entry) => entry.event), []);
+  } finally {
+    await r.stop();
+  }
+});
+
+test('a channel question with five channels and the cursor on Exit is answered with 1, never Enter (issue #133)', async () => {
+  const pane = new ClaudePane('channel-exit');
+  const r = await rig(pane);
+  try {
+    const { child } = await spawnChild(r.client, r.parent, { kind: 'claude', name: 'kid', prompt: 'go', redrawMs: 10, startupTimeoutMs: 5_000 });
+    assert.equal(pane.screen, 'prompt');
+    assert.equal(child.lastStatus, 'idle');
+    // One key, the digit of "I am using this for local development". No arrow
+    // depended on where the cursor started, and no Enter went to "Exit".
+    assert.deepEqual(pane.keys, [{ key: '1', on: 'channel-exit' }]);
   } finally {
     await r.stop();
   }
@@ -203,7 +225,7 @@ test('a resumed child that asks the channel question again is answered without a
     pane.setStatus('blocked');
     await sleep(300);
     assert.equal(pane.screen, 'prompt');
-    assert.deepEqual(pane.keys.map(({ key }) => key), ['Enter']);
+    assert.deepEqual(pane.keys.map(({ key }) => key), ['1']);
     assert.deepEqual(r.published.filter((entry) => entry.event === 'blocked'), []);
   } finally {
     await r.stop();

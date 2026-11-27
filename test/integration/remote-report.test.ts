@@ -32,7 +32,7 @@ import { RelayLinks } from '../../src/daemon/relay-links.ts';
 import { startDaemon, type Daemon, type ParentService } from '../../src/daemon/server.ts';
 import { runBellwetherTool } from '../../src/integrations/tools.ts';
 import { stopDaemonsUnder } from '../fixtures/daemons.ts';
-import { startFakeHerdr, type FakeHerdrOptions } from '../fixtures/fake-herdr.ts';
+import { startFakeHerdr, type FakeHerdrOptions, harnessStarts, harnessStart } from '../fixtures/fake-herdr.ts';
 import { ABSENT_HOME, ENV_HARNESS_FILE, ENV_KIND, KEY_FILE, READY } from '../fixtures/far-env-harness.ts';
 import { installFakeSsh, type FakeSsh } from '../fixtures/fake-ssh.ts';
 import { LIVE_HOME } from '../fixtures/isolation.ts';
@@ -576,7 +576,7 @@ test("a spawn on another machine registers the child there and starts it with th
   let herdr: Awaited<ReturnType<typeof startFakeHerdr>> | undefined;
   herdr = await startFakeHerdr({
     respond: (request) => {
-      if (request.method === 'agent.start') setTimeout(() => herdr?.send({ event: 'pane_agent_status_changed', data: { pane_id: 'w1:p1', agent_status: 'idle' } }), 20);
+      if (harnessStart(request) !== undefined) setTimeout(() => herdr?.send({ event: 'pane_agent_status_changed', data: { pane_id: 'w1:p1', agent_status: 'idle' } }), 20);
       return undefined;
     },
   });
@@ -590,8 +590,8 @@ test("a spawn on another machine registers the child there and starts it with th
   const record = inHome(w.childHome, () => readRelayRecord(child.id));
   assert.equal(record?.parentId, parent.id);
   assert.equal((record as unknown as Record<string, unknown>)['parentHost'], undefined);
-  const start = herdr.requests.find((request) => request.method === 'agent.start');
-  const args = (start?.params['args'] as string[]) ?? [];
+  const start = harnessStarts(herdr)[0];
+  const args = (start?.args as string[]) ?? [];
   const mcp = args.find((arg) => arg.startsWith('--mcp-config='))?.slice('--mcp-config='.length) ?? '';
   assert.ok(mcp.startsWith(path.join(w.childHome, 'mcp')), `the config is the remote machine's: ${mcp}`);
   assert.ok(!fs.existsSync(path.join(w.parentHome, 'mcp')), 'none was written on the parent machine');
@@ -648,7 +648,7 @@ async function idleHerdr(t: test.TestContext, respond?: FakeHerdrOptions['respon
     respond: (request) => {
       const answer = respond?.(request);
       if (answer) return answer;
-      if (request.method === 'agent.start') setTimeout(() => herdr?.send({ event: 'pane_agent_status_changed', data: { pane_id: 'w1:p1', agent_status: 'idle' } }), 20);
+      if (harnessStart(request) !== undefined) setTimeout(() => herdr?.send({ event: 'pane_agent_status_changed', data: { pane_id: 'w1:p1', agent_status: 'idle' } }), 20);
       return undefined;
     },
   });
@@ -657,7 +657,7 @@ async function idleHerdr(t: test.TestContext, respond?: FakeHerdrOptions['respon
 }
 
 function startArgs(herdr: Awaited<ReturnType<typeof startFakeHerdr>>): string[] {
-  return (herdr.requests.find((request) => request.method === 'agent.start')?.params['args'] as string[]) ?? [];
+  return (harnessStarts(herdr)[0]?.args as string[]) ?? [];
 }
 
 test('a spawn on another machine copies the brief there over ssh, and points the child at that copy', async (t) => {
@@ -700,7 +700,7 @@ test('a spawn on another machine whose brief cannot be copied fails, with no tab
     /mute was not started on machine child-box, because its brief could not be copied there: ssh child-box exited with 255/,
   );
   assert.equal(herdr.requests.filter((request) => request.method === 'tab.create').length, 0, 'no tab was opened');
-  assert.equal(herdr.requests.filter((request) => request.method === 'agent.start').length, 0);
+  assert.equal(harnessStarts(herdr).length, 0);
   assert.deepEqual(readParent(parent.id)?.children, [], 'the record went with the spawn');
   assert.ok(!fs.existsSync(path.join(w.parentHome, 'prompts')) || fs.readdirSync(path.join(w.parentHome, 'prompts')).length === 0);
 });
@@ -708,7 +708,7 @@ test('a spawn on another machine whose brief cannot be copied fails, with no tab
 test('a spawn that fails after its brief was copied removes the copy on the child\'s machine', async (t) => {
   const w = world(t);
   const parent = saveParent(emptyParent('pi', 'start-fails', '/work', { workspaceId: 'w1' }));
-  const herdr = await idleHerdr(t, (request) => (request.method === 'agent.start' ? { error: { code: 'agent_start_failed', message: 'no such agent kind' } } : undefined));
+  const herdr = await idleHerdr(t, (request) => (harnessStart(request) !== undefined ? { error: { code: 'agent_start_failed', message: 'no such agent kind' } } : undefined));
   const ops = remoteOps(machines);
   await assert.rejects(
     spawnChild(new HerdrClient({ socketPath: herdr.socketPath }), parent, { kind: 'pi', name: 'never-ran', host: 'child-box', prompt: 'a task' }, undefined, { registerRemote: (entry, text) => ops.register(parent, entry, text), cleanupRemote: (entry) => ops.cleanup(entry) }),

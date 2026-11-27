@@ -29,8 +29,9 @@ src/daemon/        the daemon: protocol, server, client, lock, relay, parent ser
 src/integrations/  the tool list, shared by both adapters, with pi/ and claude/
 bin/               the bellwether command and MCP server, run from the sources in a checkout
 dist/              the compiled JavaScript that npm publishes, built by `npm run build`
-scripts/           the release script and the phase 0 probe scripts
+scripts/           the release script, the site build and the phase 0 probe scripts
 docs/              user topics, probe results and test briefs
+site/              the documentation site's page template and stylesheet
 test/unit/         tier 1
 test/integration/  tier 2: a fake herdr socket and the daemon
 test/lab/          tier 3: a real isolated herdr server
@@ -45,6 +46,8 @@ npm run typecheck      # tsgo over src, test, bin
 npm test               # tier 1 unit, then tier 2 and 3 integration
 npm run doctor         # bellwether doctor against the live herdr
 ```
+
+The documentation site on GitHub Pages comes from `README.md` and the topic files under `docs/`. `npm run site` writes it to `_site/`, and the `pages` workflow deploys it from `main`. A new topic file reaches the site once it has an entry in `PAGES` in `scripts/build-site.ts`.
 
 Prose in Markdown files runs through Vale. The rules are the `ai-tells`, `ai-tells-experimental` and `noslop` packs. Read `/Users/nicolas/.agents/skills/vale-prose-rules/SKILL.md` before writing docs, a pull request body or a ticket.
 

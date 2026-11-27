@@ -49,7 +49,7 @@ To run it:
 
 5. Run checks 1 to 4 below. Where a check says `bellwether` on CHILD, use `$X/prefix/bin/bellwether` with the same two variables. Where it says `~/.bellwether`, read `$X/home`. A report from the child is `bellwether report --child relay-check-child --status done --text <text>`. Check 4 switches the far end by writing `$X/old` into the prefix file, then cuts the connection as check 3 does.
 
-6. Stop `parent.ts`, run `BELLWETHER_HOME=$X/home $X/prefix/bin/bellwether drain --socket $X/home/daemon.sock` on CHILD, and delete `$X` on CHILD and `$PH` on PARENT. Without `BELLWETHER_HOME`, drain describes the lock in `~/.bellwether` rather than the daemon it drained, and can print `from before 0.1.5 on protocol unknown` for a daemon on protocol 4 ([#110](https://github.com/elecnix/bellwether/issues/110)).
+6. Stop `parent.ts`, run `BELLWETHER_HOME=$X/home $X/prefix/bin/bellwether drain --socket $X/home/daemon.sock` on CHILD, and delete `$X` on CHILD and `$PH` on PARENT. Drain describes the daemon from the lock beside the socket it drained, and its message gives that lock's path.
 
 ## The harness skips the global lookup and the spawn
 
@@ -72,7 +72,7 @@ A green harness doesn't prove either. Only the global path proves them, so run i
 
 4. Drain both machines with `bellwether drain`, so that each starts its next daemon from the install under test. A parent session may run its own copy, such as a Claude Code plugin. Whichever session reconnects first starts the daemon.
 
-   On PARENT, run `bellwether drain` and start `bellwether daemon` detached in the same command. Then check that each machine's `daemon.lock` names a daemon of the build under test. The lock's `entry` must lie under the tarball's install. For a daemon that `bellwether daemon` started, which writes a lock without an `entry`, check instead that a pid's command line runs that install, because doctor's claim that the daemon predates the field is wrong for that case ([#111](https://github.com/elecnix/bellwether/issues/111)).
+   On PARENT, run `bellwether drain` and start `bellwether daemon` detached in the same command. Then check that each machine's `daemon.lock` names a daemon of the build under test. The lock's `entry` must lie under the tarball's install. A daemon that `bellwether daemon` started writes a lock without an `entry`, and doctor says a person started it by hand, and gives its socket. For that daemon, check instead that a pid's command line runs that install.
 
 5. From a parent session on PARENT, call `agent_spawn` with `kind: "pi"`, `name: "relay-check"` and `machine: "CHILD"`.
 
@@ -93,7 +93,7 @@ The SSH session on CHILD that carries the bridge runs as your own user, so you c
 - During the freeze, PARENT loses the link within 45 to 60 seconds. `ServerAliveInterval=15` and `ServerAliveCountMax=3` set that window.
 - PARENT then reconnects on a new session, and doctor prints `connected` with a new `since` time.
 - Read the loss and the reconnect in the parent daemon's log, `relay: lost machine CHILD` and then `relay: connected to machine CHILD`. On one network the reconnect takes under two seconds, and one `bellwether doctor` call takes about four, because doctor also probes every machine for moves. So doctor almost never prints `fail  relay CHILD: reconnecting` in this check, and the log is the evidence. A daemon you started detached with its output on `/dev/null` doesn't keep a log: start it with its output in a file.
-- The error in the `lost machine` line should mention a timeout. While the far machine's Node prints a warning on standard error, the line quotes that warning instead, such as `(node:6467) ExperimentalWarning: SQLite is an experimental feature`, until a release fixes [#109](https://github.com/elecnix/bellwether/issues/109).
+- The error in the `lost machine` line should mention a timeout. A Node warning on the far machine's standard error, such as `(node:6467) ExperimentalWarning: SQLite is an experimental feature`, never replaces that reason in the line.
 - Ask the child to report while the old session is frozen. The report arrives once, over the new connection.
 - About 45 seconds after the freeze, before the subshell ends, the bridge under the frozen session exits: its parent has sent nothing for three heartbeats. `pgrep -af 'bellwether relay-bridge'` on CHILD then prints one process. A build from before the heartbeat keeps both bridges until the session resumes.
 - When the subshell ends, it resumes the old session. That session has lost its connection, so it exits.

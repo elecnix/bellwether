@@ -104,3 +104,17 @@ test('a far bellwether whose help lists no move verbs is told the release that b
   const advice = releaseAdvice('child-box', { code: 0, stdout: 'Usage: bellwether <daemon|spawn|watch|list>\n', stderr: '', command: ['move-probe'] });
   assert.match(advice ?? '', /move-probe came with Bellwether 0\.1\.5/);
 });
+
+const NODE_WARNING = '(node:3263) ExperimentalWarning: SQLite is an experimental feature and might change at any time\n(Use `node --trace-warnings ...` to show where the warning was created)\n';
+
+test('a Node warning gives way to any line that names the failure', () => {
+  assert.equal(farErrorLine(`${NODE_WARNING}ssh: connect to host child-box port 22: Connection refused\n`), 'ssh: connect to host child-box port 22: Connection refused');
+  assert.equal(farErrorLine(`${NODE_WARNING}Error: EACCES: permission denied\n`), 'Error: EACCES: permission denied');
+  const message = describeFailure('child-box', { code: 1, stdout: '', stderr: `Error: EACCES: permission denied\n${NODE_WARNING}` });
+  assert.doesNotMatch(message, /ExperimentalWarning|trace-warnings|more line/, 'a warning after the cause is neither context nor output left out');
+});
+
+test('a Node warning that is all the far end printed is quoted as not the cause', () => {
+  assert.equal(farErrorLine(NODE_WARNING), 'it printed only a Node warning, which is not the cause: (node:3263) ExperimentalWarning: SQLite is an experimental feature and might change at any time');
+  assert.match(describeFailure('hawthorne', { code: 255, stdout: '', stderr: NODE_WARNING }), /^ssh hawthorne exited with 255: it printed only a Node warning, which is not the cause: \(node:3263\) ExperimentalWarning/);
+});

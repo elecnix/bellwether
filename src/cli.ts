@@ -29,7 +29,7 @@ import { readMemory, runsOn } from './daemon/relay-links.ts';
 import type { RelayHostState } from './daemon/protocol.ts';
 import { describePiTools, guardlessPiCopies } from './core/pi-extension.ts';
 import { describeClaudeTools, describeToolSource, findAmbientServers } from './core/tool-source.ts';
-import { readLock } from './daemon/lock.ts';
+import { lockPath, readLock } from './daemon/lock.ts';
 import { BELLWETHER_BUILD, BELLWETHER_BUILD_ID, BELLWETHER_VERSION, describeBuild } from './core/version.ts';
 import { daemonIsLive, startDaemon } from './daemon/server.ts';
 import type { ChildRecord, OutboxEntry } from './core/types.ts';
@@ -396,12 +396,15 @@ async function main(argv: string[]): Promise<number> {
 
   if (command === 'drain') {
     const socketPath = str(flags, 'socket') ?? process.env['BELLWETHER_DAEMON_SOCKET'] ?? path.join(bellwetherHome(), 'daemon.sock');
-    const lock = readLock(bellwetherHome());
+    // The daemon that answers on a socket keeps its lock beside it, whatever BELLWETHER_HOME says.
+    const lockHome = path.dirname(path.resolve(socketPath));
+    const lock = readLock(lockHome);
     if (!(await drainDaemon(socketPath))) {
       console.log(`no daemon answers on ${socketPath}; the next session starts one from its own install`);
       return 0;
     }
-    console.log(`drained the daemon ${lock?.version ?? 'from before 0.1.5'} on protocol ${lock?.protocol ?? 'unknown'} (pid ${lock?.pid ?? 'unknown'}); the next session call starts the daemon from that session's install`);
+    const described = lock ? `${lock.version ?? 'from a release before 0.1.5'} on protocol ${lock.protocol} (pid ${lock.pid}), as its lock ${lockPath(lockHome)} records` : `on ${socketPath}, whose version is unknown because no lock sits beside it at ${lockPath(lockHome)}`;
+    console.log(`drained the daemon ${described}; the next session call starts the daemon from that session's install`);
     return 0;
   }
 

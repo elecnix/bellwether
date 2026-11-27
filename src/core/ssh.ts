@@ -135,8 +135,18 @@ function isNoise(line: string): boolean {
     || /^\s*\^+\s*$/.test(line)
     || /^(?:file:\/\/|node:|\/)\S*:\d+\s*$/.test(line)
     || /^Warning: Permanently added /.test(line)
+    || isNodeWarning(line)
     || /^\s*[{}]\s*$/.test(line)
     || /^\s+(?:errno|code|syscall|path|generatedMessage|operator):\s/.test(line);
+}
+
+/**
+ * A warning Node prints on its own, such as `(node:3263) ExperimentalWarning:
+ * SQLite is an experimental feature`, and the hint it adds after one. Node
+ * prints these from a program that then works, so they never name a failure.
+ */
+function isNodeWarning(line: string): boolean {
+  return /^\s*\(node:\d+\) [A-Za-z]*Warning: /.test(line) || /^\s*\(Use `node --trace-[a-z-]+ \.\.\.` to show where the warning was created\)\s*$/.test(line);
 }
 
 /** A line Node prints for a thrown error: `Error: …`, `TypeError: …`, `Error [ERR_X]: …`, `Uncaught …`. */
@@ -149,7 +159,9 @@ const BELLWETHER_LINE = /^bellwether [a-z-]+: /;
  * bellwether command prints for its own failure, then the line a Node crash
  * prints for the error it threw, then the first line that is not a stack
  * frame, a Node.js banner, a source excerpt's caret or location, or SSH's
- * host-key note. Undefined when the output holds nothing but those.
+ * host-key note or a Node warning. A Node warning comes last, marked as the
+ * only thing the far end printed, because it is never the cause. Undefined
+ * when the output holds nothing but those.
  */
 export function farErrorLine(output: string): string | undefined {
   return farError(output.split('\n')).cause;
@@ -163,7 +175,9 @@ function farError(lines: string[]): { cause?: string; index: number } {
   // The first plain line, but past a crash's source excerpt: with a location line there, its excerpt comes before the caret.
   const caret = lines.findIndex((line) => /^\s*\^+\s*$/.test(line));
   const plain = lines.findIndex((line, index) => index > caret && line.trim() && !isNoise(line));
-  return plain >= 0 ? { cause: lines[plain]!.trim(), index: plain } : { index: -1 };
+  if (plain >= 0) return { cause: lines[plain]!.trim(), index: plain };
+  const warning = lines.findIndex((line) => /^\s*\(node:\d+\) /.test(line) && isNodeWarning(line));
+  return warning >= 0 ? { cause: `it printed only a Node warning, which is not the cause: ${lines[warning]!.trim()}`, index: warning } : { index: -1 };
 }
 
 /** How many lines of context follow the cause in a failure's message. */

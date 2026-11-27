@@ -68,9 +68,9 @@ The parent's daemon runs `bellwether relay-register`, `relay-cleanup`, `relay-br
 
 1. the line a `bellwether` command prints for its own failure, `bellwether <command>: …`;
 2. the line Node prints for the thrown error, such as `Error: …` or `TypeError: …`;
-3. the first line that is not a stack frame, a `Node.js v…` banner or a source excerpt.
+3. the first line that is not a stack frame, a `Node.js v…` banner, a source excerpt or a Node warning.
 
-A Node warning on the far machine's standard error counts as a match. So when the far machine's Node prints `ExperimentalWarning`, a lost connection quotes that warning rather than ssh's reason, until a release fixes [#109](https://github.com/elecnix/bellwether/issues/109).
+A Node warning, such as `(node:3263) ExperimentalWarning: …`, comes from a program that went on to work, so the error never reports it as the cause. When the far machine printed nothing else, the error quotes the warning after `it printed only a Node warning, which is not the cause:`, and the ssh exit code before it stays the cause.
 
 Each failure's full output goes to `~/.bellwether/logs/ssh/`, and the daemon keeps the newest 20 files. When the error left lines out, it gives that file's path.
 

@@ -56,7 +56,9 @@ test('a daemon whose lock names no entry point is described once, without a hand
   // The machine from the report: same version, no sessions request, no entry in the lock.
   const report = describeUpgrade(threeInstalls({ error: 'unknown_type: unknown request type "sessions"' }, { entry: undefined, origin: undefined }));
   const text = report.lines.join('\n');
-  assert.match(text, /from an entry point its lock does not name, because the daemon that wrote it predates that field/);
+  // A lock with a version is from 0.1.5 or later, so no entry point means bellwether daemon started it by hand, on the socket its lock names.
+  assert.match(text, /started by hand with bellwether daemon on \/h\/daemon\.sock, so its lock names no entry point/);
+  assert.doesNotMatch(text, /predates/);
   assert.doesNotMatch(text, /hands it over/);
   // Without the sessions list, nobody can say which build each session runs, so the upgrade is not called finished.
   assert.equal(report.state, 'unknown');

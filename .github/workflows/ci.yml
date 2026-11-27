@@ -38,6 +38,10 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      # Fixtures name only public or synthetic providers and models. A failure prints a redacted
+      # form of the value, because this log is public.
+      - name: fixture identifiers
+        run: npm run check:fixtures
       - name: tier 1 unit tests
         run: npm run test:unit
       - name: tier 2 integration tests

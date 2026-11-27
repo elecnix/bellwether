@@ -32,9 +32,9 @@ test('a call carries the identity of the session that made it', () => {
 });
 
 test('a call carries the provider and model the calling session runs on, only as a pair', () => {
-  const parsed = parseRequest(JSON.stringify({ type: 'call', id: 'c3', tool: 'agent_spawn', args: {}, caller: { paneId: 'w1:p4', model: { provider: 'acme-cloud', id: 'acme-large' } } }));
-  assert.deepEqual(parsed, { type: 'call', id: 'c3', tool: 'agent_spawn', args: {}, caller: { paneId: 'w1:p4', model: { provider: 'acme-cloud', id: 'acme-large' } } });
-  const half = parseRequest(JSON.stringify({ type: 'call', id: 'c4', tool: 'agent_spawn', args: {}, caller: { paneId: 'w1:p4', model: { id: 'acme-large' } } }));
+  const parsed = parseRequest(JSON.stringify({ type: 'call', id: 'c3', tool: 'agent_spawn', args: {}, caller: { paneId: 'w1:p4', model: { provider: 'example-cloud', id: 'example-large' } } }));
+  assert.deepEqual(parsed, { type: 'call', id: 'c3', tool: 'agent_spawn', args: {}, caller: { paneId: 'w1:p4', model: { provider: 'example-cloud', id: 'example-large' } } });
+  const half = parseRequest(JSON.stringify({ type: 'call', id: 'c4', tool: 'agent_spawn', args: {}, caller: { paneId: 'w1:p4', model: { id: 'example-large' } } }));
   assert.deepEqual(half, { type: 'call', id: 'c4', tool: 'agent_spawn', args: {}, caller: { paneId: 'w1:p4' } });
 });
 

@@ -82,6 +82,10 @@ Prose in Markdown files runs through Vale. The rules are the `ai-tells`, `ai-tel
 3. **Lab.** `test/lab/herdr-lab.ts` starts a real herdr server in its own config root and session, with a guard that refuses the live socket. `test/lab/scripted-models.ts` serves an OpenAI-compatible endpoint for Pi and an Anthropic Messages endpoint for Claude, including a stall reply that produces the stuck event. `npm run test:lab` runs it, and the files skip themselves when `herdr` is absent, so CI remains green.
 4. **Live smoke.** The same lab with real models at the cheapest tier, run by hand before a release.
 
+A fixture mentions a provider, a model or a tier only when it is public or synthetic. This repository is public, and a name from somebody's own setup stays in its history. A synthetic id starts with `example`, `fake`, `test`, `stub` or `mock`. The public providers and model families sit in `scripts/fixture-identifiers.ts`, each with where it is public, and a new entry needs the same proof.
+
+`test/unit/fixture-identifiers.test.ts` and the `fixture identifiers` step in CI enforce the rule. A failure prints the file, the line and the value with all but its first and last characters hidden, because a CI log is public too.
+
 Scripted replies for each parent and child pair come next. The fixtures exist, and the work left is the orchestration that starts Pi and Claude in a lab pane.
 
 The lab removes `HERDR_ENV`, `HERDR_PANE_ID` and `HERDR_SOCKET_PATH` from the child environment, because inherited values point at the live server. It refuses to start when the resolved socket is `~/.config/herdr/herdr.sock`. The lab root is under `/tmp`, because macOS caps a Unix socket path at 104 bytes and a root under the default temp directory exceeds that cap.

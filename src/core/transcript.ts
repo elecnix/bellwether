@@ -64,8 +64,8 @@ function newestFile(dir: string, matches: (name: string) => boolean, depth = 3):
   return best?.file;
 }
 
-/** Pi names a session file `<timestamp>_<session id>.jsonl`. */
-const endsWith = (name: string) => (sessionId: string): boolean => name.endsWith(`${sessionId}.jsonl`);
+/** Pi names a session file `<timestamp>_<session id>.jsonl`, so the file name ends with the session id. */
+const endsWith = (sessionId: string) => (name: string): boolean => name.endsWith(`${sessionId}.jsonl`);
 
 /** Where a session's transcript is, or why there is none on this machine. */
 export type TranscriptLookup = { path: string; missing?: undefined } | { path?: undefined; missing: string };

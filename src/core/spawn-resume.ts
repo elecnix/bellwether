@@ -112,6 +112,7 @@ export async function spawnResume(clientFor: (host: string) => Promise<HerdrClie
           delete entry.exitedAt;
           delete entry.exitCode;
           delete entry.harnessEnded;
+          delete entry.tabClosedAt;
         });
         delete child.exitedAt;
       }

@@ -435,6 +435,7 @@ async function restartChildLocked(client: HerdrClient, parentId: string, childId
     // The new harness has yet to show herdr it runs, and the watcher checks it once after its start window.
     delete entry.harnessSeenAt;
     delete entry.harnessEnded;
+    delete entry.tabClosedAt;
     // A child brought back did not ask for this run to end its worktree.
     clearRetirement(entry);
   });

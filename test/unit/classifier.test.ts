@@ -153,6 +153,23 @@ test('a child that answers its prompt and works on fires one idle, at the end of
   assert.deepEqual(events, ['idle']);
 });
 
+test('a dialog named while the child works, then reported idle by herdr, is one block', () => {
+  // Claude Code's Notification hook can name a dialog before herdr moves the
+  // child from working to idle. The status changes, but the dialog is the same.
+  const prompt = 'Claude needs your permission to use Bash';
+  let state = advance(initialState('working', 0), { status: 'working', prompt }, 0, limits).state;
+  const blocked = advance(state, { status: 'working', prompt }, limits.blockedMs, limits);
+  assert.equal(blocked.event, 'blocked');
+  state = blocked.state;
+  const events: string[] = [];
+  for (let at = limits.blockedMs + 1; at < limits.blockedMs + limits.idleMs * 3; at += 1_000) {
+    const step = advance(state, { status: 'idle', completionSeq: 1, prompt }, at, limits);
+    if (step.event) events.push(step.event);
+    state = step.state;
+  }
+  assert.deepEqual(events, []);
+});
+
 test('a prompt that closes on an idle child restarts the idle settle, so answering it is not a finished turn', () => {
   const prompt = 'Share usage totals?';
   // A child first seen idle on a dialog, as a pi child is at its first-run question.

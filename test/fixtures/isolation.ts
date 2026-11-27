@@ -4,9 +4,21 @@
 // the live home throw. A test that forgets its own isolation fails here
 // instead of talking to the operator's daemon or writing to the real registry.
 import fs from 'node:fs';
+import module from 'node:module';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+
+// Every process a test starts, from a CLI call through the fake ssh to a
+// detached daemon, loads the same sources again. Node's compile cache keeps
+// each module's compiled code, keyed by its content, so a changed source
+// compiles again and an unchanged one loads from the cache. From Node 24 it
+// also keeps the result of stripping a TypeScript file's types, which is most
+// of a start's CPU time. The processes inherit the directory through the
+// environment, and this one turns the cache on for itself.
+export const COMPILE_CACHE = process.env['NODE_COMPILE_CACHE'] || path.resolve(import.meta.dirname, '../../node_modules/.cache/bellwether-test-compile');
+process.env['NODE_COMPILE_CACHE'] = COMPILE_CACHE;
+module.enableCompileCache?.(COMPILE_CACHE);
 
 /** The operator's real Bellwether home, read before any test can move HOME. */
 export const LIVE_HOME = path.resolve(path.join(os.userInfo().homedir, '.bellwether'));

@@ -100,6 +100,28 @@ test('the watcher sends one inactive notice at the default five minutes, and not
   );
 });
 
+test('a new turn with no status change is persisted as activity', async () => {
+  const parent = saveParent(emptyParent('pi', 'watch-turn', '/work'));
+  const stub = stubClient();
+  await spawnChild(stub as unknown as HerdrClient, parent, { kind: 'pi', name: 'turn-worker' });
+  const before = readParent(parent.id)?.children[0];
+  assert.ok(before);
+
+  // The pane stays idle, but herdr reports a new completion_seq for it.
+  const snapshotStub = stub as unknown as { snapshot: () => Promise<unknown> };
+  snapshotStub.snapshot = async () => ({ agents: [{ pane_id: 'w1:p1', agent_status: 'idle', completion_seq: 2 }] });
+  const clock = { now: Date.parse(before.lastBusyAt) };
+  const watcher = watcherFor(parent.id, stub, clock);
+  await (watcher as unknown as { reconcile(children: unknown[], signal: AbortSignal): Promise<void> }).reconcile(
+    [before],
+    new AbortController().signal,
+  );
+
+  const after = readParent(parent.id)?.children[0];
+  assert.equal(after?.completionSeq, 2);
+  assert.notEqual(after?.lastBusyAt, before.lastBusyAt, 'the new turn moved the persisted activity time');
+});
+
 test('output on the child screen restarts the clock, and the next quiet period notifies again', async () => {
   const parent = saveParent(emptyParent('pi', 'watch-active', '/work'));
   const stub = stubClient();

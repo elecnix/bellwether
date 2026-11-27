@@ -357,7 +357,11 @@ export class Watcher {
       const sessionChanged = session !== undefined && (session.value !== child.session?.value || session.kind !== child.session?.kind);
       if (status !== child.lastStatus || (seq !== undefined && seq !== child.completionSeq) || (stateSeq !== undefined && stateSeq !== child.stateChangeSeq) || sessionChanged) {
         updateChild(this.parentId, child.id, (entry) => {
-          if (entry.lastStatus !== status) entry.statusChangedAt = new Date().toISOString();
+          const at = new Date().toISOString();
+          if (entry.lastStatus !== status) entry.statusChangedAt = at;
+          // A new turn is activity even when the status did not change. The
+          // record keeps it, so a restarted parent does not lose the period.
+          if (seq !== undefined && seq !== entry.completionSeq) entry.lastBusyAt = at;
           entry.lastStatus = status;
           if (seq !== undefined) entry.completionSeq = seq;
           if (stateSeq !== undefined) entry.stateChangeSeq = stateSeq;

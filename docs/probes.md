@@ -345,3 +345,59 @@ node scripts/herdr-watch.ts --session bw-probe --pane w1:p5 --seconds 75
 The numbers only move when herdr sees a transition. A Claude turn that finishes under a second, or runs while the scripted server answers instantly, can leave `completion_seq` where it was, because screen detection never caught `working` at all. The 30-second held turn is what makes the Claude reading trustworthy.
 
 **Verdict: herdr 0.9.5 reports `completion_seq` for both harnesses, and only on the agent projection.** Bellwether reads it from the projection that lacks it: `watcher.ts` takes it from `pane.list` and from `snapshot['panes']`, and both are `PaneInfo`. The fix is to read `agent.list`, `agent.get` or `snapshot['agents']`, and to keep `state_change_seq` beside `completionSeq` in the child record, because the two move together and a stalled `state_change_seq` is the cheapest evidence that detection missed a turn.
+
+## 6. Claude Code's startup questions under herdr
+
+> What does a Claude Code child show before its prompt, and when does herdr call it blocked?
+
+A scratch herdr session, `herdr --session bw-dlg<pid> server`, started Claude Code 2.1.332 in a fresh folder under `/var/tmp` with `--dangerously-load-development-channels=server:bellwether` and no prompt. The probe read the pane with `pane.read --source visible` every 500 ms and listened to `pane.agent_status_changed` for that pane.
+
+`agent.start` answered within a second with `launch_pending: true` and `agent_status: unknown`. It does not wait for the harness.
+
+The first screen asked whether to trust the folder, with the marker on the refusal:
+
+```text
+ Quick safety check: Is this a project you created or one you trust? (Like your own code, a well-known open source
+ project, or work from your team). If not, take a moment to review what's in this folder first.
+ ❯ No, exit
+   Yes, I trust this folder
+```
+
+The first `Down`, sent 0.6 s after the start, left the marker where it was. The second, 0.5 s later, moved it. Claude Code ignores keys for a moment after it draws the question, so one blind `Down` then `Enter` would have quit Claude Code. After `Enter` on "Yes, I trust this folder" the second screen appeared, with the marker already on its accepting option:
+
+```text
+  WARNING: Loading development channels
+  Channels: server:your-attention, server:bellwether
+  ❯ 1. I am using this for local development
+    2. Exit
+```
+
+`Enter` reached the prompt 3.7 s after the start. herdr sent `idle` at 4.6 s. When nothing answers, herdr sends `blocked` at about 4.6 s instead, and the pane stays there. A folder already trusted, such as anything under `/tmp` on this machine, skips the first question and still asks the second.
+
+`pane.agent_status_changed` held `agent`, `agent_status`, `pane_id` and `workspace_id`, and no `state_change_seq`. Only `agent.get` and the snapshot's agent entries report that number. Once the child reached its prompt, `agent.get` reported `agent_session: {"kind": "id", "value": "<uuid>"}`, the value `claude --resume` takes.
+
+**Verdict: the spawn answers both questions from the screen, because herdr's `blocked` arrives too late to start it.** `src/core/startup-dialogs.ts` reads the screen and sends `Down` until the marker is on "Yes, I trust this folder". It sends `Enter` only once the screen shows that selection. A resumed Claude Code session asks the development channel question again, so when a `blocked` event turns out to be a startup question, the watcher runs the same pass and publishes nothing.
+
+## 7. Starting the channel with `--channels` instead of the development flag
+
+> Can a child start with `--channels plugin:bellwether@bellwether`, so the development channel question never appears?
+
+Claude Code 2.1.332 refuses it. It admits a plugin channel without the development flag only when the plugin is on an allowlist, and the binary contains the two refusals:
+
+```text
+plugin bellwether@bellwether is not on the approved channels allowlist (use --dangerously-load-development-channels for local dev)
+plugin bellwether@bellwether is not on your org's approved channels list (set allowedChannelPlugins in managed settings)
+```
+
+Anthropic maintains the default allowlist. Managed settings can replace it with `allowedChannelPlugins`, which also needs `channelsEnabled: true` in the same place. Managed settings live in a system path, such as `/etc/claude-code/managed-settings.json` on Linux, or arrive as an organization's server-managed policy. A user's own `settings.json` cannot set either key.
+
+To avoid the question, the person's setup would need these changes:
+
+- Bellwether installed as a plugin from its marketplace, as `.claude-plugin/` describes.
+- A managed settings file, written with administrator rights, holding `"channelsEnabled": true` and `"allowedChannelPlugins": [{"plugin": "bellwether", "marketplace": "bellwether"}]`.
+- Each child started with `--channels plugin:bellwether@bellwether`.
+- Every other development channel the person's `claude` wrapper adds, such as `server:your-attention`, moved to the same allowlist. Otherwise the question still appears for that channel.
+
+The folder-trust question has nothing to do with channels, and it appears in any folder Claude Code has not seen.
+
+**Verdict: answering the questions remains the fix.** On a machine with that managed setting, children could start with `--channels` and skip one question. The dialog pass would then find nothing to answer and return as soon as the child reaches its prompt.

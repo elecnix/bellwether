@@ -1,14 +1,17 @@
 // Claude Code opens on up to two dialogs before its prompt: the folder-trust
 // question, and the confirmation for --dangerously-load-development-channels,
 // which every Claude Code child gets so it loads the Bellwether channel. No
-// supported setting skips the second one: Claude Code registers a `server:`
-// channel only under that flag, and the flag always asks. So the spawn answers
-// both, the way a person would, and only while it holds the child's events.
+// setting a user can write skips the second one: Claude Code admits a channel
+// without that flag only from an allowlist in managed settings, and the flag
+// always asks (docs/probes.md, sections 6 and 7). So the spawn answers both,
+// the way a person would, and only while it holds the child's events.
 //
 // The answer is driven by the child's status events. The watch opens before
 // the harness starts, so the first blocked event cannot slip past it. The
 // screen is read when a status arrives, and again after each key, until no
-// dialog is left.
+// dialog is left. A key goes out only toward the accepting option, and Enter
+// only once the screen shows that option selected, so a dialog whose shape
+// changed fails the spawn instead of taking a stray Enter.
 import type { HerdrClient, Subscription } from './herdr-client.ts';
 
 export type StartupDialog = 'trust' | 'channel';
@@ -18,6 +21,15 @@ const CHANNEL = /WARNING: Loading development channels/;
 const TRUST_ACCEPT = 'Yes, I trust this folder';
 const CHANNEL_ACCEPT = 'I am using this for local development';
 const SELECTED = /^\s*[❯>]\s/;
+
+/** What each dialog is called in a message to the person. */
+export const DIALOG_NAMES: Record<StartupDialog, string> = {
+  trust: 'the folder-trust question',
+  channel: 'the development-channel question',
+};
+
+/** herdr's statuses for a child that is past its dialogs. */
+const READY = new Set(['idle', 'working', 'done']);
 
 export function detectDialog(screen: string): StartupDialog | undefined {
   if (TRUST.test(screen)) return 'trust';
@@ -39,11 +51,29 @@ export function keyToward(screen: string, wanted: string): 'Enter' | 'Up' | 'Dow
   return target < selected ? 'Up' : 'Down';
 }
 
-export type StartupOutcome = 'started' | 'untrusted' | 'timeout';
+/** The option the selection marker is on, for an error message. */
+function selectedOption(screen: string): string | undefined {
+  const line = screen.split('\n').find((candidate) => SELECTED.test(candidate));
+  return line?.replace(SELECTED, '').replace(/^\d+\.\s*/, '').trim() || undefined;
+}
+
+export class StartupDialogTimeout extends Error {
+  readonly dialog: StartupDialog | undefined;
+  constructor(message: string, dialog: StartupDialog | undefined) {
+    super(message);
+    this.name = 'StartupDialogTimeout';
+    this.dialog = dialog;
+  }
+}
 
 export interface StartupWatch {
-  /** Answer the dialogs, and resolve once the child is past them or a person has to decide. */
-  answer(options: { trusted: boolean }): Promise<StartupOutcome>;
+  /**
+   * Answer the dialogs, and resolve once the child is past them: no dialog on
+   * screen, and either the channel confirmation answered or herdr reporting
+   * the child idle, working or done. Rejects with StartupDialogTimeout when the
+   * child is not past them in time, naming the screen it was on.
+   */
+  answer(): Promise<StartupDialog[]>;
   close(): void;
 }
 
@@ -87,34 +117,47 @@ export async function watchStartup(client: HerdrClient, paneId: string, signal?:
     });
 
   return {
-    async answer({ trusted }) {
+    async answer() {
       const deadline = Date.now() + timeoutMs;
-      let channelAnswered = false;
+      const answered: StartupDialog[] = [];
+      let screen = '';
+      let dialog: StartupDialog | undefined;
       while (Date.now() < deadline && !controller.signal.aborted) {
-        const screen = await client.paneRead({ paneId, source: 'visible', lines: 40 }).catch(() => '');
-        const dialog = detectDialog(screen);
-        if (dialog === 'trust' && !trusted) return 'untrusted';
+        screen = await client.paneRead({ paneId, source: 'visible', lines: 40 }).catch(() => screen);
+        dialog = detectDialog(screen);
         if (dialog) {
           const key = keyToward(screen, dialog === 'trust' ? TRUST_ACCEPT : CHANNEL_ACCEPT);
           if (key) {
             await client.sendKeys(paneId, [key]);
-            if (dialog === 'channel' && key === 'Enter') channelAnswered = true;
+            if (key === 'Enter' && !answered.includes(dialog)) answered.push(dialog);
           }
           await sleep(redrawMs);
           continue;
         }
-        // Every Claude Code child loads the Bellwether channel, so its
-        // confirmation always comes, and it is the last of the two. Once it is
-        // answered and gone, anything else on screen is the watcher's to report.
-        if (channelAnswered) return 'started';
+        // The channel confirmation comes last, so once it is answered and gone
+        // the child is at its prompt. A child started with no development
+        // channel never shows it, and herdr's status says when it is ready.
+        if (answered.includes('channel') || READY.has(status)) return answered;
         // A blocked pane with no dialog on screen is still drawing it.
         await nextStatus(status === 'blocked' ? redrawMs : Math.max(0, deadline - Date.now()));
       }
-      return 'timeout';
+      if (controller.signal.aborted) throw new Error(`the spawn was cancelled while Claude Code in pane ${paneId} was starting`);
+      throw timeoutError(paneId, timeoutMs, dialog, status, screen);
     },
     close() {
       subscription.close();
       controller.abort();
     },
   };
+}
+
+function timeoutError(paneId: string, timeoutMs: number, dialog: StartupDialog | undefined, status: string, screen: string): StartupDialogTimeout {
+  const seconds = Math.round(timeoutMs / 1000);
+  const tail = screen.trim().split('\n').slice(-12).join('\n');
+  if (dialog) {
+    const selected = selectedOption(screen);
+    const where = selected ? `with "${selected}" selected` : 'with no option selected';
+    return new StartupDialogTimeout(`Claude Code in pane ${paneId} was still on ${DIALOG_NAMES[dialog]}, ${where}, when the spawn timed out after ${seconds} s. The screen:\n${tail}`, dialog);
+  }
+  return new StartupDialogTimeout(`Claude Code in pane ${paneId} never reached its prompt before the spawn timed out after ${seconds} s: herdr reported it ${status}, on a screen Bellwether does not answer. The screen:\n${tail}`, undefined);
 }

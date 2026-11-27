@@ -3,6 +3,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import type { ChildSession } from './types.ts';
 
 /** Claude Code replaces every non-alphanumeric character of the cwd with a dash. */
 export function claudeProjectDir(cwd: string): string {
@@ -59,6 +60,14 @@ export function resolveTranscript(harness: string, sessionId: string | undefined
     return newestFile(path.join(root, 'sessions'), endsWith(sessionId));
   }
   return undefined;
+}
+
+/** herdr's agent_session for a pane, as a kind and a value. */
+export function sessionFrom(agentSession: unknown): ChildSession | undefined {
+  const value = sessionValueFrom(agentSession);
+  if (!value) return undefined;
+  const kind = typeof agentSession === 'object' && agentSession !== null ? (agentSession as Record<string, unknown>)['kind'] : undefined;
+  return { kind: typeof kind === 'string' && kind ? kind : value.includes('/') ? 'path' : 'id', value };
 }
 
 /** The session value herdr reports for a pane, whatever shape it takes. */

@@ -5,10 +5,9 @@ import os from 'node:os';
 import { HerdrApiError, type HerdrClient } from './herdr-client.ts';
 import { newChildId } from './outbox.ts';
 import { briefArgument, removeBrief, writeBrief } from './brief.ts';
-import { claudeTrustsRepository } from './claude-trust.ts';
 import { removeChild, updateChild, upsertChild } from './registry.ts';
-import { watchStartup, type StartupOutcome, type StartupWatch } from './startup-dialogs.ts';
-import { resolveTranscript } from './transcript.ts';
+import { watchStartup, type StartupDialog, type StartupWatch } from './startup-dialogs.ts';
+import { resolveTranscript, sessionFrom } from './transcript.ts';
 import type { ChildRecord, Harness, ParentRecord } from './types.ts';
 
 /** How deep a Bellwether child may spawn. The design starts at 2. */
@@ -37,17 +36,24 @@ export interface SpawnOptions {
   workspaceId?: string;
   /** How deep a child may itself spawn. */
   maxDepth?: number;
+  /** How long the startup dialogs may take. Tests shorten it. */
+  startupTimeoutMs?: number;
+  /** How long a screen takes to redraw after a key. Tests shorten it. */
+  redrawMs?: number;
 }
 
 export interface SpawnResult {
   child: ChildRecord;
   link: string;
-  /** How the startup dialogs went, for a harness that shows them. */
-  startup?: StartupOutcome;
+  /** The startup dialogs the spawn answered, in order. */
+  answered?: StartupDialog[];
 }
 
 /** How long the watcher holds a new Claude Code child's events. Longer than the dialog wait. */
 const STARTUP_HOLD_MS = 45_000;
+
+/** How long the spawn waits for a Claude Code child to get past its dialogs. */
+export const STARTUP_TIMEOUT_MS = 30_000;
 
 /**
  * The arguments a child harness starts with. The brief is never one of them:
@@ -117,8 +123,9 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
     // Claude Code opens on dialogs the spawn answers, so the watcher holds the
     // child's events until then, and the status watch opens before the start.
     if (options.kind === 'claude') {
-      child.startingUntil = new Date(Date.now() + STARTUP_HOLD_MS).toISOString();
-      startup = await watchStartup(client, tab.paneId, signal);
+      const timeoutMs = options.startupTimeoutMs ?? STARTUP_TIMEOUT_MS;
+      child.startingUntil = new Date(Date.now() + Math.max(STARTUP_HOLD_MS, timeoutMs + 15_000)).toISOString();
+      startup = await watchStartup(client, tab.paneId, signal, { timeoutMs, redrawMs: options.redrawMs });
     }
     upsertChild(parent.id, child);
 
@@ -132,42 +139,51 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
     throw error;
   }
 
-  // 4. Answer the startup dialogs, then let the watcher read the child.
-  let outcome: StartupOutcome | undefined;
+  // 4. Answer the startup dialogs, then let the watcher read the child. The
+  // spawn answers yes to the folder-trust question for any folder, because
+  // the operator approves every spawn by default. A child still on a dialog
+  // when the wait runs out is undone, and the error names the dialog.
+  let answered: StartupDialog[] | undefined;
   if (startup) {
     try {
-      outcome = await startup.answer({ trusted: claudeTrustsRepository(options.cwd ?? parent.cwd) });
-    } catch {
-      outcome = 'timeout';
-    } finally {
+      answered = await startup.answer();
+    } catch (error) {
       startup.close();
-      child.startingUntil = undefined;
-      updateChild(parent.id, child.id, (entry) => {
-        delete entry.startingUntil;
-      });
+      await abandon(client, parent.id, child.id, tabId, hooks);
+      throw error;
     }
+    startup.close();
   }
 
-  // 5. Resolve the transcript, then hand back the child and its herdr link.
-  // The registry is re-read rather than written from the caller's copy, which
-  // would erase the child record that upsertChild just added.
-  await new Promise((resolve) => setTimeout(resolve, 750));
+  // 5. Record the session and transcript, then hand back the child and its
+  // herdr link. The registry is re-read rather than written from the caller's
+  // copy, which would erase the child record that upsertChild just added.
+  if (!startup) await new Promise((resolve) => setTimeout(resolve, 750));
   try {
-    const panes = await client.agentList(signal);
-    const pane = panes.find((entry) => entry.paneId === child.paneId);
-    if (pane) {
-      child.transcript = resolveTranscript(child.harness, pane.agentSessionId, child.cwd);
-      child.lastStatus = pane.agentStatus;
-      updateChild(parent.id, child.id, (entry) => {
-        entry.transcript = child.transcript;
-        entry.lastStatus = child.lastStatus;
-      });
+    const result = await client.request('agent.get', { target: child.paneId }, { signal });
+    const agent = typeof result === 'object' && result !== null ? (result as Record<string, unknown>)['agent'] : undefined;
+    const pane = typeof agent === 'object' && agent !== null ? (agent as Record<string, unknown>) : {};
+    const session = sessionFrom(pane['agent_session']);
+    if (session) {
+      child.session = session;
+      child.transcript = resolveTranscript(child.harness, session.value, child.cwd);
     }
+    const status = pane['agent_status'];
+    if (typeof status === 'string' && status) child.lastStatus = status as ChildRecord['lastStatus'];
   } catch {
-    // A missed session id only costs the transcript-based summary.
+    // A missed session id only costs the transcript-based summary until the
+    // watcher reads it.
   }
+  child.startingUntil = undefined;
+  updateChild(parent.id, child.id, (entry) => {
+    if (child.session) entry.session = child.session;
+    if (child.transcript) entry.transcript = child.transcript;
+    if (entry.lastStatus !== child.lastStatus) entry.statusChangedAt = new Date().toISOString();
+    entry.lastStatus = child.lastStatus;
+    delete entry.startingUntil;
+  });
 
-  return { child, link: herdrLink('pane', child.paneId), startup: outcome };
+  return { child, link: herdrLink('pane', child.paneId), answered };
 }
 
 /**

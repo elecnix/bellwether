@@ -147,10 +147,8 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
       maxDepth: typeof args['max_depth'] === 'number' ? (args['max_depth'] as number) : DEFAULT_MAX_DEPTH,
     };
     if (!options.name) throw new Error('agent_spawn needs a name');
-    const { child, link, startup } = await spawnChild(ctx.client, record, options, undefined, { forget: (childId) => ctx.watcher.forget(childId) });
+    const { child, link } = await spawnChild(ctx.client, record, options, undefined, { forget: (childId) => ctx.watcher.forget(childId) });
     const lines = [`${child.name} started as a ${child.kind} agent in pane ${child.paneId}, tab ${child.tabId ?? child.paneId}.`, `Bellwether watches it, and your next turn starts when it changes state.`, `herdr link: ${link}`];
-    if (startup === 'untrusted') lines.push(`Claude Code asks whether to trust ${options.cwd ?? record.cwd}. Nobody trusted this repository in Claude Code before, so Bellwether left the question for a person, and the child stays blocked until someone answers it.`);
-    if (startup === 'timeout') lines.push('Claude Code was still on a startup dialog after 30 s. If the child stays blocked, Bellwether reports it with the dialog.');
     return lines.join('\n');
   }
 

@@ -3,6 +3,7 @@
 // client uses, so a test can validate a request without the herdr binary.
 export const REQUIRED_FIELDS: Record<string, readonly string[]> = {
   'agent.list': [],
+  'agent.get': ['target'],
   'pane.list': [],
   'pane.current': [],
   'workspace.list': [],

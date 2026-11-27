@@ -287,8 +287,17 @@ export class DaemonClient {
 
   private dispatch(reply: DaemonReply): void {
     if (reply.type === 'events') {
-      for (const entry of reply.entries) this.received.set(entry.receipt, entry);
-      for (const handler of this.handlers) handler(reply.entries);
+      // An entry that arrives read was settled in the daemon, by a newer state
+      // or a newer event for the same child. Drop it, so no resend repeats it.
+      const unread: OutboxEntry[] = [];
+      for (const entry of reply.entries) {
+        if (entry.read) this.received.delete(entry.receipt);
+        else {
+          this.received.set(entry.receipt, entry);
+          unread.push(entry);
+        }
+      }
+      if (unread.length) for (const handler of this.handlers) handler(unread);
       return;
     }
     if (reply.type === 'status') {

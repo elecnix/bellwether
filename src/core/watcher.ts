@@ -11,7 +11,8 @@ import type { HerdrClient, HerdrEvent, Subscription } from './herdr-client.ts';
 import { DEFAULT_LIMITS, advance, initialState, markReported, type ClassifierState, type SettleLimits } from './classifier.ts';
 import { Outbox } from './outbox.ts';
 import { mutateParent, readParent, updateChild } from './registry.ts';
-import { resolveTranscript, sessionValueFrom } from './transcript.ts';
+import { DIALOG_NAMES, detectDialog, watchStartup } from './startup-dialogs.ts';
+import { resolveTranscript, sessionFrom } from './transcript.ts';
 import { removeBrief } from './brief.ts';
 import { childLabel } from './label.ts';
 import { spoolPath } from './paths.ts';
@@ -102,6 +103,16 @@ export class Watcher {
     return this.outbox.all();
   }
 
+  /**
+   * Unread entries ready to deliver, after any a newer child state made stale
+   * has been settled. A reconnect replays these, so it never replays a dialog
+   * someone already answered.
+   */
+  pendingEntries(): OutboxEntry[] {
+    this.settleStale();
+    return this.outbox.pending();
+  }
+
   markRead(receipt: string): void {
     if (!this.outbox.markRead(receipt)) return;
     this.outbox.save(this.parentId);
@@ -170,6 +181,8 @@ export class Watcher {
   }
 
   private markExited(child: ChildRecord, code: number | undefined): void {
+    // The session and transcript stay on the record, so a retired child can
+    // still be resumed.
     updateChild(this.parentId, child.id, (entry) => {
       entry.exitedAt = new Date().toISOString();
       entry.exitCode = code;
@@ -250,8 +263,14 @@ export class Watcher {
     }
     if (STATUS_EVENTS.has(event.event)) {
       const status = statusOf(event.data, child.lastStatus);
+      const stateSeq = typeof event.data['state_change_seq'] === 'number' ? (event.data['state_change_seq'] as number) : undefined;
       updateChild(this.parentId, child.id, (entry) => {
-        if (entry.lastStatus !== status) entry.statusChangedAt = new Date().toISOString();
+        if (entry.lastStatus !== status) {
+          entry.statusChangedAt = new Date().toISOString();
+          // herdr 0.9.5 sends no state_change_seq on this event, so a seq
+          // read before the change no longer describes the status.
+          entry.stateChangeSeq = stateSeq;
+        } else if (stateSeq !== undefined) entry.stateChangeSeq = stateSeq;
         entry.lastStatus = status;
       });
       // Read the registry again rather than reusing the copy taken above,
@@ -294,11 +313,16 @@ export class Watcher {
       if (!pane) continue;
       const status = statusOf(pane, child.lastStatus);
       const seq = typeof pane['completion_seq'] === 'number' ? (pane['completion_seq'] as number) : undefined;
-      if (status !== child.lastStatus || (seq !== undefined && seq !== child.completionSeq)) {
+      const stateSeq = typeof pane['state_change_seq'] === 'number' ? (pane['state_change_seq'] as number) : undefined;
+      const session = sessionFrom(pane['agent_session']);
+      const sessionChanged = session !== undefined && (session.value !== child.session?.value || session.kind !== child.session?.kind);
+      if (status !== child.lastStatus || (seq !== undefined && seq !== child.completionSeq) || (stateSeq !== undefined && stateSeq !== child.stateChangeSeq) || sessionChanged) {
         updateChild(this.parentId, child.id, (entry) => {
           if (entry.lastStatus !== status) entry.statusChangedAt = new Date().toISOString();
           entry.lastStatus = status;
           if (seq !== undefined) entry.completionSeq = seq;
+          if (stateSeq !== undefined) entry.stateChangeSeq = stateSeq;
+          if (session) entry.session = session;
         });
       }
     }
@@ -317,7 +341,11 @@ export class Watcher {
       if (child.exitedAt) continue;
       // The spawn is answering this child's startup dialogs. Its first state
       // is read once the spawn is done.
-      if (child.startingUntil && Date.parse(child.startingUntil) > now) continue;
+      if (child.startingUntil && Date.parse(child.startingUntil) > Date.now()) {
+        this.states.delete(child.id);
+        continue;
+      }
+      if (child.lastStatus !== 'blocked') this.gaveUp.delete(child.id);
       const state = this.states.get(child.id) ?? initialState(child.lastStatus, now);
       const busy = await this.childIsBusy(child, now);
       // A spawn can set its own stuck threshold, which is what the lab uses to
@@ -339,9 +367,50 @@ export class Watcher {
         this.states.set(child.id, markReported(next, now));
         continue;
       }
+      if (event === 'blocked') {
+        const dialog = await this.client.paneRead({ paneId: child.paneId, source: 'detection', lines: 30 }).catch(() => '');
+        if (this.answerStartupDialog(child, dialog)) continue;
+        this.offer(child, event, this.describeBlocked(child, dialog));
+        continue;
+      }
       this.offer(child, event, await this.describe(child, event, next.lastBusyAt, now));
     }
     this.publish();
+  }
+
+  private readonly answering = new Set<string>();
+  /** Children whose startup dialog outlasted its wait in this blocked spell. */
+  private readonly gaveUp = new Set<string>();
+
+  /**
+   * A Claude Code startup dialog on a child's screen is Bellwether's to
+   * answer, never the operator's: a resumed session shows the development
+   * channel question again, long after its spawn returned. Answer it here and
+   * publish nothing. Returns false for any other dialog, and for one whose
+   * answer already failed, which then reaches the parent as blocked.
+   */
+  private answerStartupDialog(child: ChildRecord, screen: string): boolean {
+    const dialog = detectDialog(screen);
+    if (!dialog || child.kind !== 'claude' || this.gaveUp.has(child.id)) return false;
+    if (this.answering.has(child.id)) return true;
+    this.answering.add(child.id);
+    this.log(`${child.name} is on ${DIALOG_NAMES[dialog]}; answering it`);
+    void (async () => {
+      const watch = await watchStartup(this.client, child.paneId, this.controller?.signal);
+      try {
+        await watch.answer();
+      } finally {
+        watch.close();
+      }
+    })()
+      .catch((error: unknown) => {
+        this.log(`answering ${child.name}'s startup dialog failed: ${String(error)}`);
+        this.gaveUp.add(child.id);
+        const state = this.states.get(child.id);
+        if (state) this.states.set(child.id, { ...state, firedBlocked: undefined });
+      })
+      .finally(() => this.answering.delete(child.id));
+    return true;
   }
 
   /**
@@ -359,9 +428,11 @@ export class Watcher {
     try {
       const result = await this.client.request('agent.get', { target: child.paneId });
       const record = isRecord(result) && isRecord(result['agent']) ? result['agent'] : isRecord(result) ? result : undefined;
-      const path = resolveTranscript(child.harness, sessionValueFrom(record?.['agent_session']), child.cwd);
-      if (path) updateChild(this.parentId, child.id, (entry) => {
-        entry.transcript = path;
+      const session = sessionFrom(record?.['agent_session']);
+      const path = resolveTranscript(child.harness, session?.value, child.cwd);
+      if (path || session) updateChild(this.parentId, child.id, (entry) => {
+        if (path) entry.transcript = path;
+        if (session) entry.session = session;
       });
       return path;
     } catch {
@@ -416,15 +487,16 @@ export class Watcher {
   private async describe(child: ChildRecord, event: ChildEventKind, quietSince: number, now: number): Promise<string> {
     const age = this.age(Date.parse(child.startedAt));
     if (event === 'exited') return this.describeExit(child, child.exitCode);
-    if (event === 'blocked') {
-      const dialog = await this.client.paneRead({ paneId: child.paneId, source: 'detection', lines: 30 }).catch(() => '');
-      return `${childLabel(child)} is blocked on a dialog after ${age}. The dialog:\n${trim(dialog)}\n\nAnswer it with agent_send keys, or answer the card your-attention posted.`;
-    }
+    if (event === 'blocked') return this.describeBlocked(child, await this.client.paneRead({ paneId: child.paneId, source: 'detection', lines: 30 }).catch(() => ''));
     // Measure the quiet period on the classifier's own clock. The registry's
     // lastBusyAt can be written by another process that only sees file size.
     if (event === 'stuck') return `${childLabel(child)} has been quiet for ${this.age(quietSince, now)}. Last screen lines:\n${trim(await this.screenTail(child))}`;
     const text = child.lastReport?.text?.trim() || (await this.lastMessage(child)) || trim(await this.screenTail(child));
     return `${childLabel(child)} went idle after ${age}:${text ? `\n${text}` : ' no message and no readable screen.'}`;
+  }
+
+  private describeBlocked(child: ChildRecord, dialog: string): string {
+    return `${childLabel(child)} is blocked on a dialog after ${this.age(Date.parse(child.startedAt))}. The dialog:\n${trim(dialog)}\n\nAnswer it with agent_send keys, or answer the card your-attention posted.`;
   }
 
   private describeExit(child: ChildRecord, code: number | undefined): string {
@@ -460,15 +532,29 @@ export class Watcher {
   }
 
   private offer(child: ChildRecord, event: ChildEventKind, text: string): void {
-    this.outbox.offer({ childId: child.id, name: child.name, kind: child.kind, paneId: child.paneId, event, text, at: new Date().toISOString() });
+    const state = event === 'blocked' || event === 'stuck' || event === 'idle' ? { status: child.lastStatus, stateChangeSeq: child.stateChangeSeq } : {};
+    this.outbox.offer({ childId: child.id, name: child.name, kind: child.kind, paneId: child.paneId, event, text, at: new Date().toISOString(), ...state });
     this.outbox.prune();
     this.outbox.save(this.parentId);
   }
 
+  /** Settle the entries a newer child state made stale, against the registry as it is now. */
+  private settleStale(): void {
+    const children = readParent(this.parentId)?.children ?? [];
+    if (this.outbox.settleSuperseded(children).length) this.outbox.save(this.parentId);
+  }
+
+  /**
+   * Hand the adapter every unread entry, plus each entry settled without a
+   * receipt since the last call, marked read, so a client holding one drops
+   * it instead of sending it again.
+   */
   private publish(): void {
+    this.settleStale();
+    const settled = this.outbox.takeSettled();
     const pending = this.outbox.pending();
-    if (!pending.length) return;
-    this.onEntries(pending);
+    if (!pending.length && !settled.length) return;
+    this.onEntries([...settled, ...pending]);
   }
 
   /** Read parent_report lines the children appended to the spool. */

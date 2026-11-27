@@ -50,7 +50,16 @@ function startArgs(herdr: FakeHerdr): string[] {
 }
 
 test('a multi-line prompt reaches Claude Code as an @ mention of a private file', async () => {
-  const space = await room();
+  // The child reaches its prompt with no dialog, and herdr reports it idle,
+  // which is what lets the spawn return.
+  let herdr: FakeHerdr | undefined;
+  const space = await room({
+    respond: (request) => {
+      if (request.method === 'agent.start') setTimeout(() => herdr?.send({ event: 'pane_agent_status_changed', data: { pane_id: 'w1:p1', agent_status: 'idle' } }), 20);
+      return undefined;
+    },
+  });
+  herdr = space.herdr;
   try {
     const { child } = await spawnChild(space.client, space.parent, { kind: 'claude', name: 'npm-publish', prompt: brief });
     const file = promptPath(child.id);

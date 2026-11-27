@@ -6,8 +6,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { adoptedParentOf } from '../../src/core/adopted-session.ts';
 import { HerdrClient } from '../../src/core/herdr-client.ts';
 import { emptyParent, readParent, saveParent, updateChild } from '../../src/core/registry.ts';
+import { childOfCaller } from '../../src/core/report.ts';
 import { RETIRE_TOOL, retireLogPath } from '../../src/core/retire.ts';
 import { Watcher } from '../../src/core/watcher.ts';
 import type { ChildRecord } from '../../src/core/types.ts';
@@ -534,4 +536,35 @@ test('a pane_closed that lands while the stop is still checking the pane gets th
   await watcher.retirements();
   assert.equal(w.child().retireOutcome, 'removed');
   assert.deepEqual(w.log().map((line) => line['outcome']), ['removed']);
+});
+
+// herdr reuses a pane id once its agent ends. A retired child keeps its old
+// pane id on its record, and a session adopted later in that pane must answer
+// to its adopter by every route: the report routing and the adopted-session
+// lookup agree, and neither picks the retired child. Issue #143 with #152.
+test('a retired child and a session adopted later in the same pane id agree on the adopter as the parent', async (t) => {
+  const w = await world(t);
+  w.git.merged.add(`${REPO}:feat/x`);
+  const watcher = w.watcher();
+  watcher.start();
+  await w.herdr.waitFor('events.subscribe');
+  await stop(w, watcher, () => {
+    w.panes.delete(PANE);
+  });
+  assert.equal(w.child().retireOutcome, 'removed');
+  assert.equal(w.child().paneId, PANE, 'the retired record keeps its old pane id');
+
+  const adopter = emptyParent('claude-code', `adopter-${path.basename(w.parentId)}`, '/work', { paneId: 'w1:p2' });
+  const long = new Date(Date.now() - 60_000).toISOString();
+  adopter.children.push({ id: 'c-adopted', name: 'by-hand', kind: 'pi', harness: 'pi', paneId: PANE, host: 'local', origin: 'adopt', cwd: '/work/other', startedAt: long, lastStatus: 'idle', statusChangedAt: long, lastBusyAt: long, depth: 1, session: { kind: 'path', value: '/sessions/by-hand.jsonl' } });
+  saveParent(adopter);
+
+  assert.deepEqual(adoptedParentOf({ paneId: PANE, session: 'by-hand' }), { parentId: adopter.id, childId: 'c-adopted', name: 'by-hand', where: 'here' });
+  const routed = childOfCaller({ paneId: PANE });
+  assert.equal(routed?.parent.id, adopter.id);
+  assert.equal(routed?.child.id, 'c-adopted');
+
+  // The adopted session gets parent_report but never request_retirement, and asking anyway writes nothing.
+  await assert.rejects(runBellwetherTool(w.ctx(watcher), RETIRE_TOOL, {}, { paneId: PANE }), /carries no BELLWETHER_CHILD/);
+  assert.equal(readParent(adopter.id)?.children[0]?.retireRequestedAt, undefined);
 });

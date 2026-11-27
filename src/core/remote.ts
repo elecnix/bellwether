@@ -13,6 +13,7 @@ import { resolveMachine, type MachineResolver } from './machine.ts';
 import { describeFailure, runRemoteBellwether, type SshOptions } from './ssh.ts';
 import type { ChildRecord, ParentRecord } from './types.ts';
 import type { ToolSource } from './tool-source.ts';
+import type { PaneClaim } from './pane-claims.ts';
 
 /** What the child's machine wrote when it registered the child. */
 export interface RemoteRegistration {
@@ -47,6 +48,8 @@ export interface RemoteOps {
   cleanup(child: ChildRecord): Promise<void>;
   /** The child's last assistant message, read on its own machine, or undefined when it has none. */
   lastMessage(child: ChildRecord): Promise<string | undefined>;
+  /** Ask the pane's machine to record an adoption, or say who already watches the pane there. Absent when the session holds no relay. */
+  claim?(host: string, claim: PaneClaim): Promise<{ childId: string; held: boolean }>;
 }
 
 /** The arguments `bellwether relay-register` takes on the child's machine. */
@@ -107,6 +110,8 @@ export function installedThere(registration: Pick<RemoteRegistration, 'version' 
 /** Reads a remote child's transcript over the connection its machine already has open. */
 export interface RemoteReader {
   lastMessage(child: ChildRecord): Promise<string | undefined>;
+  /** Record an adoption on the pane's machine, over the same connection. */
+  adopt?(host: string, claim: PaneClaim): Promise<{ childId: string; held: boolean }>;
 }
 
 export function remoteOps(resolve: MachineResolver = resolveMachine, options: SshOptions = {}, reader?: RemoteReader): RemoteOps {
@@ -129,6 +134,10 @@ export function remoteOps(resolve: MachineResolver = resolveMachine, options: Ss
     async lastMessage(child) {
       if (!reader) throw new Error(`this session holds no connection to machine ${child.host}`);
       return reader.lastMessage(child);
+    },
+    async claim(host, claim) {
+      if (!reader?.adopt) throw new Error(`this session holds no connection to machine ${host}`);
+      return reader.adopt(host, claim);
     },
   };
 }

@@ -47,6 +47,31 @@ When the machine is unreachable, the reply says so and returns the child's last 
 
 A resume goes back to the machine where the child last ran. To change that machine, call `agent_move`. [moving.md](moving.md) describes it.
 
+## Adopting an agent on another machine
+
+`agent_adopt` takes a pane on another machine. Name the machine with `machine`, or write the target as `machine:pane`, as in `child-box:w1:p5` or `child-box:first-mate`. The parent's daemon reads the pane from that machine's herdr, through the same `herdr remote-api-bridge` connection that watches a child it spawned there. It then sends `relay-adopt` over its relay connection to that machine, and the daemon there records the adoption as a relay record with the pane, the harness session and `adopted: true`.
+
+That daemon answers who watches the pane, because its registry lists the children of the parents on that machine, and its relay records list the adoptions of parents on other machines. Bellwether refuses an adoption in four cases, and each refusal says why:
+
+- herdr has no saved machine by that name, and the error lists the saved ones;
+- herdr recognizes no agent in that pane;
+- a parent already watches that pane, on that machine or through an earlier adoption from a third machine, and the error gives that parent and the child's name;
+- the Bellwether on that machine predates `relay-adopt`, and the error gives the version it runs and the release that brings the request, 0.1.6.
+
+An adoption from a third machine stops counting once herdr shows a different session in that pane, because herdr reused the pane id for another agent.
+
+The child record on the parent's machine has the machine as `host`, the pane, the session id from that machine's herdr and `origin: adopt`. Its transcript stays on that machine, and `agent_read` reads it over the relay connection.
+
+When the connection to that machine drops, the child is unreachable, not exited. `agent_list` shows `unreachable since <time> (last seen <status>)` in its state column. The watcher never reports that child stuck or exited while the link is down, because its silence is the link's. Once the child's inactivity period passes, the inactivity notice starts the parent's turn and says the child is unreachable, not exited.
+
+When the machine answers again, the watcher takes a fresh snapshot and the child goes on under the same child id, with no second adoption. A turn that finished during the outage arrives once, as an `idle` event. A restart of the daemon on that machine drops only the relay connection, which reconnects, and the herdr connection that carries the child's status stays up. The new daemon reads the adoption from its relay record on disk.
+
+An adopted child can't call `parent_report`, on this machine or another. Claude Code and pi load the Bellwether server or extension that carries a child id only when they start, and adoption happens after that. No daemon can then tell which parent a report from that session is for.
+
+A session Bellwether starts or restarts gets a child id. An adopted session would need a harness that loads a new MCP server or extension while it runs. Until then, its status changes are what start the parent's turns.
+
+When the child's pane closes, the watcher runs `bellwether relay-cleanup` there, which removes the adoption.
+
 ## Connection state
 
 Backoff runs from 1 second to 5 minutes when the parent's daemon retries a connection that fails or drops. The first reply on each connection gives the version and build of the child's machine, and `bellwether doctor` prints both on the `relay` line for that machine. Machines on one version number but different builds then show different lines.

@@ -15,6 +15,8 @@ export type { RelayHostState, RelayLinkStatus } from '../core/types.ts';
 //    acknowledges each one (relay-ack), reads a transcript over the same
 //    connection (relay-read), and `bellwether doctor` asks it for the state of
 //    every connection (relay-status). A child's machine never connects out.
+//    Later, without a bump: a parent's daemon adopts a pane there and asks
+//    that machine who watches it (relay-adopt).
 //
 // Change the wire additively: a new request type, or a new optional field,
 // needs no bump, because a daemon answers a request it does not know with
@@ -189,6 +191,30 @@ export interface RelayReadRequest {
   cwd?: string;
 }
 
+/**
+ * From a parent's daemon on another machine that adopts a pane here: record
+ * the claim, or answer who already watches the pane. The answer is a result
+ * whose text is the JSON of `RelayAdoptAnswer`, or whose error names the
+ * holder. Added without a protocol bump: a daemon that predates it answers
+ * unknown_type, and the parent names the release that brings it.
+ */
+export interface RelayAdoptRequest {
+  type: 'relay-adopt';
+  id: string;
+  parentId: string;
+  childId: string;
+  name: string;
+  kind: string;
+  paneId: string;
+  session?: string;
+}
+
+/** The text of a relay-adopt result: the child id the claim stands under, and whether this parent already held it. */
+export interface RelayAdoptAnswer {
+  childId: string;
+  held: boolean;
+}
+
 /** The state of every connection this daemon holds to another machine. */
 export interface RelayStatusRequest {
   type: 'relay-status';
@@ -212,7 +238,7 @@ export interface AncestryRequest {
   agent: string;
 }
 
-export type DaemonRequest = HelloRequest | CallRequest | ReceiptRequest | ByeRequest | DrainRequest | WatchRequest | ReportRequest | RelaySubscribeRequest | RelayAckRequest | RelayReadRequest | RelayStatusRequest | SessionsRequest | AncestryRequest;
+export type DaemonRequest = HelloRequest | CallRequest | ReceiptRequest | ByeRequest | DrainRequest | WatchRequest | ReportRequest | RelaySubscribeRequest | RelayAckRequest | RelayReadRequest | RelayAdoptRequest | RelayStatusRequest | SessionsRequest | AncestryRequest;
 
 export interface HelloReply {
   type: 'hello';
@@ -445,6 +471,17 @@ export function parseRequest(line: string): DaemonRequest {
       if (!id || !harness || !session) throw new ProtocolError('invalid_read', 'a relay read needs an id, a harness and a session');
       const cwd = text(value['cwd']);
       return cwd ? { type: 'relay-read', id, harness, session, cwd } : { type: 'relay-read', id, harness, session };
+    }
+    case 'relay-adopt': {
+      const id = text(value['id']);
+      const parentId = text(value['parentId']);
+      const childId = text(value['childId']);
+      const paneId = text(value['paneId']);
+      const kind = text(value['kind']);
+      if (!id || !parentId || !childId || !paneId || !kind) throw new ProtocolError('invalid_adopt', 'a relay adopt needs an id, a parent id, a child id, a pane and a kind');
+      const name = text(value['name']) || paneId;
+      const session = text(value['session']);
+      return { type: 'relay-adopt', id, parentId, childId, name, kind, paneId, ...(session ? { session } : {}) };
     }
     case 'relay-status': {
       const id = text(value['id']);

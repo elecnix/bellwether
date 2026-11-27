@@ -81,9 +81,14 @@ export function relayDir(): string {
   return path.join(bellwetherHome(), 'relay');
 }
 
+/** The relay records, one file per child. */
+export function relayChildrenDir(): string {
+  return path.join(relayDir(), 'children');
+}
+
 /** One record per child whose reports this daemon carries to another machine. */
 export function relayChildPath(childId: string): string {
-  return path.join(relayDir(), 'children', `${slug(childId)}.json`);
+  return path.join(relayChildrenDir(), `${slug(childId)}.json`);
 }
 
 /** Reports waiting for a parent's daemon on another machine to collect them, one file each, named by receipt. */

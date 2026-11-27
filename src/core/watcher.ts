@@ -115,6 +115,12 @@ export class Watcher {
   private readonly links = new Map<string, { subscription: Subscription; key: string }>();
   /** When a host that failed may be tried again, so a dead machine is not dialled every tick. */
   private readonly retryAt = new Map<string, { at: number; delay: number }>();
+  /**
+   * Each other machine whose herdr the watcher cannot reach now: since when,
+   * and why. Its children are unreachable, not exited, and the classifier
+   * holds their events until the machine answers again.
+   */
+  private readonly away = new Map<string, { since: string; error: string }>();
   private ticker: NodeJS.Timeout | undefined;
   /** The classifier pass that runs now, and the one that waits for it. */
   private evaluating: Promise<void> | undefined;
@@ -215,6 +221,27 @@ export class Watcher {
     this.lastScreen.delete(childId);
   }
 
+  /** Since when, and why, the herdr on another machine has not answered, or undefined while it answers. */
+  unreachable(host: string): { since: string; error: string } | undefined {
+    const state = this.away.get(host);
+    return state ? { ...state } : undefined;
+  }
+
+  /** A host's herdr stopped answering. Its children stay as they were: a dropped link is not an exit. */
+  private lostHost(host: string, error: unknown): void {
+    if (host === LOCAL_HOST || this.away.has(host)) return;
+    this.away.set(host, { since: new Date(this.now()).toISOString(), error: String(error) });
+    this.log(`machine ${host} is unreachable; its children are not exited, and are read again once it answers: ${String(error)}`);
+  }
+
+  /** A host answered again, and the snapshot that follows brings its children's state up to date. */
+  private foundHost(host: string): void {
+    const was = this.away.get(host);
+    if (!was) return;
+    this.away.delete(host);
+    this.log(`machine ${host} answers again, after being unreachable since ${was.since}`);
+  }
+
   outboxEntries(): OutboxEntry[] {
     return this.outbox.all();
   }
@@ -263,6 +290,7 @@ export class Watcher {
       link.subscription.close();
       this.links.delete(host);
     }
+    for (const host of this.away.keys()) if (!byHost.has(host)) this.away.delete(host);
     let failed = false;
     for (const [host, children] of byHost) {
       if ((this.retryAt.get(host)?.at ?? 0) > Date.now()) continue;
@@ -281,9 +309,11 @@ export class Watcher {
           this.markExited(child, undefined);
         }
         await this.ensureSubscription(host, client, addressable, signal);
+        this.foundHost(host);
         await this.reconcile(client, addressable, signal);
         this.retryAt.delete(host);
       } catch (error) {
+        this.lostHost(host, error);
         const delay = Math.min((this.retryAt.get(host)?.delay ?? 500) * 2, 60_000);
         this.retryAt.set(host, { at: Date.now() + delay, delay });
         // One unreachable host must not silence the children on the others.
@@ -435,7 +465,10 @@ export class Watcher {
     this.log(`subscribed to ${children.length} child pane(s) on ${host}`);
     void subscription.closed.catch((error: unknown) => {
       this.log(`subscription lost on ${host}: ${String(error)}`);
-      if (this.links.get(host)?.subscription === subscription) this.links.delete(host);
+      if (this.links.get(host)?.subscription === subscription) {
+        this.links.delete(host);
+        if (!this.stopped) this.lostHost(host, error);
+      }
       this.scheduleReconnect();
     });
   }
@@ -683,13 +716,18 @@ export class Watcher {
         this.states.delete(child.id);
         continue;
       }
-      if (await this.endedBeforeSeen(child)) continue;
+      // A machine the watcher cannot reach says nothing new about its children.
+      const away = this.away.has(hostOf(child));
+      if (!away && (await this.endedBeforeSeen(child))) continue;
       if (child.lastStatus !== 'blocked') this.gaveUp.delete(child.id);
       const state = this.states.get(child.id) ?? seedFor(child, now);
-      const busy = await this.childIsBusy(child, now);
+      const busy = away ? false : await this.childIsBusy(child, now);
       // A spawn can set its own stuck and inactivity thresholds. The stuck one
       // is what the lab uses to reach that event in seconds rather than minutes.
-      const { state: next, event } = advance(state, { status: child.lastStatus, completionSeq: child.completionSeq, busy, prompt: child.prompt?.line }, now, limitsFor(child, this.limits));
+      // While its machine is unreachable a child is never stuck, because its
+      // quiet is the link's; the inactivity notice still comes, and says so.
+      const limits = limitsFor(child, this.limits);
+      const { state: next, event } = advance(state, { status: child.lastStatus, completionSeq: child.completionSeq, busy, prompt: child.prompt?.line }, now, away ? { ...limits, stuckMs: Number.POSITIVE_INFINITY } : limits);
       this.states.set(child.id, next);
       if (!event) continue;
       if (event === 'inactive') {
@@ -966,11 +1004,18 @@ export class Watcher {
     // Measure the quiet period on the classifier's own clock. The registry's
     // lastBusyAt can be written by another process that only sees file size.
     if (event === 'stuck') return `${childLabel(child)} has been quiet for ${this.age(quietSince, now)}. Last screen lines:\n${trim(await this.screenTail(child))}`;
-    if (event === 'inactive') return `${childLabel(child)} has shown no activity for ${this.age(quietSince, now)}, and its status is ${child.lastStatus}.${this.relayWarning(child)} Last screen lines:\n${trim(await this.screenTail(child))}`;
+    if (event === 'inactive') return `${childLabel(child)} has shown no activity for ${this.age(quietSince, now)}, and its status is ${child.lastStatus}.${this.awayWarning(child)}${this.relayWarning(child)} Last screen lines:\n${trim(await this.screenTail(child))}`;
     // The turn's own last message, never the last report: a report is an event
     // of its own, and the record keeps it after the turn it belonged to.
     const text = (await this.lastMessage(child)) || trim(await this.screenTail(child));
     return `${childLabel(child)} went idle after ${age}${silence(child)}:${text ? `\n${text}` : ' no message and no readable screen.'}`;
+  }
+
+  /** For a child whose machine's herdr the watcher cannot reach, one sentence that says it is unreachable, not exited. */
+  private awayWarning(child: ChildRecord): string {
+    const away = this.away.get(hostOf(child));
+    if (!away) return '';
+    return ` Bellwether cannot reach herdr on machine ${hostOf(child)} since ${away.since} (${away.error}), so that status is the last one it saw: the child is unreachable, not exited, and Bellwether reads it again once the machine answers.`;
   }
 
   /**

@@ -11,20 +11,20 @@ import { HerdrClient, resolveSocketPath } from './core/herdr-client.ts';
 import { bellwetherHome } from './core/paths.ts';
 import { emptyParent, listParents, readParent, saveParent } from './core/registry.ts';
 import { isReportStatus } from './core/report.ts';
-import { RELAY_SCHEMA, listForwards, saveRelayRecord } from './core/relay-records.ts';
+import { RELAY_SCHEMA, listForwards, readRelayRecord, removeRelayRecord, saveRelayRecord, updateRelayRecord } from './core/relay-records.ts';
 import { relayChildPath, relayOutboxDir } from './core/paths.ts';
-import { writeBrief } from './core/brief.ts';
+import { removeBriefAt, writeBrief, writeBriefIn } from './core/brief.ts';
 import { removeChildFiles, writeMcpConfig } from './core/mcp-config.ts';
 import { describeUpgrade, gatherUpgrade } from './daemon/upgrade-status.ts';
 import { describeState } from './core/hygiene.ts';
 import { HEARTBEAT_MISSES } from './core/ssh.ts';
 import { DaemonClient, REFUSED_EXIT, ReportRefused, drainDaemon, ensureDaemon, postReport, relayStatus } from './daemon/client.ts';
-import { readMemory } from './daemon/relay-links.ts';
+import { readMemory, runsOn } from './daemon/relay-links.ts';
 import type { RelayHostState } from './daemon/protocol.ts';
 import { guardlessPiCopies, resolvePiExtension } from './core/pi-extension.ts';
 import { describeDaemonEntry, readLock } from './daemon/lock.ts';
 import { DAEMON_PROTOCOL } from './daemon/protocol.ts';
-import { BELLWETHER_VERSION } from './core/version.ts';
+import { BELLWETHER_BUILD, BELLWETHER_BUILD_ID, BELLWETHER_VERSION, describeBuild } from './core/version.ts';
 import { daemonIsLive, startDaemon } from './daemon/server.ts';
 import type { ChildRecord, OutboxEntry } from './core/types.ts';
 import { LOCAL_HOST, hostOf, knownHosts } from './core/machine.ts';
@@ -192,7 +192,7 @@ function checkPackaging(): number {
 
 async function doctor(): Promise<number> {
   let failures = 0;
-  console.log(`bellwether ${BELLWETHER_VERSION}, daemon protocol ${DAEMON_PROTOCOL}`);
+  console.log(`bellwether ${describeBuild(BELLWETHER_VERSION, BELLWETHER_BUILD)}, daemon protocol ${DAEMON_PROTOCOL}`);
   console.log(`bellwether home  ${bellwetherHome()}`);
   const daemonSocket = path.join(bellwetherHome(), 'daemon.sock');
   const daemonLive = daemonIsLive(bellwetherHome());
@@ -323,7 +323,7 @@ async function main(): Promise<number> {
     console.log('Usage: bellwether <daemon|drain|spawn|watch|list|read|send|stop|move|report|parents|doctor|version>');
     console.log('  daemon [--socket PATH]                   run the local daemon in the foreground');
     console.log('  drain  [--socket PATH]                   stop the running daemon once its calls finish, so the next session starts the installed one');
-    console.log('  version                                  print the installed version (also --version)');
+    console.log('  version                                  print the installed version (also --version); doctor names the commit it was built from');
     console.log('  spawn  --kind KIND --name NAME [--cwd DIR] [--prompt TEXT] [--model M] [--parent ID] [--focus]');
     console.log('  watch  [--parent ID] [--tick-ms N]      one line per child event, then keeps reading');
     console.log('  list   [--parent ID]');
@@ -369,8 +369,8 @@ async function main(): Promise<number> {
   }
 
   if (command === 'report') return report(rest);
-  if (command === 'relay-register') return relayRegister(rest);
-  if (command === 'relay-cleanup') return relayCleanup(rest);
+  if (command === 'relay-register') return farEnd(command, () => relayRegister(rest));
+  if (command === 'relay-cleanup') return farEnd(command, () => relayCleanup(rest));
   if (command === 'relay-bridge') return relayBridge(rest);
   if ((MOVE_VERBS as readonly string[]).includes(command)) return moveVerb(command as MoveVerb);
 
@@ -478,13 +478,30 @@ async function report(argv: string[]): Promise<number> {
 }
 
 /**
+ * Run a command a parent's daemon runs here over SSH. Its error goes to
+ * standard error as one line, which the parent quotes, rather than as a stack
+ * whose last lines say nothing about what went wrong.
+ */
+function farEnd(command: string, run: () => number): number {
+  try {
+    return run();
+  } catch (error) {
+    console.error(`bellwether ${command}: ${(error as Error).message}`);
+    return 1;
+  }
+}
+
+/**
  * Record, on this machine, a child whose parent runs on another machine. A
  * parent's daemon runs it here over SSH before it creates the child's tab.
  * With --brief-stdin it reads the child's brief from standard input and
- * writes it to this machine's prompts directory, so the harness is pointed at
- * a file that exists here. The record names the parent, and no address for
- * it: this machine never connects to the parent's, whose daemon connects here
- * to collect reports. It prints the record path, the brief and, for a Claude
+ * writes it inside the child's working directory here, in a `.bellwether`
+ * directory that git ignores, so the harness reads a file that exists where it
+ * runs without asking to leave its working directory. A child with no working
+ * directory gets the brief in this machine's prompts directory. The record
+ * names the parent, and no address for it: this machine never connects to the
+ * parent's, whose daemon connects here to collect reports. It prints the
+ * record path, the brief, this install's version and build and, for a Claude
  * Code child, the MCP config the child starts with, or for a pi child, the
  * extension it loads, as one JSON line.
  */
@@ -495,20 +512,37 @@ function relayRegister(argv: string[]): number {
   if (!childId || !parentId) throw new Error('relay-register needs --child and --parent');
   // A pi child loads this machine's own extension, so a missing one fails here, before anything is written.
   const piExtension = values['kind'] === 'pi' ? resolvePiExtension() : undefined;
-  const brief = values['brief-stdin'] === 'yes' ? writeBrief(childId, fs.readFileSync(0, 'utf8')) : undefined;
-  saveRelayRecord({ schema: RELAY_SCHEMA, childId, name: values['name'] ?? childId, kind: values['kind'] ?? 'other', parentId, ...(values['cwd'] ? { cwd: values['cwd'] } : {}), registeredAt: new Date().toISOString() });
+  const cwd = values['cwd'];
+  let brief: string | undefined;
+  if (values['brief-stdin'] === 'yes') {
+    const text = fs.readFileSync(0, 'utf8');
+    brief = cwd ? writeBriefIn(cwd, childId, text) : writeBrief(childId, text);
+  }
+  saveRelayRecord({ schema: RELAY_SCHEMA, childId, name: values['name'] ?? childId, kind: values['kind'] ?? 'other', parentId, ...(cwd ? { cwd } : {}), ...(brief ? { brief } : {}), registeredAt: new Date().toISOString() });
   const mcpConfig = values['kind'] === 'claude' ? writeMcpConfig(childId) : undefined;
-  console.log(JSON.stringify({ record: relayChildPath(childId), ...(brief ? { brief } : {}), ...(mcpConfig ? { mcpConfig } : {}), ...(piExtension ? { piExtension } : {}) }));
+  console.log(JSON.stringify({ record: relayChildPath(childId), version: BELLWETHER_VERSION, build: BELLWETHER_BUILD_ID, ...(brief ? { brief } : {}), ...(mcpConfig ? { mcpConfig } : {}), ...(piExtension ? { piExtension } : {}) }));
   return 0;
 }
 
-/** Remove the files relay-register wrote for a child that is gone. The relay record stays, for reports still in flight. */
+/**
+ * Remove everything relay-register wrote for a child that is gone: its brief,
+ * wherever it went, its MCP config and its relay record. A record whose
+ * reports still wait for the parent's daemon stays, marked retired, and goes
+ * with the last of them.
+ */
 function relayCleanup(argv: string[]): number {
   const values = exactFlags(argv, ['child']);
   const childId = values['child'];
   if (!childId) throw new Error('relay-cleanup needs --child');
+  const record = readRelayRecord(childId);
+  if (record?.brief) removeBriefAt(record.brief);
   removeChildFiles(childId);
-  console.log(JSON.stringify({ removed: childId }));
+  const waiting = listForwards().filter((entry) => entry.childId === childId && !entry.refused).length;
+  if (waiting) updateRelayRecord(childId, (entry) => {
+    entry.retiredAt = new Date().toISOString();
+  });
+  else removeRelayRecord(childId);
+  console.log(JSON.stringify({ removed: childId, ...(waiting ? { recordKept: `${waiting} report(s) still wait for the parent's daemon` } : {}) }));
   return 0;
 }
 
@@ -589,7 +623,7 @@ export function describeRelayHost(state: RelayHostState): { ok: boolean; label: 
   const as = state.target && state.target !== state.host ? ` as ${state.target}` : '';
   const drain = state.lastDrainAt ? `, last drain ${state.lastDrainAt}` : ', not drained yet';
   const children = `${state.children.length} child(ren) there`;
-  if (state.status === 'connected') return { ok: true, label, detail: `connected since ${state.since}${as}${drain}, ${children}` };
+  if (state.status === 'connected') return { ok: true, label, detail: `connected since ${state.since}${as}, running ${runsOn({ version: state.farVersion, build: state.farBuild }).replace(/^bellwether /, '')}${drain}, ${children}` };
   const next = state.nextAttemptAt ? `, next attempt ${state.nextAttemptAt}` : '';
   const heard = state.lastConnectedAt ? `last connected ${state.lastConnectedAt}` : 'never connected';
   return { ok: false, label, detail: `${state.status} since ${state.since}${as}, ${state.attempts} failed attempt(s)${next}, ${heard}${drain}, ${children}, not hearing from them: ${state.lastError ?? 'no attempt has finished yet'}` };

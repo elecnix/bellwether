@@ -146,6 +146,20 @@ export interface ChildRecord {
   exitedAt?: string;
   exitCode?: number;
   /**
+   * When herdr first saw the harness run in the child's pane: a detected
+   * agent, or a status other than unknown. A child without it after its start
+   * window is checked once, to tell a harness that died at once from one that
+   * is still loading.
+   */
+  harnessSeenAt?: string;
+  /**
+   * How the child's harness ended, when its pane outlived it: `before-start`
+   * for one that ended before it reported anything, so it never ran its task,
+   * and `in-pane` for one that ended later. Either way the tab stays open on
+   * the shell that ran it.
+   */
+  harnessEnded?: 'before-start' | 'in-pane';
+  /**
    * Set when the child asked to be retired. The daemon cleans up once herdr
    * reports the pane gone. Every retirement field is optional, so an older
    * record loads unchanged.
@@ -286,4 +300,8 @@ export interface RelayHostState {
   nextAttemptAt?: string;
   /** The children on that machine this daemon is waiting to hear from. */
   children: string[];
+  /** That machine's daemon's package version, from its last relay-hello. */
+  farVersion?: string;
+  /** That daemon's build, its commit, from its last relay-hello. One version number covers many builds. */
+  farBuild?: string;
 }

@@ -8,7 +8,7 @@ import net from 'node:net';
 import path from 'node:path';
 import { DAEMON_PROTOCOL, MAX_DAEMON_FRAME_BYTES, MIN_CLIENT_PROTOCOL, ProtocolError, acceptsClientProtocol, formatReply, parseRequest, type DaemonReply, type ParentHello, type SessionInfo } from './protocol.ts';
 import { DRAIN_GRACE_MS, drainDecision } from './handover.ts';
-import { BELLWETHER_VERSION } from '../core/version.ts';
+import { BELLWETHER_BUILD_ID, BELLWETHER_VERSION } from '../core/version.ts';
 import { readParent } from '../core/registry.ts';
 import { PRUNE_DELAY_MS, PRUNE_EVERY_MS, pruneState } from '../core/hygiene.ts';
 import { defaultServiceFactory, parentIdOf, type ParentService, type ServiceFactory } from './service.ts';
@@ -76,6 +76,7 @@ interface Attached {
   parentId: string;
   parent: ParentHello;
   client: string;
+  build?: string;
   protocol: number;
   connectedAt: string;
 }
@@ -232,6 +233,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
       harness: entry.parent.harness,
       session: entry.parent.session,
       client: entry.client,
+      ...(entry.build ? { build: entry.build } : {}),
       protocol: entry.protocol,
       connectedAt: entry.connectedAt,
       liveChildren: record ? record.children.filter((child) => !child.exitedAt).length : 0,
@@ -331,7 +333,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
         reply({
           type: 'sessions',
           id: request.id,
-          daemon: { pid, version: BELLWETHER_VERSION, protocol: DAEMON_PROTOCOL, minClientProtocol: MIN_CLIENT_PROTOCOL, startedAt, draining: drainingSince !== undefined },
+          daemon: { pid, version: BELLWETHER_VERSION, build: BELLWETHER_BUILD_ID, protocol: DAEMON_PROTOCOL, minClientProtocol: MIN_CLIENT_PROTOCOL, startedAt, draining: drainingSince !== undefined },
           sessions: [...attached.values()].map(sessionInfo),
           relaySubscribers: relaySockets.size,
         });
@@ -359,7 +361,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
         relaySockets.add(socket);
         const parentIds = new Set(request.parentIds);
         const waiting = outbox.waiting(parentIds).length;
-        reply({ type: 'relay-hello', protocol: DAEMON_PROTOCOL, pid, waiting });
+        reply({ type: 'relay-hello', protocol: DAEMON_PROTOCOL, pid, waiting, version: BELLWETHER_VERSION, build: BELLWETHER_BUILD_ID });
         const { sent, stop } = outbox.subscribe({ parentIds, send: (report) => reply({ type: 'relay-report', report }) });
         relaySubscription = stop;
         reply({ type: 'relay-drained', sent });
@@ -393,8 +395,8 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
         const set = subscribers.get(session.parentId) ?? new Set<net.Socket>();
         set.add(socket);
         subscribers.set(session.parentId, set);
-        attached.set(socket, { parentId: session.parentId, parent: request.parent, client: request.client, protocol: request.protocol, connectedAt: new Date(now()).toISOString() });
-        reply({ type: 'hello', protocol: DAEMON_PROTOCOL, parentId: session.parentId, pid, pending: session.service.pending(), version: BELLWETHER_VERSION });
+        attached.set(socket, { parentId: session.parentId, parent: request.parent, client: request.client, ...(request.build ? { build: request.build } : {}), protocol: request.protocol, connectedAt: new Date(now()).toISOString() });
+        reply({ type: 'hello', protocol: DAEMON_PROTOCOL, parentId: session.parentId, pid, pending: session.service.pending(), version: BELLWETHER_VERSION, build: BELLWETHER_BUILD_ID });
         return;
       }
       if (request.type === 'bye') {

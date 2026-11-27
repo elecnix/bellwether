@@ -15,6 +15,7 @@ export const REQUIRED_FIELDS: Record<string, readonly string[]> = {
   'agent.send_keys': ['target', 'keys'],
   'pane.read': ['pane_id', 'source'],
   'pane.close': ['pane_id'],
+  'pane.process_info': ['pane_id'],
   'events.subscribe': ['subscriptions'],
 };
 

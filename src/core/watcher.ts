@@ -56,7 +56,16 @@ export interface WatcherOptions {
   retireBusyDelayMs?: number;
   /** How the daemon's connection to a remote child's machine stands, so a notice can say the parent is not hearing from it. */
   relayState?: (host: string) => RelayHostState | undefined;
+  /** How long after its start a child herdr has not seen run is checked for a harness that already ended. */
+  startConfirmMs?: number;
 }
+
+/**
+ * How long a new child's harness has to show herdr it runs before the watcher
+ * asks whether it ended. herdr detects a harness within a second or two, and
+ * a harness loading a large session can take longer, so this is generous.
+ */
+export const START_CONFIRM_MS = 20_000;
 
 export class Watcher {
   private readonly clientFor: ClientFor;
@@ -71,6 +80,9 @@ export class Watcher {
   private readonly cleanupRemote: ((child: ChildRecord) => Promise<void>) | undefined;
   private readonly retireBusy: { retries?: number; delayMs?: number };
   private readonly relayState: ((host: string) => RelayHostState | undefined) | undefined;
+  private readonly startConfirmMs: number;
+  /** Children whose start was checked once in this process, so the check never repeats. */
+  private readonly startChecked = new Set<string>();
   /** Retirements in flight, so an exit event and a start never clean the same child at once. */
   private readonly retiring = new Map<string, Promise<void>>();
   private readonly outbox: Outbox;
@@ -103,6 +115,7 @@ export class Watcher {
     this.cleanupRemote = options.cleanupRemote;
     this.retireBusy = { retries: options.retireBusyRetries, delayMs: options.retireBusyDelayMs };
     this.relayState = options.relayState;
+    this.startConfirmMs = options.startConfirmMs ?? START_CONFIRM_MS;
     this.outbox = Outbox.load(this.parentId);
   }
 
@@ -172,6 +185,7 @@ export class Watcher {
    */
   reset(childId: string): void {
     this.states.delete(childId);
+    this.startChecked.delete(childId);
     this.screenReadAt.delete(childId);
     this.transcriptSizes.delete(childId);
     this.transcriptLookAt.delete(childId);
@@ -269,21 +283,77 @@ export class Watcher {
     return new Set(list.map((pane) => pane['pane_id']).filter((id): id is string => typeof id === 'string'));
   }
 
-  private markExited(child: ChildRecord, code: number | undefined): void {
+  /**
+   * A child herdr has not seen run since its start window closed: ask herdr
+   * once whether its harness is there. herdr keeps an agent it launched as
+   * pending when the process ends before detection, and then the pane's
+   * foreground process is its shell again. That child never started, and the
+   * parent hears it as an exit. Returns true when the child turned out gone.
+   */
+  private async endedBeforeSeen(child: ChildRecord): Promise<boolean> {
+    if (child.harnessSeenAt || child.origin === 'adopt' || !child.paneId || this.startChecked.has(child.id)) return false;
+    const since = Date.parse(child.resumedAt ?? child.startedAt);
+    if (!(Date.now() - since >= this.startConfirmMs)) return false;
+    this.startChecked.add(child.id);
+    try {
+      const client = await this.clientFor(hostOf(child));
+      const result = await client.request('agent.get', { target: child.paneId }, { signal: this.controller?.signal }).catch(() => undefined);
+      const agent = isRecord(result) && isRecord(result['agent']) ? result['agent'] : undefined;
+      if (typeof agent?.['agent'] === 'string' && agent['agent']) {
+        updateChild(this.parentId, child.id, (entry) => {
+          entry.harnessSeenAt ??= new Date().toISOString();
+        });
+        return false;
+      }
+      const reply = await client.request('pane.process_info', { pane_id: child.paneId }, { signal: this.controller?.signal });
+      const info = isRecord(reply) && isRecord(reply['process_info']) ? reply['process_info'] : undefined;
+      const shell = info?.['shell_pid'];
+      const foreground = info?.['foreground_process_group_id'];
+      if (typeof shell !== 'number' || foreground !== shell) return false;
+      this.log(`${child.name}'s harness is not running in pane ${child.paneId}: herdr never detected it, and the pane's foreground process is its shell`);
+      this.markExited(child, undefined, 'in-pane');
+      this.dropLink(hostOf(child));
+      void this.reconcileAndSubscribe();
+      return true;
+    } catch (error) {
+      this.log(`could not check whether ${child.name} started: ${String(error)}`);
+      return false;
+    }
+  }
+
+  /** Whether a child got to its task: a report, a finished turn, a busy status, or an event the parent was sent. */
+  private heardFrom(child: ChildRecord): boolean {
+    if (child.lastReport || (child.completionSeq ?? 0) > 0) return true;
+    if (child.lastStatus === 'working' || child.lastStatus === 'blocked' || child.lastStatus === 'done') return true;
+    return this.outbox.all().some((entry) => entry.childId === child.id);
+  }
+
+  /** The tab of a child whose harness already ended was closed: forget the pane, and say nothing. */
+  private closeQuietly(child: ChildRecord): void {
+    removeChildFiles(child.id);
+    void this.retire(child.id);
+  }
+
+  private markExited(child: ChildRecord, code: number | undefined, ended?: 'in-pane'): void {
     // A child that exits between two looks wrote its file after the last one,
     // so look once more. The session and transcript stay on the record, so a
     // retired child can still be read and resumed.
     if (!child.transcript && child.session && hostOf(child) === LOCAL_HOST) this.recordTranscript(child, child.session.value);
+    // A child the parent never heard from never ran its task, whatever ended it.
+    const beforeStart = !this.heardFrom(child);
+    const harnessEnded = ended ? (beforeStart ? 'before-start' : 'in-pane') : undefined;
     updateChild(this.parentId, child.id, (entry) => {
       entry.exitedAt = new Date().toISOString();
       entry.exitCode = code;
       entry.lastStatus = 'unknown';
+      if (harnessEnded) entry.harnessEnded = harnessEnded;
     });
+    child = { ...child, ...(harnessEnded ? { harnessEnded } : {}) };
     removeChildFiles(child.id);
     if (hostOf(child) !== LOCAL_HOST && this.cleanupRemote) {
       this.cleanupRemote(child).catch((error: unknown) => this.log(`could not remove ${child.name}'s files on machine ${hostOf(child)}: ${(error as Error).message}`));
     }
-    this.offer(child, 'exited', this.describeExit(child, code));
+    this.offer(child, 'exited', this.describeExit(child, code, beforeStart));
     void this.retire(child.id);
   }
 
@@ -357,16 +427,21 @@ export class Watcher {
         return;
       }
       const code = typeof event.data['exit_code'] === 'number' ? (event.data['exit_code'] as number) : undefined;
-      this.markExited(child, code);
+      // A harness that already ended in this pane was reported then; the tab closing says nothing new.
+      if (child.exitedAt && child.harnessEnded) this.closeQuietly(child);
+      else this.markExited(child, code);
       // The subscription named that pane, so it has to be rebuilt without it.
       this.dropLink(host);
       void this.reconcileAndSubscribe();
       return;
     }
     if (STATUS_EVENTS.has(event.event)) {
+      // A harness that ended in its pane is reported; the pane's last status changes say nothing more.
+      if (child.exitedAt && child.harnessEnded) return;
       const status = statusOf(event.data, child.lastStatus);
       const stateSeq = typeof event.data['state_change_seq'] === 'number' ? (event.data['state_change_seq'] as number) : undefined;
       updateChild(this.parentId, child.id, (entry) => {
+        if (status !== 'unknown' && !entry.harnessSeenAt) entry.harnessSeenAt = new Date().toISOString();
         if (entry.prompt?.source === 'screen' && (entry.lastStatus !== status || (stateSeq !== undefined && stateSeq !== entry.stateChangeSeq))) delete entry.prompt;
         if (entry.lastStatus !== status) {
           entry.statusChangedAt = new Date().toISOString();
@@ -385,7 +460,22 @@ export class Watcher {
       await this.evaluate();
       return;
     }
-    if (event.event === 'pane.agent_detected') {
+    if (AGENT_EVENTS.has(event.event)) {
+      // herdr releases a pane's agent when the harness process ends and the
+      // shell it ran in stays: the child is gone, though its tab is not.
+      if (event.data['released'] === true) {
+        if (!child.exitedAt && !isMoving(child)) {
+          this.markExited(child, undefined, 'in-pane');
+          this.dropLink(host);
+          void this.reconcileAndSubscribe();
+        }
+        return;
+      }
+      if (typeof event.data['agent'] === 'string' && event.data['agent'] && !child.harnessSeenAt) {
+        updateChild(this.parentId, child.id, (entry) => {
+          entry.harnessSeenAt ??= new Date().toISOString();
+        });
+      }
       const signal = this.controller?.signal;
       if (signal) await this.reconcile(await this.clientFor(host), (record?.children ?? []).filter((entry) => hostOf(entry) === host), signal);
     }
@@ -455,6 +545,12 @@ export class Watcher {
       const sessionChanged = session !== undefined && (session.value !== child.session?.value || session.kind !== child.session?.kind);
       const agentName = agentNameOf(pane, child.name);
       const nameChanged = agentName !== undefined && agentName !== child.agentName;
+      const seen = !child.harnessSeenAt && ((typeof pane['agent'] === 'string' && pane['agent'] !== '') || status !== 'unknown');
+      if (seen) {
+        updateChild(this.parentId, child.id, (entry) => {
+          entry.harnessSeenAt ??= new Date().toISOString();
+        });
+      }
       if (status !== child.lastStatus || (seq !== undefined && seq !== child.completionSeq) || (stateSeq !== undefined && stateSeq !== child.stateChangeSeq) || sessionChanged || nameChanged) {
         updateChild(this.parentId, child.id, (entry) => {
           const at = new Date().toISOString();
@@ -498,6 +594,7 @@ export class Watcher {
         this.states.delete(child.id);
         continue;
       }
+      if (await this.endedBeforeSeen(child)) continue;
       if (child.lastStatus !== 'blocked') this.gaveUp.delete(child.id);
       const state = this.states.get(child.id) ?? seedFor(child, now);
       const busy = await this.childIsBusy(child, now);
@@ -726,7 +823,7 @@ export class Watcher {
   /** What the parent is told about a child event. */
   private async describe(child: ChildRecord, event: ChildEventKind, quietSince: number, now: number): Promise<string> {
     const age = this.age(Date.parse(child.startedAt));
-    if (event === 'exited') return this.describeExit(child, child.exitCode);
+    if (event === 'exited') return this.describeExit(child, child.exitCode, child.harnessEnded === 'before-start');
     if (event === 'blocked') {
       if (child.prompt) return this.describeBlocked(child, child.prompt.line);
       // Pane feature: the parent's event text names the dialog its child is blocked on.
@@ -766,8 +863,11 @@ export class Watcher {
     return `${childLabel(child)} is blocked on a dialog after ${this.age(Date.parse(child.startedAt))}${what}\nIt waits for a person to answer, and Bellwether does not answer it. Read the screen with agent_read, then answer with agent_send keys.`;
   }
 
-  private describeExit(child: ChildRecord, code: number | undefined): string {
-    return `${childLabel(child)} exited${code === undefined ? '' : ` with code ${code}`}.`;
+  private describeExit(child: ChildRecord, code: number | undefined, beforeStart = false): string {
+    const coded = code === undefined ? '' : ` with code ${code}`;
+    const tab = child.harnessEnded ? ' Its tab stays open on the shell the harness ran in, with what the harness printed before it ended: agent_read shows that screen, and agent_stop closes the tab.' : '';
+    if (beforeStart) return `${childLabel(child)} never started: its ${child.kind} process ended${coded} before it reported anything, so it did not run its task.${tab}`;
+    return `${childLabel(child)} exited${coded}.${tab}`;
   }
 
   private async screenTail(child: ChildRecord, lines = 40): Promise<string> {
@@ -923,6 +1023,9 @@ function conversationGrowth(added: string): boolean {
 const CLOSE_EVENTS = new Set(['pane.exited', 'pane_exited', 'pane.closed', 'pane_closed', 'tab.closed', 'tab_closed']);
 
 const STATUS_EVENTS = new Set(['pane.agent_status_changed', 'pane_agent_status_changed']);
+
+/** herdr names an event by its subscription type in some places and with underscores on the wire. */
+const AGENT_EVENTS = new Set(['pane.agent_detected', 'pane_agent_detected']);
 
 /** How often to ask herdr for a child's session when no transcript is known. */
 const TRANSCRIPT_LOOK_INTERVAL_MS = 60_000;

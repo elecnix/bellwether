@@ -22,7 +22,14 @@ export interface RelayRecord {
   /** The parent's id in its own daemon's registry. */
   parentId: string;
   cwd?: string;
+  /** Where the child's brief was written on this machine, so the cleanup removes it there. */
+  brief?: string;
   registeredAt: string;
+  /**
+   * Set when the child is gone but some of its reports still wait for the
+   * parent's daemon. The record goes with the last of them.
+   */
+  retiredAt?: string;
   /** How many of this child's reports wait in the relay outbox. Absent or 0 when none do. */
   unforwarded?: number;
   /** When the parent's daemon last acknowledged one of its reports. */
@@ -68,6 +75,10 @@ export function readRelayRecord(childId: string): RelayRecord | undefined {
 export function saveRelayRecord(record: RelayRecord): RelayRecord {
   writePrivate(relayChildPath(record.childId), record);
   return record;
+}
+
+export function removeRelayRecord(childId: string): void {
+  fs.rmSync(relayChildPath(childId), { force: true });
 }
 
 export function updateRelayRecord(childId: string, change: (record: RelayRecord) => void): RelayRecord | undefined {

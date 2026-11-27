@@ -36,7 +36,9 @@ Each event below starts a new turn for the parent. herdr reports the state, and 
 | blocked | The child waits on a dialog. herdr reports `blocked`, or a pi child says a dialog is open. When herdr reports `idle`, the screen can also show one. Claude Code's startup questions don't count, because Bellwether answers them. | 3 s |
 | stuck | herdr reports `working` or `unknown`, and the child has been quiet past the threshold. | 10 min |
 | inactive | No status change, output, new turn or report for the child's inactivity threshold. | none |
-| exited | The pane exits or closes, or herdr stops detecting the agent. | none |
+| exited | The pane exits or closes, or the harness ends and leaves its pane open. | none |
+
+A harness can end and leave its pane open on the shell that ran it, as pi does when it can't read its brief. herdr then releases the agent, and the parent gets `exited` at once. When the harness ends before herdr ever detects it, herdr keeps it as pending. Twenty seconds after the start, Bellwether checks such a child once. If the shell is the pane's foreground process again, the parent gets `exited`. A child that ended before it reported anything gets an `exited` event that says it never started, so a dead child and a child still thinking don't look the same. Bellwether leaves its tab open on what the harness printed: `agent_read` shows that screen, and `agent_stop` closes the tab.
 
 An unread `blocked` or `stuck` event drops out once the child moves on, so a dialog someone already answered never reaches the parent's next turn.
 

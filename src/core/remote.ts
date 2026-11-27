@@ -19,6 +19,10 @@ export interface RemoteRegistration {
   brief?: string;
   /** The pi extension of the package there, for a pi child. */
   piExtension?: string;
+  /** The Bellwether version there. An install from before it said leaves it out. */
+  version?: string;
+  /** The build there, its commit. An install from before builds were named leaves it out. */
+  build?: string;
 }
 
 export interface RemoteOps {
@@ -53,8 +57,16 @@ export function parseRegistration(target: string, stdout: string, kind?: string)
   if (text('mcpConfig')) registration.mcpConfig = text('mcpConfig');
   if (text('brief')) registration.brief = text('brief');
   if (text('piExtension')) registration.piExtension = text('piExtension');
-  if (kind === 'pi' && !registration.piExtension) throw new Error(`bellwether relay-register on ${target} named no pi extension. Upgrade @elecnix/bellwether on ${target}.`);
+  if (text('version')) registration.version = text('version');
+  if (text('build')) registration.build = text('build');
+  if (kind === 'pi' && !registration.piExtension) throw new Error(`bellwether relay-register on ${target}, ${installedThere(registration)}, named no pi extension. Upgrade @elecnix/bellwether on ${target}.`);
   return registration;
+}
+
+/** Which Bellwether a registration ran, in a few words, for an error that tells the operator to upgrade it. */
+export function installedThere(registration: Pick<RemoteRegistration, 'version' | 'build'>): string {
+  if (!registration.version) return 'an install too old to name its version and build';
+  return `version ${registration.version} build ${registration.build ?? 'unknown'}`;
 }
 
 /** Reads a remote child's transcript over the connection its machine already has open. */
@@ -74,7 +86,7 @@ export function remoteOps(resolve: MachineResolver = resolveMachine, options: Ss
         throw new Error(`${describeFailure(profile.target, result)}${upgrade}`);
       }
       const registration = parseRegistration(profile.target, result.stdout, child.kind);
-      if (withBrief && !registration.brief) throw new Error(`bellwether relay-register on ${profile.target} wrote no brief. Upgrade @elecnix/bellwether on that machine.`);
+      if (withBrief && !registration.brief) throw new Error(`bellwether relay-register on ${profile.target}, ${installedThere(registration)}, wrote no brief. Upgrade @elecnix/bellwether on that machine.`);
       return registration;
     },
     async cleanup(child) {

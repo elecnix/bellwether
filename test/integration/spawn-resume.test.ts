@@ -112,7 +112,7 @@ test('a retired session comes back in a tab with --resume, the same child id, an
   isolate(t, 'bellwether-resume-');
   const local = await herdr(t);
   const id = parent('retired');
-  upsertChild(id, worker({ exitedAt: new Date().toISOString(), exitCode: 0 }));
+  upsertChild(id, worker({ exitedAt: new Date().toISOString(), exitCode: 0, harnessSeenAt: new Date().toISOString(), harnessEnded: 'in-pane' }));
 
   const text = await runBellwetherTool(context(id, local), 'agent_spawn', { resume: 'worker', prompt });
   assert.match(text, /worker resumed session sess-1 in pane w1:p\d+, as the same child child-worker/);
@@ -135,6 +135,9 @@ test('a retired session comes back in a tab with --resume, the same child id, an
   assert.equal(rest.length, 0, 'no second child record');
   assert.equal(child?.id, 'child-worker');
   assert.equal(child?.exitedAt, undefined);
+  // The new harness is checked once after its start window, as a new child's is.
+  assert.equal(child?.harnessSeenAt, undefined);
+  assert.equal(child?.harnessEnded, undefined);
   assert.notEqual(child?.paneId, 'w1:p3');
   assert.equal(local.world.panes.get(child?.paneId ?? '')?.agent_session?.value, 'sess-1');
 });

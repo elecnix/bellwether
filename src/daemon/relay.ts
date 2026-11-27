@@ -6,7 +6,7 @@
 // that acknowledgement, so a dropped connection or a stopped daemon loses
 // nothing, and the receipt in each report makes a second delivery harmless.
 import { relayOutboxPath } from '../core/paths.ts';
-import { listForwards, newReportReceipt, removeForward, saveForward, updateRelayRecord, type ForwardEntry, type RelayRecord } from '../core/relay-records.ts';
+import { listForwards, newReportReceipt, readRelayRecord, removeForward, removeRelayRecord, saveForward, updateRelayRecord, type ForwardEntry, type RelayRecord } from '../core/relay-records.ts';
 import type { ReportStatus } from '../core/types.ts';
 import { MAX_DAEMON_FRAME_BYTES, formatReply, type RelayReport } from './protocol.ts';
 
@@ -123,9 +123,14 @@ export class RelayOutbox {
     return `Reported ${status} to the parent on another machine, as ${record.name}.`;
   }
 
-  /** Say on the child's relay record how many of its reports wait. */
+  /** Say on the child's relay record how many of its reports wait, and remove the record of a gone child once none does. */
   private settleRecord(childId: string, forwarded: boolean): void {
     const waiting = this.waiting().filter((entry) => entry.childId === childId).length;
+    if (waiting === 0 && readRelayRecord(childId)?.retiredAt) {
+      removeRelayRecord(childId);
+      this.log(`relay: removed the record of child ${childId}, which is gone and has no report left to collect`);
+      return;
+    }
     updateRelayRecord(childId, (record) => {
       if (forwarded) record.lastForwardedAt = new Date(this.now()).toISOString();
       if (waiting === 0) delete record.unforwarded;

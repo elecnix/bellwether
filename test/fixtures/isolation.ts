@@ -36,6 +36,11 @@ process.env['PI_CODING_AGENT_DIR'] = path.join(ISOLATION_ROOT, 'pi-agent');
 // servers, which a Claude Code spawn reads to keep a second Bellwether server
 // out of the child. A case that needs some writes its own here.
 process.env['CLAUDE_CONFIG_DIR'] = path.join(ISOLATION_ROOT, 'claude-config');
+// Cline's directory holds the operator's session store, which agent_read and
+// the watcher read for an adopted cline child. A case that needs a store
+// writes its own here.
+process.env['CLINE_DIR'] = path.join(ISOLATION_ROOT, 'cline');
+for (const key of ['CLINE_DATA_DIR', 'CLINE_DB_DATA_DIR', 'CLINE_MCP_SETTINGS_PATH']) delete process.env[key];
 // The routes file describes the operator's own launchers. A case that needs
 // routes writes its own file here, so none reads ~/.config/bellwether.
 process.env['BELLWETHER_ROUTES'] = path.join(ISOLATION_ROOT, 'routes.json');

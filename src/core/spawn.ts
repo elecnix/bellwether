@@ -80,6 +80,8 @@ export interface SpawnResult {
   child: ChildRecord;
   /** Which provider and model a pi child runs on, and why, for the spawn reply. */
   modelNote?: string;
+  /** What the child's harness entry says about how it was started, for the spawn reply. */
+  harnessNote?: string;
   link: string;
   /** The startup dialogs the spawn answered, in order. */
   answered?: StartupDialog[];
@@ -209,7 +211,7 @@ export async function childStartFiles(parent: ParentRecord, child: ChildRecord, 
 async function checkHarness(entry: HarnessEntry, options: SpawnOptions, model: string | undefined, hooks: HarnessHooks, herdr: HerdrClient): Promise<void> {
   const refused = spawnRefusal(entry, options.name);
   if (refused) throw new Error(refused);
-  await entry.preflight?.({ name: options.name, cwd: options.cwd, model, host: options.host ?? LOCAL_HOST, herdr }, hooks);
+  await entry.preflight?.({ name: options.name, cwd: options.cwd, model, host: options.host ?? LOCAL_HOST, herdr, args: options.args ?? [] }, hooks);
 }
 
 export async function spawnChild(client: HerdrClient, parent: ParentRecord, options: SpawnOptions, signal?: AbortSignal, hooks: SpawnHooks = {}): Promise<SpawnResult> {
@@ -405,7 +407,8 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
   });
 
   const note = modelNote(child);
-  return { child, link: herdrLink('pane', child.paneId), answered, ...(note ? { modelNote: note } : {}) };
+  const harnessNote = entry.spawnNote?.(child, options.args ?? []);
+  return { child, link: herdrLink('pane', child.paneId), answered, ...(note ? { modelNote: note } : {}), ...(harnessNote ? { harnessNote } : {}) };
 }
 
 /**

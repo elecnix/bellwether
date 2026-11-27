@@ -8,7 +8,7 @@ Bellwether reaches a machine through three installs, and each one updates on its
 
 2. `pi install npm:@elecnix/bellwether` for the Pi extension, which Homebrew doesn't touch. It also points Pi back at the npm package when `pi list` shows a local checkout. Pi loads the new extension at the next session start.
 
-3. `/plugin marketplace update bellwether` in Claude Code. The plugin follows this repository's default branch, not npm.
+3. `claude plugin marketplace update elecnix-plugins`, then `claude plugin update bellwether@elecnix-plugins`. The marketplace installs the plugin from this repository's default branch, not from npm.
 
 4. `bellwether drain`. Each open session keeps a connection to the running daemon, so the daemon would keep its old code until it goes idle. Drain lets it finish its current calls and exit. Each session reconnects within a second and starts a daemon from its own install, so restart every session. Then the new daemon comes from the new install.
 

@@ -14,10 +14,10 @@ function readJson<T>(file: string): T {
 
 type PluginManifest = {
   name?: string;
+  version?: string;
   mcpServers?: Record<string, { command?: string }>;
   channels?: { server?: string }[];
 };
-type MarketplaceManifest = { name?: string; plugins?: { name?: string; source?: string }[] };
 type PackageManifest = { pi?: { extensions?: string[] } };
 
 test('the plugin names its MCP server bellwether and runs bin/bellwether-mcp.js', () => {
@@ -39,12 +39,19 @@ test('the plugin names its MCP server bellwether and runs bin/bellwether-mcp.js'
   );
 });
 
-test('the marketplace offers the plugin from the repository root', () => {
-  const marketplace = readJson<MarketplaceManifest>('.claude-plugin/marketplace.json');
-  assert.equal(marketplace.name, 'bellwether');
-  const entry = marketplace.plugins?.find((plugin) => plugin.name === 'bellwether');
-  assert.ok(entry, 'the marketplace lists no bellwether plugin');
-  assert.equal(entry.source, './');
+test('the plugin declares the version of the package it runs', () => {
+  const plugin = readJson<PluginManifest>('.claude-plugin/plugin.json');
+  const manifest = readJson<{ version?: string }>('package.json');
+  assert.equal(plugin.version, manifest.version, 'plugin.json and package.json must name the same version');
+});
+
+test('the repository is a plugin, not a marketplace', () => {
+  // The elecnix/claude-plugins marketplace lists the plugin. A second
+  // marketplace here would give the same plugin two install ids.
+  assert.ok(
+    !fs.existsSync(path.join(root, '.claude-plugin', 'marketplace.json')),
+    '.claude-plugin/marketplace.json is back; list the plugin in elecnix/claude-plugins instead',
+  );
 });
 
 test('the MCP entry point exists and carries its executable bit', () => {

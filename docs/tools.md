@@ -27,6 +27,12 @@ A caller who names both, in `provider` and `model` or in `args`, wins. Naming on
 
 Either way, the spawn reply states the provider account and model the child runs on, since the account is what pays. For a default, Bellwether reads the pair from the child's session file once pi writes it, and `agent_list` shows it beside the kind. Before that, the reply gives the pair that pi's settings point to, along with the setting and its file. It marks that pair unverified.
 
+A spawn reports a child that failed to start as a failure, not as a start the parent has to disprove later. Until herdr detects the harness, the spawn checks the pane's foreground process every half second. When the shell regains the foreground from the harness, the harness has exited. At once, the spawn fails and shows the harness's printed lines.
+
+A pi child can also stay up after an error it cannot recover from, such as a provider it has no key for. It prints `Error: No API key found for <provider>.` and waits at its prompt. So once herdr detects a pi child, the spawn waits up to 20 s for its first status. `working` confirms the start. `idle` or `done` with an `Error:` line on screen fails the spawn, and the error quotes that line.
+
+A child that doesn't show a status within 20 s is slow, not dead. The spawn succeeds and its reply says the start is unconfirmed. The watcher reports the child's exit if one follows.
+
 With `via`, a spawn starts the child behind a route. A route is a launcher wrapper that this machine's routes file defines, and `model` then names one of its tiers. `key_file` runs that launcher under the key in a file, and the record keeps only the file's path.
 
 `agent_restart` and `agent_spawn` with `resume` also take `via`, which moves a child onto a route or off it on the same session. `agent_list` shows each child's route in its `route` column, or `bare`.

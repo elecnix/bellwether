@@ -1,6 +1,8 @@
 // One writer per child. A spawn that resumes a child holds a lock file on the
 // child's id while it decides whether the child is alive and while it brings it
 // back, so two callers resuming the same session open one tab between them.
+// agent_move and agent_restart hold the same lock, so no two of them run on
+// one child at once.
 // The lock is a file, not a map in memory, because two daemons on one machine
 // can share a Bellwether home. A lock whose process is gone, or that is older
 // than any resume can take, is stale and is taken over.
@@ -28,8 +30,8 @@ export class ChildBusyError extends Error {
   readonly key: string;
   readonly holder: { pid: number; at: number; purpose: string };
 
-  constructor(key: string, holder: { pid: number; at: number; purpose: string }, label: string) {
-    super(`${label} is already being brought back by another call (process ${holder.pid}, ${holder.purpose}, started ${new Date(holder.at).toISOString()}). Wait for its event, or call agent_list to see where it landed.`);
+  constructor(key: string, holder: { pid: number; at: number; purpose: string }, label: string, action = 'brought back') {
+    super(`${label} is already being ${action} by another call (process ${holder.pid}, ${holder.purpose}, started ${new Date(holder.at).toISOString()}). Wait for its event, or call agent_list to see where it landed.`);
     this.name = 'ChildBusyError';
     this.key = key;
     this.holder = holder;
@@ -50,7 +52,9 @@ function readLock(file: string): ChildLockRecord | undefined {
  * Run `work` while holding the lock on `key`. A second caller, in this process
  * or another, gets a ChildBusyError naming `label` instead of waiting.
  */
-export async function withChildLock<T>(key: string, label: string, purpose: string, work: () => Promise<T>, now = Date.now, alive = isAlive): Promise<T> {
+export async function withChildLock<T>(key: string, label: string, purpose: string, work: () => Promise<T>, now = Date.now, alive = isAlive, options: { action?: string } = {}): Promise<T> {
+  const action = options.action;
+  const busy = (holder: ChildLockRecord): ChildBusyError => new ChildBusyError(key, holder, label, action);
   const file = childLockPath(key);
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   const mine: ChildLockRecord = { pid: process.pid, at: now(), purpose };
@@ -66,14 +70,14 @@ export async function withChildLock<T>(key: string, label: string, purpose: stri
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
       const held = readLock(file);
       // A half-written file is a holder that is mid-write, so it counts as held.
-      if (!held) throw new ChildBusyError(key, { pid: 0, at: now(), purpose: 'unknown' }, label);
-      if (alive(held.pid) && now() - held.at < CHILD_LOCK_MAX_AGE_MS) throw new ChildBusyError(key, held, label);
+      if (!held) throw busy({ pid: 0, at: now(), purpose: 'unknown' });
+      if (alive(held.pid) && now() - held.at < CHILD_LOCK_MAX_AGE_MS) throw busy(held);
       fs.rmSync(file, { force: true });
     }
   }
   if (!taken) {
     const held = readLock(file);
-    throw new ChildBusyError(key, held ?? { pid: 0, at: now(), purpose: 'unknown' }, label);
+    throw busy(held ?? { pid: 0, at: now(), purpose: 'unknown' });
   }
   try {
     return await work();

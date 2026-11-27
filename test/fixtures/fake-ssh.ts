@@ -64,7 +64,10 @@ if (step === 'refuse') { process.stderr.write('ssh: connect to host ' + target +
 const machines = JSON.parse(fs.readFileSync(path.join(dir, 'machines.json'), 'utf8'));
 const machine = machines[target];
 if (!machine) { process.stderr.write('ssh: Could not resolve hostname ' + target + '\\n'); process.exit(255); }
-const env = { ...process.env, HOME: machine.userHome, BELLWETHER_HOME: machine.home, BELLWETHER_DAEMON_SOCKET: path.join(machine.home, 'daemon.sock'), FAKE_SSH_TARGET: target, PATH: dir + path.delimiter + process.env.PATH };
+// A real ssh carries none of the parent's harness directories to the other machine.
+const inherited = { ...process.env };
+for (const key of ['CLAUDE_CONFIG_DIR', 'PI_CODING_AGENT_DIR', 'PI_CODING_AGENT_SESSION_DIR']) delete inherited[key];
+const env = { ...inherited, HOME: machine.userHome, BELLWETHER_HOME: machine.home, BELLWETHER_DAEMON_SOCKET: path.join(machine.home, 'daemon.sock'), FAKE_SSH_TARGET: target, PATH: dir + path.delimiter + process.env.PATH };
 const liveDir = path.join(dir, 'live');
 fs.mkdirSync(liveDir, { recursive: true });
 const liveFile = path.join(liveDir, String(process.pid));

@@ -123,6 +123,26 @@ export const resolveMachine: MachineResolver = (selector) =>
     });
   });
 
+/** Every saved herdr machine, as `herdr machine list --json` prints them. */
+export type MachineLister = () => Promise<MachineProfile[]>;
+
+export const listMachines: MachineLister = () =>
+  new Promise((resolve, reject) => {
+    execFile('herdr', ['machine', 'list', '--json'], { timeout: 10_000 }, (error, stdout) => {
+      if (error) return reject(new Error(`herdr machine list failed: ${error.message}`));
+      try {
+        resolve(parseMachineList(stdout));
+      } catch (fault) {
+        reject(fault as Error);
+      }
+    });
+  });
+
+/** The hosts a child can run on from here: this machine, and every enabled saved machine by label. */
+export async function knownHosts(list: MachineLister = listMachines): Promise<string[]> {
+  return [LOCAL_HOST, ...(await list()).filter((profile) => profile.enabled).map((profile) => profile.label)];
+}
+
 /** Hand out one herdr client per host, the local one for LOCAL_HOST. */
 export type ClientFor = (host: string) => Promise<HerdrClient>;
 

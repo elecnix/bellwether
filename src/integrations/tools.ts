@@ -7,12 +7,15 @@ import { removeChildFiles } from '../core/mcp-config.ts';
 import { reportForCaller } from '../core/report.ts';
 import { childById, readParent, updateChild } from '../core/registry.ts';
 import { adoptPane } from '../core/adopt.ts';
-import { LOCAL_HOST, hostOf, type ClientFor } from '../core/machine.ts';
+import { LOCAL_HOST, hostOf, knownHosts, type ClientFor } from '../core/machine.ts';
 import { spawnResume } from '../core/spawn-resume.ts';
 import { promptChild } from '../core/send.ts';
+import { RESTART_TOOL, runAgentRestart, type RestartHooks } from '../core/restart.ts';
 import { RETIRE_TOOL, realRetireOps, requestRetirement, type RetireOps } from '../core/retire.ts';
 import type { RemoteOps } from '../core/remote.ts';
 import { lastAssistantMessage, locateTranscript } from '../core/transcript.ts';
+import { moveChild } from '../core/move.ts';
+import { moveEndpoints, type EndpointFor } from '../core/move-endpoint.ts';
 import type { Watcher } from '../core/watcher.ts';
 import type { CallerIdentity, ChildRecord, RelayHostState, ReportStatus } from '../core/types.ts';
 
@@ -29,6 +32,14 @@ export interface ToolContext {
   remote?: RemoteOps;
   /** How the daemon's connection to a remote host stands, so a list can say which hosts it is not hearing from. */
   relayState?: (host: string) => RelayHostState | undefined;
+  /** How a restart is deferred, waited on and stopped. The daemon supplies it; a test passes its own. */
+  restart?: RestartHooks;
+  /** Each machine's side of a move: this one in process, another over SSH. Tests pass their own. */
+  endpointFor?: EndpointFor;
+  /** The hosts a child can run on, for a move that names no machine. */
+  knownHosts?: () => Promise<string[]>;
+  /** The daemon's log. */
+  log?: (message: string) => void;
 }
 
 function clientFor(ctx: ToolContext, host: string): Promise<HerdrClient> {
@@ -115,6 +126,21 @@ export const parentTools: ToolDefinition[] = [
     },
   },
   {
+    name: 'agent_move',
+    description: 'Move a live claude or pi child to another machine, in either direction, keeping its child id, its name and its conversation: Bellwether copies the harness session to the other machine, checks the copy, closes the child\'s tab, and resumes the session there, and the parent dials the new machine for its reports from then on. If the child cannot start on the other machine, Bellwether starts it again where it was and says the move failed. It refuses, before touching anything: a different harness on the other machine (a session belongs to the harness that wrote it); a harness missing there, or older than the version that wrote the session, which could lose the conversation; a pi child whose provider and model pair the other machine does not offer; a working directory that does not exist there; a child that is working or blocked, because the move would cut its turn short; a child that has exited or has no recorded session; and a child another resume or move holds. It also stops, and removes the copy, when the copy does not read back with the same bytes and checksum. The working directory is not copied: the repository has to be on the other machine already.',
+    schema: {
+      type: 'object',
+      properties: {
+        child: { type: 'string', description: 'The child\'s name, its pane id, or the id agent_spawn returned.' },
+        machine: { type: 'string', description: 'The machine to move to: a saved herdr machine by label or id, or local for this one. Omit it when exactly one other machine is known; with more, the call is refused as ambiguous.' },
+        cwd: { type: 'string', description: 'The directory the child resumes in on the other machine. Defaults to the directory it runs in now, which must exist there.' },
+        kind: { type: 'string', enum: ['claude', 'pi'], description: 'The harness to run on the other machine. Defaults to the child\'s own, and any other is refused.' },
+        reason: { type: 'string', description: 'Why the child moves, kept in move.log.' },
+      },
+      required: ['child'],
+    },
+  },
+  {
     name: 'agent_stop',
     description: 'Close a child\'s tab, which ends it. Refuses a working child unless you pass force.',
     schema: {
@@ -124,6 +150,17 @@ export const parentTools: ToolDefinition[] = [
         force: { type: 'boolean', description: 'Close the tab even while the child is working or blocked.' },
       },
       required: ['child'],
+    },
+  },
+  {
+    name: RESTART_TOOL,
+    description: 'Restart an agent in place of its session: a child by name, id or pane, another session by its parent id, session id or pane, or yourself when you omit the target. The daemon closes the old pane, then runs the same harness on the same session in a new tab, in the same directory, so the conversation continues and no pane is left over. A child keeps its child id, so its history, receipts and retire state continue. Restarting yourself returns first: the daemon acts once your turn ends, so finish your reply and say where you will land. It refuses a target with no session to name, one on another machine, a pane no registry holds, a parent pane that now holds another session, and a target that is still mid-turn when the wait runs out.',
+    schema: {
+      type: 'object',
+      properties: {
+        target: { type: 'string', description: 'What to restart: a child name, id or pane, or a parent session id or pane. Omit it to restart this session.' },
+        wait_seconds: { type: 'number', description: 'How long to wait for the target\'s turn to end before refusing. Defaults to 30, and is held under 45 so the call can still answer.' },
+      },
     },
   },
 ];
@@ -198,8 +235,9 @@ function hostColumn(child: ChildRecord, relayState: ToolContext['relayState']): 
 function describeChild(child: ChildRecord, watcher: Watcher, relayState?: ToolContext['relayState']): string {
   const unread = watcher.outboxEntries().filter((entry) => !entry.read && entry.childId === child.id).length;
   const age = Math.max(0, Math.round((Date.now() - Date.parse(child.startedAt)) / 1000));
+  const restart = child.restartRequestedAt ? ', restart pending' : '';
   const retire = child.retireOutcome === 'removed' ? ', retired' : child.retireOutcome === 'refused' ? ', retirement refused' : child.retireRequestedAt ? ', retirement requested' : '';
-  const state = `${child.exitedAt ? `exited${child.exitCode === undefined ? '' : ` (${child.exitCode})`}` : child.lastStatus}${retire}`;
+  const state = `${child.exitedAt ? `exited${child.exitCode === undefined ? '' : ` (${child.exitCode})`}` : child.lastStatus}${restart}${retire}`;
   const name = child.agentName ? `${child.name} (${child.agentName})` : child.name;
   const kind = child.model ? `${child.kind} (${child.model.provider}/${child.model.id})` : child.kind;
   return `${name}\t${kind}\t${state}\t${age}s\t${hostColumn(child, relayState)}\t${child.paneId}\tunread ${unread}\t${child.cwd ?? ''}`;
@@ -222,6 +260,11 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
   if (name === RETIRE_TOOL) {
     // Routed by the caller's identity and this daemon's records, like parent_report.
     return requestRetirement(caller, ctx.retireOps ?? realRetireOps(), optionalString(args['reason']));
+  }
+
+  if (name === RESTART_TOOL) {
+    // Routed by the caller's identity and the records this daemon holds.
+    return runAgentRestart(ctx.client, ctx.parentId, caller, { ...(ctx.restart ?? {}), reset: (childId) => ctx.watcher.reset(childId) }, optionalString(args['target']), typeof args['wait_seconds'] === 'number' ? (args['wait_seconds'] as number) : undefined);
   }
 
   const record = readParent(ctx.parentId);
@@ -298,6 +341,35 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
     if (!record.children.length) return 'No children yet. Start one with agent_spawn.';
     const header = 'name\tkind\tstate\tage\thost\tpane\tunread\tcwd';
     return [header, ...record.children.map((child) => describeChild(child, ctx.watcher, ctx.relayState))].join('\n');
+  }
+
+  if (name === 'agent_move') {
+    const target = optionalString(args['child']);
+    if (!target) throw new Error('agent_move needs a child');
+    const known = record.children.find((entry) => entry.id === target || entry.name === target || entry.paneId === target);
+    try {
+      const result = await moveChild(
+        {
+          clientFor: (host) => clientFor(ctx, host),
+          endpointFor: ctx.endpointFor ?? moveEndpoints(),
+          knownHosts: ctx.knownHosts ?? (() => knownHosts()),
+          registerRemote: registrar(ctx, record),
+          cleanupRemote: remoteCleanup(ctx),
+          log: ctx.log,
+        },
+        ctx.parentId,
+        { child: target, machine: optionalString(args['machine']), cwd: optionalString(args['cwd']), kind: optionalString(args['kind']), reason: optionalString(args['reason']) },
+      );
+      const place = (host: string): string => (host === LOCAL_HOST ? 'this machine' : `machine ${host}`);
+      return [
+        `${result.child.name} moved from ${place(result.from)} to ${place(result.to)}, as the same child ${result.child.id}, and resumed its session in pane ${result.child.paneId}.`,
+        `Its session crossed as ${result.bytes} bytes and was verified at ${result.sessionFile}. Bellwether watches it there, and collects its reports from that machine.`,
+        `herdr link: ${result.link}`,
+      ].join('\n');
+    } finally {
+      // The child's old pane and its classifier state belong to the machine it left, or to the start that failed.
+      if (known) ctx.watcher.reset(known.id);
+    }
   }
 
   const target = optionalString(args['child']);

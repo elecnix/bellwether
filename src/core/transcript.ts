@@ -5,9 +5,37 @@ import os from 'node:os';
 import path from 'node:path';
 import type { ChildSession } from './types.ts';
 
-/** Claude Code replaces every non-alphanumeric character of the cwd with a dash. */
+/** Claude Code's state root, which a lab overrides with CLAUDE_CONFIG_DIR. */
+export function claudeConfigDir(): string {
+  return process.env['CLAUDE_CONFIG_DIR'] ?? path.join(os.homedir(), '.claude');
+}
+
+/** Claude Code caps a project directory name at this many characters. */
+const CLAUDE_PROJECT_DIR_MAX = 200;
+
+/** The 32-bit string hash Claude Code appends to a project directory name it cut short. */
+function claudeNameHash(value: string): number {
+  let hash = 0;
+  for (let index = 0; index < value.length; index += 1) hash = ((hash << 5) - hash + value.charCodeAt(index)) | 0;
+  return hash;
+}
+
+/**
+ * The directory Claude Code keeps a working directory's sessions in, under
+ * `projects`. It replaces every character outside A-Z, a-z and 0-9 with a
+ * dash. A name longer than 200 characters keeps its first 200, then a dash
+ * and the base-36 hash of the whole working directory. Pi names its session
+ * directories by a different rule, so this is for Claude Code only.
+ */
 export function claudeProjectDir(cwd: string): string {
-  return cwd.replace(/[^A-Za-z0-9]/g, '-');
+  const name = cwd.replace(/[^A-Za-z0-9]/g, '-');
+  if (name.length <= CLAUDE_PROJECT_DIR_MAX) return name;
+  return `${name.slice(0, CLAUDE_PROJECT_DIR_MAX)}-${Math.abs(claudeNameHash(cwd)).toString(36)}`;
+}
+
+/** The file Claude Code writes a session to, for a session id and the directory it started in. */
+export function claudeTranscriptPath(sessionId: string, cwd: string, configDir = claudeConfigDir()): string {
+  return path.join(configDir, 'projects', claudeProjectDir(cwd), `${sessionId}.jsonl`);
 }
 
 function newestFile(dir: string, matches: (name: string) => boolean, depth = 3): string | undefined {
@@ -39,27 +67,51 @@ function newestFile(dir: string, matches: (name: string) => boolean, depth = 3):
 /** Pi names a session file `<timestamp>_<session id>.jsonl`. */
 const endsWith = (name: string) => (sessionId: string): boolean => name.endsWith(`${sessionId}.jsonl`);
 
+/** Where a session's transcript is, or why there is none on this machine. */
+export type TranscriptLookup = { path: string; missing?: undefined } | { path?: undefined; missing: string };
+
+/** The working directory as given and as the kernel resolves it. Claude Code names its directory after the second. */
+function cwdForms(cwd: string): string[] {
+  try {
+    const real = fs.realpathSync(cwd);
+    return real === cwd ? [cwd] : [cwd, real];
+  } catch {
+    return [cwd];
+  }
+}
+
 /**
  * Locate the transcript for a harness session. Pi and Claude Code both keep
  * one JSONL file per session, named after the session id, under a per-project
- * directory.
+ * directory. When there is no file, the answer says why, because a child that
+ * exits before its first turn never gets one.
  */
-export function resolveTranscript(harness: string, sessionId: string | undefined, cwd: string | undefined): string | undefined {
-  if (!sessionId) return undefined;
+export function locateTranscript(harness: string, sessionId: string | undefined, cwd: string | undefined): TranscriptLookup {
+  if (!sessionId) return { missing: 'herdr has not reported the session yet' };
   // Pi reports its session as a path, Claude Code as an id. Take a path as one.
-  if (sessionId.includes('/') || sessionId.endsWith('.jsonl')) return fs.existsSync(sessionId) ? sessionId : undefined;
-  const home = os.homedir();
+  if (sessionId.includes('/') || sessionId.endsWith('.jsonl')) return fs.existsSync(sessionId) ? { path: sessionId } : { missing: `the session file ${sessionId} does not exist` };
   if (harness === 'claude-code') {
-    const root = path.join(home, '.claude', 'projects');
-    const direct = cwd ? path.join(root, claudeProjectDir(cwd), `${sessionId}.jsonl`) : undefined;
-    if (direct && fs.existsSync(direct)) return direct;
-    return newestFile(root, endsWith(sessionId));
+    const expected = cwd ? cwdForms(cwd).map((form) => claudeTranscriptPath(sessionId, form)) : [];
+    const direct = expected.find((file) => fs.existsSync(file));
+    if (direct) return { path: direct };
+    // A session started in another directory, or under a rule this code does not know.
+    const root = path.join(claudeConfigDir(), 'projects');
+    const found = newestFile(root, endsWith(sessionId), 1);
+    if (found) return { path: found };
+    const where = expected[0] ?? `${root}/*/${sessionId}.jsonl`;
+    return { missing: `Claude Code has not written ${where}. It writes the file at the session's first turn, so a child that exits before one has no transcript.` };
   }
   if (harness === 'pi') {
-    const root = process.env['PI_CODING_AGENT_DIR'] ?? path.join(home, '.pi', 'agent');
-    return newestFile(path.join(root, 'sessions'), endsWith(sessionId));
+    const root = path.join(process.env['PI_CODING_AGENT_DIR'] ?? path.join(os.homedir(), '.pi', 'agent'), 'sessions');
+    const found = newestFile(root, endsWith(sessionId));
+    return found ? { path: found } : { missing: `no file under ${root} ends in ${sessionId}.jsonl` };
   }
-  return undefined;
+  return { missing: `Bellwether reads no transcript for the ${harness} harness` };
+}
+
+/** The transcript's path for a harness session, when the file exists on this machine. */
+export function resolveTranscript(harness: string, sessionId: string | undefined, cwd: string | undefined): string | undefined {
+  return locateTranscript(harness, sessionId, cwd).path;
 }
 
 /** herdr's agent_session for a pane, as a kind and a value. */

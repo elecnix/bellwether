@@ -4,14 +4,10 @@
 // id appears in the file, which is the same trick your-attention uses for its
 // answers.
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
-import { claudeProjectDir } from '../../core/transcript.ts';
+import { claudeConfigDir, claudeProjectDir } from '../../core/transcript.ts';
 
-/** Claude Code's state root, which a lab overrides with CLAUDE_CONFIG_DIR. */
-export function claudeConfigDir(): string {
-  return process.env['CLAUDE_CONFIG_DIR'] ?? path.join(os.homedir(), '.claude');
-}
+export { claudeConfigDir };
 
 export function findTranscript(session: string, cwd?: string, configDir?: string): string | undefined {
   const root = path.join(configDir ?? claudeConfigDir(), 'projects');

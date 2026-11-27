@@ -30,6 +30,8 @@ export interface DaemonOptions {
   pid?: number;
   /** The relay that carries reports to parents on other machines. Tests pass one with a fake ssh. */
   relay?: Relay;
+  /** The entry point this daemon process runs, which the lock records. The process entry passes its own file. */
+  entry?: string;
 }
 
 export interface Daemon {
@@ -64,7 +66,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
   const relay = options.relay ?? new Relay({ log });
 
   if (await canConnect(options.socketPath)) throw new Error(`a daemon already listens on ${options.socketPath}`);
-  const lock = acquire(home, options.socketPath, pid);
+  const lock = acquire(home, options.socketPath, pid, undefined, options.entry);
   if (lock.kind === 'held' && lock.record.pid !== pid) throw new Error(`a daemon with pid ${lock.record.pid} holds this home`);
 
   fs.mkdirSync(path.dirname(options.socketPath), { recursive: true });

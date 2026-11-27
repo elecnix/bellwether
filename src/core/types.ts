@@ -55,6 +55,11 @@ export interface ChildRecord {
   /** The child's transcript file, when its harness keeps one. Kept after exit. */
   transcript?: string;
   /**
+   * Why a child on this machine has no transcript yet, such as a Claude Code
+   * session that has not had its first turn. Cleared once the file is found.
+   */
+  transcriptMissing?: string;
+  /**
    * The harness session, recorded as soon as herdr reports it and kept after
    * the child exits, so a retired child can still be resumed.
    */

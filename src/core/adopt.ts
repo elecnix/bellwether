@@ -7,7 +7,7 @@ import { LOCAL_HOST } from './machine.ts';
 import { newChildId } from './outbox.ts';
 import { upsertChild, watcherOfPane } from './registry.ts';
 import { AGENT_KINDS, harnessOf, herdrLink } from './spawn.ts';
-import { resolveTranscript } from './transcript.ts';
+import { locateTranscript } from './transcript.ts';
 import type { ChildRecord, ParentRecord } from './types.ts';
 import { resolveInactiveMs } from './inactivity.ts';
 
@@ -50,6 +50,8 @@ export async function adoptPane(client: HerdrClient, parent: ParentRecord, optio
   const now = new Date().toISOString();
   const kind = pane.agent;
   const harness = harnessOf(kind);
+  // A remote child's transcript sits on its own machine's disk.
+  const found = host === LOCAL_HOST ? locateTranscript(harness, pane.agentSessionId, pane.cwd) : undefined;
   const child: ChildRecord = {
     id: newChildId(),
     name: options.name ?? pane.name ?? pane.label ?? pane.paneId,
@@ -66,8 +68,8 @@ export async function adoptPane(client: HerdrClient, parent: ParentRecord, optio
     statusChangedAt: now,
     completionSeq: pane.completionSeq,
     session: pane.agentSessionId ? { kind: pane.agentSessionId.includes('/') ? 'path' : 'id', value: pane.agentSessionId } : undefined,
-    // A remote child's transcript sits on its own machine's disk.
-    transcript: host === LOCAL_HOST ? resolveTranscript(harness, pane.agentSessionId, pane.cwd) : undefined,
+    transcript: found?.path,
+    transcriptMissing: found?.missing,
     lastBusyAt: now,
     depth: parent.depth + 1,
     stuckMs: options.stuckMinutes === undefined ? undefined : Math.max(1_000, Math.round(options.stuckMinutes * 60_000)),

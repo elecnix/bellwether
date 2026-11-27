@@ -8,8 +8,9 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { DaemonClient, drainDaemon } from '../../src/daemon/client.ts';
-import { readLock } from '../../src/daemon/lock.ts';
+import { DaemonClient, drainDaemon, startDaemonProcess } from '../../src/daemon/client.ts';
+import { describeDaemonEntry, readLock } from '../../src/daemon/lock.ts';
+import { stopDaemonsUnder } from '../fixtures/daemons.ts';
 import { BELLWETHER_VERSION } from '../../src/core/version.ts';
 import { DAEMON_PROTOCOL } from '../../src/daemon/protocol.ts';
 import { startDaemon, type ParentService, type ServiceFactory } from '../../src/daemon/server.ts';
@@ -335,4 +336,73 @@ test('a client older than the running daemon leaves it alone and says so', async
     await newer.close();
     space.cleanup();
   }
+});
+
+test('a daemon started from a checkout records the checkout entry point in its lock', async () => {
+  const space = workspace();
+  try {
+    await startDaemonProcess(space.home, space.socket);
+    const lock = readLock(space.home);
+    // From the sources, the client starts src/daemon/main.ts beside itself, in this repository's working tree.
+    assert.equal(lock?.entry, fs.realpathSync(new URL('../../src/daemon/main.ts', import.meta.url)));
+    assert.equal(lock?.origin, 'checkout');
+    assert.equal(lock?.version, BELLWETHER_VERSION);
+    assert.equal(lock?.protocol, DAEMON_PROTOCOL);
+  } finally {
+    await drainDaemon(space.socket);
+    await stopDaemonsUnder(space.home);
+    space.cleanup();
+  }
+});
+
+test('the lock tells a package entry point from a checkout one', async () => {
+  const space = workspace();
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'bellwether-origin-'));
+  try {
+    const checkout = path.join(scratch, 'repo');
+    fs.mkdirSync(path.join(checkout, 'dist', 'daemon'), { recursive: true });
+    fs.writeFileSync(path.join(checkout, 'package.json'), '{}');
+    // A worktree has .git as a file.
+    fs.writeFileSync(path.join(checkout, '.git'), 'gitdir: elsewhere\n');
+    const installed = path.join(scratch, 'lib', 'node_modules', '@elecnix', 'bellwether');
+    fs.mkdirSync(path.join(installed, 'dist', 'daemon'), { recursive: true });
+    fs.writeFileSync(path.join(installed, 'package.json'), '{}');
+    // A symbolic link, like the bin link a package manager writes, resolves to the real file.
+    const linked = path.join(scratch, 'linked-main.js');
+    fs.writeFileSync(path.join(installed, 'dist', 'daemon', 'main.js'), '');
+    fs.symlinkSync(path.join(installed, 'dist', 'daemon', 'main.js'), linked);
+
+    const fake = fakeFactory();
+    const fromCheckout = await startDaemon({ socketPath: space.socket, factory: fake.factory, entry: path.join(checkout, 'dist', 'daemon', 'main.js') });
+    assert.deepEqual([readLock(space.home)?.entry, readLock(space.home)?.origin], [path.join(fs.realpathSync(checkout), 'dist', 'daemon', 'main.js'), 'checkout']);
+    await fromCheckout.close();
+
+    const fromPackage = await startDaemon({ socketPath: space.socket, factory: fake.factory, entry: linked });
+    assert.deepEqual([readLock(space.home)?.entry, readLock(space.home)?.origin], [fs.realpathSync(path.join(installed, 'dist', 'daemon', 'main.js')), 'package']);
+    await fromPackage.close();
+  } finally {
+    fs.rmSync(scratch, { recursive: true, force: true });
+    space.cleanup();
+  }
+});
+
+test('a lock an older daemon wrote still reads, with no entry point', () => {
+  const space = workspace();
+  try {
+    fs.mkdirSync(space.home, { recursive: true });
+    fs.writeFileSync(path.join(space.home, 'daemon.lock'), `${JSON.stringify({ pid: 4242, startedAt: 1, protocol: 3, socket: space.socket })}\n`);
+    assert.deepEqual(readLock(space.home), { pid: 4242, startedAt: 1, protocol: 3, socket: space.socket });
+    assert.match(describeDaemonEntry(readLock(space.home), '/somewhere/dist/daemon/main.js'), /^info {2}daemon entry: not recorded/);
+  } finally {
+    space.cleanup();
+  }
+});
+
+test('doctor says whether the running daemon is the copy this command runs', () => {
+  const own = fs.realpathSync(new URL('../../src/daemon/main.ts', import.meta.url));
+  const base = { pid: 1, startedAt: 1, protocol: DAEMON_PROTOCOL, socket: '/s' };
+  assert.match(describeDaemonEntry({ ...base, entry: own, origin: 'checkout' }, own), /^ok {4}daemon entry: .*main\.ts \(a git checkout\), the one this command runs$/);
+  const other = '/home/linuxbrew/.linuxbrew/lib/node_modules/@elecnix/bellwether/dist/daemon/main.js';
+  const line = describeDaemonEntry({ ...base, entry: other, origin: 'package' }, own);
+  assert.match(line, /^info {2}daemon entry: \/home\/linuxbrew\/.*main\.js \(an installed package\), not this command's .*main\.ts \(a git checkout\)/);
 });

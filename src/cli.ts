@@ -16,7 +16,7 @@ import { writeMcpConfig } from './core/mcp-config.ts';
 import { REFUSED_EXIT } from './core/ssh.ts';
 import { lastAssistantMessage, resolveTranscript } from './core/transcript.ts';
 import { DaemonClient, ReportRefused, drainDaemon, postReport } from './daemon/client.ts';
-import { readLock } from './daemon/lock.ts';
+import { describeDaemonEntry, readLock } from './daemon/lock.ts';
 import { DAEMON_PROTOCOL } from './daemon/protocol.ts';
 import { BELLWETHER_VERSION } from './core/version.ts';
 import { daemonIsLive, startDaemon } from './daemon/server.ts';
@@ -190,6 +190,7 @@ async function doctor(): Promise<number> {
     } else {
       console.log(`  info  daemon version: ${running}, not this install's ${BELLWETHER_VERSION}. Run bellwether drain to replace it.`);
     }
+    console.log(`  ${describeDaemonEntry(lock, path.join(import.meta.dirname, 'daemon', `main${path.extname(import.meta.url)}`))}`);
   }
   failures += checkPackaging();
   const socket = resolveSocketPath();

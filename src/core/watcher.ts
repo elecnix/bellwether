@@ -13,7 +13,7 @@ import { LOCAL_HOST, hostOf, type ClientFor } from './machine.ts';
 import { Outbox } from './outbox.ts';
 import { mutateParent, readParent, updateChild } from './registry.ts';
 import { DIALOG_NAMES, detectDialog, watchStartup } from './startup-dialogs.ts';
-import { lastAssistantMessage, resolveTranscript, sessionFrom } from './transcript.ts';
+import { lastAssistantMessage, locateTranscript, sessionFrom } from './transcript.ts';
 import { removeChildFiles } from './mcp-config.ts';
 import { childLabel } from './label.ts';
 import { spoolPath } from './paths.ts';
@@ -264,8 +264,10 @@ export class Watcher {
   }
 
   private markExited(child: ChildRecord, code: number | undefined): void {
-    // The session and transcript stay on the record, so a retired child can
-    // still be resumed.
+    // A child that exits between two looks wrote its file after the last one,
+    // so look once more. The session and transcript stay on the record, so a
+    // retired child can still be read and resumed.
+    if (!child.transcript && child.session && hostOf(child) === LOCAL_HOST) this.recordTranscript(child, child.session.value);
     updateChild(this.parentId, child.id, (entry) => {
       entry.exitedAt = new Date().toISOString();
       entry.exitCode = code;
@@ -518,15 +520,19 @@ export class Watcher {
 
   /**
    * The child's transcript. A spawn can finish before herdr has detected the
-   * agent, so the path is resolved lazily rather than only at spawn time.
+   * agent, and Claude Code writes its file only at the first turn, so the path
+   * is resolved lazily rather than only at spawn time.
    */
   private async transcriptFor(child: ChildRecord): Promise<string | undefined> {
     if (child.transcript) return child.transcript;
     // A remote child's transcript sits on its own machine's disk.
     if (hostOf(child) !== LOCAL_HOST) return undefined;
-    // A child whose harness keeps no transcript would otherwise cost one
-    // herdr call per tick forever. Look again once a minute at most, because
-    // herdr can report the session a little after the spawn returns.
+    // With the session known, a look is a file check, so it runs every pass.
+    if (child.session) return this.recordTranscript(child, child.session.value);
+    // Without it, a look costs a herdr call. A child whose harness reports no
+    // session would otherwise cost one per tick forever, so look again once a
+    // minute at most, because herdr can report the session a little after the
+    // spawn returns.
     const lastLook = this.transcriptLookAt.get(child.id) ?? 0;
     if (this.now() - lastLook < TRANSCRIPT_LOOK_INTERVAL_MS) return undefined;
     this.transcriptLookAt.set(child.id, this.now());
@@ -534,15 +540,36 @@ export class Watcher {
       const result = await (await this.clientFor(LOCAL_HOST)).request('agent.get', { target: child.paneId });
       const record = isRecord(result) && isRecord(result['agent']) ? result['agent'] : isRecord(result) ? result : undefined;
       const session = sessionFrom(record?.['agent_session']);
-      const path = resolveTranscript(child.harness, session?.value, child.cwd);
-      if (path || session) updateChild(this.parentId, child.id, (entry) => {
-        if (path) entry.transcript = path;
-        if (session) entry.session = session;
+      if (!session) return undefined;
+      updateChild(this.parentId, child.id, (entry) => {
+        entry.session = session;
       });
-      return path;
+      return this.recordTranscript({ ...child, session }, session.value);
     } catch {
       return undefined;
     }
+  }
+
+  /**
+   * Look for the transcript of a session on this machine and write what was
+   * found to the record: the path, or why there is none. The registry is
+   * written only when that changes.
+   */
+  private recordTranscript(child: ChildRecord, session: string): string | undefined {
+    const found = locateTranscript(child.harness, session, child.cwd);
+    if (found.path) {
+      updateChild(this.parentId, child.id, (entry) => {
+        entry.transcript = found.path;
+        delete entry.transcriptMissing;
+      });
+      return found.path;
+    }
+    if (found.missing !== child.transcriptMissing) {
+      updateChild(this.parentId, child.id, (entry) => {
+        entry.transcriptMissing = found.missing;
+      });
+    }
+    return undefined;
   }
 
   /** Whether the child moved since the last look. Transcript growth, then screen. */

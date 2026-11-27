@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import type { HerdrClient } from '../core/herdr-client.ts';
 import { HerdrApiError } from '../core/herdr-client.ts';
 import { AGENT_KINDS, DEFAULT_MAX_DEPTH, spawnChild, type SpawnOptions } from '../core/spawn.ts';
+import { removeBrief } from '../core/brief.ts';
 import { reportToParent } from '../core/report.ts';
 import { childById, readParent, updateChild } from '../core/registry.ts';
 import type { Watcher } from '../core/watcher.ts';
@@ -35,7 +36,7 @@ export const parentTools: ToolDefinition[] = [
         kind: { type: 'string', enum: [...AGENT_KINDS], description: 'The harness to start: pi, claude, codex, opencode or cline.' },
         name: { type: 'string', description: 'A short handle for the child, unique in this session. Used as the herdr agent name and the tab label.' },
         cwd: { type: 'string', description: 'The directory to start the child in. Use an absolute path, ideally a git worktree of its own.' },
-        prompt: { type: 'string', description: 'The first message the child receives. The whole prompt, not a path.' },
+        prompt: { type: 'string', description: 'The first message the child receives. The whole prompt, not a path. Line breaks and any length are fine: Bellwether hands it to the child through a private file.' },
         model: { type: 'string', description: 'The model or tier to pass to the child harness.' },
         args: { type: 'array', items: { type: 'string' }, description: 'Extra arguments for the child harness, passed through unchanged and appended last.' },
         focus: { type: 'boolean', description: 'Move your view to the new tab. Defaults to false, so the child does not steal focus.' },
@@ -146,7 +147,7 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
       maxDepth: typeof args['max_depth'] === 'number' ? (args['max_depth'] as number) : DEFAULT_MAX_DEPTH,
     };
     if (!options.name) throw new Error('agent_spawn needs a name');
-    const { child, link } = await spawnChild(ctx.client, record, options);
+    const { child, link } = await spawnChild(ctx.client, record, options, undefined, { forget: (childId) => ctx.watcher.forget(childId) });
     return [`${child.name} started as a ${child.kind} agent in pane ${child.paneId}, tab ${child.tabId ?? child.paneId}.`, `Bellwether watches it, and your next turn starts when it changes state.`, `herdr link: ${link}`].join('\n');
   }
 
@@ -224,6 +225,7 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
     updateChild(ctx.parentId, child.id, (entry) => {
       entry.exitedAt = new Date().toISOString();
     });
+    removeBrief(child.id);
     return `Closed ${child.name}.`;
   }
 

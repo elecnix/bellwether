@@ -4,7 +4,8 @@
 import os from 'node:os';
 import { HerdrApiError, type HerdrClient } from './herdr-client.ts';
 import { newChildId } from './outbox.ts';
-import { updateChild, upsertChild } from './registry.ts';
+import { briefArgument, removeBrief, writeBrief } from './brief.ts';
+import { removeChild, updateChild, upsertChild } from './registry.ts';
 import { resolveTranscript } from './transcript.ts';
 import type { ChildRecord, Harness, ParentRecord } from './types.ts';
 
@@ -41,20 +42,29 @@ export interface SpawnResult {
   link: string;
 }
 
-/** The extra arguments a child harness needs to load Bellwether itself. */
-export function childArgs(kind: string, options: SpawnOptions): string[] {
+/**
+ * The arguments a child harness starts with. The brief is never one of them:
+ * `briefFile` names the private file that holds it, and the harness gets a
+ * one-line pointer to that file.
+ */
+export function childArgs(kind: string, options: SpawnOptions, briefFile?: string): string[] {
   const args: string[] = [];
   if (options.model) args.push('--model', options.model);
   // Claude Code reads this flag as a list and keeps taking values until the
   // next flag, so the two-argument form swallowed the prompt that follows it.
   // The equals form pins the flag to one value.
   if (kind === 'claude') args.push('--dangerously-load-development-channels=server:bellwether');
-  if (options.prompt) args.push(options.prompt);
+  if (briefFile) args.push(briefArgument(kind, briefFile));
   if (options.args?.length) args.push(...options.args);
   return args;
 }
 
-export async function spawnChild(client: HerdrClient, parent: ParentRecord, options: SpawnOptions, signal?: AbortSignal): Promise<SpawnResult> {
+export interface SpawnHooks {
+  /** Drop whatever the watcher holds for a child whose spawn failed. */
+  forget?: (childId: string) => void;
+}
+
+export async function spawnChild(client: HerdrClient, parent: ParentRecord, options: SpawnOptions, signal?: AbortSignal, hooks: SpawnHooks = {}): Promise<SpawnResult> {
   const depth = parent.depth + 1;
   const maxDepth = options.maxDepth ?? DEFAULT_MAX_DEPTH;
   if (depth > maxDepth) throw new Error(`Bellwether is ${maxDepth} levels deep already, so ${options.name} would go one level too far. Raise max_depth on the spawn if that is what you want.`);
@@ -77,29 +87,33 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
   // 1. The record lands before herdr is asked for anything.
   upsertChild(parent.id, child);
 
-  // 2. The tab carries the environment the child needs to find its parent.
-  const env: Record<string, string> = {
-    BELLWETHER_PARENT: parent.id,
-    BELLWETHER_CHILD: child.id,
-    BELLWETHER_CHILD_NAME: child.name,
-    BELLWETHER_DEPTH: String(depth),
-    BELLWETHER_HARNESS: child.harness,
-  };
-  const tab = await client.tabCreate({ workspaceId: options.workspaceId ?? parent.workspaceId, cwd: options.cwd, label: child.name, env, focus: options.focus ?? false }, signal);
-  if (!tab.paneId) throw new Error('herdr created no pane for the child tab');
-
-  child.tabId = tab.tabId;
-  child.paneId = tab.paneId;
-  child.workspaceId = options.workspaceId ?? parent.workspaceId;
-  upsertChild(parent.id, child);
-
-  // 3. Start the harness in the tab's root pane. A tab answers tab.create
-  // before its shell is at a prompt, so herdr refuses the start with
-  // agent_pane_busy until the shell is ready.
+  let tabId: string | undefined;
   try {
-    await startWithRetry(client, { name: child.name, kind: options.kind, paneId: tab.paneId, args: childArgs(options.kind, options) }, signal);
+    const briefFile = options.prompt ? writeBrief(child.id, options.prompt) : undefined;
+
+    // 2. The tab carries the environment the child needs to find its parent.
+    const env: Record<string, string> = {
+      BELLWETHER_PARENT: parent.id,
+      BELLWETHER_CHILD: child.id,
+      BELLWETHER_CHILD_NAME: child.name,
+      BELLWETHER_DEPTH: String(depth),
+      BELLWETHER_HARNESS: child.harness,
+    };
+    const tab = await client.tabCreate({ workspaceId: options.workspaceId ?? parent.workspaceId, cwd: options.cwd, label: child.name, env, focus: options.focus ?? false }, signal);
+    tabId = tab.tabId ?? tab.paneId;
+    if (!tab.paneId) throw new Error('herdr created no pane for the child tab');
+
+    child.tabId = tab.tabId;
+    child.paneId = tab.paneId;
+    child.workspaceId = options.workspaceId ?? parent.workspaceId;
+    upsertChild(parent.id, child);
+
+    // 3. Start the harness in the tab's root pane. A tab answers tab.create
+    // before its shell is at a prompt, so herdr refuses the start with
+    // agent_pane_busy until the shell is ready.
+    await startWithRetry(client, { name: child.name, kind: options.kind, paneId: tab.paneId, args: childArgs(options.kind, options, briefFile) }, signal);
   } catch (error) {
-    await client.tabClose(tab.tabId ?? tab.paneId).catch(() => {});
+    await abandon(client, parent.id, child.id, tabId, hooks);
     throw error;
   }
 
@@ -123,6 +137,18 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
   }
 
   return { child, link: herdrLink('pane', child.paneId) };
+}
+
+/**
+ * Undo a spawn that never produced a running child. The record goes first, so
+ * the watcher finds no child when the tab-closed event arrives and the parent
+ * hears nothing about a child that never ran.
+ */
+async function abandon(client: HerdrClient, parentId: string, childId: string, tabId: string | undefined, hooks: SpawnHooks): Promise<void> {
+  removeChild(parentId, childId);
+  hooks.forget?.(childId);
+  removeBrief(childId);
+  if (tabId) await client.tabClose(tabId).catch(() => {});
 }
 
 /** herdr refuses a start until the new tab's shell reaches its prompt. */

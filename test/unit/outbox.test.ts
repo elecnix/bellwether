@@ -92,3 +92,14 @@ test('delivering an entry records a time without marking it read', () => {
   assert.equal(outbox.all()[0]?.deliveredAt, '2026-01-01T00:00:00.000Z');
   fs.rmSync(root, { recursive: true, force: true });
 });
+
+test('dropping a child removes its entries and keeps the others', () => {
+  const root = scratch();
+  const outbox = Outbox.load('parent-drop');
+  outbox.offer(offer('ghost', 'blocked'));
+  outbox.offer(offer('c2', 'idle'));
+  assert.equal(outbox.drop('ghost'), true);
+  assert.deepEqual(outbox.pending().map((entry) => entry.childId), ['c2']);
+  assert.equal(outbox.drop('ghost'), false);
+  fs.rmSync(root, { recursive: true, force: true });
+});

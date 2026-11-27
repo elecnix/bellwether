@@ -70,6 +70,13 @@ export class Outbox {
     if (entry) entry.deliveredAt = at;
   }
 
+  /** Drop every entry for a child, for one whose spawn failed. */
+  drop(childId: string): boolean {
+    const before = this.entries.length;
+    this.entries = this.entries.filter((entry) => entry.childId !== childId);
+    return this.entries.length !== before;
+  }
+
   pending(): OutboxEntry[] {
     return this.entries.filter((entry) => !entry.read);
   }

@@ -19,6 +19,11 @@ export interface FakeHerdrOptions {
    * the ack and an event in one chunk. Return true when it answered.
    */
   subscribe?: (socket: net.Socket, request: RecordedRequest) => boolean;
+  /**
+   * Answer one request in place of the default: a result, or an error with a
+   * code. Return undefined to fall through to the default answer.
+   */
+  respond?: (request: RecordedRequest) => { result: unknown } | { error: { code: string; message: string } } | undefined;
 }
 
 export interface FakeHerdr {
@@ -62,6 +67,17 @@ function defaultResult(request: RecordedRequest): unknown {
   }
 }
 
+/**
+ * herdr types an agent's arguments into the pane's shell, and refuses one it
+ * cannot quote for that shell. A line break is the case Bellwether met.
+ */
+function refuseUnsafeArguments(request: RecordedRequest): { error: { code: string; message: string } } | undefined {
+  if (request.method !== 'agent.start') return undefined;
+  const args = Array.isArray(request.params['args']) ? (request.params['args'] as unknown[]) : [];
+  if (!args.some((arg) => typeof arg === 'string' && /[\r\n]/.test(arg))) return undefined;
+  return { error: { code: 'invalid_agent_argument', message: 'herdr agent arguments cannot be encoded safely for the target shell' } };
+}
+
 export async function startFakeHerdr(options: FakeHerdrOptions = {}): Promise<FakeHerdr> {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bellwether-fake-'));
   const socketPath = path.join(root, 'herdr.sock');
@@ -98,7 +114,8 @@ export async function startFakeHerdr(options: FakeHerdrOptions = {}): Promise<Fa
           socket.write(`${JSON.stringify({ id: request.id, error: { code: 'invalid_request', message: invalid } })}\n`);
           continue;
         }
-        socket.write(`${JSON.stringify({ id: request.id, result: defaultResult(request) })}\n`);
+        const answer = options.respond?.(request) ?? refuseUnsafeArguments(request) ?? { result: defaultResult(request) };
+        socket.write(`${JSON.stringify({ id: request.id, ...answer })}\n`);
       }
     });
   });

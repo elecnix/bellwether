@@ -32,6 +32,7 @@ import { runBellwetherTool } from '../../src/integrations/tools.ts';
 import { daemonsUnder, stopDaemonsUnder } from '../fixtures/daemons.ts';
 import { hasHerdr, startLab } from './herdr-lab.ts';
 import { startScriptedModels } from './scripted-models.ts';
+import { shownScreen } from '../../src/core/screen.ts';
 
 const run = promisify(execFile);
 
@@ -139,7 +140,7 @@ test('the Codex drill: a real Codex gets its brief, reports to its parent throug
   // The report went through the child's own server: the parent's spool holds
   // a done report with the word only the brief holds.
   const report = await until(() => spooled(parentId, child.id), "the parent_report in the parent's spool", 120_000).catch(async (error: unknown) => {
-    console.log(`pane:\n${await herdr.paneRead({ paneId: child.paneId, source: 'recent_unwrapped', lines: 40 }).catch(() => '')}`);
+    console.log(`pane:\n${await herdr.paneRead({ paneId: child.paneId, source: 'recent_unwrapped', lines: 40 }).then(shownScreen).catch(() => '')}`);
     throw error;
   });
   assert.equal(report.status, 'done');
@@ -165,7 +166,7 @@ test('the Codex drill: a real Codex gets its brief, reports to its parent throug
     return output ? JSON.stringify(output.payload) : undefined;
   }, 'the refused agent_list call in the rollout', 60_000).catch(async (error: unknown) => {
     const tail = fs.readFileSync(saved.transcript ?? '', 'utf8').split('\n').filter(Boolean).slice(-8).map((line) => line.slice(0, 400));
-    console.log(`rollout tail:\n${tail.join('\n')}\nmodel requests: ${models.requests.length}\npane:\n${await herdr.paneRead({ paneId: child.paneId, source: 'recent_unwrapped', lines: 30 }).catch(() => '')}`);
+    console.log(`rollout tail:\n${tail.join('\n')}\nmodel requests: ${models.requests.length}\npane:\n${await herdr.paneRead({ paneId: child.paneId, source: 'recent_unwrapped', lines: 30 }).then(shownScreen).catch(() => '')}`);
     throw error;
   });
   assert.match(refusal, /requires approval, but approval policy is never/);

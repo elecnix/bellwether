@@ -41,6 +41,7 @@ export type SpawnResumeResult =
       session: HarnessSession;
       link: string;
       corrected?: string;
+      reportWarning?: string;
     };
 
 function sessionTarget(value: string): HarnessSession {
@@ -65,7 +66,7 @@ export async function spawnResume(clientFor: (host: string) => Promise<HerdrClie
     // this one may have just brought the child back.
     const record = readParent(parentId) ?? first;
     const panes = await client.agentList(signal);
-    const options: ResumeOptions = { prompt: request.prompt, model: request.model, args: request.args, focus: request.focus, startupTimeoutMs: request.startupTimeoutMs, redrawMs: request.redrawMs };
+    const options: ResumeOptions = { prompt: request.prompt, model: request.model, args: request.args, focus: request.focus, startupTimeoutMs: request.startupTimeoutMs, redrawMs: request.redrawMs, registerRemote: request.registerRemote };
 
     if (!known) {
       const wanted = sessionTarget(request.target);
@@ -78,7 +79,7 @@ export async function spawnResume(clientFor: (host: string) => Promise<HerdrClie
       }
       resumeArgs(request.kind, wanted);
       const resumed = await resumeChild(client, record, { session: wanted, kind: request.kind, name: request.name, cwd: request.cwd, host }, options, signal);
-      return { action: 'resumed', child: resumed.child, session: resumed.session, link: resumed.link };
+      return { action: 'resumed', child: resumed.child, session: resumed.session, link: resumed.link, ...(resumed.reportWarning ? { reportWarning: resumed.reportWarning } : {}) };
     }
 
     const child = record.children.find((entry) => entry.id === known.id) ?? known;
@@ -130,6 +131,6 @@ export async function spawnResume(clientFor: (host: string) => Promise<HerdrClie
       child.exitedAt = at;
     }
     const resumed = await resumeChild(client, record, { child }, options, signal);
-    return { action: 'resumed', child: resumed.child, session: resumed.session, link: resumed.link, corrected };
+    return { action: 'resumed', child: resumed.child, session: resumed.session, link: resumed.link, corrected, ...(resumed.reportWarning ? { reportWarning: resumed.reportWarning } : {}) };
   });
 }

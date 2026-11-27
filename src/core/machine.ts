@@ -5,6 +5,7 @@
 import { execFile, spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { HerdrClient, type HerdrConnection, type HerdrDialer } from './herdr-client.ts';
+import { shellQuote } from './ssh.ts';
 
 /** The host a child runs on when no machine was named: this machine's herdr. */
 export const LOCAL_HOST = 'local';
@@ -33,10 +34,6 @@ const BRIDGE_SCRIPT = [
   "echo 'no herdr on this machine can bridge the API; update herdr there' >&2",
   'exit 78',
 ].join('\n');
-
-function shellQuote(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`;
-}
 
 /** The command line SSH runs on the remote machine. */
 export function bridgeCommand(session: string): string {

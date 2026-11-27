@@ -44,7 +44,7 @@ The inactivity threshold defaults to 5 minutes. `agent_spawn` takes `inactive_mi
 | `agent_read` | any session | returns a child's last assistant message, or its screen when you pass `lines` |
 | `agent_send` | any session | prompts a child, or sends keys when herdr refuses a blocked one |
 | `agent_stop` | any session | closes a child's tab, refusing a working child unless you pass `force` |
-| `parent_report` | a child Bellwether started or resumed on this machine | sends `done`, `needs-input` or `progress` to the parent that holds the child's record |
+| `parent_report` | a child Bellwether started or resumed, here or on a saved herdr machine | sends `done`, `needs-input` or `progress` to the parent that holds the child's record |
 | `request_retirement` | a session whose environment carries `BELLWETHER_CHILD` | asks the daemon to remove the child's worktree and branch after herdr drops its pane, and doesn't remove anything itself |
 
 Bellwether sends input only to panes that belong to this parent: the ones it started, resumed or adopted.
@@ -80,7 +80,27 @@ Bellwether also refuses a live agent that isn't a child, a harness without a res
 
 A lock file under `~/.bellwether/locks/`, one per child, covers the decision and the resume. A second call for the same child fails at once with the process that holds the lock, so two callers open one tab between them. Bellwether takes over a lock whose process has exited or that is older than five minutes.
 
-A child on another machine runs on that machine's herdr. Bellwether reaches it the way `herdr --machine` does, through `herdr remote-api-bridge` over SSH to the saved profile's target, so the profile must exist in `herdr machine list` and SSH must log in without a prompt. That child's `parent_report` writes to its own machine's disk, which the parent never reads, so Bellwether follows it through herdr status alone.
+### Reports from another machine
+
+A child on another machine runs on that machine's herdr. Bellwether reaches it the way `herdr --machine` does, through `herdr remote-api-bridge` over SSH to the saved profile's target, so the profile must exist in `herdr machine list` and SSH must log in without a prompt.
+
+Each machine runs one Bellwether daemon. The parent's daemon keeps the registry of record, so a report from a child on another machine goes there. A child's own daemon serves such a report only when it has a parent record for that child, as step 2 describes.
+
+1. Before the child's tab opens, the parent's daemon runs `bellwether relay-register` on the child's machine over SSH. The command writes a relay record, `~/.bellwether/relay/children/<child id>.json`, with mode 0600. The record lists the child, the parent id and the parent machine's SSH target. For a Claude Code child, the MCP config goes there too.
+
+2. The child calls `parent_report`, and the call goes to the daemon on its own machine. If that daemon has a parent record for the child, it serves the report locally. Otherwise, the relay record decides. The daemon writes the report to `~/.bellwether/relay/outbox/<receipt>.json` with mode 0600, then forwards it in one SSH command. A local parent record means the daemon forwards nothing.
+
+3. On the parent's machine, the command is `bellwether report --parent <id> --child <id> --receipt <id> --status <status> --text <text>`. It posts the report to that machine's daemon over its local socket, and it starts the daemon when none answers. The daemon checks the parent and the child against its own registry, and it accepts each receipt once, so a retried forward is safe.
+
+A failed hop leaves the report in the outbox. The daemon retries it with backoff from 2 seconds to 5 minutes, and it keeps running until the outbox empties. The relay record counts the reports in `unforwarded` and shows the newest error in `lastForwardError`. Every attempt appears in the daemon log with its host.
+
+A refusal from the parent's daemon is final. Bellwether marks the report `refused` and stops retrying it, but the report stays on disk. With no parent host, a relay record refuses the report and shows its path.
+
+Bellwether connects to the parent's machine by its host name. When SSH knows that machine by another name, set the name in `~/.bellwether/config.json` on the parent's machine, as `{"sshTarget": "name"}`. Bellwether uses the operator's SSH configuration with `BatchMode=yes`. It doesn't add a key, and it doesn't write anything under `~/.ssh`. Both machines need Bellwether installed, because each end of a hop runs the `bellwether` command.
+
+Because a forward puts the report on one SSH command line, the daemon refuses any text longer than 100,000 bytes, and the report doesn't go out. If registration fails, the spawn still starts the child, and herdr status still follows it. The spawn's reply says why the child can't report.
+
+For a remote child, `agent_read` reads the transcript in place through `bellwether last-message` over the same hop. That works after the child exits, for as long as the transcript stays on disk. If the hop fails, it returns the child's last report, which the parent's registry keeps.
 
 Each child record keeps its `host` after the child exits, so a resume goes back to the same machine. A registry file written before version 2 gains `host: local` for each child the next time Bellwether writes it.
 
@@ -111,7 +131,7 @@ claude --dangerously-load-development-channels plugin:bellwether@bellwether
 
 The plugin runs `bin/bellwether-mcp.js` as an MCP server and enables it as a channel, and that declaration is what delivers child events. Load the server as a plain MCP server and the tools arrive, with events waiting in the outbox.
 
-The plugin is for a parent session, one you start yourself. You don't set anything up for a child: `agent_spawn`, with or without `resume`, starts each Claude Code child with its own server, passed as `--mcp-config=~/.bellwether/mcp/<child id>.json`. The file has mode 0600 and lists one server, which runs this package's channel entry point with `--child <child id>`. Bellwether deletes it when the child exits or the spawn fails. A child on another machine doesn't get a file, because the daemon on that machine doesn't store a record of it.
+The plugin is for a parent session, one you start yourself. You don't set anything up for a child: `agent_spawn`, with or without `resume`, starts each Claude Code child with its own server, passed as `--mcp-config=~/.bellwether/mcp/<child id>.json`. The file has mode 0600 and lists one server, which runs this package's channel entry point with `--child <child id>`. Bellwether deletes it when the child exits or the spawn fails. A child on another machine gets its file from that machine, written by `bellwether relay-register` under that machine's `~/.bellwether/mcp/`.
 
 You don't need a `mcpServers` entry in your Claude Code settings for children. A user-level `bellwether` entry is harmless, and children don't use it. For the tools in a session you start by hand, install the plugin above.
 
@@ -127,7 +147,7 @@ It reports the herdr socket, the herdr API version, the Pi extension path, the M
 
 ## Environment
 
-A child started by `agent_spawn` receives these variables in its tab, for its own scripts and for the `bellwether report` command. The MCP server identifies its child with `--child` instead, and the daemon looks up the parent in its records.
+A child started by `agent_spawn` receives these variables in its tab, for its own scripts and for the `bellwether report` command, which takes `--child` from `BELLWETHER_CHILD` when the flag is absent. The MCP server identifies its child with `--child` instead, and the daemon looks up the parent in its records.
 
 | Variable | Meaning |
 | -- | -- |

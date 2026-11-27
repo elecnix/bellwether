@@ -9,7 +9,10 @@ import path from 'node:path';
 import { DAEMON_PROTOCOL, MAX_DAEMON_FRAME_BYTES, ProtocolError, formatReply, parseRequest, type DaemonReply, type ParentHello } from './protocol.ts';
 import { defaultServiceFactory, parentIdOf, type ParentService, type ServiceFactory } from './service.ts';
 import { acquire, isAlive, readLock, release } from './lock.ts';
-import type { OutboxEntry } from '../core/types.ts';
+import { Relay } from './relay.ts';
+import { acceptLocalReport, isReportStatus, localParentOf, routeReport, type ReportInput } from '../core/report.ts';
+import { readRelayRecord } from '../core/relay-records.ts';
+import type { CallerIdentity, OutboxEntry } from '../core/types.ts';
 
 export type { ParentService, ServiceFactory } from './service.ts';
 
@@ -25,6 +28,8 @@ export interface DaemonOptions {
   log?: (message: string) => void;
   now?: () => number;
   pid?: number;
+  /** The relay that carries reports to parents on other machines. Tests pass one with a fake ssh. */
+  relay?: Relay;
 }
 
 export interface Daemon {
@@ -56,6 +61,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
   const factory = options.factory ?? defaultServiceFactory;
   const idleMs = options.idleMs ?? 5 * 60_000;
   const idleCheckMs = options.idleCheckMs ?? 30_000;
+  const relay = options.relay ?? new Relay({ log });
 
   if (await canConnect(options.socketPath)) throw new Error(`a daemon already listens on ${options.socketPath}`);
   const lock = acquire(home, options.socketPath, pid);
@@ -114,6 +120,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
     subscribers.clear();
     for (const service of services.values()) service.stop();
     services.clear();
+    relay.stop();
     fs.rmSync(options.socketPath, { force: true });
     release(home, pid);
     await serverClosed;
@@ -124,12 +131,43 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
 
   const idle = setInterval(() => {
     if (closed) return;
-    if (sockets.size === 0 && now() - lastActivity >= idleMs) {
+    // A report still on its way to another machine keeps the daemon up, or nobody would retry it.
+    if (sockets.size === 0 && now() - lastActivity >= idleMs && !relay.busy()) {
       log('idle: closing the daemon');
       void close();
     }
   }, idleCheckMs);
   idle.unref?.();
+
+  /**
+   * A report posted without a session: from `bellwether report`, which is how
+   * a report from another machine arrives. A parent this daemon holds takes
+   * it once per receipt; a relay child's report goes on to its parent's machine.
+   */
+  const postReport = async (input: ReportInput): Promise<{ text: string; duplicate: boolean }> => {
+    const route = routeReport(input);
+    if (route.kind === 'relay') return { text: await relay.report(route.record, input.status, input.text), duplicate: false };
+    const { duplicate } = acceptLocalReport(route.parent, route.child, input);
+    if (duplicate) log(`report ${input.receipt} for child ${route.child.id} was already accepted, so the copy was dropped`);
+    else log(`report${input.receipt ? ` ${input.receipt}` : ''} from child ${route.child.id} accepted for parent ${route.parent.id}`);
+    return { text: duplicate ? `Report ${input.receipt} was already received; this copy was dropped.` : `Reported ${input.status} to ${route.parent.id}, as ${route.child.name}.`, duplicate };
+  };
+
+  /**
+   * parent_report from a child whose parent runs on another machine. A child
+   * this daemon holds a parent record for is served locally, by the session's
+   * own tool, so it never reaches the relay.
+   */
+  const relayCall = async (args: Record<string, unknown>, caller: CallerIdentity): Promise<string | undefined> => {
+    if (!caller.childId || !readRelayRecord(caller.childId) || localParentOf(caller.childId)) return undefined;
+    const status = typeof args['status'] === 'string' ? args['status'].trim() : undefined;
+    const text = typeof args['text'] === 'string' ? args['text'].trim() : '';
+    if (!status || !text) throw new Error('parent_report needs both status and text');
+    if (!isReportStatus(status)) throw new Error('parent_report status must be done, needs-input or progress');
+    const route = routeReport({ childId: caller.childId, paneId: caller.paneId });
+    if (route.kind !== 'relay') return undefined;
+    return relay.report(route.record, status, text);
+  };
 
   const server = net.createServer((socket) => {
     sockets.add(socket);
@@ -166,7 +204,16 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
         request = parseRequest(line);
       } catch (error) {
         const fault = error as ProtocolError;
-        reply({ type: 'error', code: fault.code, message: fault.message });
+        reply({ type: 'error', code: fault.code, message: fault.message, ...(fault.code === 'protocol_mismatch' ? { protocol: DAEMON_PROTOCOL } : {}) });
+        return;
+      }
+      if (request.type === 'report') {
+        try {
+          const outcome = await postReport(request.report);
+          reply({ type: 'result', id: request.id, text: outcome.text, duplicate: outcome.duplicate });
+        } catch (error) {
+          reply({ type: 'result', id: request.id, error: (error as Error).message });
+        }
         return;
       }
       if (request.type === 'hello') {
@@ -219,7 +266,8 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
       }
       if (request.type === 'call') {
         try {
-          const text = await session.service.tool(request.tool, request.args, request.caller ?? {});
+          const relayed = request.tool === 'parent_report' ? await relayCall(request.args, request.caller ?? {}) : undefined;
+          const text = relayed ?? (await session.service.tool(request.tool, request.args, request.caller ?? {}));
           reply({ type: 'result', id: request.id, text });
         } catch (error) {
           reply({ type: 'result', id: request.id, error: (error as Error).message });
@@ -239,6 +287,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
     });
   });
   fs.chmodSync(options.socketPath, 0o600);
+  relay.start();
 
   return {
     socketPath: options.socketPath,

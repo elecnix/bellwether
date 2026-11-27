@@ -1,10 +1,12 @@
 // The daemon protocol: one request per line, JSON, on a local socket. The
 // version travels in every hello, so a client newer than a running daemon can
 // ask it to drain and start the new one.
-import type { CallerIdentity, Harness, OutboxEntry } from '../core/types.ts';
+import type { CallerIdentity, Harness, OutboxEntry, ReportStatus } from '../core/types.ts';
 
 // 2: a call carries the caller identity, and parent_report routes by it.
-export const DAEMON_PROTOCOL = 2;
+// 3: a report request, which needs no hello, so `bellwether report` can post
+//    a report carried from another machine.
+export const DAEMON_PROTOCOL = 3;
 
 /** The largest line a daemon or client will read, matching the herdr client. */
 export const MAX_DAEMON_FRAME_BYTES = 4 * 1024 * 1024;
@@ -69,7 +71,24 @@ export interface WatchRequest {
   paneId: string;
 }
 
-export type DaemonRequest = HelloRequest | CallRequest | ReceiptRequest | ByeRequest | DrainRequest | WatchRequest;
+/**
+ * Post one report without a session. The daemon routes it by its own records:
+ * into a parent it holds, or on to the parent's machine for a relay child.
+ */
+export interface ReportRequest {
+  type: 'report';
+  id: string;
+  protocol: number;
+  report: {
+    parentId?: string;
+    childId: string;
+    receipt?: string;
+    status: ReportStatus;
+    text: string;
+  };
+}
+
+export type DaemonRequest = HelloRequest | CallRequest | ReceiptRequest | ByeRequest | DrainRequest | WatchRequest | ReportRequest;
 
 export interface HelloReply {
   type: 'hello';
@@ -84,6 +103,8 @@ export interface ResultReply {
   id: string;
   text?: string;
   error?: string;
+  /** For a report request: whether the receipt had already been accepted. */
+  duplicate?: boolean;
 }
 
 export interface EventsPush {
@@ -147,6 +168,23 @@ export function parseRequest(line: string): DaemonRequest {
       return { type: 'bye' };
     case 'drain':
       return { type: 'drain' };
+    case 'report': {
+      const id = text(value['id']);
+      const protocol = value['protocol'];
+      const report = value['report'];
+      if (!id) throw new ProtocolError('invalid_report', 'a report needs an id');
+      if (typeof protocol !== 'number' || protocol !== DAEMON_PROTOCOL) throw new ProtocolError('protocol_mismatch', `the report spoke protocol ${String(protocol)}`);
+      if (!isRecord(report)) throw new ProtocolError('invalid_report', 'a report needs a report object');
+      const childId = text(report['childId']);
+      const status = report['status'];
+      const body = typeof report['text'] === 'string' ? report['text'] : '';
+      if (!childId) throw new ProtocolError('invalid_report', 'a report needs a child id');
+      if (status !== 'done' && status !== 'needs-input' && status !== 'progress') throw new ProtocolError('invalid_report', 'a report status must be done, needs-input or progress');
+      if (!body.trim()) throw new ProtocolError('invalid_report', 'a report needs text');
+      const parentId = text(report['parentId']);
+      const receipt = text(report['receipt']);
+      return { type: 'report', id, protocol, report: { childId, status, text: body, ...(parentId ? { parentId } : {}), ...(receipt ? { receipt } : {}) } };
+    }
     case 'watch': {
       const paneId = text(value['paneId']);
       if (!paneId) throw new ProtocolError('invalid_watch', 'a watch needs a pane id');

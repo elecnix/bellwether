@@ -175,6 +175,12 @@ export interface SpoolReport {
   text: string;
   at: string;
   seq: number;
+  /**
+   * Names this one report. A report carried from another machine keeps the
+   * receipt its child's daemon gave it, so a forward that is retried after it
+   * already landed is accepted once.
+   */
+  receipt?: string;
 }
 
 /**

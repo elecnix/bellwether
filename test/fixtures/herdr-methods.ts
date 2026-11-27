@@ -23,6 +23,7 @@ export const REQUIRED_FIELDS: Record<string, readonly string[]> = {
   'pane.close': ['pane_id'],
   'pane.process_info': ['pane_id'],
   'events.subscribe': ['subscriptions'],
+  'integration.list': [],
 };
 
 /** The reason a request is refused, or undefined when it is well formed. */

@@ -7,15 +7,22 @@
 import { claude } from './claude.ts';
 import { cline } from './cline.ts';
 import { codex } from './codex.ts';
+import { omp } from './omp.ts';
 import { opencode } from './opencode.ts';
 import { pi } from './pi.ts';
 import type { TranscriptLookup } from '../transcript.ts';
 import type { HarnessEntry } from './types.ts';
 
-export type { HarnessEntry, HarnessHooks, HarnessSession, ChildFiles, LaunchInput, VersionProbe } from './types.ts';
+export type { HarnessEntry, HarnessHooks, HerdrRequester, HarnessSession, ChildFiles, LaunchInput, VersionProbe } from './types.ts';
 
 /** The entries, in the order agent_spawn lists its kinds. */
-const HARNESSES: HarnessEntry[] = [pi, claude, codex, opencode, cline];
+const HARNESSES: HarnessEntry[] = [pi, claude, codex, opencode, cline, omp];
+
+/** The kinds as a person reads a list of them: `pi`, `pi or claude`, `pi, claude or omp`. */
+export function kindList(kinds: readonly string[], conjunction: 'and' | 'or'): string {
+  if (kinds.length < 2) return kinds.join('');
+  return `${kinds.slice(0, -1).join(', ')} ${conjunction} ${kinds.at(-1)}`;
+}
 
 /** Every harness Bellwether knows, by its herdr kind. */
 export function harnesses(): readonly HarnessEntry[] {

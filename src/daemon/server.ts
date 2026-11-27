@@ -10,6 +10,7 @@ import { DAEMON_PROTOCOL, MAX_DAEMON_FRAME_BYTES, MIN_CLIENT_PROTOCOL, ProtocolE
 import { DRAIN_GRACE_MS, drainDecision } from './handover.ts';
 import { BELLWETHER_VERSION } from '../core/version.ts';
 import { readParent } from '../core/registry.ts';
+import { PRUNE_DELAY_MS, PRUNE_EVERY_MS, pruneState } from '../core/hygiene.ts';
 import { defaultServiceFactory, parentIdOf, type ParentService, type ServiceFactory } from './service.ts';
 import { acquire, isAlive, readLock, release } from './lock.ts';
 import { RelayOutbox } from './relay.ts';
@@ -43,6 +44,10 @@ export interface DaemonOptions {
   entry?: string;
   /** How long a drain waits for calls in flight before it closes anyway. Default 60 s. */
   drainGraceMs?: number;
+  /** How often the idle tick prunes the state no live session needs, after the first prune. Default an hour; false never prunes. */
+  pruneEveryMs?: number | false;
+  /** How long after start the first prune waits, so the sessions of a hand-over reconnect first. Default 1 min. */
+  pruneDelayMs?: number;
 }
 
 export interface Daemon {
@@ -170,8 +175,28 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
     return closing;
   };
 
+  const pruneEveryMs = options.pruneEveryMs ?? PRUNE_EVERY_MS;
+  const pruneAfter = now() + (options.pruneDelayMs ?? PRUNE_DELAY_MS);
+  let lastPrune: number | undefined;
+  /**
+   * Remove what no live session needs. A parent with a service here counts as
+   * connected, which is why the first prune waits for the sessions of a
+   * hand-over to say hello again.
+   */
+  const prune = (): void => {
+    if (pruneEveryMs === false || closed || drainingSince !== undefined || now() < pruneAfter) return;
+    if (lastPrune !== undefined && now() - lastPrune < pruneEveryMs) return;
+    lastPrune = now();
+    try {
+      pruneState({ connected: new Set(services.keys()), now: now(), log });
+    } catch (error) {
+      log(`prune failed: ${(error as Error).message}`);
+    }
+  };
+
   const idle = setInterval(() => {
     if (closed) return;
+    prune();
     // A report for a parent on another machine waits on disk, and that parent's daemon starts this one to collect it.
     if (sockets.size === 0 && now() - lastActivity >= idleMs) {
       log('idle: closing the daemon');

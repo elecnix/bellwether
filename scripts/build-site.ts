@@ -116,7 +116,9 @@ function render(page: Page, root: string, repo: string): Rendered {
 
   const h1 = tokens.findIndex((t) => t.type === 'heading' && (t as Tokens.Heading).depth === 1);
   if (h1 !== 0) throw new Error(`${page.source}: the first block must be the page's # heading`);
-  const lead = tokens.findIndex((t) => t.type === 'paragraph');
+  // The lead is the paragraph right under the page title, when there is one.
+  const next = tokens.findIndex((t, i) => i > 0 && t.type !== 'space');
+  const lead = tokens[next]?.type === 'paragraph' ? next : -1;
   const part = (from: number, to?: number): string => md.parser(tokens.slice(from, to) as Token[]);
 
   const heading = part(0, 1);

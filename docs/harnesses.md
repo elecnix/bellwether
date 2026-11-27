@@ -11,6 +11,7 @@ Each `agent_spawn` kind names the harness a child runs in, and Bellwether's harn
 | `opencode` | yes | a sentence that references a file in the working directory | the spawn picks the id and finds it in OpenCode's store | OpenCode's store | its own MCP server, named in `OPENCODE_CONFIG` | the screen | no | no | no |
 | `omp` | yes, after you run `herdr integration install omp` | `@file`, attached | herdr, as a file path | session file | the Bellwether pi extension, loaded with `-e` | herdr's omp integration, then the screen | `--session` | no | no |
 | `codex` | yes | a sentence that references a file | the spawn finds it in Codex's rollouts | the rollout | its own MCP server, defined in a `-c` override on its launch line | the screen | `codex resume` | no | no |
+| `kilo` | yes, on the native binary | a sentence that references a file in the working directory | found in kilo's store by directory, start time and prompt | kilo's store | its own MCP server, named in `KILO_CONFIG` | herdr's screen rule for kilo | `--session` | no | no |
 | `cline` | no | none | none | none | not yet | the screen | no | no | none |
 
 herdr reports `working`, `idle`, `blocked` and `done` for every kind it detects. Some dialogs show as `idle`. Where the child has an adapter of its own, pi's extension or Claude Code's hook names such a dialog; otherwise Bellwether reads the screen before an `idle` event, looking for a marked selection or a y/n question. Bellwether reports a dialog and never answers it, apart from Claude Code's startup questions ([tools](tools.md)).
@@ -51,6 +52,12 @@ Each kind has the same three bullets, so a reader can line up two kinds. The bul
 - **Cannot:** start children or message other agents, because Codex's approval policy refuses every other Bellwether tool. It cannot run on another machine either.
 - **How:** its own MCP server, set by a `-c` override on its launch line that pre-approves those three tools. The approval reaches only that child, and Bellwether never sends a key to a Codex dialog.
 
+### `kilo`
+
+- **Can:** report, request retirement, request depth, and start and message children of its own within its depth ceiling. A parent resumes it with `--session`.
+- **Cannot:** run on another machine, because Bellwether reads kilo's store and version on the machine where it runs. It can't start through npm's `kilo` launcher either, because herdr detects kilo by its process name and that launcher runs the binary as `.kilo`.
+- **How:** its own MCP server, configured in a per-child file that `KILO_CONFIG` points to. kilo merges that file over the operator's global configuration and leaves it unchanged, and the child's `bellwether` server replaces one by that name in the global configuration.
+
 ### `cline`
 
 - **Can:** `agent_adopt` takes its pane once it runs, and its status changes still start your turns.
@@ -69,11 +76,11 @@ Cline is in that state. Bellwether can't start it yet. herdr detects it, so `age
 
 ## An older daemon
 
-When a release changes a kind's entry, the running daemon must serve the argument `agent_spawn.kind=<kind>`. If the daemon predates the change, the call fails and reports the operation and the release that brought it. It never falls back to the old launch method ([upgrading](upgrading.md)). Bellwether has applied this check to the OpenCode, omp and Codex kinds since 0.1.5.
+When a release changes a kind's entry, the running daemon must serve the argument `agent_spawn.kind=<kind>`. If the daemon predates the change, the call fails and reports the operation and the release that brought it. It never falls back to the old launch method ([upgrading](upgrading.md)). Bellwether has applied this check to the OpenCode, omp, Codex and kilo kinds since 0.1.5.
 
 ## Launch details
 
-The topics for [OpenCode](opencode.md) and [Codex](codex.md) cover the launch arguments, the session lookup and the refusals.
+The topics for [OpenCode](opencode.md), [Codex](codex.md) and [kilo](kilo.md) cover the launch arguments, the session lookup and the refusals.
 
 An omp child starts as `omp [--model provider/id] -e <pi extension> @<brief>`. omp takes the model as one value, either `provider/id` or a name it matches, so `agent_spawn` refuses a separate `provider` for this kind.
 

@@ -95,7 +95,8 @@ src/daemon/        the daemon: protocol, server, client, lock, parent service
 src/integrations/  the tool list, shared by both adapters
 src/integrations/pi/       the Pi extension
 src/integrations/claude/   the Claude Code MCP channel server
-bin/               the bellwether command
+bin/               the bellwether command and MCP server, run from the sources in a checkout
+dist/              the compiled JavaScript that npm publishes, built by `npm run build`
 docs/              probe results and notes
 test/unit/         tier 1: fake clock, in-memory registry
 test/integration/  tier 2: a fake herdr socket and the daemon, tier 3: a real isolated herdr server

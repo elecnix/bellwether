@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 // The bellwether command.
 //
 // `watch` is the dogfood driver: it runs the same core the Pi extension and the
@@ -93,6 +94,7 @@ function packageRoot(): string | undefined {
 }
 
 type PackageManifest = {
+  bin?: Record<string, string>;
   pi?: { extensions?: string[] };
 };
 
@@ -128,7 +130,12 @@ function checkPackaging(): number {
     }
   }
 
-  const mcpEntry = path.join(root, 'bin', 'bellwether-mcp.js');
+  const declared = manifest.bin?.['bellwether-mcp'];
+  if (!declared) {
+    bad('mcp entry', 'package.json declares no bellwether-mcp bin');
+    return failures + 1;
+  }
+  const mcpEntry = path.resolve(root, declared);
   const label = path.relative(root, mcpEntry);
   if (!fs.existsSync(mcpEntry)) {
     bad('mcp entry', `${label} does not exist`);

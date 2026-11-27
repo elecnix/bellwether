@@ -3,3 +3,4 @@ node_modules
 .github/vale/styles/ai-tells-experimental/
 *.sqlite
 *.sqlite-*
+dist/

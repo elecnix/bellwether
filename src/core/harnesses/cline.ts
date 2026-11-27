@@ -278,8 +278,16 @@ export const cline: HarnessEntry = {
   brief: { where: 'prompts', argument: briefSentence },
   chosenBy: 'flag',
   launchArgs: ({ model, extra = [], files }) => [...modelFlag(model, extra), '-i', ...(files.briefFile ? [briefSentence(files.briefFile)] : []), ...extra],
-  // herdr reports no agent_session for Cline; an adopted child's session is found in the store by agent_read and the watcher.
-  session: { from: 'herdr', kind: 'id' },
+  // herdr reports no agent_session for Cline, and `--id` only reopens a session
+  // Cline already has, so the spawn finds the session Cline picked. An adopted
+  // child's session is found in the store by agent_read and the watcher.
+  session: {
+    from: 'store',
+    storePath: (hooks) => hooks.store ?? clineDbPath(),
+    async confirm({ store, cwd, briefFile, since }, hooks) {
+      return findClineSession({ db: store, cwd, prompt: briefSentence(briefFile), since, waitMs: hooks.waitMs, intervalMs: hooks.intervalMs });
+    },
+  },
   /**
    * The default launch is refused for the shared hub, and only `-y` in args
    * opens the door. A child on another machine is refused, because the store
@@ -292,7 +300,8 @@ export const cline: HarnessEntry = {
   spawnNote: (_child, args) => (clineOptedIn(args) ? CLINE_OPT_IN_NOTE : undefined),
   reports: {
     via: 'harness-config',
-    local: (child, { env }) => ({ env: { CLINE_MCP_SETTINGS_PATH: writeClineMcpSettings(child.id, { ...env }) } }),
+    // The child reads its own MCP settings, and writes its session to the store this daemon reads.
+    local: (child, { env }) => ({ env: { CLINE_MCP_SETTINGS_PATH: writeClineMcpSettings(child.id, { ...env }), ...(child.store ? { CLINE_DB_DATA_DIR: path.dirname(child.store) } : {}) } }),
     remoteRefusal: "a cline child runs on this machine only for now, because Cline's store is read where it runs",
   },
   conversation: {

@@ -12,7 +12,7 @@ Each `agent_spawn` kind names the harness a child runs in, and Bellwether's harn
 | `omp` | yes, after you run `herdr integration install omp` | `@file`, attached | herdr, as a file path | session file | the Bellwether pi extension, loaded with `-e` | herdr's omp integration, then the screen | `--session` | no | no |
 | `codex` | yes | a sentence that references a file | the spawn finds it in Codex's rollouts | the rollout | its own MCP server, defined in a `-c` override on its launch line | the screen | `codex resume` | no | no |
 | `kilo` | yes, on the native binary | a sentence that references a file in the working directory | found in kilo's store by directory, start time and prompt | kilo's store | its own MCP server, named in `KILO_CONFIG` | herdr's screen rule for kilo | `--session` | no | no |
-| `cline` | no | none | none | none | not yet | the screen | no | no | none |
+| `cline` | only with `-y` | a sentence that references a file | in Cline's `sessions.db` | Cline's `sessions.db` | its own MCP server, named in `CLINE_MCP_SETTINGS_PATH` | the screen | no | no | no |
 
 herdr reports `working`, `idle`, `blocked` and `done` for every kind it detects. Some dialogs show as `idle`. Where the child has an adapter of its own, pi's extension or Claude Code's hook names such a dialog; otherwise Bellwether reads the screen before an `idle` event, looking for a marked selection or a y/n question. Bellwether reports a dialog and never answers it, apart from Claude Code's startup questions ([tools](tools.md)).
 
@@ -60,23 +60,57 @@ Each kind has the same three bullets, so a reader can line up two kinds. The bul
 
 ### `cline`
 
-- **Can:** `agent_adopt` takes its pane once it runs, and its status changes still start your turns.
-- **Cannot:** run through `agent_spawn`, because Bellwether does not yet give a cline child its own Bellwether server.
-- **How:** none yet. The spawn refuses rather than start a child whose reports would go nowhere.
+- **Can:** `agent_adopt` takes a Cline pane, and Bellwether reads its conversation from Cline's `sessions.db`. A child started with `-y` also reports, requests retirement and depth, and takes an `agent_send` follow-up after its first task.
+- **Cannot:** start through `agent_spawn` by default, because Cline runs every terminal session inside a shared background hub. It can't run on another machine or resume either.
+- **How:** the explicit `-y` opt-in in `agent_spawn`'s `args`, which runs the session in the child's own process with its own MCP server, named in `CLINE_MCP_SETTINGS_PATH`. When the caller turns `-y` on, the spawn reply prints what it costs.
 
 ## Refusing a child no one can hear
 
 A child calls `parent_report` through a Bellwether server or extension that holds its child id. When a harness has no such server, its entry says so. `agent_spawn` then refuses the spawn before it writes a record, a brief or a tab. The refusal reads:
 
 ```
-worker was not started: Bellwether does not give a cline child its own Bellwether server yet, so the child could not call parent_report. A cline child can be adopted with agent_adopt once it runs, and its status changes still reach you; see docs/harnesses.md.
+worker was not started: Bellwether does not give an example child its own Bellwether server yet, so the child could not call parent_report. An example child can be adopted with agent_adopt once it runs, and its status changes still reach you; see docs/harnesses.md.
 ```
 
-Cline is in that state. Bellwether can't start it yet. herdr detects it, so `agent_adopt` can take a pane that runs it, and its status changes still start your turns. Before this release, a spawn of Cline started a child whose reports went nowhere.
+No kind here lacks one today. Cline has its server too, but `agent_spawn` still refuses Cline's default launch, for a different reason: the shared background hub that the next section describes, where the server would not stay with its child.
+
+## Cline and its shared hub
+
+Cline 3.0.76 reads the MCP settings file that `CLINE_MCP_SETTINGS_PATH` names, so each child could have its own server. Whether that works depends on where the session runs, and `-y` changes that.
+
+### Without `-y`: refused
+
+`cline -i` joins Cline's shared background hub when one runs, and starts one when none does. MCP servers load in the hub, which keeps the environment of the session that started it, so in a test with two children on one machine the second child's session ran in the first child's hub and loaded the first child's server. What goes wrong:
+
+- A second child's reports would go out under the first child's id.
+- The hub keeps running after the child that started it exits.
+- Your own Cline sessions join that hub, and they load the child's server.
+
+No Cline setting stops a terminal session from joining the hub. The terminal UI ignores the environment variable meant for it ([cline/cline#13631](https://github.com/cline/cline/issues/13631)). [cline/cline#15881](https://github.com/cline/cline/issues/15881) asks for a per-session MCP configuration or a hub-off switch. Until Cline has one, `agent_spawn` refuses this launch, and its refusal states the hub and these consequences.
+
+### With `-y`: allowed, at a cost
+
+Passing `-y` (or `--yolo`) in `args` runs the session in the child's own process. That process never starts or joins a hub. In the same test, a `-y` child loaded only its own server while another session's hub ran, and it stayed up after its first task. It answered a follow-up typed at its prompt, so `agent_send` reaches it.
+
+The cost is Cline's benchmark mode, which the spawn reply prints when the caller turns it on:
+
+- Another system prompt.
+- Six built-in tools, `read_files`, `search_codebase`, `run_commands`, `fetch_web_content`, `editor` and `ask_question`, plus the MCP tools, where the default mode offers 26.
+- No skills, sub-agents or teams.
+- Cline's own help, which calls `-y` "DANGEROUS: use only in sandboxed environments."
+
+### The session store
+
+Bellwether finds a cline child's session in Cline's `sessions.db`. For an adopted pane, `agent_read` and the watcher use the newest live top-level session in the pane's directory. The store is at the first of these paths that applies:
+
+- `CLINE_DB_DATA_DIR`
+- `CLINE_DATA_DIR/db`
+- `CLINE_DIR/data/db`
+- `~/.cline/data/db`
 
 ## An older daemon
 
-When a release changes a kind's entry, the running daemon must serve the argument `agent_spawn.kind=<kind>`. If the daemon predates the change, the call fails and reports the operation and the release that brought it. It never falls back to the old launch method ([upgrading](upgrading.md)). Bellwether has applied this check to the OpenCode, omp, Codex and kilo kinds since 0.1.5.
+When a release changes a kind's entry, the running daemon must serve the argument `agent_spawn.kind=<kind>`. If the daemon predates the change, the call fails and reports the operation and the release that brought it. It never falls back to the old launch method ([upgrading](upgrading.md)). Bellwether has applied this check to the OpenCode, omp, Codex, kilo and Cline kinds since 0.1.5.
 
 ## Launch details
 

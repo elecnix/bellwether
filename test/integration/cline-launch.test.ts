@@ -17,7 +17,7 @@ import { Watcher } from '../../src/core/watcher.ts';
 import { runBellwetherTool, type ToolContext } from '../../src/integrations/tools.ts';
 import { addClineSession, clineStore } from '../fixtures/cline-db.ts';
 import { startFakeHerdr, type FakeHerdr } from '../fixtures/fake-herdr.ts';
-import { fakeWorld, type FakeWorld } from '../fixtures/fake-world.ts';
+import { fakeWorld, type FakePane, type FakeWorld } from '../fixtures/fake-world.ts';
 import { isolate } from '../fixtures/isolated.ts';
 
 interface Room {
@@ -43,6 +43,19 @@ async function room(t: test.TestContext): Promise<Room> {
 
 function context(space: Room): ToolContext {
   return { client: space.client, clientFor: async () => space.client, parentId: space.parentId, watcher: new Watcher({ client: space.client, parentId: space.parentId, onEntries: () => {} }) };
+}
+
+/** Cline's part: when the agent starts, record the session it picked, with the prompt it was given. */
+function clineWrites(space: Room, id = 'example-cline-session'): void {
+  space.world.onStart = (pane: FakePane) => {
+    const args = pane.args ?? [];
+    // herdr reports no session for Cline.
+    delete pane.agent_session;
+    const db = clineDbPath();
+    const store = clineStore(db);
+    addClineSession(store, db, { id, cwd: space.cwd, prompt: args[args.indexOf('-i') + 1] as string, startedAt: new Date().toISOString(), replies: ['the -y child answered'] });
+    store.close();
+  };
 }
 
 function nothingWritten(space: Room): void {
@@ -71,11 +84,16 @@ test('a child on another machine is refused, because the store is read where it 
   nothingWritten(space);
 });
 
-test('with -y the child starts in unattended mode with its own MCP settings, and the reply lists the costs', async (t) => {
+test('with -y the child starts in benchmark mode with its own MCP settings, its session is found in the store, and the reply lists the costs', async (t) => {
   const space = await room(t);
+  clineWrites(space);
   const reply = await runBellwetherTool(context(space), 'agent_spawn', { kind: 'cline', name: 'worker', prompt: 'report back', cwd: space.cwd, model: 'example-model', args: ['-y'] }, {});
   const child = readParent(space.parentId)?.children.find((entry) => entry.name === 'worker');
   assert.ok(child, 'the spawn wrote no record');
+  // The spawn found the session Cline picked, and agent_read answers from it.
+  assert.deepEqual(child.session, { kind: 'id', value: 'example-cline-session' });
+  assert.equal(child.store, clineDbPath());
+  assert.equal(await runBellwetherTool(context(space), 'agent_read', { child: 'worker' }, {}), 'the -y child answered');
 
   const start = space.fake.requests.find((request) => request.method === 'agent.start');
   assert.equal(start?.params['kind'], 'cline');
@@ -86,6 +104,7 @@ test('with -y the child starts in unattended mode with its own MCP settings, and
   const create = space.fake.requests.find((request) => request.method === 'tab.create' || request.method === 'workspace.create');
   const env = (create?.params['env'] ?? {}) as Record<string, string>;
   assert.equal(env['CLINE_MCP_SETTINGS_PATH'], mcpConfigPath(child.id));
+  assert.equal(env['CLINE_DB_DATA_DIR'], path.dirname(clineDbPath()));
   assert.equal(fs.statSync(mcpConfigPath(child.id)).mode & 0o777, 0o600);
   const settings = JSON.parse(fs.readFileSync(mcpConfigPath(child.id), 'utf8')) as { mcpServers: Record<string, { transport: { type: string; args: string[]; env: Record<string, string> } }> };
   const servers = Object.values(settings.mcpServers);
@@ -110,4 +129,14 @@ test("agent_read answers an adopted cline child from Cline's store, by its direc
   const now = new Date().toISOString();
   upsertChild(space.parentId, { id: 'c-adopted', name: 'adopted', kind: 'cline', harness: 'cline', paneId: 'w1:p9', host: 'local', origin: 'adopt', cwd: space.cwd, startedAt: now, lastStatus: 'idle', statusChangedAt: now, lastBusyAt: now, depth: 1 });
   assert.equal(await runBellwetherTool(context(space), 'agent_read', { child: 'adopted' }, {}), 'the adopted child answered');
+});
+
+test('a -y spawn whose session never shows in the store fails, naming the store, and closes the pane', async (t) => {
+  const space = await room(t);
+  const db = path.join(space.cwd, '..', 'fixture-cline', 'db', 'sessions.db');
+  await assert.rejects(
+    spawnChild(space.client, readParent(space.parentId)!, { kind: 'cline', name: 'silent', prompt: 'report back', cwd: space.cwd, args: ['-y'] }, undefined, { harness: { store: db, waitMs: 200, intervalMs: 20 } }),
+    (error: Error) => error.message.startsWith('silent was not started: Cline never recorded a session') && error.message.includes(db),
+  );
+  assert.deepEqual(readParent(space.parentId)?.children, []);
 });

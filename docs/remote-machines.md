@@ -74,7 +74,7 @@ On either machine, a failing `bellwether` command prints `bellwether <command>: 
 
 ## Reports that do not arrive
 
-When registration fails for a child with no brief, an opencode or cline child still starts, and herdr status still follows it. The spawn's reply says why the child can't report.
+When registration fails for a child with no brief, an opencode child still starts, and herdr status still follows it. The spawn's reply says why the child can't report.
 
 Without that machine's extension path, a pi child would have no tools, so its spawn fails instead.
 

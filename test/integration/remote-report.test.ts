@@ -310,6 +310,23 @@ test("the child's daemon keeps a report for a remote parent on disk and runs no 
   assert.equal(fs.statSync(relayChildPath('c-quiet')).mode & 0o777, 0o600);
 });
 
+test('a report too long for one relay line is refused on the child machine, and nothing is kept', async (t) => {
+  const w = world(t, 'child');
+  saveRelayRecord(relayRecord('c-big'));
+  await childDaemon(w);
+  // Quotes double in JSON, so this text fits the child's own request but not one relay line.
+  const text = '"'.repeat(2_500_000);
+  const outbox = new RelayOutbox({ ackWaitMs: 50 });
+  await assert.rejects(outbox.report(relayRecord('c-big'), 'done', text), (error: Error) => {
+    assert.match(error.message, /too long to cross to the parent's machine/);
+    assert.match(error.message, /Nothing was saved/);
+    return true;
+  });
+  assert.deepEqual(listForwards(), [], 'nothing waits that would cut every connection it is sent on');
+  const fits = await outbox.report(relayRecord('c-big'), 'done', 'x'.repeat(1_000_000));
+  assert.match(fits, /saved as/);
+});
+
 test('a report for a child this machine holds is served here and never spooled for a remote parent', async (t) => {
   const w = world(t, 'child');
   await childDaemon(w);

@@ -8,7 +8,7 @@
 import { relayOutboxPath } from '../core/paths.ts';
 import { listForwards, newReportReceipt, removeForward, saveForward, updateRelayRecord, type ForwardEntry, type RelayRecord } from '../core/relay-records.ts';
 import type { ReportStatus } from '../core/types.ts';
-import type { RelayReport } from './protocol.ts';
+import { MAX_DAEMON_FRAME_BYTES, formatReply, type RelayReport } from './protocol.ts';
 
 export interface RelayOutboxOptions {
   log?: (message: string) => void;
@@ -86,6 +86,12 @@ export class RelayOutbox {
    */
   async report(record: RelayRecord, status: ReportStatus, text: string): Promise<string> {
     const entry: ForwardEntry = { receipt: newReportReceipt(), childId: record.childId, parentId: record.parentId, status, text, at: new Date(this.now()).toISOString() };
+    // The report crosses as one protocol line, and the parent's daemon cuts a connection that sends a longer one.
+    // A report kept here past that size would cut every connection it was sent on, so it is refused before it is kept.
+    const line = formatReply({ type: 'relay-report', report: toReport(entry) }).length;
+    if (line > MAX_DAEMON_FRAME_BYTES) {
+      throw new Error(`parent_report text is too long to cross to the parent's machine: as one relay line it takes ${line} characters, over the ${MAX_DAEMON_FRAME_BYTES} a line may carry. Nothing was saved. Report a shorter summary, and leave the rest in a file the parent can read with agent_read or over SSH.`);
+    }
     saveForward(entry);
     this.settleRecord(entry.childId, false);
     const listeners = [...this.subscribers].filter((subscriber) => subscriber.parentIds.has(entry.parentId));

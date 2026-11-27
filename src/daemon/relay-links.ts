@@ -327,11 +327,6 @@ export class RelayLinks {
   private read(link: Link, child: ChildProcess, chunk: string): void {
     if (link.process !== child) return;
     link.buffer += chunk;
-    if (link.buffer.length > MAX_DAEMON_FRAME_BYTES) {
-      link.farError = `machine ${link.host} sent a line over ${MAX_DAEMON_FRAME_BYTES} bytes`;
-      child.kill('SIGTERM');
-      return;
-    }
     let index = link.buffer.indexOf('\n');
     while (index >= 0) {
       const line = link.buffer.slice(0, index);
@@ -346,6 +341,11 @@ export class RelayLinks {
         continue;
       }
       this.dispatch(link, child, reply);
+    }
+    // Only the unfinished line counts against the limit, so two whole lines in one chunk never trip it.
+    if (link.buffer.length > MAX_DAEMON_FRAME_BYTES) {
+      link.farError = `machine ${link.host} sent a line over ${MAX_DAEMON_FRAME_BYTES} characters`;
+      child.kill('SIGTERM');
     }
   }
 

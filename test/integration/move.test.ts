@@ -25,6 +25,7 @@ import { emptyParent, readParent, saveParent, upsertChild } from '../../src/core
 import { readRelayRecord } from '../../src/core/relay-records.ts';
 import { remoteOps } from '../../src/core/remote.ts';
 import { spawnResume } from '../../src/core/spawn-resume.ts';
+import { restartChild } from '../../src/core/restart.ts';
 import { claudeProjectDir } from '../../src/core/transcript.ts';
 import type { ChildRecord } from '../../src/core/types.ts';
 import { Watcher } from '../../src/core/watcher.ts';
@@ -416,12 +417,14 @@ test('agent_move through the tool list replies with where the child went and how
 });
 
 
-test('a resume of a child mid-move is refused, even after the lock would count as stale', async (t) => {
+test('a resume or a restart of a child mid-move is refused, even after the lock would count as stale', async (t) => {
   const w = await world(t);
   claudeHere(w, dir(w.here.user, 'src', 'repo'));
   const since = new Date().toISOString();
   upsertChild(w.parentId, { ...record(w)!, moving: { from: LOCAL_HOST, to: 'box', since, until: new Date(Date.now() + 60_000).toISOString() } });
   await assert.rejects(spawnResume(w.deps.clientFor, w.parentId, { target: 'worker', prompt: 'hello' }), /worker \(child child-worker\) is being moved to machine box/);
+  await assert.rejects(restartChild(w.here.client, w.parentId, 'child-worker'), /worker \(child child-worker\) is being moved to machine box/);
+  assert.ok(w.here.world.panes.has('w1:p3'), 'the refused restart closed nothing');
   // A second move is refused by the same mark.
   await assert.rejects(moveChild(w.deps, w.parentId, { child: 'worker', machine: 'box' }), /already being moved to machine box/);
 });

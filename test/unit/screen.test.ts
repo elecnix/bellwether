@@ -6,7 +6,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { detectModal } from '../../src/core/modal.ts';
 import { boxLine, parseRuns, parseScreen, shownScreen } from '../../src/core/screen.ts';
-import { BOX_CASES, CLAUDE_GHOST_QUESTION, SUGGESTION, TYPED, stripAnsi } from '../fixtures/ghost-screens.ts';
+import { CLAUDE_STARTUP, keyToward } from '../../src/core/startup-dialogs.ts';
+
+const TRUST = CLAUDE_STARTUP.dialogs.find((dialog) => dialog.id === 'trust')?.shows ?? /^$/;
+import { BOX_CASES, CLAUDE_GHOST_QUESTION, PERMISSION_DIMMED, SUGGESTION, TRUST_DIMMED_ACCEPT, TRUST_FAINT_ACCEPT, TYPED, stripAnsi } from '../fixtures/ghost-screens.ts';
 
 for (const box of BOX_CASES) {
   test(`${box.name}: the ANSI format reads ${box.state}`, () => {
@@ -67,4 +70,16 @@ test('a screen with no box says nothing about one', () => {
   const screen = parseScreen('$ ls\r\nREADME.md', 'ansi');
   assert.equal(screen.box, undefined);
   assert.equal(shownScreen(screen), '$ ls\nREADME.md');
+});
+
+test('a dialog that dims its unselected options is still a dialog, and the screen has no box', () => {
+  const screen = parseScreen(PERMISSION_DIMMED, 'ansi', (view) => detectModal(view) !== undefined);
+  assert.equal(detectModal(screen), 'Bash command: Do you want to proceed?');
+  assert.equal(screen.box, undefined, `the selected option was read as an input box: ${JSON.stringify(screen.box)}`);
+  assert.equal(boxLine(screen), undefined);
+});
+
+test('the spawn walks to an accepting option drawn dim, and never takes a faint marker as selected', () => {
+  assert.equal(keyToward(parseScreen(TRUST_DIMMED_ACCEPT, 'ansi'), 'Yes, I trust this folder', TRUST), 'Down');
+  assert.equal(keyToward(parseScreen(TRUST_FAINT_ACCEPT, 'ansi'), 'Yes, I trust this folder', TRUST), undefined);
 });

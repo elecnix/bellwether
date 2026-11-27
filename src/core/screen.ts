@@ -33,6 +33,8 @@ export interface Screen {
   readonly styled: boolean;
   /** Each line's styled runs. */
   readonly lines: readonly (readonly ScreenRun[])[];
+  /** Every character on screen, faint or not, without escapes. Deciding that a dialog is up reads this. */
+  readonly plain: string;
   /**
    * The screen as content: every faint character replaced by a space, so
    * columns still line up, and each line's trailing space trimmed. Dialog
@@ -41,14 +43,14 @@ export interface Screen {
   readonly content: string;
   /**
    * What the input box holds. Undefined when the screen shows no box, when a
-   * dialog covers it, or when the screen came without its styling and the box
+   * dialog is on screen, which is decided before the box, or when the screen came without its styling and the box
    * holds text, which could be either a suggestion or a draft.
    */
   readonly box: InputBox | undefined;
 }
 
 /** A screen with nothing on it, for a read that failed. */
-export const BLANK_SCREEN: Screen = { styled: true, lines: [], content: '', box: undefined };
+export const BLANK_SCREEN: Screen = { styled: true, lines: [], plain: '', content: '', box: undefined };
 
 // CSI: ESC [ params intermediates final. OSC: ESC ] ... BEL or ST. Other ESC x pairs.
 const ESCAPE = /\u001b(?:\[([0-9;:?<=>]*)[ -/]*([@-~])|\][^\u0007\u001b]*(?:\u0007|\u001b\\)|[@-Z\\-_])/gu;
@@ -195,13 +197,16 @@ export function inputBox(lines: readonly (readonly ScreenRun[])[]): InputBox | u
  * ignored the request for ANSI answers `text`, and then the screen has no
  * styling to read, so its box is known only when empty.
  */
-export function parseScreen(text: string, format: string | undefined, coversBox: (content: string) => boolean = () => false): Screen {
+export function parseScreen(text: string, format: string | undefined, isDialog: (view: { plain: string; content: string }) => boolean = () => false): Screen {
   const styled = format === 'ansi';
   const lines = parseRuns(styled ? text : text.replace(/\u001b/g, ''));
+  const plain = lines.map((runs) => lineText(runs, false).trimEnd()).join('\n');
   const content = lines.map((runs) => lineText(runs, true).trimEnd()).join('\n');
-  let box = coversBox(content) ? undefined : inputBox(lines);
+  // A screen that asks a question is not a box waiting for an answer, so the
+  // dialog check comes first, and a dialog on screen means there is no box.
+  let box = isDialog({ plain, content }) ? undefined : inputBox(lines);
   if (!styled && box && box.state !== 'EMPTY') box = undefined;
-  return { styled, lines, content, box };
+  return { styled, lines, plain, content, box };
 }
 
 /** The one line that tells a reader what the input box holds. */

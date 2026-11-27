@@ -32,11 +32,17 @@ export interface Feature {
    * so it passes the same Vale rules as the docs.
    */
   summary: string;
+  /**
+   * The pull requests that brought it. The release script stops on a pull
+   * request merged since the last release that no entry names, so a feature
+   * from 0.1.8 on names its own.
+   */
+  prs?: readonly number[];
 }
 
 /** The features one release brought on one protocol, each name with its summary. */
-function brought(kind: Feature['kind'], protocol: number, version: string, summaries: Record<string, string>): Feature[] {
-  return Object.entries(summaries).map(([name, summary]) => ({ name, kind, protocol, version, summary }));
+function brought(kind: Feature['kind'], protocol: number, version: string, summaries: Record<string, string>, prs?: readonly number[]): Feature[] {
+  return Object.entries(summaries).map(([name, summary]) => ({ name, kind, protocol, version, summary, ...(prs ? { prs } : {}) }));
 }
 
 const BASE: readonly Feature[] = [
@@ -113,13 +119,51 @@ const BASE: readonly Feature[] = [
   ...brought('argument', 4, '0.1.7', {
     'agent_spawn.reads': "A spawn adds paths to the child's read set, which its launch settings list.",
     'agent_restart.reads': "A restart replaces the paths in the child's read set.",
-  }),
+  }, [150]),
   // A child's adapter acknowledges a parent's message that entered its session, rather than its pane.
   ...brought('request', 4, '0.1.7', {
     'message-ack': "A parent's message enters a Claude Code, pi or omp child's session, where herdr used to type it into the pane, and the child's adapter acknowledges it.",
-    // A far daemon that predates it answers unknown_type, and the parent types the message.
+  }, [136]),
+  // A far daemon that predates it answers unknown_type, and the parent types the message.
+  ...brought('request', 4, '0.1.7', {
     'relay-message': "The daemon on a child's machine puts a parent's message in that child's session, where herdr used to type it into the far pane.",
-  }),
+  }, [144]),
+];
+
+/**
+ * A change in what a release does that adds nothing to the wire: a person
+ * would want to read about it, and no client negotiates it. It sits apart from
+ * FEATURES, which feeds the hello, `serves` and doctor, because a behavior has
+ * no name an older daemon could refuse and no protocol a client could compare.
+ */
+export interface Behavior {
+  /** The first release that behaves this way. */
+  version: string;
+  /** The pull requests that brought it, which the release script matches against what merged. */
+  prs: readonly number[];
+  /**
+   * One sentence for a person reading the release notes: what someone can now
+   * do, or what now happens. The release pull request lists it under its
+   * version, ahead of the protocol, so it passes the same Vale rules as the docs.
+   */
+  summary: string;
+}
+
+/**
+ * Every change in behavior since 0.1.7, oldest first. A pull request that
+ * changes nothing a person would read about, such as a test, a typo or a
+ * dependency bump, carries the `release-note: none` label instead.
+ */
+export const BEHAVIORS: readonly Behavior[] = [
+  { version: '0.1.7', prs: [137], summary: 'A resume that brings a prompt keeps the brief a child never read, and puts that brief ahead of the prompt.' },
+  { version: '0.1.7', prs: [147], summary: "A bare child starts behind `command`, so a shell function or alias of the harness's name no longer changes its launch, and the spawn answers Claude Code's channel question by its digit." },
+  { version: '0.1.7', prs: [148], summary: "A pi child that exits or stops on a fatal error at startup fails its spawn, and the error quotes pi's own line." },
+  { version: '0.1.7', prs: [151], summary: 'Retirement removes a child\'s worktree once its tab closes, and `agent_stop` retires the child it closes.' },
+  { version: '0.1.7', prs: [152], summary: 'An adopted session that runs a Bellwether adapter gains `parent_report` over the daemon connection it opened at its start.' },
+  { version: '0.1.7', prs: [153, 154], summary: "An alert can end with one line that counts the parent's other live children by state, sent only when it changed and at most once in 10 minutes." },
+  { version: '0.1.8', prs: [158], summary: 'A suggestion that a harness draws faint in its input box no longer reads as typed text: `agent_read` and `idle` events leave it out and say whether the box holds a suggestion, a draft or nothing.' },
+  { version: '0.1.8', prs: [161], summary: 'A dialog that dims the options it has not selected counts as a dialog again, so the parent hears `blocked` rather than `idle`, and the startup answerer can select a dimmed accepting option.' },
+  { version: '0.1.8', prs: [163], summary: "The spawn reads a startup dialog's options from the block under the dialog's own line, so a shell prompt that starts with `❯` above it never passes for the selected option." },
 ];
 
 /**
@@ -129,7 +173,7 @@ const BASE: readonly Feature[] = [
  * refuses the kind by name instead.
  */
 export function kindFeatures(entries: readonly HarnessEntry[] = harnesses()): Feature[] {
-  return entries.flatMap((entry) => (entry.since ? [{ name: `agent_spawn.kind=${entry.kind}`, kind: 'argument' as const, protocol: entry.since.protocol, version: entry.since.version, summary: `A spawn starts a child that runs ${entry.label}.` }] : []));
+  return entries.flatMap((entry) => (entry.since ? [{ name: `agent_spawn.kind=${entry.kind}`, kind: 'argument' as const, protocol: entry.since.protocol, version: entry.since.version, summary: `A spawn starts a child that runs ${entry.label}.`, ...(entry.since.prs ? { prs: entry.since.prs } : {}) }] : []));
 }
 
 export const FEATURES: readonly Feature[] = [...BASE, ...kindFeatures()];

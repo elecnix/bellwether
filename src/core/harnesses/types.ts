@@ -206,8 +206,9 @@ export interface HarnessEntry {
    * The first release whose daemon starts this kind as this entry says. A
    * client checks it as the argument `agent_spawn.kind=<kind>`, so an older
    * daemon is refused by name instead of starting a child nobody hears.
+   * `prs` names the pull requests that brought it, as a feature's does.
    */
-  since?: { protocol: number; version: string };
+  since?: { protocol: number; version: string; prs?: readonly number[] };
   /**
    * Where the brief file goes, and how the harness gets it. With `launch`,
    * the launch line carries a one-line first prompt that points at the file,

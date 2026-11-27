@@ -24,7 +24,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { prBody } from './release.ts';
-import { FEATURES } from '../src/daemon/features.ts';
+import { BEHAVIORS, FEATURES } from '../src/daemon/features.ts';
 
 /** What the lint passes to Vale. A directory covers every page under it. */
 export const PROSE_PATHS = ['README.md', 'AGENTS.md', 'docs'] as const;
@@ -143,11 +143,11 @@ export function signatureFindings(root: string, config = path.join(root, '.vale.
 
 /** Each form the release pull request's description takes, by the file name its alerts carry. */
 export const RELEASE_BODIES: Record<string, string> = {
-  'release-body-protocol-moves.md': prBody('0.1.5', '0.1.4', { from: 3, to: 4 }, FEATURES),
-  'release-body-protocol-stays.md': prBody('0.1.6', '0.1.5', undefined, FEATURES),
-  'release-body-first-release.md': prBody('0.1.0', undefined, undefined, FEATURES),
-  // One body per release that features.ts names, so every summary in the table passes Vale.
-  ...Object.fromEntries([...new Set(FEATURES.map((feature) => feature.version))].map((version) => [`release-body-features-${version}.md`, prBody(version, undefined, undefined, FEATURES)])),
+  'release-body-protocol-moves.md': prBody('0.1.5', '0.1.4', { from: 3, to: 4 }, FEATURES, BEHAVIORS),
+  'release-body-protocol-stays.md': prBody('0.1.6', '0.1.5', undefined, FEATURES, BEHAVIORS),
+  'release-body-first-release.md': prBody('0.1.0', undefined, undefined, FEATURES, BEHAVIORS),
+  // One body per release that features.ts names, so every summary in both tables passes Vale.
+  ...Object.fromEntries([...new Set([...FEATURES, ...BEHAVIORS].map((entry) => entry.version))].map((version) => [`release-body-features-${version}.md`, prBody(version, undefined, undefined, FEATURES, BEHAVIORS)])),
 };
 
 /**

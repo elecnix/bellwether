@@ -212,7 +212,9 @@ A child that answers its dialog and works on stays in the same turn. Closing the
 
 Claude Code shows a suggested next message in its input box, and Codex shows a placeholder there. Both draw that text faint. herdr's plain text read drops the styling, so a suggestion looks like a message somebody typed. Bellwether reads every screen in herdr's ANSI format, and it treats faint text as a suggestion and never as content.
 
-- A faint line is never a dialog, an option, a startup answer or a fatal error. A faint `(y/n)` suggestion leaves the child `idle`. The spawn never presses Enter on a faint option.
+- Bellwether first checks whether a question is on screen, and it reads every line for that, faint ones too, because a dialog often dims the options it has not selected. The selection marker and a `(y/n)` question must be solid, though. A faint `(y/n)` suggestion in the input box leaves the child `idle`.
+- A screen with a question on it has no input box. Its `❯` line is the selected option, so it never reads as a draft or a suggestion.
+- The spawn walks to an accepting option even when the dialog dims it, and it presses Enter only when a solid marker is on that option. A faint line is never a startup answer or a fatal error.
 - A screen that a parent reads leaves faint text out. This covers `agent_read`, the screen lines in a `stuck`, `inactive` or `idle` event, the dialog after a refused `agent_send`, and the screen `agent_stop` shows. The parent never sees the words of a suggestion.
 - That screen ends with one line about the input box. `Input box: EMPTY.` means nothing is in it. `Input box: GHOST.` means it holds a suggestion that nobody typed. `Input box: DRAFT.` means someone typed the text on its line and did not send it. Typed text beside a faint tail counts as a draft, and the screen shows the typed part.
 - When a dialog covers the box, or the screen has no box, Bellwether omits the line. An older herdr that answers without styling gives `Input box: unknown.`, because there a suggestion and a draft look the same. An empty box still reads `EMPTY`.

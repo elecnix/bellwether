@@ -71,6 +71,8 @@ const SELECTED = /^\s*[❯›>]\s/u;
  * a working directory (src/core/claude-hooks.ts), so a read there never asks:
  * a read question is for a path beyond what the spawn gave, and Bellwether
  * declines it with the answer that saves nothing to the operator's settings.
+ * Claude Code asks it only on a machine that has not settled such reads
+ * already, so on other machines no read question comes and nothing is declined.
  * Claude Code asks a person to approve a shell command it cannot prove free of
  * a dangerous rm, and Bellwether never approves a command for the operator, so
  * it declines that one too. The child hears No, as if a person had chosen it,

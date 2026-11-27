@@ -310,7 +310,8 @@ class Release {
         if (step.before) await this.install(step.prefix, step.before, `the install of ${step.before} that the check ${step.name} starts from`);
         await this.install(step.prefix, tarball, `the release tarball, installed ${step.name}`);
         const bin = path.join(step.prefix, 'bin', 'bellwether');
-        const printed = (await this.must(bin, ['--version'])).trim();
+        // The version comes first, then the commit the install was built from.
+        const printed = (await this.must(bin, ['--version'])).trim().split(/\s+/)[0] ?? '';
         if (printed !== this.version) throw new ReleaseError(`the release tarball, installed ${step.name}, prints ${printed || 'nothing'}, not ${this.version}, for bellwether --version`);
         if (!(await this.must(bin, ['help'])).includes('relay-bridge')) throw new ReleaseError(`the release tarball, installed ${step.name}, has no relay-bridge in bellwether help`);
         this.deps.log(`the release tarball installs ${step.name}`);

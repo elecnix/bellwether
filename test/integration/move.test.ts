@@ -428,3 +428,51 @@ test('a resume or a restart of a child mid-move is refused, even after the lock 
   // A second move is refused by the same mark.
   await assert.rejects(moveChild(w.deps, w.parentId, { child: 'worker', machine: 'box' }), /already being moved to machine box/);
 });
+
+test('a move whose rollback also fails leaves the child stranded on the source, says so, and agent_spawn with resume brings it back', async (t) => {
+  let sourceStarts = false;
+  const refuse = (where: string) => ({ error: { code: 'agent_start_failed', message: `${where} would not start claude` } });
+  const w = await world(t, {
+    box: (_world, request) => (request.method === 'agent.start' ? refuse('box') : undefined),
+    here: (_world, request) => (request.method === 'agent.start' && !sourceStarts ? refuse('here') : undefined),
+  });
+  harness(w.here, { claude: '2.1.300' });
+  harness(w.box, { claude: '2.1.332' });
+  const hereCwd = dir(w.here.user, 'src', 'repo');
+  const boxCwd = dir(w.box.user, 'Source', 'repo');
+  const source = claudeHere(w, hereCwd);
+
+  const failure = await moveChild(w.deps, w.parentId, { child: 'worker', machine: 'box', cwd: boxCwd }).catch((error: unknown) => error);
+  assert.ok(failure instanceof MoveFailedError, String(failure));
+  assert.match(failure.message, /box would not start claude/);
+  assert.match(failure.message, /start it again on this machine, and that failed too: .*here would not start claude/);
+  assert.ok(failure.message.includes(`its session is intact on this machine at ${source.file}`), failure.message);
+  assert.match(failure.message, /Call agent_spawn with resume worker to bring it back there/);
+
+  // The record names the source and says the child is not running, which is what agent_list shows.
+  const stranded = record(w);
+  assert.equal(stranded?.id, 'child-worker');
+  assert.equal(stranded?.host, LOCAL_HOST);
+  assert.equal(stranded?.cwd, hereCwd);
+  assert.ok(stranded?.exitedAt, 'the child is recorded as not running');
+  assert.equal(stranded?.moving, undefined);
+  assert.equal(stranded?.session?.value, 'sess-1');
+  assert.equal(fs.readFileSync(source.file, 'utf8'), TRANSCRIPT, 'the session on the source is untouched');
+  assert.equal(fs.existsSync(path.join(w.box.claude, 'projects', claudeProjectDir(fs.realpathSync(boxCwd)), 'sess-1.jsonl')), false, 'the copy on the target is removed');
+  const [line] = moveLog();
+  assert.equal(line?.['outcome'], 'stranded');
+  assert.match(String(line?.['rollbackError']), /here would not start claude/);
+  const watcher = new Watcher({ client: w.here.client, clientFor: w.deps.clientFor, parentId: w.parentId, onEntries: () => {} });
+  const listed = await runBellwetherTool({ client: w.here.client, clientFor: w.deps.clientFor, parentId: w.parentId, watcher }, 'agent_list', {});
+  assert.match(listed, /^worker\tclaude\texited\t.*\tlocal\t/m);
+
+  // The named recovery: once the source can start it, the same child comes back on its own session.
+  sourceStarts = true;
+  const resumed = await spawnResume(w.deps.clientFor, w.parentId, { target: 'worker', startupTimeoutMs: 5_000, redrawMs: 20 });
+  assert.equal(resumed.action, 'resumed');
+  assert.equal(resumed.child.id, 'child-worker');
+  assert.equal(resumed.child.host, LOCAL_HOST);
+  assert.equal(record(w)?.exitedAt, undefined);
+  const args = startArgs(w.here).at(-1);
+  assert.deepEqual(args?.slice(args.indexOf('--resume'), args.indexOf('--resume') + 2), ['--resume', 'sess-1']);
+});

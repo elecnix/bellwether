@@ -60,18 +60,26 @@ A parent's machine and a child's machine each run their own install. Protocol 4 
 
 ## A build npm hasn't published
 
-To run a commit ahead of the next release, build its tarball and install that. Don't install from a git URL. `npm install -g github:elecnix/bellwether#main` fails on an empty prefix: npm builds the clone with config from the global prefix, so the build finds no `tsgo` and exits 127.
+To run a commit ahead of the next release, install a tarball packed from it. Never install from a git URL such as `npm install -g github:elecnix/bellwether#main`.
 
-Over an existing install, the same command stops earlier with `ENOTEMPTY` on the installed package's directory, and leaves that package as it was. Running `npm uninstall -g` first doesn't help. [#57](https://github.com/elecnix/bellwether/issues/57) has the details.
+Every npm tested in [#57](https://github.com/elecnix/bellwether/issues/57) fails that command, and uninstalling first doesn't help. npm leaves the installed package as it was.
 
 ```sh
 git clone --depth 1 https://github.com/elecnix/bellwether.git && cd bellwether
 npm ci && npm run build && npm install -g "$(npm pack --silent)"
 ```
 
-A release installs from the npm registry and doesn't need this. It installs over the version already there, with no uninstall first.
-
 A build like this has the version number of the release it follows. A daemon with that same number doesn't hand over to it, so run `bellwether drain` after the install to start the build's daemon.
+
+A release installs from the npm registry and doesn't need this. It installs over the version already there, with no uninstall first, and `npm run release` proves that before it stages anything: it installs the release tarball into an empty global prefix and over the previous release, then checks `bellwether --version` and `bellwether help` in each. When either install fails, the release stops before npm sees it, with the case, npm's exit code and npm's own error line.
+
+Check a doubtful install with `npm ls -g @elecnix/bellwether` and `bellwether help | grep relay-bridge`. Repair a missing or partial package directory in three steps:
+
+1. Run `npm uninstall -g @elecnix/bellwether`.
+2. Delete any `<prefix>/lib/node_modules/@elecnix/.bellwether-*` directory npm left behind. `npm prefix -g` prints `<prefix>`.
+3. Install from the registry, or from a packed tarball for a build npm hasn't published.
+
+Every git-URL install in [#57](https://github.com/elecnix/bellwether/issues/57) left an existing package whole. These steps are for one that doesn't.
 
 ## If it goes wrong
 

@@ -14,7 +14,9 @@ Each run reads where the release stands, then takes it one stage further:
 
 2. With the version staged on npm, the script waits up to 30 minutes while the registry's review shows `validating`, then prints the `stage approve` command. A rejected stage stops it.
 
-3. If `origin/main` already declares the version, the script checks out the commit that set it in a `release-<version>` worktree beside the current one. It runs `npm ci` and `npm stage publish` there, and continues as in step 2.
+3. If `origin/main` already declares the version, the script checks out the commit that set it in a `release-<version>` worktree beside the current one. After `npm ci` there, it checks that the packed tarball installs. Then it stages the version and continues as in step 2.
+
+   The check installs the tarball into an empty global prefix and over the version npm serves as `latest`, each a throwaway prefix, then reads `bellwether --version` and `bellwether help`. A failed install stops the script before `npm stage publish`, naming the case and npm's error.
 
 4. While a pull request from `release/<version>` is open, the script waits for its CI with `gh monitor`. Once every check passes, it squash-merges. A failing check stops it and leaves the pull request open.
 

@@ -235,17 +235,21 @@ export class RelayLinks {
     const wanted = new Map<string, Wanted>();
     for (const parent of listParents()) {
       for (const child of parent.children) {
-        const host = hostOf(child);
-        if (host === LOCAL_HOST) continue;
-        const want = wanted.get(host) ?? { parentIds: new Set<string>(), children: [], exitedSinceDrain: 0 };
-        wanted.set(host, want);
-        want.parentIds.add(parent.id);
-        const drained = Date.parse(this.links.get(host)?.state.lastDrainAt ?? this.memory[host]?.lastDrainAt ?? '') || 0;
-        const exited = child.exitedAt ? Date.parse(child.exitedAt) : undefined;
-        if (exited === undefined) want.children.push(child.id);
-        else if (exited >= drained) {
-          want.children.push(child.id);
-          want.exitedSinceDrain = Math.max(want.exitedSinceDrain, exited);
+        // A child that moved away left its old machine as an exited child leaves
+        // its own: that machine is drained once more, for a report it left there.
+        const places: { host: string; left?: number }[] = [{ host: hostOf(child), left: child.exitedAt ? Date.parse(child.exitedAt) : undefined }];
+        if (child.movedFrom && child.movedFrom.host !== places[0]?.host) places.push({ host: child.movedFrom.host, left: Date.parse(child.movedFrom.at) || 0 });
+        for (const { host, left } of places) {
+          if (host === LOCAL_HOST) continue;
+          const want = wanted.get(host) ?? { parentIds: new Set<string>(), children: [], exitedSinceDrain: 0 };
+          wanted.set(host, want);
+          want.parentIds.add(parent.id);
+          const drained = Date.parse(this.links.get(host)?.state.lastDrainAt ?? this.memory[host]?.lastDrainAt ?? '') || 0;
+          if (left === undefined) want.children.push(child.id);
+          else if (left >= drained) {
+            want.children.push(child.id);
+            want.exitedSinceDrain = Math.max(want.exitedSinceDrain, left);
+          }
         }
       }
     }

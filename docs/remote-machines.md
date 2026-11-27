@@ -32,7 +32,7 @@ Each report moves through the following steps. Step one runs over SSH from the p
 
 When the machine is unreachable, the reply says so and returns the child's last report.
 
-A resume goes back to the child's original machine.
+A resume goes back to the machine where the child last ran. To change that machine, call `agent_move`. [moving.md](moving.md) describes it.
 
 ## Connection state
 

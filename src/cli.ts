@@ -25,7 +25,11 @@ import { describeDaemonEntry, readLock } from './daemon/lock.ts';
 import { DAEMON_PROTOCOL } from './daemon/protocol.ts';
 import { BELLWETHER_VERSION } from './core/version.ts';
 import { daemonIsLive, startDaemon } from './daemon/server.ts';
-import type { OutboxEntry } from './core/types.ts';
+import type { ChildRecord, OutboxEntry } from './core/types.ts';
+import { LOCAL_HOST, hostOf, knownHosts } from './core/machine.ts';
+import { MOVE_VERBS, moveEndpoints, serveMoveVerb, type MoveVerb } from './core/move-endpoint.ts';
+import { moveRefusals, pairLabel, type MovableHarness, type ModelPair } from './core/move-plan.ts';
+import type { ProbeResult } from './core/session-state.ts';
 
 interface Flags {
   [key: string]: string | number | boolean | undefined;
@@ -213,7 +217,89 @@ async function doctor(): Promise<number> {
     const live = parent.children.filter((child) => !child.exitedAt);
     console.log(`  ${parent.id}: ${live.length} live of ${parent.children.length} children, updated ${parent.updatedAt}`);
   }
+  await checkMoves();
   return failures;
+}
+
+function machineLabel(host: string): string {
+  return host === LOCAL_HOST ? 'this machine' : `machine ${host}`;
+}
+
+function harnessLine(probe: ProbeResult, harness: MovableHarness): string {
+  const name = harness === 'pi' ? 'pi' : 'claude';
+  const found = probe.harnesses[harness];
+  if (!found?.path) return `${name} missing${found?.error ? ` (${found.error})` : ''}`;
+  return found.version ? `${name} ${found.version}` : `${name} at ${found.path}, version unreadable${found.error ? ` (${found.error})` : ''}`;
+}
+
+/**
+ * What agent_move would need on each known machine: the harness, its version,
+ * and pi's models, then for each live claude or pi child, whether each other
+ * machine could take it. These are information, not failures: a machine that
+ * cannot take a child only refuses a move to it.
+ */
+async function checkMoves(): Promise<void> {
+  let hosts: string[];
+  try {
+    hosts = await knownHosts();
+  } catch (error) {
+    console.log(`  info  move: the saved herdr machines could not be listed (${(error as Error).message}), so only this machine is checked`);
+    hosts = [LOCAL_HOST];
+  }
+  const children = listParents().flatMap((parent) => parent.children).filter((child): child is ChildRecord & { harness: MovableHarness } => !child.exitedAt && (child.harness === 'pi' || child.harness === 'claude-code'));
+  const endpointFor = moveEndpoints(undefined, { timeoutMs: 30_000 });
+  const probes = new Map<string, ProbeResult | string>();
+  await Promise.all(
+    hosts.map(async (host) => {
+      const piSessions = children.filter((child) => hostOf(child) === host && child.harness === 'pi' && child.session?.value).map((child) => child.session?.value as string);
+      try {
+        probes.set(host, await endpointFor(host).probe({ piModels: true, piSessions }));
+      } catch (error) {
+        probes.set(host, (error as Error).message);
+      }
+    }),
+  );
+  for (const host of hosts) {
+    const probe = probes.get(host);
+    if (typeof probe !== 'object') {
+      console.log(`  info  move ${machineLabel(host)}: no child can move there or from there until this is fixed: ${probe ?? 'no answer'}`);
+      continue;
+    }
+    const models = probe.piModels ? `${probe.piModels.length} pi models` : `pi models unknown (${probe.piModelsError ?? 'not listed'})`;
+    console.log(`  info  move ${machineLabel(host)} (${probe.hostname}): ${harnessLine(probe, 'claude-code')}, ${harnessLine(probe, 'pi')}, ${models}, bellwether ${probe.bellwether}`);
+  }
+  for (const child of children) {
+    const source = hostOf(child);
+    const sourceProbe = probes.get(source);
+    if (typeof sourceProbe !== 'object') {
+      console.log(`  info  move ${child.name}: not checked, because its machine ${source === LOCAL_HOST ? 'here' : source} could not be read`);
+      continue;
+    }
+    const pair: ModelPair | undefined = child.session?.value ? (sourceProbe.piSessionModels?.[child.session.value] ?? undefined) : undefined;
+    for (const target of hosts) {
+      if (target === source) continue;
+      const targetProbe = probes.get(target);
+      if (typeof targetProbe !== 'object') continue;
+      const reasons = moveRefusals({
+        childName: child.name,
+        harness: child.harness,
+        status: 'idle',
+        exited: false,
+        source,
+        target,
+        hasSession: Boolean(child.session),
+        sourceHarness: sourceProbe.harnesses[child.harness],
+        targetHarness: targetProbe.harnesses[child.harness],
+        piModel: pair,
+        targetModels: targetProbe.piModels,
+        targetModelsError: targetProbe.piModelsError,
+        targetModelsFile: targetProbe.piModelsFile,
+      });
+      const about = `${child.name} (${child.harness === 'pi' ? `pi${pair ? `, ${pairLabel(pair)}` : ''}` : 'claude'}) from ${machineLabel(source)} to ${machineLabel(target)}`;
+      if (reasons.length) console.log(`  info  move ${about} would be refused: ${reasons.join(' ')}`);
+      else console.log(`  ok    move ${about}: the harness and its version${child.harness === 'pi' ? ', and the provider and model,' : ''} are there. The working directory is checked when the move runs.`);
+    }
+  }
 }
 
 async function main(): Promise<number> {
@@ -226,7 +312,7 @@ async function main(): Promise<number> {
   }
 
   if (command === 'help' || command === '--help') {
-    console.log('Usage: bellwether <daemon|drain|spawn|watch|list|read|send|stop|report|parents|doctor|version>');
+    console.log('Usage: bellwether <daemon|drain|spawn|watch|list|read|send|stop|move|report|parents|doctor|version>');
     console.log('  daemon [--socket PATH]                   run the local daemon in the foreground');
     console.log('  drain  [--socket PATH]                   stop the running daemon once its calls finish, so the next session starts the installed one');
     console.log('  version                                  print the installed version (also --version)');
@@ -236,10 +322,12 @@ async function main(): Promise<number> {
     console.log('  read   CHILD [--lines N]');
     console.log('  send   CHILD [--text TEXT | --keys KEY,...]');
     console.log('  stop   CHILD [--force]');
+    console.log('  move   CHILD [--machine M] [--cwd DIR] [--reason TEXT]  move a live claude or pi child to another machine, keeping its id and conversation');
     console.log('  report --child ID --status done|needs-input|progress --text TEXT [--parent ID] [--receipt ID]');
     console.log('  relay-register --child ID --name NAME --kind KIND --parent ID [--cwd DIR] [--brief-stdin yes]');
     console.log('  relay-cleanup --child ID                 remove the brief and MCP config relay-register wrote');
     console.log('  relay-bridge [--heartbeat-ms N]          join stdin and stdout to this machine\'s daemon; a parent\'s daemon runs it over SSH');
+    console.log('  move-probe|move-export|move-import|move-discard|move-commit   the machine side of a move: a JSON request on stdin, one JSON line out; a parent\'s daemon runs them over SSH');
     return 0;
   }
 
@@ -276,6 +364,7 @@ async function main(): Promise<number> {
   if (command === 'relay-register') return relayRegister(rest);
   if (command === 'relay-cleanup') return relayCleanup(rest);
   if (command === 'relay-bridge') return relayBridge(rest);
+  if ((MOVE_VERBS as readonly string[]).includes(command)) return moveVerb(command as MoveVerb);
 
   const { id: parentId } = parentFor(flags);
   const parent = readParent(parentId);
@@ -338,12 +427,16 @@ async function main(): Promise<number> {
       if (!child) throw new Error('send needs a child');
       const keys = str(flags, 'keys')?.split(',').map((key) => key.trim()).filter(Boolean);
       console.log(await daemon.tool('agent_send', { child, text: str(flags, 'text'), keys }));
+    } else if (command === 'move') {
+      const child = positional[0];
+      if (!child) throw new Error('move needs a child');
+      console.log(await daemon.tool('agent_move', { child, machine: str(flags, 'machine'), cwd: str(flags, 'cwd'), reason: str(flags, 'reason') }));
     } else if (command === 'stop') {
       const child = positional[0];
       if (!child) throw new Error('stop needs a child');
       console.log(await daemon.tool('agent_stop', { child, force: flags['force'] === true }));
     } else {
-      console.log('Usage: bellwether <daemon|drain|spawn|watch|list|read|send|stop|report|parents|doctor|version>');
+      console.log('Usage: bellwether <daemon|drain|spawn|watch|list|read|send|stop|move|report|parents|doctor|version>');
       return 1;
     }
   } finally {
@@ -462,6 +555,24 @@ async function relayBridge(argv: string[]): Promise<number> {
   });
   // stdin stays open until the far side hangs up, so leave without waiting for it.
   process.exit(0);
+}
+
+/**
+ * The machine side of a move, which a parent's daemon on another machine runs
+ * here over SSH. The request arrives as JSON on standard input, so a session
+ * never sits on a command line, and one JSON line goes back on standard
+ * output: the result, or the error.
+ */
+async function moveVerb(verb: MoveVerb): Promise<number> {
+  try {
+    const input = fs.readFileSync(0, 'utf8');
+    const result = await serveMoveVerb(verb, input.trim() ? JSON.parse(input) : {});
+    process.stdout.write(`${JSON.stringify({ ok: true, result })}\n`);
+    return 0;
+  } catch (error) {
+    process.stdout.write(`${JSON.stringify({ ok: false, error: (error as Error).message })}\n`);
+    return 1;
+  }
 }
 
 /** The doctor line for one remote host's connection. */

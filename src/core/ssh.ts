@@ -64,6 +64,8 @@ export interface SshOptions {
   timeoutMs?: number;
   /** Text for the remote command's standard input, so a brief never sits on a command line. */
   input?: string;
+  /** The most output to accept, in bytes. A session bundle needs far more than a report. Default 8 MiB. */
+  maxBuffer?: number;
 }
 
 /**
@@ -73,7 +75,7 @@ export interface SshOptions {
  */
 export function runRemoteBellwether(target: string, args: string[], options: SshOptions = {}): Promise<SshResult> {
   return new Promise((resolve) => {
-    const child = execFile(options.ssh ?? 'ssh', sshArgv(target, args), { timeout: options.timeoutMs ?? 30_000, maxBuffer: 8 * 1024 * 1024, encoding: 'utf8' }, (error, stdout, stderr) => {
+    const child = execFile(options.ssh ?? 'ssh', sshArgv(target, args), { timeout: options.timeoutMs ?? 30_000, maxBuffer: options.maxBuffer ?? 8 * 1024 * 1024, encoding: 'utf8' }, (error, stdout, stderr) => {
       if (!error) return resolve({ code: 0, stdout, stderr });
       const fault = error as NodeJS.ErrnoException & { code?: number | string; killed?: boolean };
       if (fault.code === 'ENOENT') return resolve({ code: 127, stdout, stderr: `ssh is not installed: ${fault.message}` });

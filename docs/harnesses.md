@@ -20,7 +20,7 @@ Codex doesn't ask its folder-trust question, because its launch line marks the f
 
 ## Each kind in three lines
 
-Each kind has the same three bullets, so a reader can line up two kinds. The bullets give the child's abilities, its limits and its Bellwether tools.
+Each kind has the same three bullets, so a reader can line up two kinds. The bullets give the child's abilities and limits, then say how it gets its Bellwether tools.
 
 ### `pi`
 
@@ -48,7 +48,7 @@ Each kind has the same three bullets, so a reader can line up two kinds. The bul
 
 ### `codex`
 
-- **Can:** report, request retirement and request depth.
+- **Can:** report, and request retirement and depth.
 - **Cannot:** start children or message other agents, because Codex's approval policy refuses every other Bellwether tool. It cannot run on another machine either.
 - **How:** its own MCP server, set by a `-c` override on its launch line that pre-approves those three tools. The approval reaches only that child, and Bellwether never sends a key to a Codex dialog.
 
@@ -83,8 +83,7 @@ Cline 3.0.76 reads the MCP settings file that `CLINE_MCP_SETTINGS_PATH` names, s
 `cline -i` joins Cline's shared background hub when one runs, and starts one when none does. MCP servers load in the hub, which keeps the environment of the session that started it, so in a test with two children on one machine the second child's session ran in the first child's hub and loaded the first child's server. What goes wrong:
 
 - A second child's reports would go out under the first child's id.
-- The hub keeps running after the child that started it exits.
-- Your own Cline sessions join that hub, and they load the child's server.
+- The hub keeps running after the child that started it exits, and your own Cline sessions join that hub and load the child's server.
 
 No Cline setting stops a terminal session from joining the hub. The terminal UI ignores the environment variable meant for it ([cline/cline#13631](https://github.com/cline/cline/issues/13631)). [cline/cline#15881](https://github.com/cline/cline/issues/15881) asks for a per-session MCP configuration or a hub-off switch. Until Cline has one, `agent_spawn` refuses this launch, and its refusal states the hub and these consequences.
 
@@ -114,7 +113,7 @@ When a release changes a kind's entry, the running daemon must serve the argumen
 
 ## Launch details
 
-The topics for [OpenCode](opencode.md), [Codex](codex.md) and [kilo](kilo.md) cover the launch arguments, the session lookup and the refusals.
+The [OpenCode](opencode.md) and [Codex](codex.md) topics cover the launch arguments, the session lookup and the refusals, and so does the [kilo](kilo.md) topic.
 
 An omp child starts as `omp [--model provider/id] -e <pi extension> @<brief>`. omp takes the model as one value, either `provider/id` or a name it matches, so `agent_spawn` refuses a separate `provider` for this kind.
 

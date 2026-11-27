@@ -63,7 +63,7 @@ The documentation site on GitHub Pages comes from `README.md` and the topic file
 
 A release ends only when the deployed site's byline shows the released version, and `npm run release` checks it. Locally, `npm run site` fails on a page whose byline shows a version other than the one in `package.json`.
 
-Prose in Markdown files runs through Vale. The rules are the `ai-tells`, `ai-tells-experimental` and `noslop` packs. Read `/Users/nicolas/.agents/skills/vale-prose-rules/SKILL.md` before writing docs, a pull request body or a ticket.
+Prose in Markdown files runs through Vale. The rules are the `ai-tells`, `ai-tells-experimental` and `noslop` packs. The `prose` job runs `npm run check:prose`, which lints `README.md`, `AGENTS.md` and every page under `docs/` with `.vale.ini` as it stands. A warning fails it, as a warning fails the `pr-body` check. Fix the prose, never the level. `npm run check:prose-coverage` then runs Vale again with one added rule that matches once in each file Vale reads, and it fails on a tracked page under `docs/` that Vale skipped. Run `vale sync` once before either. Read `/Users/nicolas/.agents/skills/vale-prose-rules/SKILL.md` before writing docs, a pull request body or a ticket.
 
 ## Rules that are not style
 
@@ -105,3 +105,5 @@ A fixture mentions a provider, a model or a tier only when it is public or synth
 Scripted replies for each parent and child pair come next. The fixtures exist, and the work left is the orchestration that starts Pi and Claude in a lab pane.
 
 The lab removes `HERDR_ENV`, `HERDR_PANE_ID` and `HERDR_SOCKET_PATH` from the child environment, because inherited values point at the live server. It refuses to start when the resolved socket is `~/.config/herdr/herdr.sock`. The lab root is under `/tmp`, because macOS caps a Unix socket path at 104 bytes and a root under the default temp directory exceeds that cap.
+
+A lab case starts real harnesses, and a harness spends the account of any key it finds. So `npm run test:lab` first prints one line listing each provider key, token and cloud credential the shell exported, never its value. Then each lab file's process loads `test/lab/scrub-environment.ts`, which removes them before any case runs. `test/lab/credentials.ts` holds the rule: a name that ends in `_KEY`, `_TOKEN`, `_SECRET`, `_PASSWORD` or `_CREDENTIALS`, among others, or that starts with a cloud SDK's prefix such as `AWS_`. To keep a key, name it in `BELLWETHER_LAB_KEYS`, as in `BELLWETHER_LAB_KEYS=XAI_API_KEY npm run test:lab`. A lab pane still gets a kept key only when its case passes the name to `startLab({ keys })`, and `startLab` refuses a key the run removed, with the command that keeps it. `test/unit/lab-environment.test.ts` runs the `test:lab` command line over probe files to prove both.

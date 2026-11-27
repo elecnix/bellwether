@@ -8,7 +8,7 @@ Every session with Bellwether gets these tools, in Pi and in Claude Code alike.
 | `agent_adopt` | any session | makes a running agent this session didn't start into its child, on this machine or another one, and refuses a pane another session watches. [remote-machines.md](remote-machines.md#adopting-an-agent-on-another-machine) covers another machine |
 | `agent_list` | any session | lists this session's children with status, age, workspace and unread events |
 | `agent_read` | any session | returns a child's last assistant message, or its screen when you pass `lines` |
-| `agent_send` | any session | prompts a child, or sends keys when herdr refuses a blocked one |
+| `agent_send` | any session | sends a child a message, or keys for a dialog. [Messages to a child](#messages-to-a-child) gives the path a message takes |
 | `agent_move` | any session | moves a live claude or pi child to another machine, under the same id and with its session. [moving.md](moving.md) lists the refusals. |
 | `agent_stop` | any session | closes a child's tab, and refuses a working child unless you pass `force` |
 | `agent_restart` | any session | closes a child's or a session's pane and reopens the same session in a new one, or restarts the caller when it omits the target |
@@ -34,6 +34,35 @@ With `via`, a spawn starts the child behind a route. A route is a launcher wrapp
 [routes.md](routes.md) describes the routes file, the launch and the refusals.
 
 A child record keeps the session file that herdr reports for a pi child, including after the child exits and the daemon retires it. `agent_read` reads the child's last message from that file. When pi gives the child a name of its own, the record keeps it as `agentName`, beside the parent's chosen name. `agent_list` shows both names. The other tools accept either one, unless two children answer to the same name.
+
+## Messages to a child
+
+`agent_send` with `text` puts the message into the child's session when the child's harness offers a way in. When it offers none, Bellwether types the message into the child's pane. A spawn with `resume` that finds its child alive takes the same path, and so does a depth grant. Bellwether writes the grant to the child's record before the child hears of it. So the delivery path changes how the child learns of a grant, not what the grant means.
+
+| Kind | How the message arrives |
+| -- | -- |
+| `claude` | in the session, as a channel notification from the child's own Bellwether server |
+| `pi`, `omp` | in the session, through the Bellwether pi extension's `pi.sendMessage` |
+| `codex`, `cline`, `kilo`, `opencode` | typed into the pane through herdr's `agent.prompt`, because each loads Bellwether as an ordinary MCP server, and its MCP client takes no message from a server into the session |
+
+Even a `claude`, `pi` or `omp` child can receive a message in its pane. That happens in four cases:
+
+- The child runs on another machine. This daemon reaches that machine only to collect reports.
+- The child is `blocked`. herdr refuses the prompt and shows the dialog, as before.
+- No Bellwether session of the child holds a connection to this daemon.
+- The session doesn't take the message within 5 seconds.
+
+The reply gives the reason for the pane fallback. Each message takes exactly one of the two paths.
+
+A busy child takes a session message after the tool calls in flight and before its next model call. Typed input reaches the child at that same point, so a correction arrives mid-turn instead of after the turn ends. Claude Code queues a channel message the way it queues a typed prompt. The pi extension steers it with `deliverAs: 'steer'`. An idle child starts a turn on the message.
+
+The child record keeps the newest 20 messages. Each entry records its id, its path and, for a typed message, the reason. `agent_list` prints the newest three per child.
+
+A session message counts as read once the child's model has it. Claude Code reports that when the transcript records the channel message, and pi reports it at `message_end`. Bellwether can't tell when a model reads typed input, and `agent_list` says so. Until then, the message shows as unread.
+
+A child session that reconnects takes its unread message again, after a daemon hand-over or a restart of its server. Before it resends, the adapter checks the session's history, so the model never sees the same message twice.
+
+If a child exits before it reads a message, Bellwether raises an exit event identifying the message, and the record marks the message undelivered.
 
 ## Workspaces
 

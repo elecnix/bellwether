@@ -26,11 +26,15 @@ function expandHome(value: string): string {
 /**
  * Where a harness binary may sit. A non-interactive SSH shell often has a
  * shorter PATH than the login shell herdr starts a tab with, so the usual
- * install places are tried after PATH.
+ * install places are tried after PATH. BELLWETHER_HARNESS_DIRS, when set,
+ * replaces those places with its own list, and an empty value leaves PATH
+ * alone, which is how a test makes a harness absent on a machine that has it.
  */
 function binaryCandidates(name: string): string[] {
   const home = os.homedir();
   const fromPath = (process.env['PATH'] ?? '').split(path.delimiter).filter(Boolean).map((dir) => path.join(dir, name));
+  const override = process.env['BELLWETHER_HARNESS_DIRS'];
+  if (override !== undefined) return [...fromPath, ...override.split(path.delimiter).filter(Boolean).map((dir) => path.join(dir, name))];
   const nvm = path.join(home, '.nvm', 'versions', 'node');
   let nvmBins: string[] = [];
   try {

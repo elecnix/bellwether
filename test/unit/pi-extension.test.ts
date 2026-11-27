@@ -61,7 +61,7 @@ test('every copy loads in a session Bellwether did not start, or with a stale va
   assert.equal(standDown(global, { [PI_EXTENSION_ENV]: given }, ['node', 'pi']), false);
 });
 
-test('the extension registers nothing when it stands down, and everything otherwise', async () => {
+test('the extension registers nothing when it stands down, and otherwise waits for its session to take the daemon\'s tools', async () => {
   const { default: bellwether } = (await import('../../src/integrations/pi/extension.ts')) as { default: (pi: unknown) => void };
   const fakePi = (): { tools: string[]; events: string[] } & Record<string, unknown> => {
     const tools: string[] = [];
@@ -73,7 +73,8 @@ test('the extension registers nothing when it stands down, and everything otherw
     const loaded = fakePi();
     delete process.env[PI_EXTENSION_ENV];
     bellwether(loaded);
-    assert.ok(loaded.tools.includes('agent_spawn'));
+    // The tools come from the daemon's hello at session start, not from this install's own list.
+    assert.deepEqual(loaded.tools, []);
     assert.ok(loaded.events.includes('session_start'));
 
     const other = path.join(os.tmpdir(), `bellwether-other-${process.pid}.js`);
@@ -99,6 +100,8 @@ test('a registration names the pi extension on the remote machine, and an older 
   assert.deepEqual(parseRegistration('far', '{"record":"/r/c.json","piExtension":"/opt/bw/dist/integrations/pi/extension.js"}', 'pi'), { piExtension: '/opt/bw/dist/integrations/pi/extension.js' });
   assert.throws(() => parseRegistration('far', '{"record":"/r/c.json"}', 'pi'), /far.*pi extension/);
   assert.deepEqual(parseRegistration('far', '{"record":"/r/c.json","mcpConfig":"/r/mcp/c.json"}', 'claude'), { mcpConfig: '/r/mcp/c.json' });
+  // Only the per-child server carries the child id, so a Claude Code child without one is refused.
+  assert.throws(() => parseRegistration('far', '{"record":"/r/c.json"}', 'claude'), /far.*wrote no MCP config for the child/);
 });
 
 /** A pi agent directory whose settings list `source`, with a Bellwether copy installed at `dir`. */

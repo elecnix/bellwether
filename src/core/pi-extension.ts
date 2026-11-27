@@ -83,12 +83,8 @@ function hasGuard(dir: string): boolean {
   return fs.existsSync(path.join(dir, 'dist', 'core', 'pi-extension.js')) || fs.existsSync(path.join(dir, 'src', 'core', 'pi-extension.ts'));
 }
 
-/**
- * The Bellwether copies pi's user settings load that predate the stand-down
- * guard. pi exits at startup when two extensions register the same tool, so a
- * child started with -e beside such a copy would die before its first turn.
- */
-export function guardlessPiCopies(agentDir: string = piAgentDir()): string[] {
+/** Every Bellwether copy pi's user settings load, and whether it carries the stand-down guard. */
+export function piSettingsCopies(agentDir: string = piAgentDir()): { dir: string; guarded: boolean }[] {
   let packages: unknown;
   try {
     packages = (JSON.parse(fs.readFileSync(path.join(agentDir, 'settings.json'), 'utf8')) as { packages?: unknown }).packages;
@@ -96,14 +92,38 @@ export function guardlessPiCopies(agentDir: string = piAgentDir()): string[] {
     return [];
   }
   if (!Array.isArray(packages)) return [];
-  const found: string[] = [];
+  const found: { dir: string; guarded: boolean }[] = [];
   for (const entry of packages) {
     const source = typeof entry === 'string' ? entry : typeof entry === 'object' && entry !== null ? (entry as { source?: unknown }).source : undefined;
     if (typeof source !== 'string') continue;
     const dir = packageDir(agentDir, source);
-    if (dir && isBellwether(dir) && !hasGuard(dir)) found.push(dir);
+    if (dir && isBellwether(dir)) found.push({ dir, guarded: hasGuard(dir) });
   }
   return found;
+}
+
+/**
+ * The Bellwether copies pi's user settings load that predate the stand-down
+ * guard. pi exits at startup when two extensions register the same tool, so a
+ * child started with -e beside such a copy would die before its first turn.
+ */
+export function guardlessPiCopies(agentDir: string = piAgentDir()): string[] {
+  return piSettingsCopies(agentDir).filter((copy) => !copy.guarded).map((copy) => copy.dir);
+}
+
+/**
+ * The doctor line for pi: where a session started by hand gets Bellwether's
+ * tools, and what a spawned child gets instead. A child loads this package's
+ * extension with -e, and a guarded copy from pi's settings stands down, so the
+ * child has one set. A guardless copy fails, because pi would exit on it.
+ */
+export function describePiTools(agentDir: string = piAgentDir(), own: string = piExtensionEntry()): { level: 'ok' | 'fail'; text: string } {
+  const copies = piSettingsCopies(agentDir);
+  const session = copies.length ? copies.map((copy) => copy.dir).join(' and ') : 'no Bellwether package in pi\'s settings';
+  const stale = copies.filter((copy) => !copy.guarded);
+  if (stale.length) return { level: 'fail', text: `tools pi: pi's settings load ${stale.map((copy) => copy.dir).join(' and ')} without the stand-down guard, so a spawned child would load two sets and pi would exit. Run pi install npm:@elecnix/bellwether.` };
+  if (copies.length > 1) return { level: 'fail', text: `tools pi: pi's settings load Bellwether twice, from ${session}, and a session started by hand exits on the duplicate tools. Remove all but one from ${path.join(agentDir, 'settings.json')}.` };
+  return { level: 'ok', text: `tools pi: a session started by hand gets them from ${session}; a spawned child loads ${own} with -e${copies.length ? `, and the copy in pi's settings stands down (${PI_EXTENSION_ENV})` : ', and nothing else in pi\'s settings offers them'}` };
 }
 
 /** Throw, with the fix, when pi's settings load a Bellwether copy that would make a pi child exit. */

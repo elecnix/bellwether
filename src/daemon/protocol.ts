@@ -94,6 +94,15 @@ export interface ParentHello {
   childId?: string;
   /** The ceiling the spawn put in the session's environment. Added without a protocol bump. */
   maxDepth?: number;
+  /** The parent id the session's environment names, BELLWETHER_PARENT, which gives it parent_report. Added without a protocol bump. */
+  reportsTo?: string;
+}
+
+/** One tool as a session offers it to its model: the daemon's definition, which the adapter passes on unchanged. */
+export interface ServedTool {
+  name: string;
+  description: string;
+  schema: Record<string, unknown>;
 }
 
 export interface HelloRequest {
@@ -207,6 +216,13 @@ export interface HelloReply {
   minProtocol?: number;
   /** The requests and tools the daemon serves, by name. A daemon before 0.1.5 leaves it out. */
   features?: string[];
+  /**
+   * The tools this session offers its model, with their definitions, from the
+   * daemon's feature table, so a newer daemon gives an older adapter its new
+   * tools. A daemon from before the list leaves it out, and the adapter falls
+   * back on its own list, less what the daemon does not serve.
+   */
+  tools?: ServedTool[];
 }
 
 export interface ResultReply {
@@ -466,7 +482,7 @@ function parseHello(value: Record<string, unknown>): HelloRequest {
     protocol,
     client: text(value['client']) || 'unknown',
     ...(text(value['build']) ? { build: text(value['build']) } : {}),
-    parent: { harness, session, cwd, host, depth, herdrSocket, paneId: optional('paneId'), workspaceId: optional('workspaceId'), childId: optional('childId'), ...(maxDepth === undefined ? {} : { maxDepth }) },
+    parent: { harness, session, cwd, host, depth, herdrSocket, paneId: optional('paneId'), workspaceId: optional('workspaceId'), childId: optional('childId'), ...(maxDepth === undefined ? {} : { maxDepth }), ...(optional('reportsTo') ? { reportsTo: optional('reportsTo') } : {}) },
   };
 }
 

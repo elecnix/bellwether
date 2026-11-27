@@ -9,7 +9,8 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { BELLWETHER_BUILD_ID, BELLWETHER_PACKAGE_DIR, BELLWETHER_VERSION } from '../core/version.ts';
 import { missingFeatureMessage, featureNamed, serves, unservedArgument, type DaemonOffer } from './features.ts';
-import { DAEMON_PROTOCOL, MAX_DAEMON_FRAME_BYTES, MIN_DAEMON_PROTOCOL, formatRequest, type DaemonReply, type ParentHello, type RelayHostState, type ReportRequest, type SessionsReply } from './protocol.ts';
+import { DAEMON_PROTOCOL, MAX_DAEMON_FRAME_BYTES, MIN_DAEMON_PROTOCOL, formatRequest, type DaemonReply, type ParentHello, type RelayHostState, type ReportRequest, type ServedTool, type SessionsReply } from './protocol.ts';
+import { fallbackTools } from '../integrations/tools.ts';
 import { isAlive, readLock } from './lock.ts';
 import { HANDOVER_TIMEOUT_MS, decideHandOver, type DaemonIdentity } from './handover.ts';
 import { canConnect } from './server.ts';
@@ -49,6 +50,8 @@ interface Hello {
   daemon: DaemonIdentity;
   offer: DaemonOffer;
   spoken: number;
+  /** The tools the daemon serves this session, when its hello listed them. */
+  served?: ServedTool[];
 }
 
 /** How many times a client hands over or restarts before it gives up on one connect. */
@@ -113,6 +116,9 @@ export class DaemonClient {
   /** Panes whose watch went out on the current connection, so a reconnect sends each again once. */
   private sentWatches = new Set<string>();
   private readonly handlers = new Set<(entries: OutboxEntry[]) => void>();
+  private readonly toolHandlers = new Set<(tools: ServedTool[]) => void>();
+  /** The tools the daemon last served this session, when it listed them. */
+  private served: ServedTool[] | undefined;
   private readonly paneHandlers = new Map<string, Set<(status: string) => void>>();
   private readonly received = new Map<string, OutboxEntry>();
   private readonly unsentReceipts: string[] = [];
@@ -165,8 +171,34 @@ export class DaemonClient {
     const home = options.home ?? process.env['BELLWETHER_HOME'] ?? path.join(os.homedir(), '.bellwether');
     const socketPath = options.socketPath ?? defaultDaemonSocket(home);
     const client = new DaemonClient(parent, home, socketPath, options);
-    const hello = await client.establish();
-    return Object.assign(client, { parentId: hello.parentId, pid: hello.pid, daemon: hello.daemon, offer: hello.offer, spoken: hello.spoken });
+    client.adopt(await client.establish());
+    return client;
+  }
+
+  /** Take what a hello said, and tell the adapter when the tools it offers changed. */
+  private adopt(hello: Hello): void {
+    const before = this.offer ? this.tools() : undefined;
+    Object.assign(this, { parentId: hello.parentId, pid: hello.pid, daemon: hello.daemon, offer: hello.offer, spoken: hello.spoken, served: hello.served });
+    if (!before) return;
+    const after = this.tools();
+    if (JSON.stringify(after) === JSON.stringify(before)) return;
+    for (const handler of this.toolHandlers) handler(after);
+  }
+
+  /**
+   * The tools this session offers its model. The daemon's list decides, from
+   * its feature table. A daemon from before the list leaves it to this
+   * client's own list, less each tool the daemon does not serve.
+   */
+  tools(): ServedTool[] {
+    if (this.served) return this.served.map((tool) => ({ ...tool }));
+    return fallbackTools({ reportsTo: this.parent.reportsTo, childId: this.parent.childId }, this.offer);
+  }
+
+  /** Hear when a reconnect, such as a hand-over to a newer daemon, changes the tools this session offers. */
+  onTools(handler: (tools: ServedTool[]) => void): () => void {
+    this.toolHandlers.add(handler);
+    return () => this.toolHandlers.delete(handler);
   }
 
   /** Unread entries the daemon sent with the last hello. */
@@ -395,8 +427,7 @@ export class DaemonClient {
     if (this.reconnecting) return;
     this.reconnecting = true;
     try {
-      const hello = await this.establish();
-      Object.assign(this, { parentId: hello.parentId, pid: hello.pid, daemon: hello.daemon, offer: hello.offer, spoken: hello.spoken });
+      this.adopt(await this.establish());
       if (this.unsentReceipts.length) this.write(formatRequest({ type: 'receipt', receipts: this.unsentReceipts.splice(0) }));
     } finally {
       this.reconnecting = false;
@@ -428,7 +459,8 @@ export class DaemonClient {
     const features = Array.isArray(reply.features) ? reply.features.filter((name): name is string => typeof name === 'string') : undefined;
     // Lines that arrived with the hello's answer, after the pending entries it carried.
     if (connection.buffer) this.read(connection, '');
-    return { parentId: reply.parentId, pid: reply.pid, daemon, offer: { ...daemon, ...(features ? { features } : {}) }, spoken: offer };
+    const served = Array.isArray(reply.tools) ? reply.tools.filter(isServedTool) : undefined;
+    return { parentId: reply.parentId, pid: reply.pid, daemon, offer: { ...daemon, ...(features ? { features } : {}) }, spoken: offer, ...(served ? { served } : {}) };
   }
 
   private open(): Promise<Connection> {
@@ -929,4 +961,11 @@ function alive(pid: number): boolean {
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === 'EPERM';
   }
+}
+
+/** Whether a tool from a hello has what an adapter needs to offer it. */
+function isServedTool(value: unknown): value is ServedTool {
+  if (typeof value !== 'object' || value === null) return false;
+  const tool = value as Record<string, unknown>;
+  return typeof tool['name'] === 'string' && typeof tool['description'] === 'string' && typeof tool['schema'] === 'object' && tool['schema'] !== null;
 }

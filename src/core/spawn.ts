@@ -9,7 +9,8 @@ import { PI_EXTENSION_ENV, piExtensionEntry, piFallback, resolvePiExtension } fr
 import { briefArgument, writeBrief } from './brief.ts';
 import { DEFAULT_MAX_DEPTH, tooDeep } from './depth.ts';
 import { resolveInactiveMs } from './inactivity.ts';
-import { removeChildFiles, writeMcpConfig } from './mcp-config.ts';
+import { removeChildFiles, writeChildToolFiles, type ChildToolFiles } from './mcp-config.ts';
+import type { ToolSource } from './tool-source.ts';
 import { removeChild, updateChild, upsertChild } from './registry.ts';
 import { watchStartup, type StartupDialog, type StartupWatch } from './startup-dialogs.ts';
 import { agentNameOf, locateTranscript, piSessionModel, sessionFrom } from './transcript.ts';
@@ -103,6 +104,8 @@ export interface ChildLaunch {
   briefFile?: string;
   /** A Claude Code child's own Bellwether server. */
   mcpConfigFile?: string;
+  /** A Claude Code child's own settings, which turn off a Bellwether plugin that would duplicate its server. */
+  claudeSettingsFile?: string;
   /** The Bellwether extension a pi child loads, on the machine it runs on. */
   piExtension?: string;
 }
@@ -112,7 +115,7 @@ export interface ChildLaunch {
  * the harness gets a one-line pointer to the file that holds it.
  */
 export function childArgs(kind: string, options: SpawnOptions, launch: ChildLaunch = {}): string[] {
-  const { briefFile, mcpConfigFile, piExtension } = launch;
+  const { briefFile, mcpConfigFile, claudeSettingsFile, piExtension } = launch;
   const args: string[] = [];
   // pi needs both flags. A flag the caller already put in args is not repeated.
   if (options.provider && kind === 'pi' && argValue(options.args, '--provider') === undefined) args.push('--provider', options.provider);
@@ -121,6 +124,9 @@ export function childArgs(kind: string, options: SpawnOptions, launch: ChildLaun
   if (kind === 'pi' && piExtension) args.push('-e', piExtension);
   // --mcp-config is a list flag too, so it takes the equals form for the same reason.
   if (kind === 'claude' && mcpConfigFile) args.push(`--mcp-config=${mcpConfigFile}`);
+  // Claude Code merges these settings over every other source, so the child
+  // keeps the operator's settings and loses only a duplicate Bellwether plugin.
+  if (kind === 'claude' && claudeSettingsFile) args.push(`--settings=${claudeSettingsFile}`);
   // Claude Code reads this flag as a list and keeps taking values until the
   // next flag, so the two-argument form swallowed the prompt that follows it.
   // The equals form pins the flag to one value.
@@ -209,6 +215,10 @@ export interface ChildStartFiles {
   briefFile?: string;
   /** The MCP config's path on the child's own machine. */
   mcpConfigFile?: string;
+  /** The Claude Code settings' path on the child's own machine, when the child needs any. */
+  claudeSettingsFile?: string;
+  /** Which server gives a Claude Code child its Bellwether tools, for its record. */
+  toolSource?: ToolSource;
   /** The Bellwether extension a pi child loads, on its own machine. */
   piExtension?: string;
   /** Why the child's reports cannot reach this machine, when they cannot. */
@@ -235,13 +245,15 @@ export async function childStartFiles(child: ChildRecord, prompt: string | undef
   if ((child.host ?? LOCAL_HOST) === LOCAL_HOST) {
     // Resolved first, so a missing extension writes nothing.
     const extension = pi ? resolvePiExtension(piExtension()) : undefined;
-    return { briefFile: prompt !== undefined ? writeBrief(child.id, prompt) : undefined, mcpConfigFile: childMcpConfig(child), ...(extension ? { piExtension: extension } : {}), registered: false };
+    const tools = childToolFiles(child);
+    return { briefFile: prompt !== undefined ? writeBrief(child.id, prompt) : undefined, ...toolLaunch(tools), ...(extension ? { piExtension: extension } : {}), registered: false };
   }
   const reports = child.harness === 'claude-code' || child.harness === 'pi';
   if (!reports && prompt === undefined) return { registered: false };
   if (!register) {
     if (pi) throw new Error(`${child.name} was not started on machine ${child.host}: this session cannot register children there, so Bellwether cannot name the pi extension it would load.`);
     if (prompt !== undefined) throw new Error(`${child.name} was not started on machine ${child.host}: this session cannot register children there, so its brief cannot reach that machine.`);
+    if (child.kind === 'claude') throw new Error(withoutIdentity(child, 'this session cannot register children there'));
     return { warning: `${child.name} runs on machine ${child.host}, and this session cannot register it there, so it cannot call parent_report.`, registered: false };
   }
   let registration: RemoteRegistration;
@@ -250,11 +262,18 @@ export async function childStartFiles(child: ChildRecord, prompt: string | undef
   } catch (error) {
     if (pi) throw new Error(`${child.name} was not started on machine ${child.host}, because Bellwether could not register it there to name the pi extension it would load: ${(error as Error).message}`);
     if (prompt !== undefined) throw new Error(`${child.name} was not started on machine ${child.host}, because its brief could not be copied there: ${(error as Error).message}`);
+    if (child.kind === 'claude') throw new Error(withoutIdentity(child, `Bellwether could not register it there: ${(error as Error).message}`));
     return { warning: `${child.name} could not be registered on machine ${child.host}, so it cannot call parent_report: ${(error as Error).message}`, registered: false };
   }
   return {
     briefFile: registration.brief,
-    mcpConfigFile: child.kind === 'claude' ? registration.mcpConfig : undefined,
+    ...(child.kind === 'claude'
+      ? {
+          mcpConfigFile: registration.mcpConfig,
+          ...(registration.claudeSettings ? { claudeSettingsFile: registration.claudeSettings } : {}),
+          toolSource: registration.toolSource ?? { server: 'per-child' as const, suppressed: [], unchecked: `the Bellwether on machine ${child.host} predates this check, so a Bellwether plugin or server there may still add a second set of tools` },
+        }
+      : {}),
     ...(pi ? { piExtension: registration.piExtension } : {}),
     registered: true,
   };
@@ -316,9 +335,10 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
   let registered = false;
   try {
     const files = await childStartFiles(child, options.prompt || undefined, hooks.registerRemote, hooks.piExtension);
-    const { briefFile, mcpConfigFile, piExtension } = files;
+    const { briefFile, mcpConfigFile, claudeSettingsFile, piExtension } = files;
     registered = files.registered;
     reportWarning = files.warning;
+    if (files.toolSource) child.toolSource = files.toolSource;
 
     // 2. The tab carries the environment the child needs to find its parent.
     const env = childEnv(parent, child, piExtension);
@@ -345,7 +365,7 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
     // 3. Start the harness in the tab's root pane. A tab answers tab.create
     // before its shell is at a prompt, so herdr refuses the start with
     // agent_pane_busy until the shell is ready.
-    const args = childArgs(options.kind, { ...harnessOptions, ...(chosen ? { provider: chosen.provider, model: chosen.id } : {}) }, { briefFile, mcpConfigFile, piExtension });
+    const args = childArgs(options.kind, { ...harnessOptions, ...(chosen ? { provider: chosen.provider, model: chosen.id } : {}) }, { briefFile, mcpConfigFile, claudeSettingsFile, piExtension });
     await startHarness(client, { name: child.name, kind: options.kind, paneId: tab.paneId, args, ...(launchVia ? { launch: routeLaunch(launchVia.config, launchVia.route, options.kind, args) } : {}) }, signal);
   } catch (error) {
     startup?.close();
@@ -437,13 +457,31 @@ async function abandon(client: HerdrClient, parentId: string, child: ChildRecord
 }
 
 /**
- * Write a Claude Code child's MCP configuration on this machine. A server
- * talks to the daemon on its own machine, so a child on another machine gets
- * the config its own machine writes when the spawn registers it there.
+ * Write a Claude Code child's tool files on this machine: its MCP
+ * configuration, and the settings that keep any other Bellwether server in
+ * its environment from adding a second set of tools. A server talks to the
+ * daemon on its own machine, so a child on another machine gets the files its
+ * own machine writes when the spawn registers it there.
  */
-export function childMcpConfig(child: Pick<ChildRecord, 'id' | 'kind' | 'host'>): string | undefined {
+export function childToolFiles(child: Pick<ChildRecord, 'id' | 'kind' | 'host' | 'cwd'>): ChildToolFiles | undefined {
   if (child.kind !== 'claude' || (child.host ?? LOCAL_HOST) !== LOCAL_HOST) return undefined;
-  return writeMcpConfig(child.id);
+  return writeChildToolFiles(child.id, child.cwd);
+}
+
+/** The launch fields for a child's tool files. */
+function toolLaunch(tools: ChildToolFiles | undefined): Pick<ChildStartFiles, 'mcpConfigFile' | 'claudeSettingsFile' | 'toolSource'> {
+  if (!tools) return {};
+  return { mcpConfigFile: tools.mcpConfig, ...(tools.claudeSettings ? { claudeSettingsFile: tools.claudeSettings } : {}), toolSource: tools.toolSource };
+}
+
+/**
+ * Why a Claude Code child on another machine is not started without its own
+ * server. Only that server carries the child id. A Bellwether plugin or server
+ * that the machine loads on its own has no id, so the child's parent_report
+ * would reach no parent, and a child that cannot report is not started.
+ */
+function withoutIdentity(child: Pick<ChildRecord, 'name' | 'host'>, cause: string): string {
+  return `${child.name} was not started on machine ${child.host}: ${cause}, so it would have no Bellwether server that carries its child id. Any other Bellwether server there lacks that id, and the child's parent_report would reach no parent. Fix the registration (\`bellwether doctor\` on that machine) and spawn again.`;
 }
 
 /**

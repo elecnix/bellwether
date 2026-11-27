@@ -16,14 +16,15 @@ import { isReportStatus } from './core/report.ts';
 import { RELAY_SCHEMA, listForwards, readRelayRecord, removeRelayRecord, saveRelayRecord, updateRelayRecord } from './core/relay-records.ts';
 import { relayChildPath, relayOutboxDir } from './core/paths.ts';
 import { removeBriefAt, writeBrief, writeBriefIn } from './core/brief.ts';
-import { removeChildFiles, writeMcpConfig } from './core/mcp-config.ts';
+import { removeChildFiles, writeChildToolFiles } from './core/mcp-config.ts';
 import { describeUpgrade, farPairing, gatherUpgrade } from './daemon/upgrade-status.ts';
 import { describeState } from './core/hygiene.ts';
 import { HEARTBEAT_MISSES } from './core/ssh.ts';
 import { DaemonClient, REFUSED_EXIT, ReportRefused, drainDaemon, ensureDaemon, postReport, relayStatus } from './daemon/client.ts';
 import { readMemory, runsOn } from './daemon/relay-links.ts';
 import type { RelayHostState } from './daemon/protocol.ts';
-import { guardlessPiCopies, resolvePiExtension } from './core/pi-extension.ts';
+import { describePiTools, guardlessPiCopies, resolvePiExtension } from './core/pi-extension.ts';
+import { describeClaudeTools, describeToolSource, findAmbientServers } from './core/tool-source.ts';
 import { describeDaemonEntry, readLock } from './daemon/lock.ts';
 import { DAEMON_PROTOCOL } from './daemon/protocol.ts';
 import { BELLWETHER_BUILD, BELLWETHER_BUILD_ID, BELLWETHER_VERSION, describeBuild } from './core/version.ts';
@@ -203,6 +204,7 @@ async function doctor(): Promise<number> {
   for (const line of describeUpgrade(upgrade).lines) console.log(`  ${line}`);
   if (daemonLive) console.log(`  ${describeDaemonEntry(readLock(bellwetherHome()), path.join(import.meta.dirname, 'daemon', `main${path.extname(import.meta.url)}`))}`);
   failures += checkPackaging();
+  failures += checkToolSources();
   failures += await checkRelay(daemonLive, daemonSocket);
   // The size of the home, and what the next prune would remove, before it becomes a problem.
   const connected = new Set(upgrade.sessions && 'sessions' in upgrade.sessions ? upgrade.sessions.sessions.map((session) => session.parentId) : []);
@@ -226,7 +228,7 @@ async function doctor(): Promise<number> {
     const live = parent.children.filter((child) => !child.exitedAt);
     if (!live.length) continue;
     console.log(`  ${parent.id}: ${live.length} live of ${parent.children.length} children, updated ${parent.updatedAt}`);
-    for (const child of live) console.log(`    ${child.name} on ${machineLabel(hostOf(child))}, workspace ${workspaceColumn(child)}`);
+    for (const child of live) console.log(`    ${child.name} on ${machineLabel(hostOf(child))}, workspace ${workspaceColumn(child)}${child.toolSource ? `, tools from ${describeToolSource(child.toolSource)}` : ''}`);
   }
   // Each route a child can start on, and what a child on it sees that a bare one does not.
   const routeLines = describeRoutes(() => readRoutes(), listParents().flatMap((parent) => parent.children).filter((child) => !child.exitedAt));
@@ -234,6 +236,18 @@ async function doctor(): Promise<number> {
   failures += routeLines.filter((line) => line.startsWith('fail')).length;
   await checkMoves();
   return failures;
+}
+
+/**
+ * One line per harness: which server gives a session on this machine its
+ * Bellwether tools, and what a spawned child gets instead, with each duplicate
+ * the spawn keeps out and how. Claude Code's project scope is read from the
+ * directory doctor runs in.
+ */
+function checkToolSources(): number {
+  const lines = [describeClaudeTools(findAmbientServers(process.cwd())), describePiTools()];
+  for (const line of lines) console.log(`  ${line.level.padEnd(5)} ${line.text}`);
+  return lines.filter((line) => line.level === 'fail').length;
 }
 
 function machineLabel(host: string): string {
@@ -532,8 +546,9 @@ function relayRegister(argv: string[]): number {
     brief = cwd ? writeBriefIn(cwd, childId, text) : writeBrief(childId, text);
   }
   saveRelayRecord({ schema: RELAY_SCHEMA, childId, name: values['name'] ?? childId, kind: values['kind'] ?? 'other', parentId, ...(cwd ? { cwd } : {}), ...(brief ? { brief } : {}), registeredAt: new Date().toISOString() });
-  const mcpConfig = values['kind'] === 'claude' ? writeMcpConfig(childId) : undefined;
-  console.log(JSON.stringify({ record: relayChildPath(childId), version: BELLWETHER_VERSION, build: BELLWETHER_BUILD_ID, ...(brief ? { brief } : {}), ...(mcpConfig ? { mcpConfig } : {}), ...(piExtension ? { piExtension } : {}) }));
+  // A Claude Code child's own server, and whatever keeps this machine's other Bellwether servers from adding a second set of tools.
+  const tools = values['kind'] === 'claude' ? writeChildToolFiles(childId, cwd) : undefined;
+  console.log(JSON.stringify({ record: relayChildPath(childId), version: BELLWETHER_VERSION, build: BELLWETHER_BUILD_ID, ...(brief ? { brief } : {}), ...(tools ? { mcpConfig: tools.mcpConfig, ...(tools.claudeSettings ? { claudeSettings: tools.claudeSettings } : {}), toolSource: tools.toolSource } : {}), ...(piExtension ? { piExtension } : {}) }));
   return 0;
 }
 

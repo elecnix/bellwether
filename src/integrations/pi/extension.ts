@@ -15,7 +15,8 @@ import { childLabel } from '../../core/label.ts';
 import { byEventTime, lateNote } from '../../core/notice.ts';
 import { PROMPT_NOTICE, maxDepthFromEnv } from '../../core/report.ts';
 import type { OutboxEntry } from '../../core/types.ts';
-import { toolsFor } from '../tools.ts';
+import { fallbackTools } from '../tools.ts';
+import type { ServedTool } from '../../daemon/protocol.ts';
 
 // The parts of pi's ExtensionAPI this extension uses.
 interface PiContext {
@@ -165,7 +166,10 @@ export default function bellwether(pi: PiApi): void {
         herdrSocket: resolveSocketPath(),
         childId: process.env['BELLWETHER_CHILD'],
         ...(maxDepthFromEnv() === undefined ? {} : { maxDepth: maxDepthFromEnv() }),
+        ...(process.env['BELLWETHER_PARENT'] ? { reportsTo: process.env['BELLWETHER_PARENT'] } : {}),
       }, { log: (message) => console.error('[bellwether]', message) });
+      register(daemon.tools());
+      daemon.onTools(register);
       // A previous pi process for this session may have delivered an event
       // and died before its receipt reached the daemon.
       const delivered = deliveredInHistory(ctx);
@@ -178,6 +182,8 @@ export default function bellwether(pi: PiApi): void {
     } catch (error) {
       console.error('[bellwether] the daemon did not start:', (error as Error).message);
       daemon = undefined;
+      // The tools still appear, and each call says the daemon is not running.
+      register(fallbackTools({ reportsTo: process.env['BELLWETHER_PARENT'] || undefined, childId: process.env['BELLWETHER_CHILD'] || undefined }, undefined));
     }
   });
 
@@ -196,8 +202,19 @@ export default function bellwether(pi: PiApi): void {
     if (receipts.length) daemon?.receipts(receipts);
   });
 
-  const tools = toolsFor({ parent: process.env['BELLWETHER_PARENT'], child: process.env['BELLWETHER_CHILD'] });
-  for (const tool of tools) {
+  // The daemon decides the tools, from its feature table, and sends them in
+  // its hello. pi takes a tool registered after startup into the running
+  // session, so a reconnect to a newer daemon adds its tools without a
+  // restart. A name registered once is not registered again.
+  const registered = new Set<string>();
+  function register(tools: ServedTool[]): void {
+    for (const tool of tools) {
+      if (registered.has(tool.name)) continue;
+      registered.add(tool.name);
+      registerTool(tool);
+    }
+  }
+  function registerTool(tool: ServedTool): void {
     pi.registerTool({
       name: tool.name,
       label: tool.name.replace(/_/g, ' '),

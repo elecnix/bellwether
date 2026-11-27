@@ -32,6 +32,10 @@ process.env['BELLWETHER_HOME'] = path.join(ISOLATION_ROOT, 'home');
 process.env['BELLWETHER_DAEMON_SOCKET'] = path.join(ISOLATION_ROOT, 'home', 'daemon.sock');
 // pi's agent directory holds the operator's pi settings, which a pi spawn reads.
 process.env['PI_CODING_AGENT_DIR'] = path.join(ISOLATION_ROOT, 'pi-agent');
+// Claude Code's config directory holds the operator's settings and MCP
+// servers, which a Claude Code spawn reads to keep a second Bellwether server
+// out of the child. A case that needs some writes its own here.
+process.env['CLAUDE_CONFIG_DIR'] = path.join(ISOLATION_ROOT, 'claude-config');
 // The routes file describes the operator's own launchers. A case that needs
 // routes writes its own file here, so none reads ~/.config/bellwether.
 process.env['BELLWETHER_ROUTES'] = path.join(ISOLATION_ROOT, 'routes.json');

@@ -11,7 +11,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { Outbox } from './outbox.ts';
-import { bellwetherHome, mcpDir, outboxDir, outboxPath, promptsDir, registryPath, relayChildPath, spoolDir, spoolPath } from './paths.ts';
+import { bellwetherHome, claudeSettingsDir, mcpDir, outboxDir, outboxPath, promptsDir, registryPath, relayChildPath, spoolDir, spoolPath } from './paths.ts';
 import { listParents } from './registry.ts';
 import type { ParentRecord } from './types.ts';
 
@@ -184,6 +184,8 @@ export function parentFacts(record: ParentRecord, connected: ReadonlySet<string>
 const CHILD_FILES = [
   { kind: 'brief', dir: promptsDir, extension: '.md' },
   { kind: 'mcp', dir: mcpDir, extension: '.json' },
+  // A Claude Code child's settings file goes with its MCP configuration: the spawn writes both, and both name the child.
+  { kind: 'mcp', dir: claudeSettingsDir, extension: '.json' },
 ] as const;
 
 /** The facts for each brief and MCP configuration under the home. */

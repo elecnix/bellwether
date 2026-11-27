@@ -20,8 +20,8 @@ import { acceptLocalReport, isReportStatus, localParentOf, routeReport, type Rep
 import { readRelayRecord } from '../core/relay-records.ts';
 import { lastAssistantMessage, resolveTranscript } from '../core/transcript.ts';
 import type { CallerIdentity, OutboxEntry } from '../core/types.ts';
-import type { RelayHostState, RelayReport } from './protocol.ts';
-import { UnknownTool } from '../integrations/tools.ts';
+import type { RelayHostState, RelayReport, ServedTool } from './protocol.ts';
+import { UnknownTool, servedTools } from '../integrations/tools.ts';
 import { FEATURES } from './features.ts';
 
 /** What this daemon serves, by name, sent in its hello so a client and doctor need not infer it. */
@@ -56,6 +56,8 @@ export interface DaemonOptions {
   pruneEveryMs?: number | false;
   /** How long after start the first prune waits, so the sessions of a hand-over reconnect first. Default 1 min. */
   pruneDelayMs?: number;
+  /** The tools a session gets, by its hello. Default the feature table's tools for its identity; a test passes a newer table. */
+  tools?: (parent: ParentHello) => ServedTool[];
 }
 
 export interface Daemon {
@@ -99,6 +101,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
   const log = options.log ?? (() => {});
   const now = options.now ?? (() => Date.now());
   const factory = options.factory ?? defaultServiceFactory;
+  const sessionTools = options.tools ?? ((parent: ParentHello): ServedTool[] => servedTools({ reportsTo: parent.reportsTo, childId: parent.childId }));
   const idleMs = options.idleMs ?? 5 * 60_000;
   const idleCheckMs = options.idleCheckMs ?? 30_000;
   const outbox = options.relayOutbox ?? new RelayOutbox({ log });
@@ -404,7 +407,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
         set.add(socket);
         subscribers.set(session.parentId, set);
         attached.set(socket, { parentId: session.parentId, parent: request.parent, client: request.client, ...(request.build ? { build: request.build } : {}), protocol: request.protocol, connectedAt: new Date(now()).toISOString() });
-        reply({ type: 'hello', protocol: DAEMON_PROTOCOL, parentId: session.parentId, pid, pending: session.service.pending(), version: BELLWETHER_VERSION, build: BELLWETHER_BUILD_ID, minProtocol: MIN_CLIENT_PROTOCOL, features: SERVED });
+        reply({ type: 'hello', protocol: DAEMON_PROTOCOL, parentId: session.parentId, pid, pending: session.service.pending(), version: BELLWETHER_VERSION, build: BELLWETHER_BUILD_ID, minProtocol: MIN_CLIENT_PROTOCOL, features: SERVED, tools: sessionTools(request.parent) });
         return;
       }
       if (request.type === 'bye') {

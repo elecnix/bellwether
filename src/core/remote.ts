@@ -10,11 +10,16 @@
 import { resolveMachine, type MachineResolver } from './machine.ts';
 import { describeFailure, runRemoteBellwether, type SshOptions } from './ssh.ts';
 import type { ChildRecord, ParentRecord } from './types.ts';
+import type { ToolSource } from './tool-source.ts';
 
 /** What the child's machine wrote when it registered the child. */
 export interface RemoteRegistration {
   /** The MCP config path there, for a Claude Code child. */
   mcpConfig?: string;
+  /** The Claude Code settings path there, when the child needs any to keep a second Bellwether server out. */
+  claudeSettings?: string;
+  /** Which server gives a Claude Code child its tools there. An install from before the check leaves it out. */
+  toolSource?: ToolSource;
   /** The brief's path there, when the spawn sent one. */
   brief?: string;
   /** The pi extension of the package there, for a pi child. */
@@ -55,10 +60,15 @@ export function parseRegistration(target: string, stdout: string, kind?: string)
   const text = (key: string): string | undefined => (typeof parsed[key] === 'string' && parsed[key] ? (parsed[key] as string) : undefined);
   const registration: RemoteRegistration = {};
   if (text('mcpConfig')) registration.mcpConfig = text('mcpConfig');
+  if (text('claudeSettings')) registration.claudeSettings = text('claudeSettings');
+  const source = parsed['toolSource'];
+  if (typeof source === 'object' && source !== null && Array.isArray((source as ToolSource).suppressed)) registration.toolSource = source as ToolSource;
   if (text('brief')) registration.brief = text('brief');
   if (text('piExtension')) registration.piExtension = text('piExtension');
   if (text('version')) registration.version = text('version');
   if (text('build')) registration.build = text('build');
+  // Only the per-child server carries the child id, so a Claude Code child without one could not report.
+  if (kind === 'claude' && !registration.mcpConfig) throw new Error(`bellwether relay-register on ${target}, ${installedThere(registration)}, wrote no MCP config for the child. Upgrade @elecnix/bellwether on ${target}.`);
   if (kind === 'pi' && !registration.piExtension) throw new Error(`bellwether relay-register on ${target}, ${installedThere(registration)}, named no pi extension. Upgrade @elecnix/bellwether on ${target}.`);
   return registration;
 }

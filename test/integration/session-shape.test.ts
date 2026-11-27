@@ -12,6 +12,7 @@ import { mcpConfigPath } from '../../src/core/paths.ts';
 import { emptyParent, readParent, saveParent, upsertChild } from '../../src/core/registry.ts';
 import { Watcher } from '../../src/core/watcher.ts';
 import type { ChildRecord, OutboxEntry } from '../../src/core/types.ts';
+import type { RemoteOps } from '../../src/core/remote.ts';
 import { runBellwetherTool, type ToolContext } from '../../src/integrations/tools.ts';
 import { startFakeHerdr, type FakeHerdr } from '../fixtures/fake-herdr.ts';
 import { fakeWorld, type FakeWorld } from '../fixtures/fake-world.ts';
@@ -39,9 +40,17 @@ function parent(session: string): string {
   return saveParent(emptyParent('claude-code', session, '/work', { workspaceId: 'w1' })).id;
 }
 
+/** A child's machine that registers each Claude Code child, and writes its MCP config there. */
+const farRegistry: RemoteOps = {
+  register: async (_parent, child) => ({ mcpConfig: `/far/.bellwether/mcp/${child.id}.json`, toolSource: { server: 'per-child', suppressed: [] } }),
+  cleanup: async () => {},
+  lastMessage: async () => undefined,
+};
+
 function context(parentId: string, local: Herdr, machines: Record<string, Herdr> = {}): ToolContext {
   const watcher = new Watcher({ client: local.client, parentId, onEntries: () => {} });
   return {
+    remote: farRegistry,
     client: local.client,
     clientFor: async (host) => {
       if (host === LOCAL_HOST) return local.client;
@@ -235,10 +244,11 @@ test('a spawn on a machine records the host, targets that machine, and resumes t
   const create = remote.fake.requests.find((request) => request.method === 'tab.create');
   assert.equal(create?.params['workspace_id'], null, 'the local workspace id is not sent to another machine');
   assert.equal(local.fake.requests.some((request) => request.method === 'tab.create' || request.method === 'agent.start'), false, 'nothing starts locally');
-  // The daemon on that machine holds no record of this child, so a server
-  // there could not resolve it. The child gets no MCP config, and no file is left here.
+  // A server talks to the daemon on its own machine, so the child gets the
+  // MCP config that machine wrote, and no file is left here.
   const remoteArgs = remote.fake.requests.find((request) => request.method === 'agent.start')?.params['args'] as string[];
-  assert.equal(remoteArgs.some((arg) => arg.startsWith('--mcp-config')), false, `a remote child got ${JSON.stringify(remoteArgs)}`);
+  assert.ok(remoteArgs.includes(`--mcp-config=/far/.bellwether/mcp/${child?.id}.json`), `a remote child got ${JSON.stringify(remoteArgs)}`);
+  assert.deepEqual(child?.toolSource, { server: 'per-child', suppressed: [] });
   assert.equal(fs.existsSync(mcpConfigPath(child?.id ?? '?')), false);
 
   // The watcher follows the child on its own machine.

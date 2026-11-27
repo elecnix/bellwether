@@ -11,7 +11,7 @@
 //   3. origin/main carries the version: build that commit and stage it.
 //   4. An open pull request from release/<version>: merge it once CI is green.
 //   5. Nothing yet: refuse a dirty tree or a red main, run the gates in a
-//      worktree of origin/main, bump both version fields, push, open the pull
+//      worktree of origin/main, bump the version fields, push, open the pull
 //      request and merge it once CI is green.
 //
 // The script never approves a staged version. Approval needs the operator's
@@ -76,6 +76,16 @@ export function compareVersions(a: string, b: string): number {
 }
 
 /** Point the formula at a new tarball. The url and sha256 lines are the only ones a release changes. */
+/** The Claude Code plugin manifest, which declares the same version as package.json. */
+const PLUGIN_MANIFEST = '.claude-plugin/plugin.json';
+
+/** The plugin manifest with its version set to `version`, and every other field kept. */
+export function bumpPluginManifest(text: string, version: string): string {
+  const manifest = JSON.parse(text) as Record<string, unknown>;
+  if (typeof manifest['version'] !== 'string') throw new ReleaseError(`${PLUGIN_MANIFEST} declares no version`);
+  return `${JSON.stringify({ ...manifest, version }, null, 2)}\n`;
+}
+
 export function bumpFormula(text: string, url: string, sha256: string): string {
   const urlLine = /^(\s*)url "https:\/\/registry\.npmjs\.org\/[^"]+"$/m;
   const shaLine = /^(\s*)sha256 "[0-9a-f]{64}"$/m;
@@ -106,7 +116,7 @@ export function installNotice(version: string, formula: string): string {
 export function prBody(version: string, previous: string | undefined, change: ProtocolChange | undefined): string {
   const since = previous ? ` since ${previous}` : '';
   const lines = [
-    `The version in \`package.json\` and \`package-lock.json\` moves to ${version}, so the next publish includes every change merged${since}. \`npm run release\` opened the pull request and merges it once CI passes.`,
+    `The version in \`package.json\`, \`package-lock.json\` and \`.claude-plugin/plugin.json\` moves to ${version}, so the next publish includes every change merged${since}. \`npm run release\` opened the pull request and merges it once CI passes.`,
     '',
   ];
   if (change) {
@@ -307,7 +317,9 @@ class Release {
     const manifest = JSON.parse(await readFile(path.join(tree, 'package.json'), 'utf8')) as { version?: string };
     if (manifest.version !== this.version) {
       await this.must('npm', ['version', this.version, '--no-git-tag-version'], { cwd: tree });
-      await this.must('git', ['commit', '--quiet', '-m', `release: ${this.version}`, '--', 'package.json', 'package-lock.json'], { cwd: tree });
+      const plugin = path.join(tree, PLUGIN_MANIFEST);
+      await writeFile(plugin, bumpPluginManifest(await readFile(plugin, 'utf8'), this.version));
+      await this.must('git', ['commit', '--quiet', '-m', `release: ${this.version}`, '--', 'package.json', 'package-lock.json', PLUGIN_MANIFEST], { cwd: tree });
     }
     await this.must('git', ['push', '--quiet', '-u', 'origin', `HEAD:refs/heads/${this.branch}`], { cwd: tree });
     const change = await this.protocolChange(tree, latest);

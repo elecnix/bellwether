@@ -32,15 +32,15 @@ For Pi:
 pi install npm:@elecnix/bellwether
 ```
 
-For Claude Code, run these inside a session, then start each parent session with the flag below:
+For Claude Code, add the elecnix plugin marketplace and install the plugin from it, then start each parent session with the flag below:
 
-```text
-/plugin marketplace add elecnix/bellwether
-/plugin install bellwether@bellwether
+```sh
+claude plugin marketplace add elecnix/claude-plugins
+claude plugin install bellwether@elecnix-plugins
 ```
 
 ```sh
-claude --dangerously-load-development-channels plugin:bellwether@bellwether
+claude --dangerously-load-development-channels plugin:bellwether@elecnix-plugins
 ```
 
 Check the result:
@@ -60,7 +60,7 @@ brew upgrade bellwether                  # or: npm install -g @elecnix/bellwethe
 pi install npm:@elecnix/bellwether
 ```
 
-In Claude Code, run `/plugin marketplace update bellwether`.
+For Claude Code, run `claude plugin marketplace update elecnix-plugins`, then `claude plugin update bellwether@elecnix-plugins`.
 
 The background daemon keeps running the code it started with. Stop it, then restart every Pi and Claude Code session that uses Bellwether, so the next one starts a daemon from the new install:
 

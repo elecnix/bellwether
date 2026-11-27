@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -78,6 +78,8 @@ async function harness(overrides: Partial<World> = {}) {
       await mkdir(path.join(tree, 'src/daemon'), { recursive: true });
       await writeFile(path.join(tree, 'src/daemon/protocol.ts'), 'export const DAEMON_PROTOCOL = 3;\n');
       await writeFile(path.join(tree, 'package.json'), JSON.stringify({ version: world.mainVersion }));
+      await mkdir(path.join(tree, '.claude-plugin'), { recursive: true });
+      await writeFile(path.join(tree, '.claude-plugin/plugin.json'), `${JSON.stringify({ name: 'bellwether', version: world.mainVersion }, null, 2)}\n`);
       return ok();
     }
     if (line.startsWith('npm version')) {
@@ -153,6 +155,12 @@ test('a fresh release runs the gates, bumps, opens and merges the pull request, 
     at = next;
   }
   assert.ok(!h.calls.some((call) => call.includes('stage approve')), 'the script never approves');
+
+  const tree = path.join(h.root, 'release-0.1.4');
+  const plugin = JSON.parse(await readFile(path.join(tree, '.claude-plugin/plugin.json'), 'utf8')) as { version?: string };
+  assert.equal(plugin.version, '0.1.4', 'the release bumps the plugin manifest with the package');
+  const commit = h.calls.find((call) => call.startsWith('git commit'))!;
+  assert.match(commit, /\.claude-plugin\/plugin\.json/, 'the release commit carries the plugin manifest');
 });
 
 test('a dirty tree is refused before anything is pushed', async () => {

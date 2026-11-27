@@ -16,6 +16,7 @@ import { resolveSocketPath } from '../../core/herdr-client.ts';
 import { hostName } from '../../core/spawn.ts';
 import { childLabel } from '../../core/label.ts';
 import type { OutboxEntry } from '../../core/types.ts';
+import { BELLWETHER_VERSION } from '../../core/version.ts';
 import { toolsFor } from '../tools.ts';
 import { ReceiptScan, claudeConfigDir } from './transcript.ts';
 
@@ -48,7 +49,7 @@ const childId = argument(process.argv.slice(2), '--child') ?? process.env['BELLW
 const tools = toolsFor({ parent: process.env['BELLWETHER_PARENT'], child: childId });
 
 const mcp = new Server(
-  { name: 'bellwether', version: '0.1.0' },
+  { name: 'bellwether', version: BELLWETHER_VERSION },
   {
     capabilities: { experimental: { 'claude/channel': {} }, tools: {} },
     instructions: [

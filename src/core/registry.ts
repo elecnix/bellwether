@@ -5,7 +5,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { parentId, parentsDir, registryPath, slug } from './paths.ts';
-import type { ChildRecord, Harness, ParentRecord } from './types.ts';
+import { REGISTRY_SCHEMA, type ChildRecord, type Harness, type ParentRecord } from './types.ts';
+
+/** The host of a child started before the registry recorded one. */
+const LOCAL_HOST = 'local';
 
 export { parentId, slug };
 
@@ -15,6 +18,7 @@ function ensure(dir: string): void {
 
 export function emptyParent(harness: Harness, session: string, cwd: string, extra: Partial<ParentRecord> = {}): ParentRecord {
   return {
+    schema: REGISTRY_SCHEMA,
     id: parentId(harness, session),
     harness,
     session,
@@ -32,12 +36,25 @@ export function readParent(id: string): ParentRecord | undefined {
     const raw = fs.readFileSync(registryPath(id), 'utf8');
     const parsed: unknown = JSON.parse(raw);
     if (typeof parsed !== 'object' || parsed === null) return undefined;
-    const record = parsed as ParentRecord;
-    if (!Array.isArray(record.children)) record.children = [];
-    return record;
+    return migrateParent(parsed as ParentRecord);
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Bring a record written by an older Bellwether up to the current layout. It
+ * only adds what is missing and never rewrites a field that is set, so it can
+ * run on every read. The file changes on the next write, not on the read.
+ */
+export function migrateParent(record: ParentRecord): ParentRecord {
+  if (!Array.isArray(record.children)) record.children = [];
+  for (const child of record.children) {
+    // Every child before version 2 ran on the parent's own herdr.
+    if (typeof child.host !== 'string' || !child.host) child.host = LOCAL_HOST;
+  }
+  if (typeof record.schema !== 'number' || record.schema < REGISTRY_SCHEMA) record.schema = REGISTRY_SCHEMA;
+  return record;
 }
 
 export function listParents(): ParentRecord[] {
@@ -100,4 +117,16 @@ export function updateChild(id: string, childId: string, change: (child: ChildRe
 
 export function childById(record: ParentRecord, childId: string): ChildRecord | undefined {
   return record.children.find((child) => child.id === childId || child.name === childId || child.paneId === childId);
+}
+
+/**
+ * The parent that watches a live pane on a host, if any. A child that exited
+ * no longer holds its pane, so it does not count.
+ */
+export function watcherOfPane(host: string, paneId: string): { parent: ParentRecord; child: ChildRecord } | undefined {
+  for (const parent of listParents()) {
+    const child = parent.children.find((entry) => !entry.exitedAt && entry.paneId === paneId && (entry.host ?? LOCAL_HOST) === host);
+    if (child) return { parent, child };
+  }
+  return undefined;
 }

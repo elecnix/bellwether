@@ -8,7 +8,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { newChildId } from '../../src/core/outbox.ts';
 import { registryPath } from '../../src/core/paths.ts';
-import { childById, emptyParent, listParents, readParent, saveParent, slug, updateChild, upsertChild } from '../../src/core/registry.ts';
+import { childById, emptyParent, listParents, migrateParent, readParent, saveParent, slug, updateChild, upsertChild } from '../../src/core/registry.ts';
 import type { ChildRecord } from '../../src/core/types.ts';
 
 function scratch(): string {
@@ -25,6 +25,7 @@ function child(name: string): ChildRecord {
     kind: 'pi',
     harness: 'pi',
     paneId: `w1:p-${name}`,
+    host: 'local',
     startedAt: at,
     lastStatus: 'unknown',
     statusChangedAt: at,
@@ -127,4 +128,46 @@ test('a slug never carries a path separator', () => {
   assert.equal(slug('a/b'), 'a-b');
   assert.equal(slug('../escape').includes('/'), false);
   assert.notEqual(slug('../escape'), '..');
+});
+
+test('an older registry file loads, gains the host and schema, and keeps them on the next write', () => {
+  const root = scratch();
+  const id = 'pi-old-session';
+  const at = new Date(0).toISOString();
+  const old = {
+    id,
+    harness: 'pi',
+    session: 'old-session',
+    host: 'laptop',
+    cwd: '/work',
+    depth: 0,
+    updatedAt: at,
+    children: [{ id: 'c1', name: 'old', kind: 'pi', harness: 'pi', paneId: 'w1:p1', startedAt: at, lastStatus: 'idle', statusChangedAt: at, lastBusyAt: at, depth: 1, transcript: '/t/old.jsonl', exitedAt: at }],
+  };
+  fs.mkdirSync(path.dirname(registryPath(id)), { recursive: true });
+  fs.writeFileSync(registryPath(id), JSON.stringify(old));
+
+  const read = readParent(id);
+  assert.equal(read?.schema, 2);
+  assert.equal(read?.children[0]?.host, 'local');
+  assert.equal(read?.children[0]?.transcript, '/t/old.jsonl', 'existing fields stay as they were');
+  assert.equal(read?.children[0]?.exitedAt, at);
+  assert.equal(JSON.parse(fs.readFileSync(registryPath(id), 'utf8')).schema, undefined, 'a read does not write the file');
+
+  saveParent(read!);
+  const written = JSON.parse(fs.readFileSync(registryPath(id), 'utf8')) as { schema: number; children: { host: string }[] };
+  assert.equal(written.schema, 2);
+  assert.equal(written.children[0]?.host, 'local');
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('the migration runs twice without changing a record it already migrated', () => {
+  const root = scratch();
+  const parent = emptyParent('pi', 'twice', '/work');
+  parent.children.push({ ...child('far'), host: 'hawthorne' });
+  const once = structuredClone(migrateParent(structuredClone(parent)));
+  const twice = migrateParent(structuredClone(once));
+  assert.deepEqual(twice, once);
+  assert.equal(twice.children[0]?.host, 'hawthorne', 'a recorded host is never rewritten');
+  fs.rmSync(root, { recursive: true, force: true });
 });

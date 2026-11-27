@@ -33,6 +33,17 @@ export interface ChildRecord {
   paneId: string;
   tabId?: string;
   workspaceId?: string;
+  /**
+   * The herdr server the child runs on: `local` for this machine's, or the
+   * label of a saved herdr machine. Pane ids are scoped to one server, so
+   * every herdr call for the child goes to this host, and a resume goes back
+   * to it.
+   */
+  host: string;
+  /** How the child came under this parent. An older record means spawn. */
+  origin?: 'spawn' | 'adopt' | 'resume';
+  /** When the child was last brought back with agent_resume. */
+  resumedAt?: string;
   cwd?: string;
   startedAt: string;
   /** The last status herdr reported for the pane. */
@@ -75,8 +86,13 @@ export interface ChildRecord {
   exitCode?: number;
 }
 
+/** The registry layout this code writes. Version 2 added the child host. */
+export const REGISTRY_SCHEMA = 2;
+
 /** One parent session, and the children it started. */
 export interface ParentRecord {
+  /** The registry layout. A file without one predates version 2. */
+  schema?: number;
   id: string;
   harness: Harness;
   session: string;

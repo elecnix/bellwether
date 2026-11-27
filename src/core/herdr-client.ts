@@ -41,6 +41,33 @@ export class HerdrApiError extends Error {
   }
 }
 
+/**
+ * One connection to a herdr server. A Unix socket is one; the stdio of a
+ * machine bridge is another, so the same framing serves a saved SSH machine.
+ */
+export interface HerdrConnection {
+  write(line: string): unknown;
+  on(event: 'data', listener: (chunk: Buffer) => void): unknown;
+  on(event: 'error', listener: (error: Error) => void): unknown;
+  on(event: 'end', listener: () => void): unknown;
+  destroy(): unknown;
+  /** Let the process exit while this connection is open. */
+  unref(): unknown;
+}
+
+/** Open a connection, calling `onReady` once it can take a request. */
+export type HerdrDialer = (onReady: () => void) => HerdrConnection;
+
+/** A socket path, or a dialer for a transport that is not a local socket. */
+export type HerdrEndpoint = string | HerdrDialer;
+
+function dial(endpoint: HerdrEndpoint, onReady: () => void): HerdrConnection {
+  if (typeof endpoint !== 'string') return endpoint(onReady);
+  const socket = net.createConnection(endpoint);
+  socket.on('connect', onReady);
+  return socket;
+}
+
 let sequence = 0;
 
 export function nextRequestId(prefix = 'bellwether'): string {
@@ -103,10 +130,10 @@ function errorFrom(frame: Record<string, unknown>): HerdrApiError | undefined {
 }
 
 /** One request on its own connection, resolving with `result` or rejecting with HerdrApiError. */
-export function requestHerdr(socketPath: string, request: HerdrRequest, signal?: AbortSignal, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<unknown> {
+export function requestHerdr(endpoint: HerdrEndpoint, request: HerdrRequest, signal?: AbortSignal, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<unknown> {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) return reject(new Error('herdr request aborted'));
-    const socket = net.createConnection(socketPath);
+    const socket = dial(endpoint, () => socket.write(`${JSON.stringify(request)}\n`));
     const frames = new NdjsonFrames();
     let settled = false;
     const timer = setTimeout(() => finish(new Error(`herdr ${request.method} timed out after ${timeoutMs}ms`)), timeoutMs);
@@ -127,7 +154,6 @@ export function requestHerdr(socketPath: string, request: HerdrRequest, signal?:
     const onAbort = (): void => finish(new Error('herdr request aborted'));
 
     signal?.addEventListener('abort', onAbort, { once: true });
-    socket.on('connect', () => socket.write(`${JSON.stringify(request)}\n`));
     socket.on('error', (error) => finish(error));
     socket.on('end', () => finish(new Error(`herdr closed the connection before answering ${request.method}`)));
     socket.on('data', (chunk: Buffer) => {
@@ -154,7 +180,7 @@ export function requestHerdr(socketPath: string, request: HerdrRequest, signal?:
  * buffered and replayed, so no event is lost between connect and ack.
  */
 export function openHerdrSubscription(
-  socketPath: string,
+  endpoint: HerdrEndpoint,
   request: HerdrRequest,
   onEvent: (event: HerdrEvent) => void,
   signal: AbortSignal,
@@ -162,7 +188,7 @@ export function openHerdrSubscription(
 ): Promise<Subscription> {
   return new Promise((resolve, reject) => {
     if (signal.aborted) return reject(new Error('herdr subscription aborted'));
-    const socket = net.createConnection(socketPath);
+    const socket = dial(endpoint, () => socket.write(`${JSON.stringify(request)}\n`));
     const frames = new NdjsonFrames();
     const pending: HerdrEvent[] = [];
     let ready = false;
@@ -235,7 +261,6 @@ export function openHerdrSubscription(
     }
 
     signal.addEventListener('abort', onAbort, { once: true });
-    socket.on('connect', () => socket.write(`${JSON.stringify(request)}\n`));
     socket.on('error', (error) => finish(error));
     socket.on('end', () => finish(intentional ? undefined : new Error('herdr closed the subscription')));
     socket.on('data', (chunk: Buffer) => {
@@ -323,16 +348,24 @@ export function parsePane(value: unknown): HerdrPane | undefined {
   };
 }
 
-/** A thin typed wrapper over one herdr socket. */
+/** A thin typed wrapper over one herdr server, local or on a saved machine. */
 export class HerdrClient {
+  /** The local socket, or a `machine:` label for a client that dials a bridge. */
   readonly socketPath: string;
+  private readonly endpoint: HerdrEndpoint;
 
-  constructor(options: { session?: string; socketPath?: string } = {}) {
-    this.socketPath = resolveSocketPath(options);
+  constructor(options: { session?: string; socketPath?: string; dial?: HerdrDialer; label?: string } = {}) {
+    if (options.dial) {
+      this.endpoint = options.dial;
+      this.socketPath = options.label ?? 'machine';
+    } else {
+      this.socketPath = resolveSocketPath(options);
+      this.endpoint = this.socketPath;
+    }
   }
 
   request(method: string, params: Record<string, unknown> = {}, options: { signal?: AbortSignal; timeoutMs?: number; id?: string } = {}): Promise<unknown> {
-    return requestHerdr(this.socketPath, { id: options.id ?? nextRequestId(), method, params }, options.signal, options.timeoutMs);
+    return requestHerdr(this.endpoint, { id: options.id ?? nextRequestId(), method, params }, options.signal, options.timeoutMs);
   }
 
   async agentList(signal?: AbortSignal): Promise<HerdrPane[]> {
@@ -405,6 +438,6 @@ export class HerdrClient {
   }
 
   subscribe(subscriptions: Record<string, unknown>[], onEvent: (event: HerdrEvent) => void, signal: AbortSignal, timeoutMs?: number): Promise<Subscription> {
-    return openHerdrSubscription(this.socketPath, { id: nextRequestId('sub'), method: 'events.subscribe', params: { subscriptions } }, onEvent, signal, timeoutMs);
+    return openHerdrSubscription(this.endpoint, { id: nextRequestId('sub'), method: 'events.subscribe', params: { subscriptions } }, onEvent, signal, timeoutMs);
   }
 }

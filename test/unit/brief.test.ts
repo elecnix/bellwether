@@ -5,7 +5,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { briefArgument, pruneBriefs, writeBrief } from '../../src/core/brief.ts';
+import { pruneBriefs, writeBrief } from '../../src/core/brief.ts';
+import { briefArgument } from '../../src/core/harnesses/index.ts';
 
 function scratch(): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bellwether-brief-'));

@@ -7,7 +7,8 @@ import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { claudeConfigDir, locateTranscript } from './transcript.ts';
+import { claudeConfigDir } from './transcript.ts';
+import { locateTranscript } from './harnesses/index.ts';
 import { BELLWETHER_VERSION } from './version.ts';
 import { parsePiModelList, piModelOf, claudeVersionsOf, sha256, targetSessionLayout, type HarnessDirs, type HarnessProbe, type ModelPair, type MovableHarness } from './move-plan.ts';
 

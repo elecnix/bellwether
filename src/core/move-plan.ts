@@ -6,10 +6,12 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 import { LOCAL_HOST } from './machine.ts';
 import { claudeProjectDir } from './transcript.ts';
-import type { AgentStatus, ChildRecord, Harness } from './types.ts';
+import type { AgentStatus, ChildRecord } from './types.ts';
+import { agentKinds, harnessFor, harnessNamed } from './harnesses/index.ts';
 
 /** The harnesses a move knows how to carry: their session state is a file Bellwether can find. */
-export type MovableHarness = Extract<Harness, 'pi' | 'claude-code'>;
+/** The harnesses whose session layout this module knows. A harness's entry says `movable` only for these. */
+export type MovableHarness = 'pi' | 'claude-code';
 
 /** The herdr agent kind for a movable harness, as a spawn names it. */
 export function kindOfHarness(harness: MovableHarness): 'pi' | 'claude' {
@@ -184,9 +186,9 @@ export interface HarnessProbe {
 export interface RefusalInput {
   childName: string;
   /** The child's own harness. */
-  harness: Harness | 'other';
+  harness: string;
   /** The harness asked for on the target, when the caller named one. */
-  requestedHarness?: Harness | 'other';
+  requestedHarness?: string;
   status: AgentStatus;
   exited: boolean;
   source: string;
@@ -221,8 +223,9 @@ function machineName(host: string): string {
 export function moveRefusals(input: RefusalInput): string[] {
   const refusals: string[] = [];
   const where = machineName(input.target);
-  if (input.harness !== 'pi' && input.harness !== 'claude-code') {
-    refusals.push(`${input.childName} runs the ${input.harness} harness, and Bellwether moves only claude and pi children, the two whose session state it can find and resume.`);
+  if (!harnessNamed(input.harness)?.movable) {
+    const movable = agentKinds().filter((kind) => harnessFor(kind)?.movable);
+    refusals.push(`${input.childName} runs the ${input.harness} harness, and Bellwether moves only ${movable.join(' and ')} children, the ones whose session state it can find and resume.`);
     return refusals;
   }
   if (input.requestedHarness && input.requestedHarness !== input.harness) {

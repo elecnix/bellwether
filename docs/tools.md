@@ -19,7 +19,7 @@ Every session with Bellwether gets these tools, in Pi and in Claude Code alike.
 
 A parent sends input only to the panes it started, resumed or adopted.
 
-An `opencode` child needs OpenCode 2 and a `cwd`. [opencode.md](opencode.md) gives its launch, its session check and what it can report.
+[harnesses.md](harnesses.md) lists what a child of each kind can do, and why `agent_spawn` refuses `codex` and `cline` for now. An `opencode` child needs OpenCode 2 and a `cwd`. [opencode.md](opencode.md) gives its launch, its session check and what it can report.
 
 A pi child runs on its parent's provider and model, so a spawn never bills another account by accident. pi needs both values, so Bellwether passes `--provider` and `--model` together.
 

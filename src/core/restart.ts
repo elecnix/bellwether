@@ -31,7 +31,8 @@ import { clearRetirement } from './retire.ts';
 import { STARTUP_HOLD_MS, STARTUP_TIMEOUT_MS, childArgs, childEnv, childStartFiles, herdrLink, hostName, nextLaunch, startHarness, startWithRetry, type NextLaunch, type RouteChange } from './spawn.ts';
 import { launchLine, routeLabel, routeLaunch } from './routes.ts';
 import { watchStartup, type StartupWatch } from './startup-dialogs.ts';
-import { resolveTranscript, sessionFrom } from './transcript.ts';
+import { sessionFrom } from './transcript.ts';
+import { requireHarness, resolveTranscript } from './harnesses/index.ts';
 import type { CallerIdentity, ChildRecord, ChildRoute, ChildSession, ParentRecord } from './types.ts';
 import { openChildTab, returnPlacement, undoChildTab, type ChildTab } from './workspace.ts';
 
@@ -357,11 +358,12 @@ async function restartChildLocked(client: HerdrClient, parentId: string, childId
   try {
     // The same start files a spawn and a resume give it: a Claude Code
     // child's own MCP configuration, and the extension a pi child loads.
-    const { mcpConfigFile, claudeSettingsFile, toolSource, piExtension } = await childStartFiles(child, undefined, undefined, hooks.piExtension);
+    const { registered: _registered, ...files } = await childStartFiles(parent, child, undefined, undefined, hooks.piExtension, launch.harnessModel);
+    const toolSource = files.toolSource;
     // Closing the old tab closed a workspace Bellwether made for the child
     // when it was the last tab there, so the child gets a new one of its own.
     const placement = await returnPlacement(client, child, workspaceId);
-    const tab = await openChildTab(client, placement, { cwd: child.cwd, label: child.name, env: childEnv(parent, child, piExtension), focus: false });
+    const tab = await openChildTab(client, placement, { cwd: child.cwd, label: child.name, env: { ...childEnv(parent, child, files.piExtension), ...files.env }, focus: false });
     opened = tab;
     newTab = tab.tabId ?? tab.paneId;
     if (!tab.paneId) throw new Error('herdr created no pane for the restarted tab');
@@ -374,15 +376,16 @@ async function restartChildLocked(client: HerdrClient, parentId: string, childId
       if (tab.workspaceId) entry.workspaceId = tab.workspaceId;
       if (tab.workspaceLabel) entry.workspaceLabel = tab.workspaceLabel;
     });
-    if (child.kind === 'claude') {
+    const dialogs = requireHarness(child.kind).startup;
+    if (dialogs) {
       const timeoutMs = hooks.startupTimeoutMs ?? STARTUP_TIMEOUT_MS;
       updateChild(parentId, child.id, (entry) => {
         entry.startingUntil = new Date(Date.now() + Math.max(STARTUP_HOLD_MS, timeoutMs + 15_000)).toISOString();
       });
       // The watch opens before the start: the dialog appears with the harness.
-      startup = await watchStartup(client, newPane, undefined, { timeoutMs, redrawMs: hooks.redrawMs });
+      startup = await watchStartup(client, newPane, undefined, { timeoutMs, redrawMs: hooks.redrawMs, dialogs });
     }
-    const harnessArgs = childArgs(child.kind, { kind: child.kind, name: child.name, model: launch.harnessModel, provider: launch.provider, args: resume }, { mcpConfigFile, claudeSettingsFile, piExtension });
+    const harnessArgs = childArgs(child.kind, { model: launch.harnessModel, provider: launch.provider }, files, { resume });
     await startHarness(client, { name: child.name, kind: child.kind, paneId: newPane, args: harnessArgs, ...(launch.route && launch.config ? { launch: routeLaunch(launch.config, launch.route, child.kind, harnessArgs) } : {}) });
     if (startup) {
       await startup.answer();
@@ -417,7 +420,7 @@ async function restartChildLocked(client: HerdrClient, parentId: string, childId
   const at = new Date().toISOString();
   updateChild(parentId, child.id, (entry) => {
     entry.session = reported ?? { kind: session.kind, value: session.value };
-    const transcript = resolveTranscript(entry.harness, entry.session.value, entry.cwd);
+    const transcript = requireHarness(entry.kind).conversation.locate(entry.session.value, entry.cwd).path;
     if (transcript) entry.transcript = transcript;
     if (status && entry.lastStatus !== status) entry.statusChangedAt = at;
     entry.lastStatus = status ?? 'unknown';
@@ -449,7 +452,7 @@ function applyLaunch(entry: ChildRecord, launch: NextLaunch): void {
     return;
   }
   delete entry.route;
-  if (entry.kind === 'pi' && launch.provider && launch.harnessModel) entry.model = { provider: launch.provider, id: launch.harnessModel, source: 'caller' };
+  if (requireHarness(entry.kind).chosenBy === 'pair' && launch.provider && launch.harnessModel) entry.model = { provider: launch.provider, id: launch.harnessModel, source: 'caller' };
 }
 
 /** What the reply names as the command: the harness's resume flag, behind the route's launcher when there is one. */
@@ -473,7 +476,7 @@ function parentSessionPlan(record: ParentRecord): { kind: string; sessionValue: 
   }
   const kind = record.harness === 'pi' ? 'pi' : 'claude';
   let sessionValue = record.session;
-  if (kind === 'pi') {
+  if (record.harness === 'pi') {
     const file = resolveTranscript('pi', record.session, record.cwd);
     if (!file) throw new RestartRefused(`session ${record.id} names pi session ${record.session}, and no session file for it sits under ${path.join(os.homedir(), '.pi', 'agent', 'sessions')}, so pi cannot reopen it.`);
     sessionValue = file;

@@ -43,7 +43,7 @@ test('a move to another harness is refused, naming both harnesses', () => {
 test('a harness Bellwether cannot resume is refused before anything else', () => {
   const reasons = moveRefusals(ready({ harness: 'other' }));
   assert.equal(reasons.length, 1);
-  assert.match(reasons[0] ?? '', /moves only claude and pi children/);
+  assert.match(reasons[0] ?? '', /moves only pi and claude children/);
 });
 
 test('a harness missing on the target is refused', () => {

@@ -562,8 +562,7 @@ test("a spawn on another machine registers the child there and starts it with th
   });
   t.after(() => herdr?.stop());
   const ops = remoteOps(machines);
-  const { child, reportWarning } = await spawnChild(new HerdrClient({ socketPath: herdr.socketPath }), parent, { kind: 'claude', name: 'far-away', host: 'child-box', startupTimeoutMs: 2_000, redrawMs: 10 }, undefined, { registerRemote: (entry) => ops.register(parent, entry) });
-  assert.equal(reportWarning, undefined);
+  const { child } = await spawnChild(new HerdrClient({ socketPath: herdr.socketPath }), parent, { kind: 'claude', name: 'far-away', host: 'child-box', startupTimeoutMs: 2_000, redrawMs: 10 }, undefined, { registerRemote: (entry) => ops.register(parent, entry) });
 
   const [remote] = w.ssh.remoteCalls();
   assert.equal(remote?.target, 'child-box');
@@ -599,8 +598,7 @@ test('a pi spawn on another machine starts with the extension that machine resol
   const herdr = await startFakeHerdr();
   t.after(() => herdr.stop());
   const ops = remoteOps(machines);
-  const { child, reportWarning } = await spawnChild(new HerdrClient({ socketPath: herdr.socketPath }), parent, { kind: 'pi', name: 'far-pi', host: 'child-box', prompt: 'report back' }, undefined, { registerRemote: (entry, text) => ops.register(parent, entry, text) });
-  assert.equal(reportWarning, undefined);
+  const { child } = await spawnChild(new HerdrClient({ socketPath: herdr.socketPath }), parent, { kind: 'pi', name: 'far-pi', host: 'child-box', prompt: 'report back' }, undefined, { registerRemote: (entry, text) => ops.register(parent, entry, text) });
   assert.deepEqual(w.ssh.remoteCalls()[0]?.argv.slice(0, 6), ['relay-register', '--child', child.id, '--name', 'far-pi', '--kind']);
   // The fake machine runs this checkout's CLI, so its package resolves the same file.
   assert.deepEqual(startArgs(herdr).slice(0, 2), ['-e', piExtensionEntry()]);

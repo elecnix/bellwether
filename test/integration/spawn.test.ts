@@ -15,6 +15,7 @@ import { emptyParent, readParent, saveParent } from '../../src/core/registry.ts'
 import { spawnChild } from '../../src/core/spawn.ts';
 import type { ParentRecord } from '../../src/core/types.ts';
 import { startFakeHerdr, type FakeHerdr, type FakeHerdrOptions } from '../fixtures/fake-herdr.ts';
+import { FAKE_KIND } from '../fixtures/fake-harness.ts';
 
 const brief = 'Publish the package.\n\nRun the gates first, then tag the release.\nTell the parent when it is done.';
 
@@ -77,14 +78,14 @@ test('a multi-line prompt reaches Claude Code as an @ mention of a private file'
   }
 });
 
-test('Pi gets the same @ mention, and another harness a one-line pointer', async () => {
+test('Pi gets the same @ mention, and a harness that attaches no file a one-line pointer', async () => {
   const space = await room();
   try {
     const { child: pi } = await spawnChild(space.client, space.parent, { kind: 'pi', name: 'pi-child', prompt: brief });
     assert.ok(startArgs(space.herdr).includes(`@${promptPath(pi.id)}`));
     space.herdr.requests.length = 0;
-    const { child: codex } = await spawnChild(space.client, readParent(space.parent.id) ?? space.parent, { kind: 'codex', name: 'codex-child', prompt: brief });
-    assert.deepEqual(startArgs(space.herdr), [`Your task is in ${promptPath(codex.id)}. Read it, then do what it says.`]);
+    const { child: other } = await spawnChild(space.client, readParent(space.parent.id) ?? space.parent, { kind: FAKE_KIND, name: 'other-child', prompt: brief });
+    assert.deepEqual(startArgs(space.herdr), [`--mcp-config=${mcpConfigPath(other.id)}`, `Your task is in ${promptPath(other.id)}. Read it, then do what it says.`]);
   } finally {
     await space.close();
   }

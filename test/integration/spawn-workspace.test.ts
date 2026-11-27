@@ -13,6 +13,7 @@ import { spawnChild } from '../../src/core/spawn.ts';
 import { parseWorkspaces } from '../../src/core/workspace.ts';
 import type { ParentRecord } from '../../src/core/types.ts';
 import { startFakeHerdr, type FakeHerdr, type FakeHerdrOptions, type RecordedRequest } from '../fixtures/fake-herdr.ts';
+import { FAKE_KIND } from '../fixtures/fake-harness.ts';
 
 const WORKSPACES = [
   { workspace_id: 'w1', label: 'operator', tab_count: 3 },
@@ -83,7 +84,7 @@ test('workspace "new" creates a workspace labelled after the child, starts the c
   const state = herdrState();
   const space = await room(state.options);
   try {
-    const { child } = await spawnChild(space.client, space.parent, { kind: 'codex', name: 'big-job', workspace: 'new' });
+    const { child } = await spawnChild(space.client, space.parent, { kind: FAKE_KIND, name: 'big-job', workspace: 'new' });
     const create = space.herdr.requests.find((request) => request.method === 'workspace.create');
     assert.ok(create, 'herdr was never asked for a workspace');
     assert.equal(create.params['label'], 'big-job');
@@ -109,7 +110,7 @@ test('workspace "new" takes the label it is given', async () => {
   const state = herdrState();
   const space = await room(state.options);
   try {
-    const { child } = await spawnChild(space.client, space.parent, { kind: 'codex', name: 'big-job', workspace: 'new', workspaceLabel: 'release train' });
+    const { child } = await spawnChild(space.client, space.parent, { kind: FAKE_KIND, name: 'big-job', workspace: 'new', workspaceLabel: 'release train' });
     assert.equal(space.herdr.requests.find((request) => request.method === 'workspace.create')?.params['label'], 'release train');
     assert.equal(child.workspaceLabel, 'release train');
   } finally {
@@ -122,7 +123,7 @@ test('a workspace named by id or by label takes a tab there, and Bellwether does
     const state = herdrState();
     const space = await room(state.options);
     try {
-      const { child } = await spawnChild(space.client, space.parent, { kind: 'codex', name: 'helper', workspace: named });
+      const { child } = await spawnChild(space.client, space.parent, { kind: FAKE_KIND, name: 'helper', workspace: named });
       const tab = space.herdr.requests.find((request) => request.method === 'tab.create');
       assert.equal(tab?.params['workspace_id'], id, `${named} did not resolve to ${id}`);
       assert.ok(!methods(space.herdr).includes('workspace.create'));
@@ -141,9 +142,9 @@ test('a workspace that matches nothing, or two by label, is refused by name befo
   const state = herdrState();
   const space = await room(state.options);
   try {
-    await assert.rejects(spawnChild(space.client, space.parent, { kind: 'codex', name: 'helper', workspace: 'nowhere' }), /helper was not started: no workspace on this machine answers to nowhere, by id or by label, and its workspaces are operator \(w1\), scratch \(w7\), twin \(w8\), twin \(w9\)\. Pass workspace "new"/);
-    await assert.rejects(spawnChild(space.client, space.parent, { kind: 'codex', name: 'helper', workspace: 'twin' }), /2 workspaces on this machine are labelled twin \(w8, w9\)\. Name one by its id\./);
-    await assert.rejects(spawnChild(space.client, space.parent, { kind: 'codex', name: 'helper', workspace: 'w7', workspaceLabel: 'x' }), /workspace_label names a new workspace/);
+    await assert.rejects(spawnChild(space.client, space.parent, { kind: FAKE_KIND, name: 'helper', workspace: 'nowhere' }), /helper was not started: no workspace on this machine answers to nowhere, by id or by label, and its workspaces are operator \(w1\), scratch \(w7\), twin \(w8\), twin \(w9\)\. Pass workspace "new"/);
+    await assert.rejects(spawnChild(space.client, space.parent, { kind: FAKE_KIND, name: 'helper', workspace: 'twin' }), /2 workspaces on this machine are labelled twin \(w8, w9\)\. Name one by its id\./);
+    await assert.rejects(spawnChild(space.client, space.parent, { kind: FAKE_KIND, name: 'helper', workspace: 'w7', workspaceLabel: 'x' }), /workspace_label names a new workspace/);
     assert.deepEqual(readParent(space.parent.id)?.children, []);
     assert.ok(!methods(space.herdr).some((method) => method === 'tab.create' || method === 'workspace.create' || method === 'agent.start'));
   } finally {
@@ -154,7 +155,7 @@ test('a workspace that matches nothing, or two by label, is refused by name befo
 test('with no workspace, the child opens in the parent workspace and herdr is asked nothing new', async () => {
   const space = await room();
   try {
-    const { child } = await spawnChild(space.client, space.parent, { kind: 'codex', name: 'plain' });
+    const { child } = await spawnChild(space.client, space.parent, { kind: FAKE_KIND, name: 'plain' });
     assert.equal(space.herdr.requests.find((request) => request.method === 'tab.create')?.params['workspace_id'], 'w1');
     assert.ok(!methods(space.herdr).some((method) => method.startsWith('workspace.')), 'a spawn with no workspace asked herdr about workspaces');
     assert.equal(child.workspaceId, 'w1');
@@ -168,7 +169,7 @@ test('a spawn at max_depth is refused in a new workspace as anywhere else, befor
   const state = herdrState();
   const space = await room(state.options, 2);
   try {
-    await assert.rejects(spawnChild(space.client, space.parent, { kind: 'codex', name: 'too-deep', workspace: 'new', maxDepth: 2 }), /Bellwether is 2 levels deep already, so too-deep would go one level too far/);
+    await assert.rejects(spawnChild(space.client, space.parent, { kind: FAKE_KIND, name: 'too-deep', workspace: 'new', maxDepth: 2 }), /Bellwether is 2 levels deep already, so too-deep would go one level too far/);
     assert.deepEqual(space.herdr.requests, []);
     assert.deepEqual(readParent(space.parent.id)?.children, []);
   } finally {
@@ -183,11 +184,11 @@ test('a spawn that fails in a new workspace closes that workspace, and one that 
   const state = herdrState();
   const space = await room(refuse(state.options));
   try {
-    await assert.rejects(spawnChild(space.client, space.parent, { kind: 'codex', name: 'broken', workspace: 'new' }), /no such harness/);
+    await assert.rejects(spawnChild(space.client, space.parent, { kind: FAKE_KIND, name: 'broken', workspace: 'new' }), /no such harness/);
     assert.deepEqual(space.herdr.requests.find((request) => request.method === 'workspace.close')?.params, { workspace_id: 'w20' });
     assert.ok(!methods(space.herdr).includes('tab.close'));
 
-    await assert.rejects(spawnChild(space.client, space.parent, { kind: 'codex', name: 'broken', workspace: 'scratch' }), /no such harness/);
+    await assert.rejects(spawnChild(space.client, space.parent, { kind: FAKE_KIND, name: 'broken', workspace: 'scratch' }), /no such harness/);
     const closes = space.herdr.requests.filter((request) => request.method === 'workspace.close');
     assert.equal(closes.length, 1, 'the person\'s workspace was closed');
     assert.deepEqual(space.herdr.requests.find((request) => request.method === 'tab.close')?.params, { tab_id: 'w7:t2' });
@@ -203,19 +204,21 @@ test('a remote spawn with "new" creates the workspace on the child\'s machine, a
   const far = await startFakeHerdr(remote.options);
   const farClient = new HerdrClient({ socketPath: far.socketPath });
   const localWorkspaces = async (): Promise<ReturnType<typeof parseWorkspaces>> => parseWorkspaces(await space.client.workspaceList());
+  // The child's machine writes its server's configuration there.
+  const registerRemote = async (): Promise<{ mcpConfig: string }> => ({ mcpConfig: '/far/mcp.json' });
   try {
-    const { child } = await spawnChild(farClient, space.parent, { kind: 'codex', name: 'far-job', host: 'example-box', workspace: 'new' }, undefined, { localWorkspaces });
+    const { child } = await spawnChild(farClient, space.parent, { kind: FAKE_KIND, name: 'far-job', host: 'example-box', workspace: 'new' }, undefined, { localWorkspaces, registerRemote });
     assert.ok(methods(far).includes('workspace.create'), 'the workspace was not created on the child\'s machine');
     assert.ok(!methods(space.herdr).includes('workspace.create'), 'a workspace was created on the parent\'s machine');
     assert.equal(child.workspaceId, 'w20');
     assert.equal(child.ownsWorkspace, true);
 
     await assert.rejects(
-      spawnChild(farClient, space.parent, { kind: 'codex', name: 'far-job-2', host: 'example-box', workspace: 'w7' }, undefined, { localWorkspaces }),
+      spawnChild(farClient, space.parent, { kind: FAKE_KIND, name: 'far-job-2', host: 'example-box', workspace: 'w7' }, undefined, { localWorkspaces, registerRemote }),
       /far-job-2 was not started: w7 is a workspace on this machine \(scratch\), and a workspace id from this machine means nothing to the herdr on machine example-box, where the child runs\. Pass workspace "new" to give the child a workspace of its own on example-box, or name a workspace there: its workspaces are far-scratch \(w3\), far-job \(w20\)\./,
     );
     // A workspace on the child's machine, by label, is fine.
-    const named = await spawnChild(farClient, space.parent, { kind: 'codex', name: 'far-job-3', host: 'example-box', workspace: 'far-scratch' }, undefined, { localWorkspaces });
+    const named = await spawnChild(farClient, space.parent, { kind: FAKE_KIND, name: 'far-job-3', host: 'example-box', workspace: 'far-scratch' }, undefined, { localWorkspaces, registerRemote });
     assert.equal(named.child.workspaceId, 'w3');
   } finally {
     await far.stop();

@@ -2,7 +2,8 @@
 // MCP channel server register exactly the same names and schemas.
 import os from 'node:os';
 import type { HerdrClient } from '../core/herdr-client.ts';
-import { AGENT_KINDS, spawnChild, type RegisterRemote, type SpawnOptions } from '../core/spawn.ts';
+import { spawnChild, type RegisterRemote, type SpawnOptions } from '../core/spawn.ts';
+import { agentKinds, harnessFor, harnessNamed, locateTranscript } from '../core/harnesses/index.ts';
 import { GRANT_DEPTH_TOOL, REQUEST_DEPTH_TOOL, ceilingOf, childCeiling, describeDepth, grantDepth, raiseTree, requestDepth } from '../core/depth.ts';
 import { removeChildFiles } from '../core/mcp-config.ts';
 import { PROMPT_NOTICE, notePromptForCaller, reportForCaller } from '../core/report.ts';
@@ -14,8 +15,7 @@ import { promptChild } from '../core/send.ts';
 import { RESTART_TOOL, runAgentRestart, type RestartHooks } from '../core/restart.ts';
 import { RETIRE_TOOL, realRetireOps, requestRetirement, type RetireOps } from '../core/retire.ts';
 import type { RemoteOps } from '../core/remote.ts';
-import { lastAssistantMessage, locateTranscript } from '../core/transcript.ts';
-import { openCodeLastMessage, openCodeSessionState } from '../core/opencode.ts';
+import { lastAssistantMessage } from '../core/transcript.ts';
 import { moveChild } from '../core/move.ts';
 import { routeLabel } from '../core/routes.ts';
 import { parseWorkspaces, releaseWorkspace, workspaceColumn, workspaceName } from '../core/workspace.ts';
@@ -66,12 +66,21 @@ const optionalString = (value: unknown): string | undefined => (typeof value ===
 export const parentTools: ToolDefinition[] = [
   {
     name: 'agent_spawn',
-    description: 'Start a child coding agent in its own herdr tab, of any kind herdr can start. Bellwether watches it and starts your next turn when it reports, goes idle, blocks, stalls or exits. Give the prompt a concrete deliverable, and tell the child to call parent_report when it is done. With resume, the call is a message to an earlier child instead: a child herdr still shows gets the prompt as an ordinary message, with no new tab, and a retired one comes back in a new tab with its harness reopening the same session, under the same child id, so its history and unread events continue. Resume works for claude and pi children.',
+    description: 'Start a child coding agent in its own herdr tab, of any kind herdr can start. Bellwether watches it and starts your next turn when it reports, goes idle, blocks, stalls or exits. Give the prompt a concrete deliverable, and tell the child to call parent_report when it is done. With resume, the call is a message to an earlier child instead: a child herdr still shows gets the prompt as an ordinary message, with no new tab, and a retired one comes back in a new tab with its harness reopening the same session, under the same child id, so its history and unread events continue. Resume works for a child whose harness Bellwether can reopen, which docs/harnesses.md lists.',
     schema: {
       type: 'object',
       properties: {
         resume: { type: 'string', description: 'Message an earlier child rather than start a new one: its name, its id, or its session id. herdr decides whether it is alive. A session id no child of this session ran also takes kind, name, cwd and machine, and comes back as a new child. Omit it to start a new child.' },
-        kind: { type: 'string', enum: [...AGENT_KINDS], description: 'The harness to start: pi, claude, codex, opencode or cline. Required without resume.' },
+        // Read from the harness registry each time the list is sent, so a harness's entry is all it takes to offer its kind.
+        kind: {
+          type: 'string',
+          get enum(): string[] {
+            return agentKinds();
+          },
+          get description(): string {
+            return `The harness to start: ${agentKinds().join(', ')}. Required without resume.`;
+          },
+        },
         name: { type: 'string', description: 'A short handle for the child, unique in this session. Used as the herdr agent name and the tab label. Required without resume.' },
         cwd: { type: 'string', description: 'The directory to start the child in. Use an absolute path, ideally a git worktree of its own. Required for an opencode child, whose brief goes inside it.' },
         prompt: { type: 'string', description: 'The first message the child receives, or with resume the message for the earlier child. The whole prompt, not a path. Line breaks and any length are fine: Bellwether hands a new or resumed child the prompt through a private file.' },
@@ -350,7 +359,8 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
 
   if (name === PROMPT_NOTICE) {
     // Sent by a pi child's extension or a Claude Code child's hook, never offered to a model.
-    const source = args['source'] === 'claude-code' ? 'claude-code' : 'pi';
+    // The source names the harness whose adapter sent it; pi's extension, the first, sends none.
+    const source = harnessNamed(optionalString(args['source']))?.harness ?? 'pi';
     return notePromptForCaller(caller, { open: args['open'] === true, title: optionalString(args['title']), kind: optionalString(args['kind']), source });
   }
 
@@ -401,7 +411,6 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
     ctx.watcher.reset(child.id);
     const where = child.host === LOCAL_HOST ? '' : ` on machine ${child.host}`;
     lines.push(`${child.name} resumed session ${result.session.value}${where} in pane ${child.paneId}, as the same child ${child.id}, on route ${routeLabel(child.route)}.`, 'Bellwether watches it again, and its earlier events and receipts carry on.', `herdr link: ${result.link}`);
-    if (result.reportWarning) lines.push(result.reportWarning);
     return lines.join('\n');
   }
 
@@ -432,7 +441,7 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
     if (!options.name) throw new Error('agent_spawn needs a name for a new child, or resume to message an earlier one.');
     // Resolve the machine before anything is written, so a typo leaves no record.
     const client = await clientFor(ctx, options.host ?? LOCAL_HOST);
-    const { child, link, reportWarning, modelNote } = await spawnChild(client, record, options, undefined, {
+    const { child, link, modelNote } = await spawnChild(client, record, options, undefined, {
       forget: (childId) => ctx.watcher.forget(childId),
       registerRemote: registrar(ctx, record),
       cleanupRemote: remoteCleanup(ctx),
@@ -448,7 +457,6 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
     const lines = [`${child.name} started as a ${child.kind} agent${where} in pane ${child.paneId}, tab ${child.tabId ?? child.paneId}${room}${child.route ? `, on route ${routeLabel(child.route)}` : ''}.`, `Bellwether watches it, and your next turn starts when it changes state.`, `herdr link: ${link}`];
     if (depth.note) lines.push(depth.note);
     if (modelNote) lines.push(modelNote);
-    if (reportWarning) lines.push(reportWarning);
     return lines.join('\n');
   }
 
@@ -511,18 +519,19 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
     // Pane feature: agent_read with lines, a screen the parent asked to see.
     if (lines) return (await herdr.paneRead({ paneId: child.paneId, source: 'recent_unwrapped', lines })).trim();
     if (hostOf(child) !== LOCAL_HOST) return readRemoteChild(ctx, child, herdr);
-    // An OpenCode child's conversation is in OpenCode's store, not in a file of its own.
-    if (child.harness === 'opencode' && child.store && child.session) {
-      const answer = openCodeLastMessage(child.store, child.session.value);
+    // A harness whose conversation sits in a store of its own, such as
+    // OpenCode's, answers from there, not from a transcript file.
+    const conversation = harnessFor(child.kind)?.conversation;
+    if (conversation?.lastMessage) {
+      const answer = conversation.lastMessage(child);
       if (answer) return answer;
-      const state = openCodeSessionState(child.store, child.session.value);
-      if (state && !child.exitedAt) {
-        // Pane feature: agent_read for an OpenCode child with no answer in its store yet.
+      const pending = conversation.pending?.(child);
+      if (pending) {
+        if (!pending.withScreen) return pending.note;
+        // Pane feature: agent_read for a child whose store holds no answer yet.
         const screen = (await herdr.paneRead({ paneId: child.paneId, source: 'recent_unwrapped', lines: 40 }).catch(() => '')).trim();
-        const note = `OpenCode's store at ${child.store} holds no answer from session ${child.session.value} yet; it is ${state.busy ? 'mid-turn' : `idle${state.outcome ? ` after a turn that ${state.outcome}` : ''}`}.`;
-        return screen ? `${note}\n${screen}` : note;
+        return screen ? `${pending.note}\n${screen}` : pending.note;
       }
-      return `OpenCode's store at ${child.store} holds no answer from session ${child.session.value}${state ? '' : ', and no such session'}.`;
     }
     const transcript = child.transcript ?? transcriptFromSession(ctx.parentId, child);
     const message = transcript ? lastAssistantMessage(transcript) : undefined;

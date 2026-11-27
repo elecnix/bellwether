@@ -64,8 +64,8 @@ function opencodeWrites(space: Room, reply?: string[]): void {
   };
 }
 
-function hooks(space: Room, extra: Partial<NonNullable<SpawnHooks['openCode']>> = {}): SpawnHooks {
-  return { openCode: { probe: async () => V2, db: space.db, waitMs: 400, intervalMs: 20, ...extra } };
+function hooks(space: Room, extra: Partial<NonNullable<SpawnHooks['harness']>> = {}): SpawnHooks {
+  return { harness: { probe: async () => V2, store: space.db, waitMs: 400, intervalMs: 20, ...extra } };
 }
 
 function startRequest(fake: FakeHerdr): { kind: string; args: string[] } {

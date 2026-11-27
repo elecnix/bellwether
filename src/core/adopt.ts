@@ -6,8 +6,8 @@ import type { HerdrClient } from './herdr-client.ts';
 import { LOCAL_HOST } from './machine.ts';
 import { newChildId } from './outbox.ts';
 import { upsertChild, watcherOfPane } from './registry.ts';
-import { AGENT_KINDS, harnessOf, herdrLink } from './spawn.ts';
-import { locateTranscript } from './transcript.ts';
+import { herdrLink } from './spawn.ts';
+import { harnessFor } from './harnesses/index.ts';
 import type { ChildRecord, ParentRecord } from './types.ts';
 import { resolveInactiveMs } from './inactivity.ts';
 
@@ -40,7 +40,8 @@ export async function adoptPane(client: HerdrClient, parent: ParentRecord, optio
     if (bare) throw new Error(`Pane ${options.target} on ${host} holds no agent herdr recognizes, so there is nothing to adopt.`);
     throw new Error(`No pane or live agent on ${host} matches ${options.target}.`);
   }
-  if (!(AGENT_KINDS as readonly string[]).includes(pane.agent)) throw new Error(`Pane ${pane.paneId} on ${host} runs ${pane.agent}, which is not an agent kind Bellwether supervises.`);
+  const entry = harnessFor(pane.agent);
+  if (!entry) throw new Error(`Pane ${pane.paneId} on ${host} runs ${pane.agent}, which is not an agent kind Bellwether supervises.`);
   if (host === LOCAL_HOST && pane.paneId === parent.paneId) throw new Error('A session cannot adopt its own pane.');
 
   const owner = watcherOfPane(host, pane.paneId);
@@ -49,9 +50,9 @@ export async function adoptPane(client: HerdrClient, parent: ParentRecord, optio
 
   const now = new Date().toISOString();
   const kind = pane.agent;
-  const harness = harnessOf(kind);
+  const harness = entry.harness;
   // A remote child's transcript sits on its own machine's disk.
-  const found = host === LOCAL_HOST ? locateTranscript(harness, pane.agentSessionId, pane.cwd) : undefined;
+  const found = host === LOCAL_HOST ? entry.conversation.locate(pane.agentSessionId, pane.cwd) : undefined;
   const child: ChildRecord = {
     id: newChildId(),
     name: options.name ?? pane.name ?? pane.label ?? pane.paneId,

@@ -7,6 +7,7 @@
 // The child gets no address to call back on, because the parent's daemon
 // connects to it. Reading the child's last message goes over that same
 // connection, which the daemon's relay links hold.
+import { harnessFor } from './harnesses/index.ts';
 import { resolveMachine, type MachineResolver } from './machine.ts';
 import { describeFailure, runRemoteBellwether, type SshOptions } from './ssh.ts';
 import type { ChildRecord, ParentRecord } from './types.ts';
@@ -67,9 +68,11 @@ export function parseRegistration(target: string, stdout: string, kind?: string)
   if (text('piExtension')) registration.piExtension = text('piExtension');
   if (text('version')) registration.version = text('version');
   if (text('build')) registration.build = text('build');
-  // Only the per-child server carries the child id, so a Claude Code child without one could not report.
-  if (kind === 'claude' && !registration.mcpConfig) throw new Error(`bellwether relay-register on ${target}, ${installedThere(registration)}, wrote no MCP config for the child. Upgrade @elecnix/bellwether on ${target}.`);
-  if (kind === 'pi' && !registration.piExtension) throw new Error(`bellwether relay-register on ${target}, ${installedThere(registration)}, named no pi extension. Upgrade @elecnix/bellwether on ${target}.`);
+  // Only the per-child server carries the child id, so a child without what its harness needs could not report.
+  const needs = harnessFor(kind)?.reports;
+  const remote = needs && needs.via !== 'none' ? needs.remote : undefined;
+  if (remote === 'mcpConfig' && !registration.mcpConfig) throw new Error(`bellwether relay-register on ${target}, ${installedThere(registration)}, wrote no MCP config for the child. Upgrade @elecnix/bellwether on ${target}.`);
+  if (remote === 'piExtension' && !registration.piExtension) throw new Error(`bellwether relay-register on ${target}, ${installedThere(registration)}, named no ${harnessFor(kind)?.label} extension. Upgrade @elecnix/bellwether on ${target}.`);
   return registration;
 }
 

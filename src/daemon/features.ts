@@ -10,6 +10,9 @@
 // from 0.1.5 on lists what it serves in its hello, which this table only
 // stands in for when a daemon is older than that.
 
+import { harnesses } from '../core/harnesses/index.ts';
+import type { HarnessEntry } from '../core/harnesses/types.ts';
+
 export interface Feature {
   name: string;
   /**
@@ -25,7 +28,7 @@ export interface Feature {
   version: string;
 }
 
-export const FEATURES: readonly Feature[] = [
+const BASE: readonly Feature[] = [
   // In 0.1.3 or earlier, on protocol 2, the oldest a daemon serves.
   ...['hello', 'call', 'receipt', 'bye', 'drain', 'watch'].map((name) => ({ name, kind: 'request' as const, protocol: 2, version: '0.1.3' })),
   ...['agent_spawn', 'agent_adopt', 'agent_list', 'agent_read', 'agent_send', 'agent_stop', 'parent_report', 'request_retirement'].map((name) => ({ name, kind: 'tool' as const, protocol: 2, version: '0.1.3' })),
@@ -45,10 +48,19 @@ export const FEATURES: readonly Feature[] = [
   ...['agent_spawn.workspace', 'agent_spawn.workspace_label'].map((name) => ({ name, kind: 'argument' as const, protocol: 4, version: '0.1.5' })),
   // An older daemon would start the child bare, off the route it was asked for, and say nothing.
   ...['agent_spawn.via', 'agent_spawn.key_file', 'agent_restart.via', 'agent_restart.model', 'agent_restart.key_file', 'agent_restart.provider'].map((name) => ({ name, kind: 'argument' as const, protocol: 4, version: '0.1.5' })),
-  // An older daemon lists opencode as a kind but starts it with a sentence that
-  // OpenCode v2 reads as a directory, so the child never gets its brief.
-  { name: 'agent_spawn.kind=opencode', kind: 'argument', protocol: 4, version: '0.1.5' },
 ];
+
+/**
+ * One argument per harness kind whose registry entry names the release that
+ * first starts it as the entry says, `agent_spawn.kind=<kind>`. An older
+ * daemon would start such a child the old way or not at all, so the client
+ * refuses the kind by name instead.
+ */
+export function kindFeatures(entries: readonly HarnessEntry[] = harnesses()): Feature[] {
+  return entries.flatMap((entry) => (entry.since ? [{ name: `agent_spawn.kind=${entry.kind}`, kind: 'argument' as const, protocol: entry.since.protocol, version: entry.since.version }] : []));
+}
+
+export const FEATURES: readonly Feature[] = [...BASE, ...kindFeatures()];
 
 /**
  * The first argument of a call that the daemon would ignore or misread,
@@ -77,7 +89,7 @@ export interface DaemonOffer {
 }
 
 export function featureNamed(name: string): Feature | undefined {
-  return FEATURES.find((feature) => feature.name === name);
+  return FEATURES.find((feature) => feature.name === name) ?? kindFeatures().find((feature) => feature.name === name);
 }
 
 /**

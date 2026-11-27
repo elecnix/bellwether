@@ -155,7 +155,7 @@ test('an open child no running service watches is neither alive nor dead', () =>
  * The contract: another program reads these names. Renaming one, or adding
  * one without documenting it in docs/tools.md, fails here first.
  */
-test('the JSON shape is the documented contract', () => {
+test('the JSON fields are the documented contract', () => {
   const answer: AncestryAnswer = ancestry('claude:claude-leaf-session', threeLevels({ exitedAt: T2 }), live);
   assert.equal(ANCESTRY_SCHEMA, 1);
   assert.deepEqual(Object.keys(answer).sort(), ['agent', 'chain', 'nearestAlive', 'query', 'schema', 'source', 'stale', 'status', 'top']);

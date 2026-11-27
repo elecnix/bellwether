@@ -20,7 +20,8 @@ export function newChildId(): string {
  * Whether a newer state has made an unread entry stale. A blocked entry is
  * stale once the child has left the blocked state, which is how a dialog that
  * someone already answered stopped being reported minutes later. A stuck entry
- * is stale once the child moves. When herdr reported a state_change_seq for
+ * is stale once the child moves. An inactive entry is stale once the child
+ * shows activity after it was written. When herdr reported a state_change_seq for
  * both, the child's must also be the newer one. A report, an idle event and an
  * exit carry what the child said or did, so they are never dropped.
  */
@@ -32,6 +33,12 @@ export function isSuperseded(entry: OutboxEntry, child: ChildRecord | undefined)
     if (child.exitedAt) return true;
     const moved = Date.parse(child.lastBusyAt) > Date.parse(entry.at);
     return moved || (child.lastStatus !== 'working' && child.lastStatus !== 'unknown' && newer);
+  }
+  // An inactive notice says the child was quiet. Activity after it was written
+  // makes it false, so the notice is dropped rather than delivered late.
+  if (entry.event === 'inactive') {
+    const at = Date.parse(entry.at);
+    return Date.parse(child.lastBusyAt) > at || Date.parse(child.statusChangedAt) > at;
   }
   return false;
 }

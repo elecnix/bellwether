@@ -8,7 +8,7 @@
 // for the same reason.
 import fs from 'node:fs';
 import type { HerdrClient, HerdrEvent, Subscription } from './herdr-client.ts';
-import { DEFAULT_LIMITS, advance, initialState, markReported, type ClassifierState, type SettleLimits } from './classifier.ts';
+import { DEFAULT_LIMITS, advance, limitsFor, markReported, seedFor, type ClassifierState, type SettleLimits } from './classifier.ts';
 import { LOCAL_HOST, hostOf, type ClientFor } from './machine.ts';
 import { Outbox } from './outbox.ts';
 import { mutateParent, readParent, updateChild } from './registry.ts';
@@ -385,14 +385,20 @@ export class Watcher {
         continue;
       }
       if (child.lastStatus !== 'blocked') this.gaveUp.delete(child.id);
-      const state = this.states.get(child.id) ?? initialState(child.lastStatus, now);
+      const state = this.states.get(child.id) ?? seedFor(child, now);
       const busy = await this.childIsBusy(child, now);
-      // A spawn can set its own stuck threshold, which is what the lab uses to
-      // reach that event in seconds rather than ten minutes.
-      const limits = child.stuckMs === undefined ? this.limits : { ...this.limits, stuckMs: child.stuckMs };
-      const { state: next, event } = advance(state, { status: child.lastStatus, completionSeq: child.completionSeq, busy }, now, limits);
+      // A spawn can set its own stuck and inactivity thresholds. The stuck one
+      // is what the lab uses to reach that event in seconds rather than minutes.
+      const { state: next, event } = advance(state, { status: child.lastStatus, completionSeq: child.completionSeq, busy }, now, limitsFor(child, this.limits));
       this.states.set(child.id, next);
       if (!event) continue;
+      if (event === 'inactive') {
+        // Written before the offer, so a restart cannot send the same period again.
+        const notifiedFor = new Date(next.lastActivityAt).toISOString();
+        updateChild(this.parentId, child.id, (entry) => {
+          entry.inactiveNotifiedFor = notifiedFor;
+        });
+      }
       // A report for this turn already told the parent everything the idle
       // event would say, so keep the one message.
       if (event === 'idle' && child.reportPending) {
@@ -414,7 +420,8 @@ export class Watcher {
         this.offer(child, event, this.describeBlocked(child, dialog));
         continue;
       }
-      this.offer(child, event, await this.describe(child, event, next.lastBusyAt, now));
+      const quietSince = event === 'inactive' ? next.lastActivityAt : next.lastBusyAt;
+      this.offer(child, event, await this.describe(child, event, quietSince, now));
     }
     this.publish();
   }
@@ -539,6 +546,7 @@ export class Watcher {
     // Measure the quiet period on the classifier's own clock. The registry's
     // lastBusyAt can be written by another process that only sees file size.
     if (event === 'stuck') return `${childLabel(child)} has been quiet for ${this.age(quietSince, now)}. Last screen lines:\n${trim(await this.screenTail(child))}`;
+    if (event === 'inactive') return `${childLabel(child)} has shown no activity for ${this.age(quietSince, now)}, and its status is ${child.lastStatus}. Last screen lines:\n${trim(await this.screenTail(child))}`;
     const text = child.lastReport?.text?.trim() || (await this.lastMessage(child)) || trim(await this.screenTail(child));
     return `${childLabel(child)} went idle after ${age}:${text ? `\n${text}` : ' no message and no readable screen.'}`;
   }

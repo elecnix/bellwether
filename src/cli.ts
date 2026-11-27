@@ -35,7 +35,7 @@ function parseArgs(argv: string[]): { positional: string[]; flags: Flags } {
     }
     if (key === 'keys' || key === 'args') {
       flags[key] = next;
-    } else if (key === 'stuck-minutes' || key === 'max-depth' || key === 'lines') {
+    } else if (key === 'stuck-minutes' || key === 'inactive-minutes' || key === 'max-depth' || key === 'lines') {
       flags[key] = Number(next);
     } else {
       flags[key] = next;
@@ -269,6 +269,7 @@ async function main(): Promise<number> {
         model: str(flags, 'model'),
         focus: flags['focus'] === true,
         stuckMinutes: num(flags, 'stuck-minutes'),
+        inactive_minutes: num(flags, 'inactive-minutes'),
         maxDepth: num(flags, 'max-depth'),
         args: str(flags, 'args')?.split('\u0000'),
       }));

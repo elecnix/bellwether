@@ -23,6 +23,7 @@ A parent session runs an adapter: a Pi extension, or a Claude Code MCP channel s
 | idle | herdr reports `idle` or `done` with a new `completion_seq`, and no report covered that turn. | 5 s |
 | blocked | herdr reports `blocked`, on a question other than Claude Code's startup questions. | 3 s |
 | stuck | herdr reports `working` or `unknown` and the child has been quiet past the threshold. | 10 min |
+| inactive | The child has shown no status change, output, new turn or report for its inactivity threshold. Any status counts, `blocked` included. | none |
 | exited | `pane.exited`, `pane.closed`, or herdr stops detecting the agent. | none |
 
 A Claude Code child asks two questions before its prompt: whether to trust the folder, and whether to load the development channel. `agent_spawn` answers both before it returns. It moves the selection to "Yes, I trust this folder" and to "I am using this for local development", checks each on screen, and then presses Enter. It says yes to the folder question for any folder, which gives the child write access to whatever directory the spawn names. When a question is still on screen after the spawn's 30 seconds, the spawn fails, and the error names that question. The parent hears about neither question. A resumed session shows the channel question again, and the watcher answers it the same way.
@@ -30,6 +31,8 @@ A Claude Code child asks two questions before its prompt: whether to trust the f
 At delivery, the watcher drops an unread `blocked` or `stuck` event once the child has moved on. A dialog someone already answered stays out of the parent's next turn.
 
 The registry keeps each child's harness session, `session.kind` and `session.value`, and its transcript path after the child exits. To resume a retired Claude Code child, run `claude --resume <value>`.
+
+The inactivity threshold defaults to 5 minutes. `agent_spawn` takes `inactive_minutes` to set it for one child. A value is clamped to 1 minute through 24 hours, and no value turns the notice off. The notice fires once per quiet period. Output or a report starts a new one.
 
 ## Tools
 

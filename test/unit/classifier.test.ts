@@ -43,7 +43,9 @@ test('a blocked child reports its dialog once, after its own settle', () => {
 test('a quiet working child fires stuck once per quiet period', () => {
   const fired = advance(initialState('working', 0), { status: 'working' }, limits.stuckMs, limits);
   assert.equal(fired.event, 'stuck');
-  assert.equal(advance(fired.state, { status: 'working' }, limits.stuckMs * 2, limits).event, undefined);
+  // The inactive notice is a separate event and may fire in this quiet stretch;
+  // this test is about stuck, which must not fire a second time.
+  assert.notEqual(advance(fired.state, { status: 'working' }, limits.stuckMs * 2, limits).event, 'stuck');
 
   // Movement restarts the clock, so a later quiet stretch fires again.
   const moved = advance(fired.state, { status: 'working', busy: true }, limits.stuckMs * 2, limits);

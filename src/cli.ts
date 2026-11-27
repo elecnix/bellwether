@@ -4,6 +4,7 @@
 // `watch` is the dogfood driver: it runs the same core the Pi extension and the
 // Claude channel run, and prints one line per child event, so a supervisor can
 // read the stream instead of polling herdr.
+import { describeRoutes, readRoutes } from './core/routes.ts';
 import { workspaceColumn } from './core/workspace.ts';
 import fs from 'node:fs';
 import net from 'node:net';
@@ -229,6 +230,10 @@ async function doctor(): Promise<number> {
     console.log(`  ${parent.id}: ${live.length} live of ${parent.children.length} children, updated ${parent.updatedAt}`);
     for (const child of live) console.log(`    ${child.name} on ${machineLabel(hostOf(child))}, workspace ${workspaceColumn(child)}`);
   }
+  // Each route a child can start on, and what a child on it sees that a bare one does not.
+  const routeLines = describeRoutes(() => readRoutes(), listParents().flatMap((parent) => parent.children).filter((child) => !child.exitedAt));
+  for (const line of routeLines) console.log(`  ${line}`);
+  failures += routeLines.filter((line) => line.startsWith('fail')).length;
   await checkMoves();
   return failures;
 }
@@ -314,8 +319,8 @@ async function checkMoves(): Promise<void> {
   }
 }
 
-async function main(): Promise<number> {
-  const [command = 'help', ...rest] = process.argv.slice(2);
+async function main(argv: string[]): Promise<number> {
+  const [command = 'help', ...rest] = argv;
   const { positional, flags } = parseArgs(rest);
 
   if (command === 'version' || command === '--version') {
@@ -324,7 +329,8 @@ async function main(): Promise<number> {
   }
 
   if (command === 'help' || command === '--help') {
-    console.log('Usage: bellwether <daemon|drain|spawn|watch|list|read|send|stop|move|report|parents|doctor|version>');
+    console.log('Usage: bellwether <daemon|drain|spawn|watch|list|read|send|stop|move|report|parents|doctor|version> [--debug]');
+    console.log('  --debug                                  print the stack trace of a failure, as BELLWETHER_DEBUG=1 does');
     console.log('  daemon [--socket PATH]                   run the local daemon in the foreground');
     console.log('  drain  [--socket PATH]                   stop the running daemon once its calls finish, so the next session starts the installed one');
     console.log('  version                                  print the installed version (also --version); doctor names the commit it was built from');
@@ -383,7 +389,7 @@ async function main(): Promise<number> {
 
   const { id: parentId } = parentFor(flags);
   const parent = readParent(parentId);
-  if (!parent) throw new Error(`No parent registry ${parentId}. Run bellwether list once to create it.`);
+  if (!parent) throw new Error(`no parent registry ${parentId} in ${path.join(bellwetherHome(), 'parents')}; bellwether parents lists the ones there`);
   const daemon = await DaemonClient.connect({
     harness: parent.harness,
     session: parent.session,
@@ -729,4 +735,34 @@ async function checkRelay(daemonLive: boolean, daemonSocket: string): Promise<nu
   return failures;
 }
 
-process.exitCode = await main();
+/**
+ * Why a stack trace is shown, or undefined when it is not: `--debug` anywhere
+ * on the command line, or BELLWETHER_DEBUG=1 in the environment. The flag is
+ * taken out before parsing, so it never takes the next word as its value.
+ */
+export function debugReason(argv: string[], env: NodeJS.ProcessEnv = process.env): string | undefined {
+  if (argv.includes('--debug')) return 'because of --debug';
+  if (env['BELLWETHER_DEBUG'] === '1') return 'because BELLWETHER_DEBUG=1 is set';
+  return undefined;
+}
+
+/**
+ * Run a command, and print a failure as `bellwether <command>: <message>` on
+ * standard error with a non-zero exit. The stack trace is for whoever asked
+ * for it, and says how it was asked for.
+ */
+async function run(argv: string[]): Promise<number> {
+  const debug = debugReason(argv);
+  const args = argv.filter((word) => word !== '--debug');
+  try {
+    return await main(args);
+  } catch (error) {
+    const fault = error instanceof Error ? error : new Error(String(error));
+    console.error(`bellwether ${args[0] ?? 'help'}: ${fault.message}`);
+    if (debug) console.error(`${fault.stack ?? fault.message}\n(stack trace shown ${debug})`);
+    else console.error('Run it again with --debug, or with BELLWETHER_DEBUG=1, for the stack trace.');
+    return 1;
+  }
+}
+
+process.exitCode = await run(process.argv.slice(2));

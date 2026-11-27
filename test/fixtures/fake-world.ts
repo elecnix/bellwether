@@ -18,6 +18,11 @@ export interface FakePane {
   agent_session?: { agent: string; kind: 'id' | 'path'; source: string; value: string };
   /** The arguments the agent started with. */
   args?: string[];
+  /** For an agent started through a route: the words typed before the harness name, and the assignments in front of them. */
+  launcher?: string[];
+  assignments?: string[];
+  /** The line typed into the pane, as herdr received it. */
+  typed?: string;
   /** What pane.read shows. */
   screen?: string;
 }
@@ -49,6 +54,45 @@ export interface FakeWorld {
   respond(request: RecordedRequest): { result: unknown } | { error: { code: string; message: string } } | undefined;
 }
 
+const HARNESSES = new Set(['claude', 'pi', 'codex', 'opencode', 'cline']);
+
+/**
+ * Split a line into words as a POSIX shell does for the forms a launch line
+ * uses: spaces, single quotes, double quotes kept literal, and backslashes.
+ * Command substitution is not run: `NAME="$(cat 'f')"` stays one word.
+ */
+export function shellWords(line: string): string[] {
+  const words: string[] = [];
+  let word = '';
+  let started = false;
+  let quote: "'" | '"' | undefined;
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line[index] as string;
+    if (quote) {
+      if (char === quote) quote = undefined;
+      else word += char;
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = char;
+      started = true;
+    } else if (char === '\\' && index + 1 < line.length) {
+      index += 1;
+      word += line[index];
+      started = true;
+    } else if (/\s/.test(char)) {
+      if (started) words.push(word);
+      word = '';
+      started = false;
+    } else {
+      word += char;
+      started = true;
+    }
+  }
+  if (started) words.push(word);
+  return words;
+}
+
 export function fakeWorld(workspace = 'w1'): FakeWorld {
   const panes = new Map<string, FakePane>();
   const labels = new Map<string, string>();
@@ -62,6 +106,24 @@ export function fakeWorld(workspace = 'w1'): FakeWorld {
   const status = (world: FakeWorld, pane: FakePane, agentStatus: FakePane['agent_status']): void => {
     pane.agent_status = agentStatus;
     setTimeout(() => world.emit({ event: 'pane_agent_status_changed', data: { pane_id: pane.pane_id, agent_status: agentStatus } }), 20);
+  };
+  /** Put an agent in a pane, the way agent.start or a typed launch does. */
+  const start = (world: FakeWorld, pane: FakePane, kind: string, args: string[]): void => {
+    const flag = args.findIndex((arg) => arg === '--resume' || arg === '--session');
+    const value = flag >= 0 ? String(args[flag + 1]) : `fresh-${pane.pane_id}`;
+    pane.agent = kind;
+    pane.args = args;
+    pane.agent_session = { agent: pane.agent, kind: value.includes('/') ? 'path' : 'id', source: `herdr:${pane.agent}`, value };
+    world.onStart?.(pane);
+    // A Claude Code session loaded with the development channel opens on
+    // the confirmation and waits; one started without the flag does not.
+    if (pane.agent === 'claude' && args.some((arg) => arg.startsWith('--dangerously-load-development-channels'))) {
+      pane.screen = CHANNEL_DIALOG;
+      status(world, pane, 'blocked');
+    } else {
+      pane.screen = READY;
+      pane.agent_status = 'idle';
+    }
   };
   return {
     panes,
@@ -101,23 +163,36 @@ export function fakeWorld(workspace = 'w1'): FakeWorld {
           const pane = panes.get(String(params['pane_id']));
           if (!pane) return { error: { code: 'pane_not_found', message: 'no such pane' } };
           const args = Array.isArray(params['args']) ? (params['args'] as string[]) : [];
-          const flag = args.findIndex((arg) => arg === '--resume' || arg === '--session');
-          const value = flag >= 0 ? String(args[flag + 1]) : `fresh-${pane.pane_id}`;
-          pane.agent = String(params['kind']);
           pane.name = String(params['name']);
-          pane.args = args;
-          pane.agent_session = { agent: pane.agent, kind: value.includes('/') ? 'path' : 'id', source: `herdr:${pane.agent}`, value };
-          this.onStart?.(pane);
-          // A Claude Code session loaded with the development channel opens on
-          // the confirmation and waits; one started without the flag does not.
-          if (pane.agent === 'claude' && args.some((arg) => arg.startsWith('--dangerously-load-development-channels'))) {
-            pane.screen = CHANNEL_DIALOG;
-            status(this, pane, 'blocked');
-          } else {
-            pane.screen = READY;
-            pane.agent_status = 'idle';
-          }
+          start(this, pane, String(params['kind']), args);
           return { type: 'agent_started' };
+        }
+        case 'pane.send_input': {
+          // A line typed at the shell prompt: the shell splits it into words,
+          // and the first harness name among them is the program herdr detects
+          // behind whatever launcher runs it.
+          const pane = panes.get(String(params['pane_id']));
+          if (!pane) return { error: { code: 'pane_not_found', message: 'no such pane' } };
+          const text = typeof params['text'] === 'string' ? params['text'] : '';
+          const keys = Array.isArray(params['keys']) ? (params['keys'] as string[]) : [];
+          if (pane.agent || !keys.includes('Enter')) return { type: 'ok' };
+          const words = shellWords(text);
+          const assignments: string[] = [];
+          while (words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0] as string)) assignments.push(words.shift() as string);
+          const at = words.findIndex((word, index) => index > 0 && HARNESSES.has(word));
+          if (at < 0) return { type: 'ok' };
+          pane.typed = text;
+          pane.assignments = assignments;
+          pane.launcher = words.slice(0, at);
+          start(this, pane, words[at] as string, words.slice(at + 1));
+          setTimeout(() => this.emit({ event: 'pane_agent_detected', data: { pane_id: pane.pane_id, agent: pane.agent, workspace_id: pane.workspace_id } }), 20);
+          return { type: 'ok' };
+        }
+        case 'agent.rename': {
+          const pane = panes.get(String(params['target']));
+          if (!pane?.agent) return { error: { code: 'agent_not_found', message: 'no agent in that pane' } };
+          pane.name = String(params['name']);
+          return { type: 'ok' };
         }
         case 'pane.read': {
           const pane = panes.get(String(params['pane_id']));

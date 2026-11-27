@@ -10,7 +10,8 @@ import { newChildId } from './outbox.ts';
 import { readParent, removeChild, updateChild, upsertChild } from './registry.ts';
 import { clearRetirement } from './retire.ts';
 import { openChildTab, returnPlacement, undoChildTab, type ChildTab } from './workspace.ts';
-import { STARTUP_HOLD_MS, STARTUP_TIMEOUT_MS, childArgs, childEnv, childStartFiles, harnessOf, herdrLink, startWithRetry, type RegisterRemote } from './spawn.ts';
+import { STARTUP_HOLD_MS, STARTUP_TIMEOUT_MS, childArgs, childEnv, childStartFiles, harnessOf, herdrLink, nextLaunch, startHarness, type RegisterRemote } from './spawn.ts';
+import { routeLaunch } from './routes.ts';
 import { watchStartup, type StartupDialog, type StartupWatch } from './startup-dialogs.ts';
 import { locateTranscript, sessionFrom } from './transcript.ts';
 import type { ChildRecord, ParentRecord } from './types.ts';
@@ -67,6 +68,12 @@ export interface ResumeTarget {
 export interface ResumeOptions {
   prompt?: string;
   model?: string;
+  /** A route to resume on, `none` to leave the child's route, or undefined to keep it. */
+  via?: string;
+  /** A key file for the route. */
+  keyFile?: string;
+  /** The pi provider for a bare pi resume. */
+  provider?: string;
   args?: string[];
   focus?: boolean;
   workspaceId?: string;
@@ -114,6 +121,8 @@ export async function resumeChild(client: HerdrClient, parent: ParentRecord, tar
     throw new Error(existing ? `${existing.name} has no recorded session, so there is nothing to resume. Pass resume with the session id and kind to reopen it as a new child.` : 'A resume needs a child of this session or a session id.');
   }
   const args = resumeArgs(kind, session);
+  // The route is decided before anything is written, so a refusal leaves the record as it was.
+  const launch = nextLaunch({ name: existing?.name ?? target.name ?? 'The session', kind, host: existing?.host ?? target.host ?? LOCAL_HOST, route: existing?.route, model: existing?.model }, { via: options.via, model: options.model, keyFile: options.keyFile, provider: options.provider }, 'resumed');
 
   // Refuse a second copy of a session that still runs, here or in any pane.
   const panes = await client.agentList(signal);
@@ -142,7 +151,15 @@ export async function resumeChild(client: HerdrClient, parent: ParentRecord, tar
         depth: parent.depth + 1,
         inactiveMs: resolveInactiveMs(undefined),
       };
-  const previous = existing ? { paneId: existing.paneId, tabId: existing.tabId, workspaceId: existing.workspaceId, workspaceLabel: existing.workspaceLabel, exitedAt: existing.exitedAt ?? now, exitCode: existing.exitCode } : undefined;
+  const previous = existing ? { paneId: existing.paneId, tabId: existing.tabId, workspaceId: existing.workspaceId, workspaceLabel: existing.workspaceLabel, exitedAt: existing.exitedAt ?? now, exitCode: existing.exitCode, route: existing.route, model: existing.model } : undefined;
+  // The record says how this run starts, so a later resume or restart replays it.
+  if (launch.route) {
+    child.route = launch.route;
+    delete child.model;
+  } else {
+    delete child.route;
+    if (kind === 'pi' && launch.provider && launch.harnessModel) child.model = { provider: launch.provider, id: launch.harnessModel, source: 'caller' };
+  }
 
   // 1. The record lands first, with no pane, so a crash still says what was asked.
   child.paneId = '';
@@ -180,6 +197,10 @@ export async function resumeChild(client: HerdrClient, parent: ParentRecord, tar
       entry.workspaceLabel = previous.workspaceLabel;
       entry.exitedAt = previous.exitedAt;
       entry.exitCode = previous.exitCode;
+      if (previous.route) entry.route = previous.route;
+      else delete entry.route;
+      if (previous.model) entry.model = previous.model;
+      else delete entry.model;
     });
   };
 
@@ -218,7 +239,8 @@ export async function resumeChild(client: HerdrClient, parent: ParentRecord, tar
     upsertChild(parent.id, child);
 
     // 3. Start the harness on the session.
-    await startWithRetry(client, { name: child.name, kind, paneId: tab.paneId, args: childArgs(kind, { kind, name: child.name, model: options.model, args: [...args, ...(options.args ?? [])] }, { briefFile, mcpConfigFile, claudeSettingsFile, piExtension }) }, signal);
+    const harnessArgs = childArgs(kind, { kind, name: child.name, model: launch.harnessModel, provider: launch.provider, args: [...args, ...(options.args ?? [])] }, { briefFile, mcpConfigFile, claudeSettingsFile, piExtension });
+    await startHarness(client, { name: child.name, kind, paneId: tab.paneId, args: harnessArgs, ...(launch.route && launch.config ? { launch: routeLaunch(launch.config, launch.route, kind, harnessArgs) } : {}) }, signal);
   } catch (error) {
     startup?.close();
     await undoChildTab(client, opened);

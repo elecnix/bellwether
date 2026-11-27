@@ -368,6 +368,10 @@ export class Watcher {
   }
 
   private markExited(child: ChildRecord, code: number | undefined, ended?: 'in-pane'): void {
+    // One exit can arrive twice: the reconcile after a subscribe finds the pane
+    // gone, and the pane_closed event for it lands too. The record decides, so
+    // the exit is offered, the workspace released and retirement started once.
+    if (readParent(this.parentId)?.children.find((entry) => entry.id === child.id)?.exitedAt) return;
     // A child that exits between two looks wrote its file after the last one,
     // so look once more. The session and transcript stay on the record, so a
     // retired child can still be read and resumed.

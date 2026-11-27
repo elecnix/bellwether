@@ -64,4 +64,11 @@ test('an argument an older daemon would ignore is refused by name before the cal
     missingFeatureMessage('agent_spawn.workspace', old),
     '`agent_spawn.workspace` needs protocol 4 (Bellwether 0.1.5); this daemon serves protocol 3 (Bellwether 0.1.4). Upgrade the machine holding the daemon when convenient. Every other tool keeps working.',
   );
+
+  // An older daemon would drop via and key_file and start the child bare, so each is refused by name.
+  const beforeRoutes = { protocol: 4, version: '0.1.5', features: FEATURES.filter((feature) => !/\.(via|key_file)$/.test(feature.name)).map((feature) => feature.name) };
+  assert.equal(unservedArgument(beforeRoutes, 'agent_spawn', { kind: 'claude', name: 'x', via: 'example-router' }), 'agent_spawn.via');
+  assert.equal(unservedArgument(beforeRoutes, 'agent_spawn', { kind: 'claude', name: 'x', key_file: '/k' }), 'agent_spawn.key_file');
+  assert.equal(unservedArgument(beforeRoutes, 'agent_restart', { target: 'x', via: 'none' }), 'agent_restart.via');
+  assert.equal(unservedArgument(beforeRoutes, 'agent_spawn', { kind: 'claude', name: 'x' }), undefined);
 });

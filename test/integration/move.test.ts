@@ -464,7 +464,7 @@ test('a move whose rollback also fails leaves the child stranded on the source, 
   assert.match(String(line?.['rollbackError']), /here would not start claude/);
   const watcher = new Watcher({ client: w.here.client, clientFor: w.deps.clientFor, parentId: w.parentId, onEntries: () => {} });
   const listed = await runBellwetherTool({ client: w.here.client, clientFor: w.deps.clientFor, parentId: w.parentId, watcher }, 'agent_list', {});
-  assert.match(listed, /^worker\tclaude\texited\t.*\tlocal\t/m);
+  assert.match(listed, /^worker\tclaude\tbare\texited\t.*\tlocal\t/m);
 
   // The named recovery: once the source can start it, the same child comes back on its own session.
   sourceStarts = true;

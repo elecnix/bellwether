@@ -28,10 +28,11 @@ import { childOfCaller } from './report.ts';
 import { listParents, mutateParent, readParent, updateChild } from './registry.ts';
 import { resumeArgs, sessionOf, type HarnessSession } from './resume.ts';
 import { clearRetirement } from './retire.ts';
-import { STARTUP_HOLD_MS, STARTUP_TIMEOUT_MS, childArgs, childEnv, childStartFiles, herdrLink, hostName, startWithRetry } from './spawn.ts';
+import { STARTUP_HOLD_MS, STARTUP_TIMEOUT_MS, childArgs, childEnv, childStartFiles, herdrLink, hostName, nextLaunch, startHarness, startWithRetry, type NextLaunch, type RouteChange } from './spawn.ts';
+import { launchLine, routeLabel, routeLaunch } from './routes.ts';
 import { watchStartup, type StartupWatch } from './startup-dialogs.ts';
 import { resolveTranscript, sessionFrom } from './transcript.ts';
-import type { CallerIdentity, ChildRecord, ChildSession, ParentRecord } from './types.ts';
+import type { CallerIdentity, ChildRecord, ChildRoute, ChildSession, ParentRecord } from './types.ts';
 import { openChildTab, returnPlacement, undoChildTab, type ChildTab } from './workspace.ts';
 
 export const RESTART_TOOL = 'agent_restart';
@@ -108,6 +109,8 @@ export interface RestartOutcome {
   kind: string;
   /** The resume arguments the harness got, as one string for the reply. */
   command: string;
+  /** Set when the restart changed the child's route. */
+  route?: string;
   /** Whether herdr reported the session the restart asked for on the new pane. */
   sessionMatched: boolean;
   /** Set when the act waited for the target's turn to end. */
@@ -280,6 +283,8 @@ async function waitForTurnEnd(client: HerdrClient, label: string, pane: { paneId
 export interface RestartOptions {
   /** Wait for the target's turn to end before closing or starting anything. */
   wait?: boolean;
+  /** A change of route. Without one, the restart uses the request on the record, or keeps the child's route. */
+  change?: RouteChange;
   waitTimeoutMs?: number;
 }
 
@@ -306,6 +311,8 @@ async function restartChildLocked(client: HerdrClient, parentId: string, childId
   const session = sessionOf(child);
   if (!session) throw new RestartRefused(`${child.name} (child ${child.id}, pane ${child.paneId || 'none'}) has no recorded session, so agent_restart cannot reopen it. Resume it once with agent_spawn and resume, which records the session herdr reports.`);
   const resume = resumeArgs(child.kind, session);
+  // Decided before the old pane closes, so a refused route leaves the child running.
+  const launch = nextLaunch(child, options.change ?? child.restartRoute ?? {}, 'restarted');
 
   let waitedMs: number | undefined;
   if (options.wait && child.paneId) {
@@ -325,6 +332,7 @@ async function restartChildLocked(client: HerdrClient, parentId: string, childId
     delete entry.tabId;
     delete entry.reportPending;
     delete entry.restartRequestedAt;
+    delete entry.restartRoute;
     entry.startingUntil = new Date(Date.now() + STARTUP_HOLD_MS).toISOString();
   });
   // 2. Close what Bellwether started.
@@ -373,7 +381,8 @@ async function restartChildLocked(client: HerdrClient, parentId: string, childId
       // The watch opens before the start: the dialog appears with the harness.
       startup = await watchStartup(client, newPane, undefined, { timeoutMs, redrawMs: hooks.redrawMs });
     }
-    await startWithRetry(client, { name: child.name, kind: child.kind, paneId: newPane, args: childArgs(child.kind, { kind: child.kind, name: child.name, ...(child.model ? { provider: child.model.provider, model: child.model.id } : {}), args: resume }, { mcpConfigFile, claudeSettingsFile, piExtension }) });
+    const harnessArgs = childArgs(child.kind, { kind: child.kind, name: child.name, model: launch.harnessModel, provider: launch.provider, args: resume }, { mcpConfigFile, claudeSettingsFile, piExtension });
+    await startHarness(client, { name: child.name, kind: child.kind, paneId: newPane, args: harnessArgs, ...(launch.route && launch.config ? { launch: routeLaunch(launch.config, launch.route, child.kind, harnessArgs) } : {}) });
     if (startup) {
       await startup.answer();
       startup.close();
@@ -414,6 +423,7 @@ async function restartChildLocked(client: HerdrClient, parentId: string, childId
     entry.lastBusyAt = at;
     entry.resumedAt = at;
     entry.restartedAt = at;
+    applyLaunch(entry, launch);
     delete entry.startingUntil;
     delete entry.exitedAt;
     delete entry.exitCode;
@@ -427,7 +437,31 @@ async function restartChildLocked(client: HerdrClient, parentId: string, childId
   hooks.reset?.(child.id);
   hooks.log?.(`restart ${child.name}: closed ${oldPane}, opened ${newPane} on session ${session.value}, ${matched ? 'the session matched' : `herdr reported ${reported?.value ?? 'no session'}`}`);
   logRestart({ outcome: 'restarted', target: 'child', parent: parentId, child: child.id, name: child.name, oldPane, newPane, ...(newTab ? { newTab } : {}), session: session.value, sessionMatched: matched, ...(waitedMs !== undefined ? { waitedMs } : {}) });
-  return { target: 'child', id: child.id, name: child.name, oldPane, newPane, ...(newTab ? { newTab } : {}), session: session.value, kind: child.kind, command: resume.join(' '), sessionMatched: matched, ...(waitedMs !== undefined ? { waitedMs } : {}) };
+  return { target: 'child', id: child.id, name: child.name, oldPane, newPane, ...(newTab ? { newTab } : {}), session: session.value, kind: child.kind, command: commandWords(child.kind, resume, launch), route: routeMove(child.route, launch), sessionMatched: matched, ...(waitedMs !== undefined ? { waitedMs } : {}) };
+}
+
+/** The record's route after a start: the new route, or none for a bare start with its pi pair. */
+function applyLaunch(entry: ChildRecord, launch: NextLaunch): void {
+  if (launch.route) {
+    entry.route = launch.route;
+    delete entry.model;
+    return;
+  }
+  delete entry.route;
+  if (entry.kind === 'pi' && launch.provider && launch.harnessModel) entry.model = { provider: launch.provider, id: launch.harnessModel, source: 'caller' };
+}
+
+/** What the reply names as the command: the harness's resume flag, behind the route's launcher when there is one. */
+function commandWords(kind: string, resume: string[], launch: NextLaunch): string {
+  if (!launch.route || !launch.config) return resume.join(' ');
+  return launchLine(routeLaunch(launch.config, launch.route, kind, resume));
+}
+
+/** A sentence for a route that changed, or undefined when it did not. */
+function routeMove(before: ChildRoute | undefined, launch: NextLaunch): string | undefined {
+  const from = routeLabel(before);
+  const to = routeLabel(launch.route);
+  return from === to ? undefined : `It moved from route ${from} to ${to}, on the same session.`;
 }
 
 /** The session a parent record names, and the arguments that reopen it. */
@@ -601,7 +635,8 @@ function paneWords(outcome: RestartOutcome): string {
  * either acts and answers with the new identity or, for the caller itself,
  * records the request, arms the deferred act and answers first.
  */
-export async function runAgentRestart(client: HerdrClient, ownParentId: string, caller: CallerIdentity, hooks: RestartHooks, target?: string, waitSeconds?: number): Promise<string> {
+export async function runAgentRestart(client: HerdrClient, ownParentId: string, caller: CallerIdentity, hooks: RestartHooks, target?: string, waitSeconds?: number, change?: RouteChange): Promise<string> {
+  const changing = change && Object.values(change).some((value) => value !== undefined);
   // A child registered on another machine belongs to its parent's daemon.
   if (!target && caller.childId && readRelayRecord(caller.childId) && !childOfCaller(caller)) {
     throw new RestartRefused(`This session is child ${caller.childId}, registered on another machine, and only its parent's daemon can restart it in place. Report home and ask the parent to run agent_restart.`);
@@ -609,10 +644,11 @@ export async function runAgentRestart(client: HerdrClient, ownParentId: string, 
   const resolved = await resolveRestartTarget(client, ownParentId, caller, target);
   const waitTimeoutMs = waitFor(waitSeconds, hooks);
   if (resolved.kind === 'child') {
-    if (resolved.self) return deferChildRestart(client, resolved.parent, resolved.child, caller, hooks);
-    const outcome = await restartChild(client, resolved.parent.id, resolved.child.id, hooks, { wait: true, waitTimeoutMs });
-    return `Restarted ${outcome.name} (child ${outcome.id}): closed pane ${outcome.oldPane}, started ${outcome.kind} in ${paneWords(outcome)} with ${outcome.command}. ${matchNote(outcome.sessionMatched)}${waitNote(outcome)}\nherdr link: ${herdrLink('pane', outcome.newPane)}`;
+    if (resolved.self) return deferChildRestart(client, resolved.parent, resolved.child, caller, hooks, changing ? change : undefined);
+    const outcome = await restartChild(client, resolved.parent.id, resolved.child.id, hooks, { wait: true, waitTimeoutMs, ...(changing ? { change } : {}) });
+    return `Restarted ${outcome.name} (child ${outcome.id}): closed pane ${outcome.oldPane}, started ${outcome.kind} in ${paneWords(outcome)} with ${outcome.command}.${outcome.route ? ` ${outcome.route}` : ''} ${matchNote(outcome.sessionMatched)}${waitNote(outcome)}\nherdr link: ${herdrLink('pane', outcome.newPane)}`;
   }
+  if (changing) throw new RestartRefused(`via, model, key_file and provider change how a child starts, and ${resolved.kind === 'parent' ? `session ${resolved.parent.id} is a parent session` : `pane ${resolved.pane.paneId} holds no child of a Bellwether registry`}. Drop them to restart it as it runs, or name a child.`);
   if (resolved.kind === 'parent') {
     if (resolved.self) return deferParentRestart(client, resolved.parent, caller, hooks);
     const outcome = await restartParent(client, resolved.parent.id, hooks, { wait: true, waitTimeoutMs });
@@ -623,7 +659,7 @@ export async function runAgentRestart(client: HerdrClient, ownParentId: string, 
   throw new RestartRefused(`${pane.name ?? pane.label ?? pane.agent ?? 'The agent'} in pane ${pane.paneId} is not a session any Bellwether registry holds, so agent_restart neither closes that pane nor starts a second copy of its session. Restart it from the session that owns it, or close it and reopen its session by hand.`);
 }
 
-function deferChildRestart(client: HerdrClient, parent: ParentRecord, childNow: ChildRecord, caller: CallerIdentity, hooks: RestartHooks): string {
+function deferChildRestart(client: HerdrClient, parent: ParentRecord, childNow: ChildRecord, caller: CallerIdentity, hooks: RestartHooks, change?: RouteChange): string {
   const child = readParent(parent.id)?.children.find((entry) => entry.id === childNow.id) ?? childNow;
   if (child.restartRequestedAt) return `${child.name} (child ${child.id}) already has a restart pending from ${child.restartRequestedAt}; the daemon acts once its turn ends.`;
   if (!hooks.defer) throw new RestartRefused('This daemon cannot defer a restart, so it cannot restart the session that asked.');
@@ -632,13 +668,18 @@ function deferChildRestart(client: HerdrClient, parent: ParentRecord, childNow: 
   const session = sessionOf(child);
   if (!session) throw new RestartRefused(`${child.name} (child ${child.id}, pane ${child.paneId || 'none'}) has no recorded session, so agent_restart cannot reopen it. Resume it once with agent_spawn and resume, which records the session herdr reports.`);
   const resume = resumeArgs(child.kind, session);
+  // A wrong route is refused now, while the caller can still read why.
+  const launch = nextLaunch(child, change ?? {}, 'restarted');
   const paneId = caller.paneId ?? child.paneId;
   if (!paneId) throw new RestartRefused(`${child.name} (child ${child.id}) is in no pane the daemon can watch, so it cannot tell when this turn ends. Ask the parent to restart it with agent_restart.`);
   updateChild(parent.id, child.id, (entry) => {
     entry.restartRequestedAt = new Date().toISOString();
+    if (change) entry.restartRoute = change;
+    else delete entry.restartRoute;
   });
   hooks.defer(`child:${child.id}`, () => deferredChildRestart(client, parent.id, child.id, paneId, child.tabId, hooks));
-  return `Restart requested for ${child.name} (child ${child.id}). Once this turn ends, the daemon closes pane ${paneId} and starts ${child.kind} in a new tab with ${resume.join(' ')}, keeping the same child id, so its history and receipts continue. Finish your reply first; the new pane carries on this session.`;
+  const moved = routeMove(child.route, launch);
+  return `Restart requested for ${child.name} (child ${child.id}). Once this turn ends, the daemon closes pane ${paneId} and starts ${child.kind} in a new tab with ${commandWords(child.kind, resume, launch)}, keeping the same child id, so its history and receipts continue.${moved ? ` ${moved}` : ''} Finish your reply first; the new pane carries on this session.`;
 }
 
 function deferParentRestart(client: HerdrClient, record: ParentRecord, caller: CallerIdentity, hooks: RestartHooks): string {

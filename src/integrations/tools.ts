@@ -16,6 +16,7 @@ import { RETIRE_TOOL, realRetireOps, requestRetirement, type RetireOps } from '.
 import type { RemoteOps } from '../core/remote.ts';
 import { lastAssistantMessage, locateTranscript } from '../core/transcript.ts';
 import { moveChild } from '../core/move.ts';
+import { routeLabel } from '../core/routes.ts';
 import { parseWorkspaces, releaseWorkspace, workspaceColumn, workspaceName } from '../core/workspace.ts';
 import { moveEndpoints, type EndpointFor } from '../core/move-endpoint.ts';
 import type { Watcher } from '../core/watcher.ts';
@@ -72,13 +73,15 @@ export const parentTools: ToolDefinition[] = [
         name: { type: 'string', description: 'A short handle for the child, unique in this session. Used as the herdr agent name and the tab label. Required without resume.' },
         cwd: { type: 'string', description: 'The directory to start the child in. Use an absolute path, ideally a git worktree of its own.' },
         prompt: { type: 'string', description: 'The first message the child receives, or with resume the message for the earlier child. The whole prompt, not a path. Line breaks and any length are fine: Bellwether hands a new or resumed child the prompt through a private file.' },
-        model: { type: 'string', description: 'The model or tier to pass to the child harness. A pi child needs provider with it; with neither, a pi child runs on the provider and model of this session.' },
+        model: { type: 'string', description: 'The model to pass to the child harness, or with via a tier of that route. A pi child needs provider with it; with neither, a pi child runs on the provider and model of this session. A tier passed without via is refused, and the refusal names the route that has it.' },
+        via: { type: 'string', description: 'Start the child through a route: a launcher wrapper that this machine\'s routes file (~/.config/bellwether/routes.json, or BELLWETHER_ROUTES) defines, which runs the harness and routes it. model then names one of the route\'s tiers, and the route\'s default tier applies without one. Pass none for a bare start. With resume, a route moves the child onto it and none takes it off, on the same session; omit it to keep the route the child ran on.' },
+        key_file: { type: 'string', description: 'A file that holds the key the route\'s launcher runs under, such as another tenant\'s. Needs via. The file must exist and not be empty. Its path goes on the child\'s record, and the pane\'s shell reads the file when the launch runs, so the key never appears on a command line.' },
         provider: { type: 'string', description: 'The pi provider for model. Pass both or neither.' },
         args: { type: 'array', items: { type: 'string' }, description: 'Extra arguments for the child harness, passed through unchanged and appended last.' },
         focus: { type: 'boolean', description: 'Move your view to the new tab. Defaults to false, so the child does not steal focus.' },
         stuck_minutes: { type: 'number', description: 'How long the child may be quiet before it counts as stuck. Defaults to 10.' },
         inactive_minutes: { type: 'number', description: 'How long the child may show no activity of any kind, blocked included, before you are told. Defaults to 5. Clamped to between 1 and 1440. It cannot be turned off.' },
-        max_depth: { type: 'number', description: 'The deepest generation the child\'s own descendants may reach: with 2, your child may spawn children but they may not. Defaults to 2. From the session at the top of the tree, it also sets the tree\'s ceiling, which no grant goes past. From any other session, it is held to your own ceiling. A child in a workspace of its own counts the same depth as any other.' },
+        max_depth: { type: 'number', description: 'The deepest generation the child\'s own descendants may reach: with 2, your child may spawn children but they may not. Defaults to 2. From the session at the top of the tree, it also sets the tree\'s ceiling, which no grant goes past, and it gates this call: the child itself, one level down, must fit under it, so max_depth 0 refuses the spawn. From any other session, it is held to your own ceiling. A child in a workspace of its own counts the same depth as any other.' },
         machine: { type: 'string', description: `${MACHINE_DESCRIPTION} With resume, a known child always goes back to its own machine.` },
         workspace: { type: 'string', description: 'The herdr workspace for the child\'s tab. "new" creates a workspace for the child, on the child\'s machine, and starts the child in its first tab; the child\'s own children then open there too, so its subtree stays out of your workspace, and Bellwether closes that workspace once nothing is left in it. An existing workspace\'s id or label puts the child there, on the child\'s machine, and Bellwether never closes it; a name that matches nothing is refused. Omit it to open the child in your own workspace, as before.' },
         workspace_label: { type: 'string', description: 'The label of the workspace that workspace "new" creates. Defaults to the child\'s name.' },
@@ -178,6 +181,10 @@ export const parentTools: ToolDefinition[] = [
       properties: {
         target: { type: 'string', description: 'What to restart: a child name, id or pane, or a parent session id or pane. Omit it to restart this session.' },
         wait_seconds: { type: 'number', description: 'How long to wait for the target\'s turn to end before refusing. Defaults to 30, and is held under 45 so the call can still answer.' },
+        via: { type: 'string', description: 'For a child: restart it through this route from the routes file, or none to restart it bare, on the same session either way. Omit it to keep the route it runs on.' },
+        model: { type: 'string', description: 'For a child: the tier on a route, or the harness model on a bare start.' },
+        key_file: { type: 'string', description: 'For a child on a route: a file that holds the key the launcher runs under. Without it, a child that stays on its route keeps its key file.' },
+        provider: { type: 'string', description: 'For a pi child restarted bare: the provider for model. A pi child leaving a route needs both, because its session names the route\'s provider.' },
       },
     },
   },
@@ -288,7 +295,7 @@ function describeChild(child: ChildRecord, watcher: Watcher, relayState?: ToolCo
   const state = `${child.exitedAt ? `exited${child.exitCode === undefined ? '' : ` (${child.exitCode})`}` : child.lastStatus}${restart}${retire}`;
   const name = child.agentName ? `${child.name} (${child.agentName})` : child.name;
   const kind = child.model ? `${child.kind} (${child.model.provider}/${child.model.id})` : child.kind;
-  return `${name}\t${kind}\t${state}\t${age}s\t${hostColumn(child, relayState)}\t${workspaceColumn(child)}\t${child.paneId}\t${child.depth}/${ceilingOf(child)}\tunread ${unread}\t${child.cwd ?? ''}`;
+  return `${name}\t${kind}\t${routeLabel(child.route)}\t${state}\t${age}s\t${hostColumn(child, relayState)}\t${workspaceColumn(child)}\t${child.paneId}\t${child.depth}/${ceilingOf(child)}\tunread ${unread}\t${child.cwd ?? ''}`;
 }
 
 /**
@@ -326,7 +333,8 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
 
   if (name === RESTART_TOOL) {
     // Routed by the caller's identity and the records this daemon holds.
-    return runAgentRestart(ctx.client, ctx.parentId, caller, { ...(ctx.restart ?? {}), reset: (childId) => ctx.watcher.reset(childId) }, optionalString(args['target']), typeof args['wait_seconds'] === 'number' ? (args['wait_seconds'] as number) : undefined);
+    const change = { via: optionalString(args['via']), model: optionalString(args['model']), keyFile: optionalString(args['key_file']), provider: optionalString(args['provider']) };
+    return runAgentRestart(ctx.client, ctx.parentId, caller, { ...(ctx.restart ?? {}), reset: (childId) => ctx.watcher.reset(childId) }, optionalString(args['target']), typeof args['wait_seconds'] === 'number' ? (args['wait_seconds'] as number) : undefined, change);
   }
 
   const record = readParent(ctx.parentId);
@@ -341,6 +349,9 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
       cwd: optionalString(args['cwd']),
       host: optionalString(args['machine']),
       model: optionalString(args['model']),
+      via: optionalString(args['via']),
+      keyFile: optionalString(args['key_file']),
+      provider: optionalString(args['provider']),
       args: Array.isArray(args['args']) ? (args['args'] as string[]) : undefined,
       focus: args['focus'] === true,
       registerRemote: registrar(ctx, record),
@@ -355,7 +366,7 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
     }
     ctx.watcher.reset(child.id);
     const where = child.host === LOCAL_HOST ? '' : ` on machine ${child.host}`;
-    lines.push(`${child.name} resumed session ${result.session.value}${where} in pane ${child.paneId}, as the same child ${child.id}.`, 'Bellwether watches it again, and its earlier events and receipts carry on.', `herdr link: ${result.link}`);
+    lines.push(`${child.name} resumed session ${result.session.value}${where} in pane ${child.paneId}, as the same child ${child.id}, on route ${routeLabel(child.route)}.`, 'Bellwether watches it again, and its earlier events and receipts carry on.', `herdr link: ${result.link}`);
     if (result.reportWarning) lines.push(result.reportWarning);
     return lines.join('\n');
   }
@@ -369,6 +380,8 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
       cwd: optionalString(args['cwd']),
       prompt: optionalString(args['prompt']),
       model: optionalString(args['model']),
+      via: optionalString(args['via']),
+      keyFile: optionalString(args['key_file']),
       provider: optionalString(args['provider']),
       parentModel: caller.model,
       args: Array.isArray(args['args']) ? (args['args'] as string[]) : undefined,
@@ -398,7 +411,7 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
     });
     const where = child.host === LOCAL_HOST ? '' : ` on machine ${child.host}`;
     const room = child.ownsWorkspace ? `, in workspace ${workspaceName(child)}, which Bellwether created for it` : options.workspace && child.workspaceId ? `, in workspace ${workspaceName(child)}` : '';
-    const lines = [`${child.name} started as a ${child.kind} agent${where} in pane ${child.paneId}, tab ${child.tabId ?? child.paneId}${room}.`, `Bellwether watches it, and your next turn starts when it changes state.`, `herdr link: ${link}`];
+    const lines = [`${child.name} started as a ${child.kind} agent${where} in pane ${child.paneId}, tab ${child.tabId ?? child.paneId}${room}${child.route ? `, on route ${routeLabel(child.route)}` : ''}.`, `Bellwether watches it, and your next turn starts when it changes state.`, `herdr link: ${link}`];
     if (depth.note) lines.push(depth.note);
     if (modelNote) lines.push(modelNote);
     if (reportWarning) lines.push(reportWarning);
@@ -418,7 +431,7 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
 
   if (name === 'agent_list') {
     if (!record.children.length) return 'No children yet. Start one with agent_spawn.';
-    const header = 'name\tkind\tstate\tage\thost\tworkspace\tpane\tdepth\tunread\tcwd';
+    const header = 'name\tkind\troute\tstate\tage\thost\tworkspace\tpane\tdepth\tunread\tcwd';
     const depth = record.children.flatMap((child) => describeDepth(child));
     return [header, ...record.children.map((child) => describeChild(child, ctx.watcher, ctx.relayState)), ...(depth.length ? ['', 'Depth requests and grants:', ...depth] : [])].join('\n');
   }

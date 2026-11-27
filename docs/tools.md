@@ -47,7 +47,7 @@ A child record keeps the session file that herdr reports for a pi child, includi
 
 Even a `claude`, `pi` or `omp` child can receive a message in its pane. That happens in four cases:
 
-- The child runs on another machine. This daemon reaches that machine only to collect reports.
+- The child runs on another machine whose Bellwether predates `relay-message`, or the connection to it is down. [remote-machines.md](remote-machines.md#messages-to-a-child-there) gives the path a message takes there.
 - The child is `blocked`. herdr refuses the prompt and shows the dialog, as before.
 - No Bellwether session of the child holds a connection to this daemon.
 - The session doesn't take the message within 5 seconds.

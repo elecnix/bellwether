@@ -91,3 +91,10 @@ test('a message acknowledgement carries its outcome, and a bad one is refused by
   assert.throws(() => parseRequest(JSON.stringify({ type: 'message-ack', id: 'm-1', outcome: 'seen' })), (error: unknown) => error instanceof ProtocolError && error.code === 'invalid_ack');
   assert.throws(() => parseRequest(JSON.stringify({ type: 'message-ack', outcome: 'read' })), (error: unknown) => error instanceof ProtocolError && error.code === 'invalid_ack');
 });
+
+test('a relay message carries the parent, the child and the message, and one without text is refused by name', () => {
+  const message = { id: 'm-1', from: 'your parent', text: 'Pull first.', at: '2026-11-27T00:00:00.000Z' };
+  assert.deepEqual(parseRequest(JSON.stringify({ type: 'relay-message', id: 'r1', parentId: 'p', childId: 'c', message })), { type: 'relay-message', id: 'r1', parentId: 'p', childId: 'c', message });
+  assert.throws(() => parseRequest(JSON.stringify({ type: 'relay-message', id: 'r1', parentId: 'p', childId: 'c', message: { ...message, text: ' ' } })), (error: unknown) => error instanceof ProtocolError && error.code === 'invalid_message');
+  assert.throws(() => parseRequest(JSON.stringify({ type: 'relay-message', id: 'r1', childId: 'c', message })), (error: unknown) => error instanceof ProtocolError && error.code === 'invalid_message');
+});

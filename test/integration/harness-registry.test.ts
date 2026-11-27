@@ -110,14 +110,30 @@ test('a harness whose child could not report is refused before the record, the b
   assert.deepEqual(fs.existsSync(prompts) ? fs.readdirSync(prompts) : [], []);
 });
 
-test('cline is declared and refused until its entry gives a child its own server', async (t) => {
+test("an entry's preflight sees the caller's extra arguments, and its spawn note reaches the agent_spawn reply", async (t) => {
   const space = await room(t);
-  for (const kind of ['cline']) {
-    const entry = harnessFor(kind);
-    assert.equal(entry?.reports.via, 'none');
-    await assert.rejects(spawnChild(space.client, readParent(space.parentId)!, { kind, name: `${kind}-child`, prompt: 'x' }), new RegExp(`${kind}-child was not started: Bellwether does not give a ${kind} child its own Bellwether server yet`));
-  }
+  const gated: HarnessEntry = {
+    ...fakeHarness,
+    kind: 'fake-gated',
+    harness: 'fake-gated',
+    label: 'Fake Gated',
+    async preflight({ name, args }) {
+      if (!args.includes('--opt-in')) throw new Error(`${name} was not started: Fake Gated starts only with --opt-in`);
+    },
+    spawnNote: (_child, args) => (args.includes('--opt-in') ? 'Fake Gated runs in its opt-in mode, which costs the example tools.' : undefined),
+  };
+  t.after(registerHarness(gated));
+  await assert.rejects(spawnChild(space.client, readParent(space.parentId)!, { kind: 'fake-gated', name: 'closed', prompt: 'x' }), /closed was not started: Fake Gated starts only with --opt-in/);
   assert.deepEqual(readParent(space.parentId)?.children, []);
+  assert.equal(space.fake.requests.some((request) => request.method === 'tab.create' || request.method === 'agent.start'), false);
+
+  const reply = await runBellwetherTool(context(space), 'agent_spawn', { kind: 'fake-gated', name: 'open', prompt: 'x', args: ['--opt-in'] }, {});
+  assert.match(reply, /open started as a fake-gated agent/);
+  assert.match(reply, /\nFake Gated runs in its opt-in mode, which costs the example tools\.$/);
+  assert.equal(startArgs(space.fake).at(-1), '--opt-in');
+  // An entry without a note adds no line.
+  const plain = await runBellwetherTool(context(space), 'agent_spawn', { kind: FAKE_KIND, name: 'plain', prompt: 'x' }, {});
+  assert.doesNotMatch(plain, /opt-in/);
 });
 
 test("an entry's preflight asks herdr on the child's machine, and its refusal leaves nothing behind", async (t) => {

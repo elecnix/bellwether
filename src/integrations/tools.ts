@@ -441,7 +441,7 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
     if (!options.name) throw new Error('agent_spawn needs a name for a new child, or resume to message an earlier one.');
     // Resolve the machine before anything is written, so a typo leaves no record.
     const client = await clientFor(ctx, options.host ?? LOCAL_HOST);
-    const { child, link, modelNote } = await spawnChild(client, record, options, undefined, {
+    const { child, link, modelNote, harnessNote } = await spawnChild(client, record, options, undefined, {
       forget: (childId) => ctx.watcher.forget(childId),
       registerRemote: registrar(ctx, record),
       cleanupRemote: remoteCleanup(ctx),
@@ -457,6 +457,7 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
     const lines = [`${child.name} started as a ${child.kind} agent${where} in pane ${child.paneId}, tab ${child.tabId ?? child.paneId}${room}${child.route ? `, on route ${routeLabel(child.route)}` : ''}.`, `Bellwether watches it, and your next turn starts when it changes state.`, `herdr link: ${link}`];
     if (depth.note) lines.push(depth.note);
     if (modelNote) lines.push(modelNote);
+    if (harnessNote) lines.push(harnessNote);
     return lines.join('\n');
   }
 

@@ -82,6 +82,8 @@ export interface PreflightInput {
   host: string;
   /** herdr on the child's machine, for a harness that herdr watches only through an integration of its own. */
   herdr?: HerdrRequester;
+  /** The caller's own extra arguments, which go last on the launch line, so a harness can require or refuse one by name. */
+  args: string[];
 }
 
 /** What a harness's tool files are written from. */
@@ -215,6 +217,12 @@ export interface HarnessEntry {
   classify: Classification;
   /** Whether agent_move can copy and resume this harness's session on another machine. */
   movable: boolean;
+  /**
+   * A note for the spawn reply about how the child was started, given the
+   * caller's own extra arguments, such as what an opt-in flag costs. The
+   * reply prints it at the moment the caller turns the flag on.
+   */
+  spawnNote?(child: Pick<ChildRecord, 'name' | 'kind'>, args: string[]): string | undefined;
   /** A line for the spawn reply about which model the child runs on. */
   modelNote?(child: Pick<ChildRecord, 'name' | 'kind' | 'model' | 'host' | 'cwd'>): string | undefined;
 }

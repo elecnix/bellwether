@@ -26,12 +26,12 @@ After the release, follow [upgrading.md](upgrading.md) on each machine.
 
 ## A release that changes the daemon protocol
 
-Changing `DAEMON_PROTOCOL` in `src/daemon/protocol.ts` makes every running client either drain the daemon or fail. `npm run release` compares the value with the published `latest`, and flags a change in the release pull request and beside the approve command.
+Changing `DAEMON_PROTOCOL` in `src/daemon/protocol.ts` drops support for the protocol two back, because a daemon serves only its own protocol and the one before it. `npm run release` compares the value with the published `latest`, and flags a change in the release pull request and beside the approve command. Prefer an additive change, which doesn't need a new number.
 
 Before the person approves a release that changes the protocol, the releasing agent does this:
 
-1. Lists the live sessions with `bellwether parents`, with the children each one runs.
+1. Lists the live sessions with `bellwether doctor`, which gives the adapter version and protocol of each one.
 
-2. Tells the person which sessions and children will fail their tool calls after the upgrade. Each recovers when it restarts.
+2. Tells the person which sessions run a protocol two back. Only those fail their tool calls after the upgrade, and each recovers when it restarts.
 
-3. After the install steps, runs `bellwether drain`, restarts its own session and asks the person to restart the others. It stops a child that still has to report and resumes it with `agent_spawn` and `resume`, which starts it on the new install.
+3. After the install steps, starts a session from the new install, which hands the daemon over. It stops a child of a refused session that still has to report, and resumes it with `agent_spawn` and `resume`, which starts it on the new install.

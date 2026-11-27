@@ -62,14 +62,13 @@ pi install npm:@elecnix/bellwether
 
 For Claude Code, run `claude plugin marketplace update elecnix-plugins`, then `claude plugin update bellwether@elecnix-plugins`.
 
-The background daemon keeps running the code it started with. Stop it, then restart every Pi and Claude Code session that uses Bellwether, so the next one starts a daemon from the new install:
+Then start your next session as usual. It replaces the daemon with one from the new install, and the sessions already open keep working until they end on their own:
 
 ```sh
-bellwether drain
-bellwether doctor                        # the installed and running versions should match
+bellwether doctor                        # says upgrade: finished once every session runs the new install
 ```
 
-[docs/upgrading.md](docs/upgrading.md) gives the order across machines, and what a session shows while two versions differ.
+[docs/upgrading.md](docs/upgrading.md) says what happens while two versions share a machine, and what to do if the hand-over fails.
 
 ## Parts
 

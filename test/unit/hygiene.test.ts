@@ -105,6 +105,10 @@ test('a brief whose child is gone is pruned, and one whose child is live is kept
   assert.equal(childFileVerdict(file({ known: true, live: true }), NOW).prune, false);
 });
 
+test('the brief of an exited child that never read it is kept', () => {
+  assert.equal(childFileVerdict(file({ known: true, unread: true }), NOW).prune, false);
+});
+
 test('a brief no record names waits an hour, and a relayed child keeps its files', () => {
   assert.equal(childFileVerdict(file({ mtimeMs: NOW - ORPHAN_FILE_GRACE_MS + 60_000 }), NOW).prune, false);
   assert.equal(childFileVerdict(file({ relayed: true, mtimeMs: NOW - 30 * DAY }), NOW).prune, false);
@@ -113,7 +117,9 @@ test('a brief no record names waits an hour, and a relayed child keeps its files
 test('a prune removes stale records with their outbox and spool, and the files of children that are gone', () => {
   const root = scratch();
   const old = NOW - 8 * DAY;
-  const live = record('live-parent', [child('fake-live'), child('fake-done', old)], old);
+  // fake-done reported after its brief, so it read it; fake-stillborn exited with nothing to show it did (issue #132).
+  const done = { ...child('fake-done', old), lastReport: { status: 'done' as const, text: 'done', at: iso(NOW - 9 * DAY), seq: 1 } };
+  const live = record('live-parent', [child('fake-live'), done, child('fake-stillborn', old)], old);
   // Its spool holds one line the parent has read.
   const dead = { ...record('dead-parent', [child('fake-dead-child', old)], old), spoolOffset: 1 };
   const unread = record('unread-parent', [child('fake-unread-child', old)], old);
@@ -124,10 +130,12 @@ test('a prune removes stale records with their outbox and spool, and the files o
   const box = Outbox.load(unread.id);
   box.offer({ childId: 'fake-unread-child', name: 'fake-unread-child', kind: 'pi', paneId: 'w1:p1', event: 'exited', text: 'exited', at: iso(old) });
   box.save(unread.id);
-  for (const id of ['fake-live', 'fake-done', 'fake-dead-child']) {
+  for (const id of ['fake-live', 'fake-done', 'fake-dead-child', 'fake-stillborn']) {
     write(promptPath(id), 'brief', old);
     write(mcpConfigPath(id), '{}', old);
   }
+  write(promptPath('fake-stillborn', 2), 'continue', old);
+  write(promptPath('fake-done', 2), 'next', old);
   write(promptPath('fake-relayed'), 'brief', old);
   write(relayChildPath('fake-relayed'), '{}');
   write(promptPath('fake-spawning'), 'brief', NOW - 60_000);
@@ -144,11 +152,15 @@ test('a prune removes stale records with their outbox and spool, and the files o
   assert.equal(fs.existsSync(promptPath('fake-live')), true);
   assert.equal(fs.existsSync(mcpConfigPath('fake-live')), true);
   assert.equal(fs.existsSync(promptPath('fake-done')), false);
+  assert.equal(fs.existsSync(promptPath('fake-done', 2)), false, 'a numbered brief goes with its child');
+  assert.equal(fs.existsSync(promptPath('fake-stillborn')), true, 'an unread brief stays for the resume that hands it over');
+  assert.equal(fs.existsSync(promptPath('fake-stillborn', 2)), true);
+  assert.equal(fs.existsSync(mcpConfigPath('fake-stillborn')), false, 'its MCP configuration goes');
   assert.equal(fs.existsSync(mcpConfigPath('fake-dead-child')), false);
   assert.equal(fs.existsSync(promptPath('fake-relayed')), true);
   assert.equal(fs.existsSync(promptPath('fake-spawning')), true);
   assert.deepEqual(summary.parents, { total: 4, removed: 2 });
-  assert.deepEqual(summary.briefs, { total: 5, removed: 2 });
+  assert.deepEqual(summary.briefs, { total: 8, removed: 3 });
   assert.equal(readLastPrune()?.at, iso(NOW));
   fs.rmSync(root, { recursive: true, force: true });
 });

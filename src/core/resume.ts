@@ -2,8 +2,10 @@
 // a resume target (see spawn-resume.ts) opens a new tab on the host the child ran on, starts the harness with its
 // session's resume flag, and puts the new pane under the same child id. The
 // child's outbox entries and receipts are keyed by that id, so they continue.
+import fs from 'node:fs';
 import path from 'node:path';
 import type { HerdrClient, HerdrPane } from './herdr-client.ts';
+import { briefsOf, nextBrief, type NextBrief } from './brief-history.ts';
 import { removeChildFiles } from './mcp-config.ts';
 import { LOCAL_HOST } from './machine.ts';
 import { newChildId } from './outbox.ts';
@@ -91,6 +93,8 @@ export interface ResumeResult {
   link: string;
   /** The startup dialogs the resume answered, in order. */
   answered?: StartupDialog[];
+  /** The brief the child started on, and the unread one it repeats, when there was one. */
+  brief?: NextBrief;
 }
 
 /** Find the child a resume names: by id, name or pane, then by the session it ran. */
@@ -145,6 +149,12 @@ export async function resumeChild(client: HerdrClient, parent: ParentRecord, tar
         depth: parent.depth + 1,
         inactiveMs: resolveInactiveMs(undefined),
       };
+  // The prompt gets a file of its own. A brief nothing shows the child read
+  // goes ahead of it, so a child whose harness exited before reading its task
+  // still gets it (issue #132).
+  const next = nextBrief(child, options.prompt || undefined, now);
+  const previousBriefs = child.briefs?.map((brief) => ({ ...brief }));
+  const knownBriefs = briefsOf(child).map((brief) => ({ ...brief }));
   const previous = existing ? { paneId: existing.paneId, tabId: existing.tabId, workspaceId: existing.workspaceId, workspaceLabel: existing.workspaceLabel, exitedAt: existing.exitedAt ?? now, exitCode: existing.exitCode, route: existing.route, model: existing.model } : undefined;
   // The record says how this run starts, so a later resume or restart replays it.
   if (launch.route) {
@@ -175,7 +185,10 @@ export async function resumeChild(client: HerdrClient, parent: ParentRecord, tar
 
   let registered = false;
   const restore = (): void => {
-    removeChildFiles(child.id);
+    // A failed resume removes only the brief it wrote: the earlier ones stay
+    // for the next resume and for a person, and a record it made takes all.
+    removeChildFiles(child.id, undefined, { briefs: !previous });
+    if (previous && next && !next.reused) fs.rmSync(next.brief.file, { force: true });
     // The files on the child's machine go too; a failed hop leaves them to that machine's prune.
     if (registered) void options.cleanupRemote?.(child).catch(() => {});
     // A resume of a session no child ran made the record, so a failure drops
@@ -196,6 +209,8 @@ export async function resumeChild(client: HerdrClient, parent: ParentRecord, tar
       else delete entry.route;
       if (previous.model) entry.model = previous.model;
       else delete entry.model;
+      if (previousBriefs) entry.briefs = previousBriefs;
+      else delete entry.briefs;
     });
   };
 
@@ -210,7 +225,7 @@ export async function resumeChild(client: HerdrClient, parent: ParentRecord, tar
   try {
     // The same child id as before, so the server resolves to the same record.
     // A child on another machine gets its brief there, or the resume fails.
-    const { registered: there, ...files } = await childStartFiles(parent, { ...child, kind }, options.prompt || undefined, options.registerRemote, options.piExtension, launch.harnessModel);
+    const { registered: there, ...files } = await childStartFiles(parent, { ...child, kind }, next?.text, options.registerRemote, options.piExtension, launch.harnessModel, next?.brief.n);
     registered = there;
     if (files.toolSource) child.toolSource = files.toolSource;
     const placement = await returnPlacement(client, child, fallback, signal);
@@ -222,6 +237,11 @@ export async function resumeChild(client: HerdrClient, parent: ParentRecord, tar
     child.paneId = tab.paneId;
     child.workspaceId = tab.workspaceId;
     if (tab.workspaceLabel) child.workspaceLabel = tab.workspaceLabel;
+    if (next) {
+      next.brief.paneId = tab.paneId;
+      const kept = knownBriefs.filter((brief) => brief.n !== next.brief.n);
+      child.briefs = [...kept, next.brief];
+    }
     // A resumed Claude Code child paints the same development-channel dialog
     // as a new one, so the watcher holds its events while the resume answers.
     const dialogs = requireHarness(kind).startup;
@@ -290,5 +310,5 @@ export async function resumeChild(client: HerdrClient, parent: ParentRecord, tar
   });
 
   const saved = readParent(parent.id)?.children.find((entry) => entry.id === child.id) ?? child;
-  return { child: saved, session, link: herdrLink('pane', child.paneId), answered };
+  return { child: saved, session, link: herdrLink('pane', child.paneId), answered, ...(next ? { brief: next } : {}) };
 }

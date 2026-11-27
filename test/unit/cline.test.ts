@@ -92,6 +92,11 @@ test('only -y or --yolo opens the door, and the texts name the hub and the costs
   assert.match(CLINE_REFUSAL, /credited to the first/);
   assert.match(CLINE_REFUSAL, /outlives the child/);
   assert.match(CLINE_REFUSAL, /operator's own Cline sessions/);
-  assert.match(CLINE_OPT_IN_NOTE, /narrower tool set/);
-  assert.match(CLINE_OPT_IN_NOTE, /takes an agent_send follow-up/);
+  // Each text names only what belongs to its launch: the refusal the hub, the note the -y costs.
+  assert.doesNotMatch(CLINE_REFUSAL, /-y|benchmark/);
+  assert.match(CLINE_OPT_IN_NOTE, /own process, not in Cline's shared hub/);
+  assert.match(CLINE_OPT_IN_NOTE, /agent_send reaches it/);
+  assert.match(CLINE_OPT_IN_NOTE, /benchmark mode: a different system prompt, six built-in tools .* plus its MCP tools, where the default mode offers 26/);
+  assert.match(CLINE_OPT_IN_NOTE, /DANGEROUS: use only in sandboxed environments/);
+  assert.doesNotMatch(CLINE_OPT_IN_NOTE, /credited|outlives|operator's own/);
 });

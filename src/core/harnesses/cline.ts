@@ -2,7 +2,7 @@
 // default agent_spawn refuses it: Cline runs every TUI session it can inside
 // one shared background hub, and MCP servers load in the process that runs
 // the session, so a per-child MCP configuration does not stay with its child.
-// A caller who passes `-y` in args gets a child in Cline's unattended mode,
+// A caller who passes `-y` in args gets a child in Cline's benchmark mode,
 // which keeps off the hub, and the spawn reply prints what that mode costs.
 // Facts checked against Cline 3.0.76:
 //
@@ -13,7 +13,8 @@
 //   loads the first child's server, and the operator's own Cline sessions load
 //   it too. The environment cannot pick the local backend for the TUI.
 // - `-y` forces the local backend and leaves the hub alone, but it is Cline's
-//   unattended mode: a narrower tool set and system prompt. A -y TUI stays up
+//   benchmark mode: six built-in tools instead of 26, no skills or sub-agents,
+//   and another system prompt. A -y TUI stays up
 //   after its first task and takes a follow-up typed at its prompt.
 // - herdr reports no agent_session for Cline, and `--id` only reopens a
 //   session Cline already has. The store is `sessions.db`, in
@@ -47,19 +48,18 @@ export const CLINE_SESSION_WAIT_MS = 30_000;
 /** The flags that put Cline in its unattended mode, which keeps a session off the shared hub. */
 export const CLINE_OPT_IN = ['-y', '--yolo'];
 
-/** Why agent_spawn refuses a cline child started the default way. */
+/** Why agent_spawn refuses a cline child started the default way: the shared hub, and only the hub. */
 export const CLINE_REFUSAL =
   'Cline runs each terminal session inside one shared background hub, and MCP servers load in the hub, so a per-child Bellwether server does not stay with its child: ' +
   "a second child's reports would be credited to the first, the hub a child starts outlives the child, and the operator's own Cline sessions would load the child's server. " +
-  `Cline has no per-session MCP configuration and no switch that keeps a session off the hub (${CLINE_UPSTREAM_REQUEST}). ` +
-  'Pass -y in args to start the child in Cline\'s unattended mode instead, whose costs the spawn reply lists';
+  `Cline has no per-session MCP configuration and no switch that keeps a session off the hub (${CLINE_UPSTREAM_REQUEST})`;
 
-/** What the spawn reply says when the caller turns on Cline's unattended mode. */
+/** What the spawn reply says when the caller turns on Cline's unattended mode: what -y gives and what it costs, measured on Cline 3.0.76. */
 export const CLINE_OPT_IN_NOTE =
-  "Cline runs this child in its unattended mode (-y), which keeps the session in the child's own process and off Cline's shared background hub, so its Bellwether server stays its own. " +
-  'The mode costs: a narrower tool set (read_files, search_codebase, run_commands, fetch_web_content, editor, ask_question and MCP tools), no skills, sub-agents or teams, ' +
-  "Cline's unattended system prompt, and every tool call approved without a question. The child stays up after its first task and takes an agent_send follow-up. " +
-  `Without -y, the spawn is refused: in the shared hub a second child's reports would be credited to the first, the hub would outlive the child, and the operator's own Cline sessions would load the child's server (${CLINE_UPSTREAM_REQUEST}).`;
+  "Cline runs this child with -y: its session runs in the child's own process, not in Cline's shared hub, so it loads only its own Bellwether server, " +
+  'and it stays up after its first task, so agent_send reaches it. ' +
+  "The cost is Cline's benchmark mode: a different system prompt, six built-in tools (read_files, search_codebase, run_commands, fetch_web_content, editor and ask_question) plus its MCP tools, where the default mode offers 26, " +
+  'no skills and no sub-agents or teams. Cline\'s own help says of -y: "DANGEROUS: use only in sandboxed environments."';
 
 /** Whether the caller's extra arguments turn on Cline's unattended mode. */
 export function clineOptedIn(args: readonly string[] = []): boolean {

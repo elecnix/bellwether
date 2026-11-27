@@ -60,7 +60,6 @@ test('the default launch is refused for the shared hub, before the record, the b
     assert.match(error.message, /the hub a child starts outlives the child/);
     assert.match(error.message, /the operator's own Cline sessions would load the child's server/);
     assert.match(error.message, /https:\/\/github\.com\/cline\/cline\/issues\/15881/);
-    assert.match(error.message, /Pass -y in args/);
     return true;
   });
   nothingWritten(space);
@@ -96,10 +95,10 @@ test('with -y the child starts in unattended mode with its own MCP settings, and
 
   // The costs print at the moment the opt-in is used.
   assert.match(reply, /worker started as a cline agent/);
-  assert.match(reply, /unattended mode \(-y\)/);
-  assert.match(reply, /narrower tool set/);
-  assert.match(reply, /takes an agent_send follow-up/);
-  assert.match(reply, /Without -y, the spawn is refused/);
+  assert.match(reply, /Cline runs this child with -y/);
+  assert.match(reply, /agent_send reaches it/);
+  assert.match(reply, /benchmark mode/);
+  assert.doesNotMatch(reply, /credited to the first/);
 });
 
 test("agent_read answers an adopted cline child from Cline's store, by its directory", async (t) => {

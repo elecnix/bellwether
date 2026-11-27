@@ -28,7 +28,7 @@ export type ChildEventKind = 'report' | 'idle' | 'blocked' | 'stuck' | 'inactive
 export type ReportStatus = 'done' | 'needs-input' | 'progress';
 
 /** The harnesses Bellwether has an adapter for. */
-export type Harness = 'pi' | 'claude-code';
+export type Harness = 'pi' | 'claude-code' | 'opencode';
 
 /**
  * The harness session herdr reports for a pane: `kind` is `id` for Claude Code,
@@ -80,6 +80,11 @@ export interface ChildRecord {
   /** The herdr agent kind: pi, claude, codex, opencode or cline. */
   kind: string;
   harness: Harness | 'other';
+  /**
+   * The OpenCode store an OpenCode child's session lives in. The spawn passes
+   * the same path to the child as OPENCODE_DB, so both sides read one file.
+   */
+  store?: string;
   paneId: string;
   tabId?: string;
   /** The herdr workspace that holds the child's tab, on the child's machine. */

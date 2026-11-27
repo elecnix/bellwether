@@ -6,11 +6,12 @@ import { HerdrApiError, type HerdrClient } from './herdr-client.ts';
 import { LOCAL_HOST } from './machine.ts';
 import { newChildId } from './outbox.ts';
 import { PI_EXTENSION_ENV, piExtensionEntry, piFallback, resolvePiExtension } from './pi-extension.ts';
-import { briefArgument, writeBrief } from './brief.ts';
+import { briefArgument, writeBrief, writeBriefIn } from './brief.ts';
 import { DEFAULT_MAX_DEPTH, tooDeep } from './depth.ts';
 import { resolveInactiveMs } from './inactivity.ts';
 import { removeChildFiles, writeChildToolFiles, type ChildToolFiles } from './mcp-config.ts';
 import type { ToolSource } from './tool-source.ts';
+import { OPENCODE_SESSION_WAIT_MS, findOpenCodeSession, newOpenCodeSessionId, openCodeArgs, openCodeBriefLine, openCodeDbPath, probeOpenCode, requireOpenCodeV2, writeOpenCodeMcpConfig, type OpenCodeProbe } from './opencode.ts';
 import { removeChild, updateChild, upsertChild } from './registry.ts';
 import { watchStartup, type StartupDialog, type StartupWatch } from './startup-dialogs.ts';
 import { agentNameOf, locateTranscript, piSessionModel, sessionFrom } from './transcript.ts';
@@ -28,6 +29,7 @@ export type AgentKind = (typeof AGENT_KINDS)[number];
 export function harnessOf(kind: string): Harness | 'other' {
   if (kind === 'pi') return 'pi';
   if (kind === 'claude') return 'claude-code';
+  if (kind === 'opencode') return 'opencode';
   return 'other';
 }
 
@@ -108,6 +110,8 @@ export interface ChildLaunch {
   claudeSettingsFile?: string;
   /** The Bellwether extension a pi child loads, on the machine it runs on. */
   piExtension?: string;
+  /** The session id an OpenCode child creates, which the spawn mints. */
+  openCodeSession?: string;
 }
 
 /**
@@ -116,6 +120,9 @@ export interface ChildLaunch {
  */
 export function childArgs(kind: string, options: SpawnOptions, launch: ChildLaunch = {}): string[] {
   const { briefFile, mcpConfigFile, claudeSettingsFile, piExtension } = launch;
+  // OpenCode 2's terminal UI takes no --model: the model rides in the child's
+  // configuration file, and the session id and brief line are its arguments.
+  if (kind === 'opencode' && launch.openCodeSession) return openCodeArgs(launch.openCodeSession, briefFile, options.args);
   const args: string[] = [];
   // pi needs both flags. A flag the caller already put in args is not repeated.
   if (options.provider && kind === 'pi' && argValue(options.args, '--provider') === undefined) args.push('--provider', options.provider);
@@ -208,6 +215,27 @@ export interface SpawnHooks {
   piExtension?: () => string;
   /** The workspaces on the parent's machine, so a local id passed for a remote child is refused by name. */
   localWorkspaces?: () => Promise<WorkspaceEntry[]>;
+  /** How an OpenCode child is checked and found. Tests point it at a fixture store and a scripted version. */
+  openCode?: {
+    probe?: () => Promise<OpenCodeProbe>;
+    db?: string;
+    waitMs?: number;
+    intervalMs?: number;
+  };
+}
+
+/**
+ * Refuse an OpenCode spawn that cannot work, before anything is written. A
+ * child on another machine is not supported yet: its store and version sit on
+ * that machine. OpenCode reads outside its directory only after a question,
+ * so the brief goes in the working directory, which the spawn needs. Its
+ * terminal UI takes a model only from configuration, as provider/model.
+ */
+async function checkOpenCode(options: SpawnOptions, host: string, probe: () => Promise<OpenCodeProbe>): Promise<void> {
+  if (host !== LOCAL_HOST) throw new Error(`${options.name} was not started: an opencode child runs on this machine only for now, because its store and its version are read where it runs. Omit machine.`);
+  if (!options.cwd) throw new Error(`${options.name} was not started: an opencode child needs cwd, because OpenCode asks before it reads a file outside its directory, and the brief goes inside it.`);
+  if (options.model && !/^[^/#]+\/[^#]+(?:#[^#]+)?$/.test(options.model)) throw new Error(`${options.name} was not started: OpenCode 2 takes a model as provider/model, optionally with #variant, and "${options.model}" is not one.`);
+  requireOpenCodeV2(await probe(), options.name);
 }
 
 /** The files a child starts with, wherever it runs, and what its spawn reply should warn about. */
@@ -243,6 +271,12 @@ export interface ChildStartFiles {
  */
 export async function childStartFiles(child: ChildRecord, prompt: string | undefined, register?: RegisterRemote, piExtension: () => string = piExtensionEntry): Promise<ChildStartFiles> {
   const pi = child.kind === 'pi';
+  if (child.kind === 'opencode') {
+    // Local only, which checkOpenCode settled. The brief goes inside the
+    // working directory, and the configuration names the child's server.
+    const briefFile = prompt !== undefined && child.cwd ? writeBriefIn(child.cwd, child.id, prompt) : undefined;
+    return { briefFile, registered: false };
+  }
   if ((child.host ?? LOCAL_HOST) === LOCAL_HOST) {
     // Resolved first, so a missing extension writes nothing.
     const extension = pi ? resolvePiExtension(piExtension()) : undefined;
@@ -294,6 +328,9 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
   const harnessOptions: SpawnOptions = { ...options, model: resolved.harnessModel };
   const chosen = resolved.route ? undefined : chooseChildModel(harnessOptions);
   const launchVia = resolved.route ? { route: resolved.route, config: routeConfig(routes, resolved.route, options.name) } : undefined;
+  const openCode = options.kind === 'opencode';
+  // On a route the tier picks the model, so the check sees the model the harness itself gets.
+  if (openCode) await checkOpenCode(harnessOptions, options.host ?? LOCAL_HOST, hooks.openCode?.probe ?? (() => probeOpenCode()));
   // The workspace is settled before the record too, so a name that matches
   // nothing leaves nothing behind. Nothing is created yet.
   const host = options.host ?? LOCAL_HOST;
@@ -326,6 +363,8 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
     maxDepth,
     stuckMs: options.stuckMinutes === undefined ? undefined : Math.max(1_000, Math.round(options.stuckMinutes * 60_000)),
     inactiveMs: resolveInactiveMs(options.inactiveMinutes),
+    // herdr reports no session for OpenCode, so the spawn names it.
+    ...(openCode ? { session: { kind: 'id', value: newOpenCodeSessionId() }, store: hooks.openCode?.db ?? openCodeDbPath() } : {}),
   };
   // 1. The record lands before herdr is asked for anything.
   upsertChild(parent.id, child);
@@ -334,15 +373,22 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
   let startup: StartupWatch | undefined;
   let reportWarning: string | undefined;
   let registered = false;
+  let keptBrief: string | undefined;
   try {
     const files = await childStartFiles(child, options.prompt || undefined, hooks.registerRemote, hooks.piExtension);
     const { briefFile, mcpConfigFile, claudeSettingsFile, piExtension } = files;
     registered = files.registered;
     reportWarning = files.warning;
     if (files.toolSource) child.toolSource = files.toolSource;
+    keptBrief = openCode ? briefFile : undefined;
 
     // 2. The tab carries the environment the child needs to find its parent.
     const env = childEnv(parent, child, piExtension);
+    if (openCode && child.store) {
+      // The child's private server reads its own configuration and this store.
+      env['OPENCODE_CONFIG'] = writeOpenCodeMcpConfig(child.id, { ...env }, harnessOptions.model);
+      env['OPENCODE_DB'] = child.store;
+    }
     // A new workspace is made on the child's machine, through that machine's
     // herdr, and the child runs in its root pane, so it holds no empty shell.
     const tab = await openChildTab(client, placement, { cwd: options.cwd, label: child.name, env, focus: options.focus ?? false }, signal);
@@ -366,11 +412,23 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
     // 3. Start the harness in the tab's root pane. A tab answers tab.create
     // before its shell is at a prompt, so herdr refuses the start with
     // agent_pane_busy until the shell is ready.
-    const args = childArgs(options.kind, { ...harnessOptions, ...(chosen ? { provider: chosen.provider, model: chosen.id } : {}) }, { briefFile, mcpConfigFile, claudeSettingsFile, piExtension });
+    const args = childArgs(options.kind, { ...harnessOptions, ...(chosen ? { provider: chosen.provider, model: chosen.id } : {}) }, { briefFile, mcpConfigFile, claudeSettingsFile, piExtension, openCodeSession: openCode ? child.session?.value : undefined });
     await startHarness(client, { name: child.name, kind: options.kind, paneId: tab.paneId, args, ...(launchVia ? { launch: routeLaunch(launchVia.config, launchVia.route, options.kind, args) } : {}) }, signal);
+
+    // OpenCode's store is the only proof the brief arrived: herdr reports no
+    // session for it. A session that never shows fails the spawn, which keeps
+    // the brief so a person can see what the child was given.
+    if (openCode && child.session && child.store && briefFile && child.cwd) {
+      const waitMs = hooks.openCode?.waitMs ?? OPENCODE_SESSION_WAIT_MS;
+      try {
+        await findOpenCodeSession({ db: child.store, sessionId: child.session.value, cwd: child.cwd, prompt: openCodeBriefLine(briefFile), waitMs, intervalMs: hooks.openCode?.intervalMs });
+      } catch (error) {
+        throw new Error(`${child.name} was not started: ${(error as Error).message} The brief stays at ${briefFile} for inspection, and the pane is closed.`);
+      }
+    }
   } catch (error) {
     startup?.close();
-    await abandon(client, parent.id, child, opened, hooks, registered);
+    await abandon(client, parent.id, child, opened, hooks, registered, keptBrief);
     throw error;
   }
 
@@ -398,7 +456,8 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
     const result = await client.request('agent.get', { target: child.paneId }, { signal });
     const agent = typeof result === 'object' && result !== null ? (result as Record<string, unknown>)['agent'] : undefined;
     const pane = typeof agent === 'object' && agent !== null ? (agent as Record<string, unknown>) : {};
-    const session = sessionFrom(pane['agent_session']);
+    // An OpenCode child's session is the one the spawn minted and the store showed.
+    const session = child.session ? undefined : sessionFrom(pane['agent_session']);
     if (session) {
       child.session = session;
       // A remote child's transcript sits on its own machine's disk.
@@ -446,10 +505,11 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
  * the watcher finds no child when the tab-closed event arrives and the parent
  * hears nothing about a child that never ran.
  */
-async function abandon(client: HerdrClient, parentId: string, child: ChildRecord, opened: ChildTab | undefined, hooks: SpawnHooks, registered: boolean): Promise<void> {
+async function abandon(client: HerdrClient, parentId: string, child: ChildRecord, opened: ChildTab | undefined, hooks: SpawnHooks, registered: boolean, keepBrief?: string): Promise<void> {
   removeChild(parentId, child.id);
   hooks.forget?.(child.id);
-  removeChildFiles(child.id);
+  // A brief kept for inspection stays, and everything else goes.
+  removeChildFiles(child.id, keepBrief ? undefined : child.cwd);
   // A workspace the spawn created goes with the tab; any other keeps its tabs.
   await undoChildTab(client, opened);
   // The brief and config on the child's machine go too. A failed hop leaves

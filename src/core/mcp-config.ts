@@ -7,7 +7,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { removeBrief } from './brief.ts';
+import { removeBrief, removeBriefAt, workdirBriefPath } from './brief.ts';
 import { removeClaudeSettings, writeClaudeSettings } from './claude-hooks.ts';
 import { mcpConfigPath, mcpDir } from './paths.ts';
 import { CHILD_SERVER_NAME, findAmbientServers, planToolSource, type ToolSource } from './tool-source.ts';
@@ -82,9 +82,14 @@ export function writeChildToolFiles(childId: string, cwd: string | undefined, op
   return { mcpConfig: mcp, ...(settings ? { claudeSettings: settings } : {}), toolSource: plan.source };
 }
 
-/** Remove every file a spawn wrote for a child: its brief, its MCP configuration and its Claude Code settings. */
-export function removeChildFiles(childId: string): void {
+/**
+ * Remove every file a spawn wrote for a child: its brief, its MCP
+ * configuration and its Claude Code settings, and the brief an OpenCode child
+ * reads in its working directory when that directory is given.
+ */
+export function removeChildFiles(childId: string, cwd?: string): void {
   removeBrief(childId);
   removeMcpConfig(childId);
   removeClaudeSettings(childId);
+  if (cwd) removeBriefAt(workdirBriefPath(cwd, childId));
 }

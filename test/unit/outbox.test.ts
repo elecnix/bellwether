@@ -7,6 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { Outbox, isSuperseded, newChildId, newReceipt } from '../../src/core/outbox.ts';
+import { outboxPath } from '../../src/core/paths.ts';
 import type { ChildRecord, OutboxEntry } from '../../src/core/types.ts';
 
 function scratch(): string {
@@ -89,13 +90,41 @@ test('adding the same receipt twice keeps one entry', () => {
   fs.rmSync(root, { recursive: true, force: true });
 });
 
-test('delivering an entry records a time without marking it read', () => {
+test('a delivery marks its entry read and records when it happened', () => {
   const root = scratch();
   const outbox = Outbox.load('parent-seven');
   const offered = outbox.offer(offer('c1', 'idle'));
-  outbox.markDelivered(offered.receipt, '2026-01-01T00:00:00.000Z');
-  assert.equal(outbox.pending().length, 1);
+  assert.equal(outbox.markRead(offered.receipt, '2026-01-01T00:00:00.000Z'), true);
+  assert.equal(outbox.pending().length, 0);
   assert.equal(outbox.all()[0]?.deliveredAt, '2026-01-01T00:00:00.000Z');
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('the read state survives a reload, so a restarted daemon replays only what no delivery reached', () => {
+  const root = scratch();
+  const first = Outbox.load('parent-read-state');
+  const read = first.offer(offer('c1', 'report', 'delivered before the restart'));
+  const unread = first.offer(offer('c2', 'exited'));
+  first.markRead(read.receipt);
+  first.save('parent-read-state');
+
+  const raw = JSON.parse(fs.readFileSync(outboxPath('parent-read-state'), 'utf8')) as OutboxEntry[];
+  assert.equal(raw.find((entry) => entry.receipt === read.receipt)?.read, true, 'the read flag is on disk, beside the entry');
+
+  const second = Outbox.load('parent-read-state');
+  assert.deepEqual(second.pending().map((entry) => entry.receipt), [unread.receipt]);
+  assert.equal(second.markRead(read.receipt), false, 'a receipt read before the restart is still read');
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('pending lists entries by event time, whatever order they were added in', () => {
+  const root = scratch();
+  const outbox = Outbox.load('parent-order');
+  const later: OutboxEntry = { ...offer('c1', 'report'), at: '2026-11-27T07:26:55.682Z', receipt: newReceipt(), read: false };
+  const earlier: OutboxEntry = { ...offer('c2', 'exited'), at: '2026-11-27T07:25:46.000Z', receipt: newReceipt(), read: false };
+  outbox.add(later);
+  outbox.add(earlier);
+  assert.deepEqual(outbox.pending().map((entry) => entry.receipt), [earlier.receipt, later.receipt]);
   fs.rmSync(root, { recursive: true, force: true });
 });
 

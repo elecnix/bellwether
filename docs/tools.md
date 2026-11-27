@@ -38,6 +38,12 @@ Each event below starts a new turn for the parent. herdr reports the state, and 
 
 An unread `blocked` or `stuck` event drops out once the child moves on, so a dialog someone already answered never reaches the parent's next turn.
 
+### Delivery to the parent
+
+A busy parent gets each event at its next turn: after the tool calls in flight, before the next model call. For an idle parent, the event starts a turn. Several events from one burst arrive together in one message, oldest first, and an event more than a minute old gets a note such as `(late by 4m34s: it happened at 07:25:46 UTC)` after its receipt.
+
+Bellwether marks an event read once its own message is in front of the model. A shell read of the outbox file under `~/.bellwether/outbox/` shows the same receipts, but it leaves them unread, and the notification still arrives. That file stores the read flag, so a restarted daemon replays only the unread events.
+
 The inactivity threshold defaults to 5 minutes. Pass `inactive_minutes` to `agent_spawn` to change it for one child, from 1 minute to 24 hours. No setting turns this notice off. Bellwether sends it once per quiet period, and output or a report starts a new one.
 
 ## A child's environment

@@ -205,12 +205,6 @@ export class Watcher {
     if (this.outbox.drop(childId)) this.outbox.save(this.parentId);
   }
 
-  /** Record that a receipt has been sent to the parent, so a burst is sent once. */
-  markDelivered(receipt: string): void {
-    this.outbox.markDelivered(receipt);
-    this.outbox.save(this.parentId);
-  }
-
   /**
    * Subscribe to the current child panes, then reconcile against a snapshot.
    * A pane that has gone away must be dropped first: herdr rejects the whole

@@ -157,14 +157,24 @@ function entryMethod(notification: { method: string }): string {
   return notification.method;
 }
 
-test('a receipt in the transcript marks the event read', async () => {
+/** The line Claude Code writes when a channel message reaches the model. */
+function delivery(receipt: string): string {
+  const prompt = `<channel source="bellwether" receipt="${receipt}">child event</channel>`;
+  return `${JSON.stringify({ type: 'attachment', attachment: { type: 'queued_command', prompt, commandMode: 'prompt', origin: { kind: 'channel', server: 'bellwether' } } })}\n`;
+}
+
+test('a channel delivery in the transcript marks the event read, and a tool result quoting it does not', async () => {
   const room = lab();
   seed(room, entry('bw-feedfacecafe'));
   const { client, notifications } = await connect(room.env);
   try {
     await until('the channel notification', () => notifications.length || undefined);
     assert.equal(outboxOf(room)[0]?.read, false);
-    fs.appendFileSync(room.transcript, `${JSON.stringify({ type: 'user', message: { role: 'user', content: '<channel source="bellwether" receipt="bw-feedfacecafe">child event</channel>' } })}\n`);
+    // The parent cats its outbox file: the receipt reaches the model as tool output, which is not a delivery.
+    fs.appendFileSync(room.transcript, `${JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: '"receipt": "bw-feedfacecafe"' }] } })}\n`);
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    assert.equal(outboxOf(room)[0]?.read, false, 'a shell read of the outbox does not consume the notification');
+    fs.appendFileSync(room.transcript, delivery('bw-feedfacecafe'));
     await until('the entry to be marked read', () => (outboxOf(room)[0]?.read ? true : undefined));
   } finally {
     await client.close();
@@ -175,7 +185,7 @@ test('a receipt in the transcript marks the event read', async () => {
 test('a receipt already in the transcript is not pushed a second time', async () => {
   const room = lab();
   seed(room, entry('bw-0123456789ab'));
-  fs.appendFileSync(room.transcript, `${JSON.stringify({ type: 'user', message: { role: 'user', content: 'receipt bw-0123456789ab' } })}\n`);
+  fs.appendFileSync(room.transcript, delivery('bw-0123456789ab'));
   const { client, notifications } = await connect(room.env);
   try {
     await until('the entry to be marked read', () => (outboxOf(room)[0]?.read ? true : undefined));

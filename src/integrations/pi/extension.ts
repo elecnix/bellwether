@@ -1,8 +1,10 @@
 // The Pi extension: the Bellwether tools for the parent, and a new turn when
 // a child changes state. The core runs in the daemon; this extension is one
 // client of it. It never types into the parent's pane: it wakes the session
-// through pi.sendMessage, and the receipt id in the message marks the event
-// read once the model context contains it.
+// through pi.sendMessage. An event counts as read once pi puts this
+// extension's own message, carrying the receipts in its details, in front of
+// the model. A receipt that reaches the model any other way, such as the
+// output of a shell that read the outbox file, is not a delivery.
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { DaemonClient } from '../../daemon/client.ts';
@@ -10,6 +12,7 @@ import { resolveSocketPath } from '../../core/herdr-client.ts';
 import { standDown } from '../../core/pi-extension.ts';
 import { hostName } from '../../core/spawn.ts';
 import { childLabel } from '../../core/label.ts';
+import { byEventTime, lateNote } from '../../core/notice.ts';
 import type { OutboxEntry } from '../../core/types.ts';
 import { toolsFor } from '../tools.ts';
 
@@ -18,7 +21,13 @@ interface PiContext {
   isIdle(): boolean;
   /** The model the session runs on now. It changes with /model, so it is read at each call. */
   model?: { provider: string; id: string };
-  sessionManager: { getSessionId(): string; getCwd(): string; getSessionName?(): string | undefined };
+  sessionManager: { getSessionId(): string; getCwd(): string; getSessionName?(): string | undefined; getEntries?(): unknown[] };
+}
+/** A message as pi records it: a custom one carries the extension's customType and details. */
+interface PiMessage {
+  role?: string;
+  customType?: string;
+  details?: unknown;
 }
 interface ToolResult {
   content: { type: 'text'; text: string }[];
@@ -26,7 +35,7 @@ interface ToolResult {
 }
 interface PiApi {
   on(event: 'session_start' | 'session_shutdown', handler: (event: unknown, ctx: PiContext) => void | Promise<void>): void;
-  on(event: 'context', handler: (event: { messages: unknown[] }, ctx: PiContext) => void | Promise<void>): void;
+  on(event: 'message_end', handler: (event: { message: PiMessage }, ctx: PiContext) => void | Promise<void>): void;
   registerTool(tool: {
     name: string;
     label: string;
@@ -45,14 +54,35 @@ function depthFromEnv(): number {
   return Number.isFinite(value) ? value : 0;
 }
 
-/** One message for a burst of events, so three children changing at once read once. */
-function compose(entries: OutboxEntry[]): string {
+const CUSTOM_TYPE = 'bellwether';
+
+/**
+ * One message for a burst of events, so three children changing at once read
+ * once. Events come oldest first, and one delivered late says so.
+ */
+function compose(entries: OutboxEntry[], now = Date.now()): string {
   if (!entries.length) return '';
   const head = entries.length === 1 ? '[bellwether]' : `[bellwether] ${entries.length} children changed`;
-  const body = entries
-    .map((entry) => `${childLabel({ name: entry.name, paneId: entry.paneId, id: entry.childId })} ${entry.event}, a ${entry.kind} agent — receipt ${entry.receipt}\n${entry.text}`)
+  const body = byEventTime(entries)
+    .map((entry) => `${childLabel({ name: entry.name, paneId: entry.paneId, id: entry.childId })} ${entry.event}, a ${entry.kind} agent — receipt ${entry.receipt}${lateNote(entry, now)}\n${entry.text}`)
     .join('\n\n');
   return `${head}\n${body}\n\nRead more with agent_read. Reply with agent_send.`;
+}
+
+/** The receipts one of this extension's own messages carries, or none for any other message. */
+function receiptsOf(message: PiMessage | undefined): string[] {
+  if (!message || message.customType !== CUSTOM_TYPE) return [];
+  const receipts = (message.details as { receipts?: unknown } | undefined)?.receipts;
+  return Array.isArray(receipts) ? receipts.filter((receipt): receipt is string => typeof receipt === 'string') : [];
+}
+
+/** Receipts of this extension's messages already in the session's history, from a previous pi process. */
+function deliveredInHistory(ctx: PiContext): string[] {
+  const entries = ctx.sessionManager.getEntries?.() ?? [];
+  return entries.flatMap((entry) => {
+    const record = entry as { type?: string; customType?: string; details?: unknown };
+    return record.type === 'custom_message' ? receiptsOf(record) : [];
+  });
 }
 
 export default function bellwether(pi: PiApi): void {
@@ -62,27 +92,34 @@ export default function bellwether(pi: PiApi): void {
   if (standDown(fileURLToPath(import.meta.url))) return;
   let daemon: DaemonClient | undefined;
   let burst: NodeJS.Timeout | undefined;
-  let pending: OutboxEntry[] = [];
-  // Receipts this session has already put in front of the model.
+  const pending = new Map<string, OutboxEntry>();
+  // Receipts this process has handed to pi, so a replay does not send them twice.
   const sent = new Set<string>();
 
   const flush = (): void => {
     burst = undefined;
-    if (!pending.length) return;
-    const batch = pending;
-    pending = [];
+    if (!pending.size) return;
+    const batch = [...pending.values()];
+    pending.clear();
     const text = compose(batch);
     if (!text) return;
     for (const entry of batch) sent.add(entry.receipt);
-    // The message waits until the agent has no tool calls left, then starts the turn.
-    pi.sendMessage({ customType: 'bellwether', content: text, display: true, details: { digest: 'child events' } }, { triggerTurn: true, deliverAs: 'followUp' });
+    // An idle session starts a turn now. A busy one takes the message after
+    // the tool calls in flight, before its next model call. followUp would
+    // hold it until the whole run ends, which left events minutes late.
+    pi.sendMessage(
+      { customType: CUSTOM_TYPE, content: text, display: true, details: { digest: 'child events', receipts: batch.map((entry) => entry.receipt) } },
+      { triggerTurn: true, deliverAs: 'steer' },
+    );
   };
 
   const onEntries = (entries: OutboxEntry[]): void => {
-    const fresh = entries.filter((entry) => !sent.has(entry.receipt) && !entry.read);
-    if (!fresh.length) return;
-    pending = fresh;
-    if (burst) return;
+    for (const entry of entries) {
+      // An entry the daemon settled drops out of a burst not yet sent.
+      if (entry.read) pending.delete(entry.receipt);
+      else if (!sent.has(entry.receipt)) pending.set(entry.receipt, entry);
+    }
+    if (!pending.size || burst) return;
     burst = setTimeout(flush, 250);
     burst.unref?.();
   };
@@ -100,6 +137,11 @@ export default function bellwether(pi: PiApi): void {
         herdrSocket: resolveSocketPath(),
         childId: process.env['BELLWETHER_CHILD'],
       }, { log: (message) => console.error('[bellwether]', message) });
+      // A previous pi process for this session may have delivered an event
+      // and died before its receipt reached the daemon.
+      const delivered = deliveredInHistory(ctx);
+      for (const receipt of delivered) sent.add(receipt);
+      daemon.receipts(delivered.filter((receipt) => daemon?.unread().some((entry) => entry.receipt === receipt)));
       daemon.onEvents(onEntries);
       const missed = await daemon.pending();
       if (missed.length) onEntries(missed);
@@ -112,17 +154,16 @@ export default function bellwether(pi: PiApi): void {
   pi.on('session_shutdown', () => {
     if (burst) clearTimeout(burst);
     burst = undefined;
-    pending = [];
+    pending.clear();
     void daemon?.close();
     daemon = undefined;
   });
 
-  // A receipt that reaches the model context marks its event read.
-  pi.on('context', (event) => {
-    if (!daemon) return;
-    const seen = JSON.stringify(event.messages);
-    const receipts = daemon.unread().filter((entry) => seen.includes(entry.receipt)).map((entry) => entry.receipt);
-    if (receipts.length) daemon.receipts(receipts);
+  // pi records a steered message once it enters the conversation, ahead of
+  // the next model call. That, and only that, marks its events read.
+  pi.on('message_end', (event) => {
+    const receipts = receiptsOf(event.message);
+    if (receipts.length) daemon?.receipts(receipts);
   });
 
   const tools = toolsFor({ parent: process.env['BELLWETHER_PARENT'], child: process.env['BELLWETHER_CHILD'] });

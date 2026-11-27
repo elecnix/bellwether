@@ -3,12 +3,15 @@
 // starting another. A lock whose pid is gone is stale and is taken over.
 import fs from 'node:fs';
 import path from 'node:path';
+import { BELLWETHER_VERSION } from '../core/version.ts';
 import { DAEMON_PROTOCOL } from './protocol.ts';
 
 export interface LockRecord {
   pid: number;
   startedAt: number;
   protocol: number;
+  /** The package version of the daemon that holds the lock. A lock from before 0.1.5 has none. */
+  version?: string;
   socket: string;
 }
 
@@ -22,7 +25,9 @@ export function readLock(home: string): LockRecord | undefined {
     if (typeof parsed !== 'object' || parsed === null) return undefined;
     const record = parsed as Partial<LockRecord>;
     if (typeof record.pid !== 'number' || !Number.isInteger(record.pid)) return undefined;
-    return { pid: record.pid, startedAt: record.startedAt ?? 0, protocol: record.protocol ?? 0, socket: record.socket ?? '' };
+    const read: LockRecord = { pid: record.pid, startedAt: record.startedAt ?? 0, protocol: record.protocol ?? 0, socket: record.socket ?? '' };
+    if (typeof record.version === 'string') read.version = record.version;
+    return read;
   } catch {
     return undefined;
   }
@@ -45,7 +50,7 @@ export type AcquireResult = { kind: 'acquired' } | { kind: 'held'; record: LockR
 export function acquire(home: string, socketPath: string, pid = process.pid, alive = isAlive): AcquireResult {
   fs.mkdirSync(home, { recursive: true });
   const target = lockPath(home);
-  const record: LockRecord = { pid, startedAt: Date.now(), protocol: DAEMON_PROTOCOL, socket: socketPath };
+  const record: LockRecord = { pid, startedAt: Date.now(), protocol: DAEMON_PROTOCOL, version: BELLWETHER_VERSION, socket: socketPath };
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
       const fd = fs.openSync(target, 'wx', 0o600);

@@ -8,7 +8,9 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { DaemonClient } from '../../src/daemon/client.ts';
+import { DaemonClient, drainDaemon } from '../../src/daemon/client.ts';
+import { readLock } from '../../src/daemon/lock.ts';
+import { BELLWETHER_VERSION } from '../../src/core/version.ts';
 import { DAEMON_PROTOCOL } from '../../src/daemon/protocol.ts';
 import { startDaemon, type ParentService, type ServiceFactory } from '../../src/daemon/server.ts';
 import type { CallerIdentity, OutboxEntry } from '../../src/core/types.ts';
@@ -205,6 +207,30 @@ test('drain closes the daemon and its socket', async () => {
   await client.drain();
   await until(() => !fs.existsSync(space.socket));
   assert.equal(daemon.closed, true);
+  await daemon.close();
+  space.cleanup();
+});
+
+test('bellwether drain stops a running daemon, and reports when none answers', async () => {
+  const space = workspace();
+  const fake = fakeFactory();
+  const daemon = await startDaemon({ socketPath: space.socket, factory: fake.factory });
+  assert.equal(await drainDaemon(space.socket), true);
+  assert.equal(daemon.closed, true);
+  assert.equal(await drainDaemon(space.socket), false);
+  await daemon.close();
+  space.cleanup();
+});
+
+test('the daemon lock records the package version and protocol', async () => {
+  const space = workspace();
+  const fake = fakeFactory();
+  const daemon = await startDaemon({ socketPath: space.socket, factory: fake.factory });
+  const lock = readLock(space.home);
+  const manifest = JSON.parse(fs.readFileSync(new URL('../../package.json', import.meta.url), 'utf8')) as { version: string };
+  assert.equal(lock?.version, manifest.version);
+  assert.equal(BELLWETHER_VERSION, manifest.version);
+  assert.equal(lock?.protocol, DAEMON_PROTOCOL);
   await daemon.close();
   space.cleanup();
 });

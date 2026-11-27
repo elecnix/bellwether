@@ -37,7 +37,8 @@
     "test:unit": "node --test --import ./test/fixtures/isolation.ts --disable-warning=ExperimentalWarning \"test/unit/**/*.test.ts\"",
     "test:integration": "node --test --test-concurrency=1 --import ./test/fixtures/isolation.ts --disable-warning=ExperimentalWarning \"test/integration/**/*.test.ts\"",
     "test:lab": "node --test --test-concurrency=1 --import ./test/fixtures/isolation.ts --disable-warning=ExperimentalWarning \"test/lab/**/*.test.ts\"",
-    "doctor": "node --disable-warning=ExperimentalWarning src/cli.ts doctor"
+    "doctor": "node --disable-warning=ExperimentalWarning src/cli.ts doctor",
+    "release": "node --disable-warning=ExperimentalWarning scripts/release.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.2"

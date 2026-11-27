@@ -7,6 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { BELLWETHER_VERSION } from '../core/version.ts';
 import { DAEMON_PROTOCOL, MAX_DAEMON_FRAME_BYTES, formatRequest, type DaemonReply, type ParentHello, type ReportRequest } from './protocol.ts';
 import { canConnect } from './server.ts';
 import type { OutboxEntry } from '../core/types.ts';
@@ -239,7 +240,7 @@ export class DaemonClient {
 
   private async handshake(): Promise<{ parentId: string; pid: number }> {
     const connection = await this.open();
-    const hello = { type: 'hello', protocol: DAEMON_PROTOCOL, client: '0.1.0', parent: this.parent } as const;
+    const hello = { type: 'hello', protocol: DAEMON_PROTOCOL, client: BELLWETHER_VERSION, parent: this.parent } as const;
     const reply = await this.ask(connection, formatRequest(hello));
     if (reply.type === 'error') {
       connection.socket.destroy();
@@ -532,6 +533,17 @@ function askOnce(socketPath: string, line: string, timeoutMs: number): Promise<D
     });
     socket.once('connect', () => socket.write(line));
   });
+}
+
+/**
+ * Drain the daemon on a socket, if one answers, and wait until it stops. Each
+ * connected session reconnects and starts a daemon from its own install, so
+ * the code that runs next is that of the first session to reconnect.
+ */
+export async function drainDaemon(socketPath: string): Promise<boolean> {
+  if (!(await canConnect(socketPath))) return false;
+  await drainSocket(socketPath);
+  return true;
 }
 
 /** Ask the daemon on a socket to drain, and wait until it stops answering. */

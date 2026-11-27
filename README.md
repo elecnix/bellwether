@@ -143,7 +143,58 @@ The server speaks MCP over stdio, so each log line goes to stderr and stdout car
 bellwether doctor
 ```
 
-It reports the herdr socket, the herdr API version, the Pi extension path, the MCP entry point and every registered parent with its children. A Pi extension path that does not resolve, or an MCP entry without its executable bit, fails the check.
+It reports the installed version and daemon protocol, the herdr socket, the herdr API version, the Pi extension path, the MCP entry point and every registered parent with its children. When a daemon runs, doctor also reads its version and protocol from `~/.bellwether/daemon.lock`, and says when they differ from the install. A Pi extension path that does not resolve, or an MCP entry without its executable bit, fails the check. `bellwether --version` prints the installed version alone.
+
+## Release
+
+Every version goes through npm's staged publishing, so the operator's one-time code approves it. `npm run release` does everything else, and you run it twice:
+
+```sh
+npm run release -- 0.1.5    # gates, version bump, release PR, merge, stage, review
+npx -y npm@12 stage approve <stage id> --otp <code>    # the person, with their code
+npm run release -- 0.1.5    # the Homebrew formula: bump, tap CI, merge
+```
+
+Each run reads where the release stands, then takes it one stage further:
+
+1. Once npm serves the version, the script bumps `Formula/bellwether.rb` in `elecnix/homebrew-tap`. It downloads the tarball and writes the new `url` and `sha256` on a `bellwether-<version>` branch through the GitHub API. Then it opens the pull request, waits for the tap's CI and merges. A formula that already points at the version stays as it is, and so does the formula for any version older than npm's `latest`.
+2. With the version staged on npm, the script waits up to 30 minutes while the registry's review shows `validating`, then prints the `stage approve` command. A rejected stage stops it.
+3. If `origin/main` already declares the version, the script checks out the commit that set it, in a `release-<version>` worktree beside the current one. It runs `npm ci` and `npm stage publish` there, and continues as in step 2.
+4. While a pull request from `release/<version>` is open, the script waits for its CI with `gh monitor`. It squash-merges once every check passes. A failing check stops it and leaves the pull request open.
+5. With none of those in place, the script refuses a checkout with uncommitted changes, and an `origin/main` whose last `ci` run did not pass. It creates the `release-<version>` worktree from `origin/main` and runs `npm ci`, typecheck, the three test tiers and `doctor`. After that it bumps the version in `package.json` and `package-lock.json`. Last, it pushes `release/<version>` with a pull request, and continues as in step 4.
+
+Run it again after any stop, whether a failed check, a timeout or a closed terminal, and it resumes from the same stage. Approval stays with the person: the script stops at the `stage approve` command and leaves the code to them. It runs on the `gh` and `npm` logins of the machine, which must have write access to both repositories and publish rights on the package. It doesn't use a token or an Actions secret.
+
+### Install on each machine, in this order
+
+Bellwether reaches a machine through three channels, and each one updates on its own. A machine can use any mix of them.
+
+1. **Approve and publish.** Until the operator approves the stage, npm serves the previous version, and every install below gets that one.
+2. **`brew upgrade bellwether`** on a machine that uses the tap. It replaces the `bellwether` and `bellwether-mcp` commands. Without Homebrew, run `npm install -g @elecnix/bellwether` instead, which needs Node 22.18 or newer.
+3. **`pi install npm:@elecnix/bellwether`** for the Pi extension, which Homebrew doesn't touch. When `pi list` shows the extension at a local checkout, Pi keeps loading that checkout after a `brew upgrade`, and this command points it back at the npm package. Pi loads the new extension at the next session start.
+4. **`/plugin marketplace update bellwether`** in Claude Code, where parent sessions use the plugin. The plugin follows this repository's default branch, not npm.
+5. **`bellwether drain`.** A running daemon keeps the code it started with: each open session holds a connection to it, and it exits only when idle. `drain` lets it finish its current calls and exit. Each connected session reconnects within a second and starts a daemon from its own install, so until every session restarts, the new daemon may come from an older install.
+6. **`bellwether doctor`**, to compare the installed version with the running daemon's.
+
+On a second machine, `command -v brew` picks the route: `brew upgrade bellwether` when it prints a path, and `npm install -g @elecnix/bellwether` when it fails. Steps 3 through 6 then apply as written. Both machines need the new version before a remote child reports across a protocol change, because each end of an SSH hop runs the `bellwether` command.
+
+### A release that changes the daemon protocol
+
+Change `DAEMON_PROTOCOL` in `src/daemon/protocol.ts`, and every running client either drains the daemon or fails. `npm run release` compares the value with the published `latest`, and flags a change in the release pull request and beside the approve command.
+
+A user sees one of three things, by which side updated first:
+
+- **A newer session meets an older daemon.** The session drains it and starts its own on the new protocol. The old daemon finishes its current calls before it exits, so every call gets its answer.
+- **An older session meets a newer daemon.** The daemon keeps running. Each tool call from that session fails with `the running daemon speaks protocol N, newer than this client's M. Update this Bellwether install.` until the session restarts on the new install. A child started before the upgrade runs its MCP server from the old install, so its `parent_report` fails the same way. The watcher still turns its herdr status into events for the parent.
+- **No session has updated.** The old daemon keeps running until a session or `bellwether drain` replaces it.
+
+A releasing agent whose release changes the protocol does this before the person approves:
+
+1. Lists the live sessions with `bellwether parents`, with the children each one runs.
+2. Tells the person which sessions and children will fail their tool calls after the upgrade, and that each recovers when it restarts.
+3. After the install steps, runs `bellwether drain`, restarts its own session and asks the person to restart the others. For a child that still has to report, it stops the child and resumes it with `agent_spawn` and `resume`, which starts it on the new install.
+
+When the protocol stays the same, none of this applies: after `bellwether drain`, sessions reconnect to the new daemon without an error.
 
 ## Environment
 

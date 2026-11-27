@@ -138,9 +138,11 @@ test('a child event arrives as a channel notification with its receipt', async (
     const pushed = await until('the channel notification', () => notifications.find((each) => entryMethod(each) === 'notifications/claude/channel'));
     const params = pushed.params as { content: string; meta: Record<string, string> };
     assert.equal(params.meta['child'], 'builder');
+    assert.equal(params.meta['pane'], 'w1:p2');
+    assert.equal(params.meta['child_id'], 'child-1');
     assert.equal(params.meta['event'], 'idle');
     assert.equal(params.meta['receipt'], 'bw-abcdef123456');
-    assert.match(params.content, /builder \(pi, w1:p2\) idle/);
+    assert.match(params.content, /^\[bellwether\] builder \(w1:p2\) idle, a pi agent — receipt /);
     assert.match(params.content, /All tests pass/);
     // The receipt rides in the body, which is what reaches the transcript.
     assert.ok(params.content.includes('bw-abcdef123456'));

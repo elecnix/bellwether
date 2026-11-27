@@ -12,6 +12,7 @@ import { DEFAULT_LIMITS, advance, initialState, markReported, type ClassifierSta
 import { Outbox } from './outbox.ts';
 import { mutateParent, readParent, updateChild } from './registry.ts';
 import { resolveTranscript, sessionValueFrom } from './transcript.ts';
+import { childLabel } from './label.ts';
 import { spoolPath } from './paths.ts';
 import type { AgentStatus, ChildEventKind, ChildRecord, OutboxEntry, SpoolReport } from './types.ts';
 
@@ -163,7 +164,7 @@ export class Watcher {
       entry.exitCode = code;
       entry.lastStatus = 'unknown';
     });
-    this.offer(child, 'exited', this.describeExit(child.name, code));
+    this.offer(child, 'exited', this.describeExit(child, code));
   }
 
   /**
@@ -399,20 +400,20 @@ export class Watcher {
   /** What the parent is told about a child event. */
   private async describe(child: ChildRecord, event: ChildEventKind, quietSince: number, now: number): Promise<string> {
     const age = this.age(Date.parse(child.startedAt));
-    if (event === 'exited') return this.describeExit(child.name, child.exitCode);
+    if (event === 'exited') return this.describeExit(child, child.exitCode);
     if (event === 'blocked') {
       const dialog = await this.client.paneRead({ paneId: child.paneId, source: 'detection', lines: 30 }).catch(() => '');
-      return `${child.name} is blocked on a dialog after ${age}. The dialog:\n${trim(dialog)}\n\nAnswer it with agent_send keys, or answer the card your-attention posted.`;
+      return `${childLabel(child)} is blocked on a dialog after ${age}. The dialog:\n${trim(dialog)}\n\nAnswer it with agent_send keys, or answer the card your-attention posted.`;
     }
     // Measure the quiet period on the classifier's own clock. The registry's
     // lastBusyAt can be written by another process that only sees file size.
-    if (event === 'stuck') return `${child.name} has been quiet for ${this.age(quietSince, now)}. Last screen lines:\n${trim(await this.screenTail(child))}`;
+    if (event === 'stuck') return `${childLabel(child)} has been quiet for ${this.age(quietSince, now)}. Last screen lines:\n${trim(await this.screenTail(child))}`;
     const text = child.lastReport?.text?.trim() || (await this.lastMessage(child)) || trim(await this.screenTail(child));
-    return `${child.name} went idle after ${age}:${text ? `\n${text}` : ' no message and no readable screen.'}`;
+    return `${childLabel(child)} went idle after ${age}:${text ? `\n${text}` : ' no message and no readable screen.'}`;
   }
 
-  private describeExit(name: string, code: number | undefined): string {
-    return `${name} exited${code === undefined ? '' : ` with code ${code}`}.`;
+  private describeExit(child: ChildRecord, code: number | undefined): string {
+    return `${childLabel(child)} exited${code === undefined ? '' : ` with code ${code}`}.`;
   }
 
   private async screenTail(child: ChildRecord, lines = 40): Promise<string> {
@@ -493,7 +494,7 @@ export class Watcher {
     const state = this.states.get(child.id);
     if (state) this.states.set(child.id, markReported(state, this.now()));
     const label = report.status === 'needs-input' ? 'needs input' : report.status;
-    this.offer(child, 'report', `${child.name} reported ${label}:\n${report.text}`);
+    this.offer(child, 'report', `${childLabel(child)} reported ${label}:\n${report.text}`);
     this.publish();
   }
 

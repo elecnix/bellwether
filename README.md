@@ -79,6 +79,7 @@ herdr reports each agent's state, and Bellwether turns those reports into events
 - [docs/tools.md](docs/tools.md): the tools a session gets, and the events a parent receives.
 - [docs/recovery.md](docs/recovery.md): resuming, restarting and retiring a child, and handling a stuck or blocked one.
 - [docs/remote-machines.md](docs/remote-machines.md): children on another machine.
+- [docs/moving.md](docs/moving.md): moving a live child to another machine and back.
 - [docs/upgrading.md](docs/upgrading.md): updating several machines and protocol changes.
 - [docs/releasing.md](docs/releasing.md): cutting a release, for maintainers.
 - [AGENTS.md](AGENTS.md): how the code fits together, for anyone changing it.

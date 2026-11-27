@@ -18,6 +18,7 @@ import { removeChildFiles } from './mcp-config.ts';
 import { childLabel } from './label.ts';
 import { spoolPath } from './paths.ts';
 import { realRetireOps, reapChild, retirementPending, type RetireOps } from './retire.ts';
+import { isMoving } from './move-plan.ts';
 import type { AgentStatus, ChildEventKind, ChildRecord, OutboxEntry, RelayHostState, SpoolReport } from './types.ts';
 
 /** herdr's status for a pane, or the child's last known status. */
@@ -237,6 +238,8 @@ export class Watcher {
         const live = await this.livePanes(client, signal);
         const addressable: ChildRecord[] = [];
         for (const child of children) {
+          // A child changing machines closed its old pane on purpose.
+          if (isMoving(child)) continue;
           // A record written a moment ago may predate its pane. Leave it be.
           if (!child.paneId || Date.now() - Date.parse(child.startedAt) < 15_000 || live.has(child.paneId)) {
             if (child.paneId) addressable.push(child);
@@ -352,6 +355,12 @@ export class Watcher {
     const child = record?.children.find((entry) => hostOf(entry) === host && ((paneId !== undefined && entry.paneId === paneId) || (tabId !== undefined && entry.tabId === tabId)));
     if (!child) return;
     if (CLOSE_EVENTS.has(event.event)) {
+      // agent_move closed this pane, and the child goes on elsewhere under the same id.
+      if (isMoving(child)) {
+        this.dropLink(host);
+        void this.reconcileAndSubscribe();
+        return;
+      }
       const code = typeof event.data['exit_code'] === 'number' ? (event.data['exit_code'] as number) : undefined;
       this.markExited(child, code);
       // The subscription named that pane, so it has to be rebuilt without it.
@@ -483,6 +492,11 @@ export class Watcher {
       // The spawn is answering this child's startup dialogs. Its first state
       // is read once the spawn is done.
       if (child.startingUntil && Date.parse(child.startingUntil) > Date.now()) {
+        this.states.delete(child.id);
+        continue;
+      }
+      // A child changing machines is read again once it runs on the new one.
+      if (isMoving(child)) {
         this.states.delete(child.id);
         continue;
       }

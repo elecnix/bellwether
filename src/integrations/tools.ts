@@ -59,7 +59,8 @@ export const parentTools: ToolDefinition[] = [
         name: { type: 'string', description: 'A short handle for the child, unique in this session. Used as the herdr agent name and the tab label. Required without resume.' },
         cwd: { type: 'string', description: 'The directory to start the child in. Use an absolute path, ideally a git worktree of its own.' },
         prompt: { type: 'string', description: 'The first message the child receives, or with resume the message for the earlier child. The whole prompt, not a path. Line breaks and any length are fine: Bellwether hands a new or resumed child the prompt through a private file.' },
-        model: { type: 'string', description: 'The model or tier to pass to the child harness.' },
+        model: { type: 'string', description: 'The model or tier to pass to the child harness. A pi child needs provider with it; with neither, a pi child runs on the provider and model of this session.' },
+        provider: { type: 'string', description: 'The pi provider for model. Pass both or neither.' },
         args: { type: 'array', items: { type: 'string' }, description: 'Extra arguments for the child harness, passed through unchanged and appended last.' },
         focus: { type: 'boolean', description: 'Move your view to the new tab. Defaults to false, so the child does not steal focus.' },
         stuck_minutes: { type: 'number', description: 'How long the child may be quiet before it counts as stuck. Defaults to 10.' },
@@ -200,7 +201,8 @@ function describeChild(child: ChildRecord, watcher: Watcher, relayState?: ToolCo
   const retire = child.retireOutcome === 'removed' ? ', retired' : child.retireOutcome === 'refused' ? ', retirement refused' : child.retireRequestedAt ? ', retirement requested' : '';
   const state = `${child.exitedAt ? `exited${child.exitCode === undefined ? '' : ` (${child.exitCode})`}` : child.lastStatus}${retire}`;
   const name = child.agentName ? `${child.name} (${child.agentName})` : child.name;
-  return `${name}\t${child.kind}\t${state}\t${age}s\t${hostColumn(child, relayState)}\t${child.paneId}\tunread ${unread}\t${child.cwd ?? ''}`;
+  const kind = child.model ? `${child.kind} (${child.model.provider}/${child.model.id})` : child.kind;
+  return `${name}\t${kind}\t${state}\t${age}s\t${hostColumn(child, relayState)}\t${child.paneId}\tunread ${unread}\t${child.cwd ?? ''}`;
 }
 
 /**
@@ -260,6 +262,8 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
       cwd: optionalString(args['cwd']),
       prompt: optionalString(args['prompt']),
       model: optionalString(args['model']),
+      provider: optionalString(args['provider']),
+      parentModel: caller.model,
       args: Array.isArray(args['args']) ? (args['args'] as string[]) : undefined,
       focus: args['focus'] === true,
       stuckMinutes: typeof args['stuck_minutes'] === 'number' ? (args['stuck_minutes'] as number) : undefined,
@@ -271,9 +275,10 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
     if (!options.name) throw new Error('agent_spawn needs a name for a new child, or resume to message an earlier one.');
     // Resolve the machine before anything is written, so a typo leaves no record.
     const client = await clientFor(ctx, options.host ?? LOCAL_HOST);
-    const { child, link, reportWarning } = await spawnChild(client, record, options, undefined, { forget: (childId) => ctx.watcher.forget(childId), registerRemote: registrar(ctx, record), cleanupRemote: remoteCleanup(ctx) });
+    const { child, link, reportWarning, modelNote } = await spawnChild(client, record, options, undefined, { forget: (childId) => ctx.watcher.forget(childId), registerRemote: registrar(ctx, record), cleanupRemote: remoteCleanup(ctx) });
     const where = child.host === LOCAL_HOST ? '' : ` on machine ${child.host}`;
     const lines = [`${child.name} started as a ${child.kind} agent${where} in pane ${child.paneId}, tab ${child.tabId ?? child.paneId}.`, `Bellwether watches it, and your next turn starts when it changes state.`, `herdr link: ${link}`];
+    if (modelNote) lines.push(modelNote);
     if (reportWarning) lines.push(reportWarning);
     return lines.join('\n');
   }

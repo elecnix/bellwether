@@ -16,6 +16,8 @@ import { toolsFor } from '../tools.ts';
 // The parts of pi's ExtensionAPI this extension uses.
 interface PiContext {
   isIdle(): boolean;
+  /** The model the session runs on now. It changes with /model, so it is read at each call. */
+  model?: { provider: string; id: string };
   sessionManager: { getSessionId(): string; getCwd(): string; getSessionName?(): string | undefined };
 }
 interface ToolResult {
@@ -130,11 +132,12 @@ export default function bellwether(pi: PiApi): void {
       label: tool.name.replace(/_/g, ' '),
       description: tool.description,
       parameters: tool.schema,
-      async execute(_id, args, signal) {
+      async execute(_id, args, signal, _onUpdate, ctx) {
         if (!daemon) return result('Bellwether is not running: the daemon did not start for this session.');
         if (signal?.aborted) return result('Cancelled.');
         try {
-          return result(await daemon.tool(tool.name, args));
+          const model = ctx?.model?.provider && ctx.model.id ? { provider: ctx.model.provider, id: ctx.model.id } : undefined;
+          return result(await daemon.tool(tool.name, args, model));
         } catch (error) {
           return result((error as Error).message);
         }

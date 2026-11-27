@@ -5,15 +5,15 @@ import os from 'node:os';
 import { HerdrApiError, type HerdrClient } from './herdr-client.ts';
 import { LOCAL_HOST } from './machine.ts';
 import { newChildId } from './outbox.ts';
-import { PI_EXTENSION_ENV, piExtensionEntry, resolvePiExtension } from './pi-extension.ts';
+import { PI_EXTENSION_ENV, piExtensionEntry, piFallback, resolvePiExtension } from './pi-extension.ts';
 import { briefArgument, writeBrief } from './brief.ts';
 import { resolveInactiveMs } from './inactivity.ts';
 import { removeChildFiles, writeMcpConfig } from './mcp-config.ts';
 import { removeChild, updateChild, upsertChild } from './registry.ts';
 import { watchStartup, type StartupDialog, type StartupWatch } from './startup-dialogs.ts';
-import { agentNameOf, locateTranscript, sessionFrom } from './transcript.ts';
+import { agentNameOf, locateTranscript, piSessionModel, sessionFrom } from './transcript.ts';
 import type { RemoteRegistration } from './remote.ts';
-import type { ChildRecord, Harness, ParentRecord } from './types.ts';
+import type { ChildRecord, Harness, ModelPair, ParentRecord } from './types.ts';
 
 /** How deep a Bellwether child may spawn. The design starts at 2. */
 export const DEFAULT_MAX_DEPTH = 2;
@@ -33,6 +33,10 @@ export interface SpawnOptions {
   cwd?: string;
   prompt?: string;
   model?: string;
+  /** The pi provider for the model. pi needs both, so one without the other is refused. */
+  provider?: string;
+  /** The provider and model the parent runs on, which a pi child inherits when the caller names neither. */
+  parentModel?: ModelPair;
   args?: string[];
   focus?: boolean;
   /** Minutes of quiet before the child counts as stuck. */
@@ -60,6 +64,8 @@ export interface SpawnOptions {
 
 export interface SpawnResult {
   child: ChildRecord;
+  /** Which provider and model a pi child runs on, and why, for the spawn reply. */
+  modelNote?: string;
   link: string;
   /** Why a child on another machine cannot call parent_report, when its registration there failed. */
   reportWarning?: string;
@@ -90,7 +96,9 @@ export interface ChildLaunch {
 export function childArgs(kind: string, options: SpawnOptions, launch: ChildLaunch = {}): string[] {
   const { briefFile, mcpConfigFile, piExtension } = launch;
   const args: string[] = [];
-  if (options.model) args.push('--model', options.model);
+  // pi needs both flags. A flag the caller already put in args is not repeated.
+  if (options.provider && kind === 'pi' && argValue(options.args, '--provider') === undefined) args.push('--provider', options.provider);
+  if (options.model && argValue(options.args, '--model') === undefined) args.push('--model', options.model);
   // A pi child loads the extension it is given, whatever the host's pi settings hold.
   if (kind === 'pi' && piExtension) args.push('-e', piExtension);
   // --mcp-config is a list flag too, so it takes the equals form for the same reason.
@@ -102,6 +110,60 @@ export function childArgs(kind: string, options: SpawnOptions, launch: ChildLaun
   if (briefFile) args.push(briefArgument(kind, briefFile));
   if (options.args?.length) args.push(...options.args);
   return args;
+}
+
+/** The value of `--flag value` or `--flag=value` in a list of arguments. */
+export function argValue(args: string[] | undefined, flag: string): string | undefined {
+  if (!args) return undefined;
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index] as string;
+    if (arg === flag) return args[index + 1] ?? '';
+    if (arg.startsWith(`${flag}=`)) return arg.slice(flag.length + 1);
+  }
+  return undefined;
+}
+
+/**
+ * The provider and model a pi child starts with. A caller that names both
+ * wins, in the spawn's fields or in its extra arguments. Half a pair is
+ * refused, because pi would pair it with whatever provider it defaults to.
+ * With neither named, the child inherits the parent's pair. With the parent's
+ * pair unknown too, no flag is passed and pi picks its own default.
+ */
+export function chooseChildModel(options: Pick<SpawnOptions, 'kind' | 'name' | 'model' | 'provider' | 'args' | 'parentModel'>): (ModelPair & { source: 'caller' | 'parent' }) | undefined {
+  if (options.kind !== 'pi') {
+    if (options.provider) throw new Error(`${options.name} was not started: provider applies to a pi child, and this is a ${options.kind} child. Put the provider in model if the harness takes one.`);
+    return undefined;
+  }
+  const provider = options.provider ?? argValue(options.args, '--provider');
+  const model = options.model ?? argValue(options.args, '--model');
+  const parent = options.parentModel;
+  const instead = parent ? `or neither to run on this session's ${parent.provider} / ${parent.id}` : `or neither to run on pi's own default`;
+  if (provider && model) return { provider, id: model, source: 'caller' };
+  if (model) throw new Error(`${options.name} was not started: pi needs a provider with the model ${model}, and Bellwether does not guess one. Pass provider too, ${instead}.`);
+  if (provider) throw new Error(`${options.name} was not started: pi needs a model with the provider ${provider}, and Bellwether does not guess one. Pass model too, ${instead}.`);
+  return parent ? { ...parent, source: 'parent' } : undefined;
+}
+
+/**
+ * The line of a spawn reply that says which provider account and model a pi
+ * child runs on, since the account is what pays. With no pair passed and no
+ * session file yet, it names the default pi's settings point to, where they
+ * set it, and that the pair is unverified.
+ */
+export function modelNote(child: Pick<ChildRecord, 'name' | 'kind' | 'model' | 'host' | 'cwd'>): string | undefined {
+  if (child.kind !== 'pi') return undefined;
+  const model = child.model;
+  const on = (pair: ModelPair): string => `provider account ${pair.provider}, model ${pair.id}`;
+  if (model?.source === 'caller') return `${child.name} runs on ${on(model)}, as the spawn named.`;
+  if (model?.source === 'parent') return `${child.name} runs on ${on(model)}, the same account and model as this session.`;
+  const head = 'This session did not say which provider and model it runs on, so Bellwether passed none.';
+  if (model) return `${head} ${child.name} runs on ${on(model)}, pi's own default, read from its session file.`;
+  const tail = 'This is unverified until pi writes its session file, and agent_list shows the pair pi chose once it does.';
+  if ((child.host ?? LOCAL_HOST) !== LOCAL_HOST) return `${head} ${child.name} starts on pi's own default on machine ${child.host}, set in that machine's ~/.pi/agent/settings.json, which Bellwether cannot read from here. The pair is unverified, and its session file stays on that machine.`;
+  const fallback = piFallback(child.cwd);
+  const target = fallback.provider && fallback.id ? on({ provider: fallback.provider, id: fallback.id }) : undefined;
+  return `${head} ${child.name} starts on pi's own default${target ? `, ${target}` : ''}: ${fallback.reason}. ${tail}`;
 }
 
 /**
@@ -183,8 +245,11 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
   const maxDepth = options.maxDepth ?? DEFAULT_MAX_DEPTH;
   if (depth > maxDepth) throw new Error(`Bellwether is ${maxDepth} levels deep already, so ${options.name} would go one level too far. Raise max_depth on the spawn if that is what you want.`);
 
+  // Refused before the record, so half a pair leaves nothing behind.
+  const chosen = chooseChildModel(options);
   const now = new Date().toISOString();
   const child: ChildRecord = {
+    ...(chosen ? { model: chosen } : {}),
     id: newChildId(),
     name: options.name,
     kind: options.kind,
@@ -237,7 +302,7 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
     // 3. Start the harness in the tab's root pane. A tab answers tab.create
     // before its shell is at a prompt, so herdr refuses the start with
     // agent_pane_busy until the shell is ready.
-    await startWithRetry(client, { name: child.name, kind: options.kind, paneId: tab.paneId, args: childArgs(options.kind, options, { briefFile, mcpConfigFile, piExtension }) }, signal);
+    await startWithRetry(client, { name: child.name, kind: options.kind, paneId: tab.paneId, args: childArgs(options.kind, { ...options, ...(chosen ? { provider: chosen.provider, model: chosen.id } : {}) }, { briefFile, mcpConfigFile, piExtension }) }, signal);
   } catch (error) {
     startup?.close();
     await abandon(client, parent.id, child, tabId, hooks, registered);
@@ -278,6 +343,9 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
         const found = locateTranscript(child.harness, session.value, child.cwd);
         child.transcript = found.path;
         child.transcriptMissing = found.missing;
+        // With no pair passed, the session file says which default pi chose.
+        const fromSession = !child.model && child.kind === 'pi' && found.path ? piSessionModel(found.path) : undefined;
+        if (fromSession) child.model = { ...fromSession, source: 'session' };
       }
     }
     const status = pane['agent_status'];
@@ -291,6 +359,7 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
   updateChild(parent.id, child.id, (entry) => {
     if (child.session) entry.session = child.session;
     if (child.agentName) entry.agentName = child.agentName;
+    if (child.model && !entry.model) entry.model = child.model;
     if (child.transcript) {
       entry.transcript = child.transcript;
       delete entry.transcriptMissing;
@@ -303,7 +372,8 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
     delete entry.startingUntil;
   });
 
-  return { child, link: herdrLink('pane', child.paneId), answered, ...(reportWarning ? { reportWarning } : {}) };
+  const note = modelNote(child);
+  return { child, link: herdrLink('pane', child.paneId), answered, ...(note ? { modelNote: note } : {}), ...(reportWarning ? { reportWarning } : {}) };
 }
 
 /**

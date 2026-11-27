@@ -112,3 +112,56 @@ export function assertNoGuardlessPiCopy(agentDir: string = piAgentDir()): void {
   if (!stale.length) return;
   throw new Error(`Bellwether cannot start a pi child here: pi's settings load Bellwether from ${stale.join(' and ')}, a version without the guard that keeps a second copy from registering its tools, and pi exits when two extensions register the same tool. Run pi install npm:@elecnix/bellwether to update it, or remove it from ${path.join(agentDir, 'settings.json')}.`);
 }
+
+/** What pi will most likely start a new session on when no --provider and --model are passed. */
+export interface PiFallback {
+  provider?: string;
+  id?: string;
+  /** Why pi lands there, naming the setting and the file that holds it. */
+  reason: string;
+}
+
+const THINKING_SUFFIX = /:(off|minimal|low|medium|high|xhigh|max)$/;
+
+function readSettings(file: string): Record<string, unknown> | undefined {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as unknown;
+    return typeof parsed === 'object' && parsed !== null ? (parsed as Record<string, unknown>) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The provider and model pi falls back to for a new session started in `cwd`,
+ * read from its settings by pi's own order: with `enabledModels` set, the
+ * saved default when the list holds it, otherwise the list's first entry;
+ * without the list, the saved default; with neither, the first model pi has
+ * an API key for. A project's `.pi/settings.json` overrides the user's. This
+ * is a reading of the settings, not of what pi chose: a provider without auth
+ * or a pattern that matches nothing changes the outcome, so callers mark it
+ * unverified until the session file names the pair.
+ */
+export function piFallback(cwd: string | undefined, agentDir: string = piAgentDir()): PiFallback {
+  const userFile = path.join(agentDir, 'settings.json');
+  const projectFile = cwd ? path.join(cwd, '.pi', 'settings.json') : undefined;
+  const user = readSettings(userFile) ?? {};
+  const project = (projectFile && readSettings(projectFile)) || {};
+  const pick = (key: string): { value: unknown; file: string } => (key in project ? { value: project[key], file: projectFile as string } : { value: user[key], file: userFile });
+  const provider = pick('defaultProvider');
+  const model = pick('defaultModel');
+  const saved = typeof provider.value === 'string' && typeof model.value === 'string' && provider.value && model.value ? { provider: provider.value, id: model.value } : undefined;
+  const savedWhere = provider.file === model.file ? provider.file : `${provider.file} and ${model.file}`;
+  const enabled = pick('enabledModels');
+  const scope = Array.isArray(enabled.value) ? enabled.value.filter((entry): entry is string => typeof entry === 'string' && entry.length > 0).map((entry) => entry.replace(THINKING_SUFFIX, '')) : [];
+  if (scope.length) {
+    if (saved && scope.includes(`${saved.provider}/${saved.id}`)) return { ...saved, reason: `the saved default, defaultProvider and defaultModel in ${savedWhere}, which enabledModels in ${enabled.file} includes` };
+    const first = scope[0] as string;
+    const slash = first.indexOf('/');
+    const why = saved ? `the first entry of enabledModels in ${enabled.file}, because that list leaves out the saved default ${saved.provider} / ${saved.id}` : `the first entry of enabledModels in ${enabled.file}`;
+    if (slash > 0 && !/[*?[]/.test(first)) return { provider: first.slice(0, slash), id: first.slice(slash + 1), reason: why };
+    return { reason: `whatever model matches ${first}, ${why}` };
+  }
+  if (saved) return { ...saved, reason: `the saved default, defaultProvider and defaultModel in ${savedWhere}, provided that provider has auth` };
+  return { reason: `the first model it has an API key for, because neither ${userFile}${projectFile ? ` nor ${projectFile}` : ''} sets a default` };
+}

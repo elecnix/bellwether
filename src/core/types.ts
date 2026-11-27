@@ -34,6 +34,12 @@ export interface ChildRecord {
    * children answer to it.
    */
   agentName?: string;
+  /**
+   * The provider and model a pi child runs on, and where the pair came from:
+   * the spawn's caller, the parent session, or the child's own session file
+   * when neither named one and pi chose its default.
+   */
+  model?: ModelPair & { source: 'caller' | 'parent' | 'session' };
   /** The herdr agent kind: pi, claude, codex, opencode or cline. */
   kind: string;
   harness: Harness | 'other';
@@ -204,6 +210,14 @@ export interface SpoolReport {
 export interface CallerIdentity {
   paneId?: string;
   childId?: string;
+  /** The provider and model the calling session runs on, when its harness says. */
+  model?: ModelPair;
+}
+
+/** A pi provider and model. pi needs both, so Bellwether passes them as a pair. */
+export interface ModelPair {
+  provider: string;
+  id: string;
 }
 
 /** How a parent's daemon stands with one remote host. */

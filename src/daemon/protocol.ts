@@ -309,6 +309,11 @@ function parseCaller(value: unknown): CallerIdentity | undefined {
   const paneId = text(value['paneId']);
   if (childId) caller.childId = childId;
   if (paneId) caller.paneId = paneId;
+  // Half a pair would launch a child on a mismatched provider, so it is dropped.
+  const model = isRecord(value['model']) ? value['model'] : undefined;
+  const provider = text(model?.['provider']);
+  const id = text(model?.['id']);
+  if (provider && id) caller.model = { provider, id };
   return caller;
 }
 

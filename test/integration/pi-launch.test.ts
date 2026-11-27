@@ -216,3 +216,112 @@ test('a name that two children answer to is refused rather than guessed', async 
   await assert.rejects(runBellwetherTool(context(space), 'agent_send', { child: 'gray-trout-97', text: 'status?' }), /first.*second|second.*first/);
   assert.equal(space.fake.requests.some((request) => request.method === 'agent.prompt'), false);
 });
+
+// A pi child runs on the provider and model its parent runs on, unless the
+// caller names a pair. pi needs both flags, so half a pair is refused.
+const PARENT_MODEL = { provider: 'acme-cloud', id: 'acme-large' };
+
+function modelFlags(args: string[]): string[] {
+  const out: string[] = [];
+  args.forEach((arg, index) => {
+    if (arg === '--provider' || arg === '--model') out.push(arg, args[index + 1] ?? '');
+  });
+  return out;
+}
+
+test('a pi child inherits the parent\'s provider and model when the caller names neither', async (t) => {
+  const space = await room(t);
+  const reply = await runBellwetherTool(context(space), 'agent_spawn', { kind: 'pi', name: 'heir', prompt: 'go' }, { model: PARENT_MODEL });
+  assert.deepEqual(modelFlags(startArgs(space.fake)), ['--provider', 'acme-cloud', '--model', 'acme-large']);
+  assert.match(reply, /runs on provider account acme-cloud, model acme-large, the same account and model as this session/);
+  const child = readParent(space.parentId)?.children.find((entry) => entry.name === 'heir');
+  assert.deepEqual(child?.model, { provider: 'acme-cloud', id: 'acme-large', source: 'parent' });
+});
+
+test('a model without a provider is refused, naming the parent\'s pair, and nothing starts', async (t) => {
+  const space = await room(t);
+  await assert.rejects(
+    runBellwetherTool(context(space), 'agent_spawn', { kind: 'pi', name: 'half', prompt: 'go', model: 'deepseek-v4.1-flash' }, { model: PARENT_MODEL }),
+    (error: Error) => /provider/.test(error.message) && error.message.includes('acme-cloud') && error.message.includes('deepseek-v4.1-flash'),
+  );
+  await assert.rejects(
+    runBellwetherTool(context(space), 'agent_spawn', { kind: 'pi', name: 'half', prompt: 'go', provider: 'ollama-cloud' }, { model: PARENT_MODEL }),
+    (error: Error) => /model/.test(error.message) && error.message.includes('ollama-cloud'),
+  );
+  // Half a pair in the extra arguments counts as the caller's too.
+  await assert.rejects(runBellwetherTool(context(space), 'agent_spawn', { kind: 'pi', name: 'half', prompt: 'go', args: ['--model', 'deepseek-v4.1-flash'] }, { model: PARENT_MODEL }), /provider/);
+  assert.deepEqual(readParent(space.parentId)?.children, []);
+  assert.equal(space.fake.requests.some((request) => request.method === 'tab.create'), false);
+});
+
+test('a caller that names both provider and model wins over the parent\'s pair', async (t) => {
+  const space = await room(t);
+  const reply = await runBellwetherTool(context(space), 'agent_spawn', { kind: 'pi', name: 'chosen', prompt: 'go', provider: 'ollama-cloud', model: 'deepseek-v4.1-flash' }, { model: PARENT_MODEL });
+  assert.deepEqual(modelFlags(startArgs(space.fake)), ['--provider', 'ollama-cloud', '--model', 'deepseek-v4.1-flash']);
+  assert.match(reply, /runs on provider account ollama-cloud, model deepseek-v4.1-flash, as the spawn named/);
+  const child = readParent(space.parentId)?.children.find((entry) => entry.name === 'chosen');
+  assert.deepEqual(child?.model, { provider: 'ollama-cloud', id: 'deepseek-v4.1-flash', source: 'caller' });
+});
+
+test('with the parent\'s pair unknown, a pi child starts on pi\'s default and the reply names what it runs on', async (t) => {
+  const space = await room(t);
+  const file = piSession(space.cwd);
+  fs.appendFileSync(file, `${JSON.stringify({ type: 'model_change', provider: 'ollama-cloud', modelId: 'deepseek-v4.1-flash' })}\n`);
+  space.world.onStart = (pane) => {
+    pane.agent_session = { agent: 'pi', kind: 'path', source: 'herdr:pi', value: file };
+  };
+  const reply = await runBellwetherTool(context(space), 'agent_spawn', { kind: 'pi', name: 'orphan', prompt: 'go', cwd: space.cwd }, {});
+  assert.deepEqual(modelFlags(startArgs(space.fake)), [], 'no pair is guessed');
+  assert.match(reply, /did not say which provider and model it runs on/);
+  assert.match(reply, /runs on provider account ollama-cloud, model deepseek-v4.1-flash, pi's own default, read from its session file/);
+  const child = readParent(space.parentId)?.children.find((entry) => entry.name === 'orphan');
+  assert.deepEqual(child?.model, { provider: 'ollama-cloud', id: 'deepseek-v4.1-flash', source: 'session' });
+});
+
+/** Write pi's user settings in the case's pi agent directory, and return the file. */
+function piSettings(settings: Record<string, unknown>): string {
+  const dir = process.env['PI_CODING_AGENT_DIR'] ?? '';
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, 'settings.json');
+  fs.writeFileSync(file, JSON.stringify(settings));
+  return file;
+}
+
+test('with the pair unknown and no session file yet, the reply names the account pi will fall back to, unverified', async (t) => {
+  const space = await room(t);
+  // The drill's settings: a saved default outside enabledModels, so pi takes the first entry.
+  const file = piSettings({ defaultProvider: 'acme-cloud', defaultModel: 'acme-large', enabledModels: ['ollama-cloud/deepseek-v4.1-flash', 'ollama-backup/deepseek-v4.1-flash'] });
+  const reply = await runBellwetherTool(context(space), 'agent_spawn', { kind: 'pi', name: 'unseen', prompt: 'go' }, {});
+  assert.deepEqual(modelFlags(startArgs(space.fake)), []);
+  assert.match(reply, /provider account ollama-cloud, model deepseek-v4.1-flash/);
+  assert.ok(reply.includes(file), `the reply names where the default is set: ${reply}`);
+  assert.match(reply, /enabledModels/);
+  assert.match(reply, /unverified until pi writes its session file/);
+  const child = readParent(space.parentId)?.children.find((entry) => entry.name === 'unseen');
+  assert.equal(child?.model, undefined, 'an unverified pair is not recorded as the child\'s');
+});
+
+test('with the pair unknown and a saved default in enabledModels or no enabledModels, the reply names the saved default, unverified', async (t) => {
+  const space = await room(t);
+  piSettings({ defaultProvider: 'acme-cloud', defaultModel: 'acme-large', enabledModels: ['ollama-cloud/deepseek-v4.1-flash', 'acme-cloud/acme-large'] });
+  const inScope = await runBellwetherTool(context(space), 'agent_spawn', { kind: 'pi', name: 'scoped', prompt: 'go' }, {});
+  assert.match(inScope, /provider account acme-cloud, model acme-large/);
+  piSettings({ defaultProvider: 'acme-cloud', defaultModel: 'acme-large' });
+  const plain = await runBellwetherTool(context(space), 'agent_spawn', { kind: 'pi', name: 'plain', prompt: 'go' }, {});
+  assert.match(plain, /provider account acme-cloud, model acme-large/);
+  assert.match(plain, /defaultProvider/);
+  assert.match(plain, /unverified/);
+});
+
+test('with the pair unknown and no pi settings, the reply says pi takes the first model it has a key for', async (t) => {
+  const space = await room(t);
+  const reply = await runBellwetherTool(context(space), 'agent_spawn', { kind: 'pi', name: 'bare', prompt: 'go' }, {});
+  assert.match(reply, /first model it has an API key for/);
+  assert.match(reply, /unverified/);
+});
+
+test('a Claude child gets no provider and model from a pi parent', async (t) => {
+  const space = await room(t);
+  await runBellwetherTool(context(space), 'agent_spawn', { kind: 'claude', name: 'claude-kid', prompt: 'go' }, { model: PARENT_MODEL });
+  assert.deepEqual(modelFlags(startArgs(space.fake)), []);
+});

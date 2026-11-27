@@ -13,7 +13,7 @@ import { LOCAL_HOST, hostOf, type ClientFor } from './machine.ts';
 import { Outbox } from './outbox.ts';
 import { mutateParent, readParent, updateChild } from './registry.ts';
 import { DIALOG_NAMES, detectDialog, watchStartup } from './startup-dialogs.ts';
-import { agentNameOf, lastAssistantMessage, locateTranscript, sessionFrom } from './transcript.ts';
+import { agentNameOf, lastAssistantMessage, locateTranscript, piSessionModel, sessionFrom } from './transcript.ts';
 import { removeChildFiles } from './mcp-config.ts';
 import { childLabel } from './label.ts';
 import { spoolPath } from './paths.ts';
@@ -608,9 +608,12 @@ export class Watcher {
   private recordTranscript(child: ChildRecord, session: string): string | undefined {
     const found = locateTranscript(child.harness, session, child.cwd);
     if (found.path) {
+      // A pi child started on pi's default names it in its session file.
+      const model = child.kind === 'pi' && !child.model ? piSessionModel(found.path) : undefined;
       updateChild(this.parentId, child.id, (entry) => {
         entry.transcript = found.path;
         delete entry.transcriptMissing;
+        if (model && !entry.model) entry.model = { ...model, source: 'session' };
       });
       return found.path;
     }

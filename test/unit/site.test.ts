@@ -18,6 +18,7 @@ test('the site has one HTML file per page, in reading order, and nothing else', 
     'docs/recovery.md',
     'docs/remote-machines.md',
     'docs/moving.md',
+    'docs/routes.md',
     'docs/upgrading.md',
     'docs/releasing.md',
   ]);

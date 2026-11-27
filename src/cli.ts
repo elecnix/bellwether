@@ -4,6 +4,7 @@
 // `watch` is the dogfood driver: it runs the same core the Pi extension and the
 // Claude channel run, and prints one line per child event, so a supervisor can
 // read the stream instead of polling herdr.
+import { describeRoutes, readRoutes } from './core/routes.ts';
 import { workspaceColumn } from './core/workspace.ts';
 import fs from 'node:fs';
 import net from 'node:net';
@@ -227,6 +228,10 @@ async function doctor(): Promise<number> {
     console.log(`  ${parent.id}: ${live.length} live of ${parent.children.length} children, updated ${parent.updatedAt}`);
     for (const child of live) console.log(`    ${child.name} on ${machineLabel(hostOf(child))}, workspace ${workspaceColumn(child)}`);
   }
+  // Each route a child can start on, and what a child on it sees that a bare one does not.
+  const routeLines = describeRoutes(() => readRoutes(), listParents().flatMap((parent) => parent.children).filter((child) => !child.exitedAt));
+  for (const line of routeLines) console.log(`  ${line}`);
+  failures += routeLines.filter((line) => line.startsWith('fail')).length;
   await checkMoves();
   return failures;
 }

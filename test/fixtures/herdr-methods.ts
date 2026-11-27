@@ -17,6 +17,8 @@ export const REQUIRED_FIELDS: Record<string, readonly string[]> = {
   'agent.start': ['name', 'kind', 'pane_id'],
   'agent.prompt': ['target', 'text'],
   'agent.send_keys': ['target', 'keys'],
+  'agent.rename': ['target'],
+  'pane.send_input': ['pane_id'],
   'pane.read': ['pane_id', 'source'],
   'pane.close': ['pane_id'],
   'pane.process_info': ['pane_id'],

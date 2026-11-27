@@ -14,8 +14,9 @@ import { removeChild, updateChild, upsertChild } from './registry.ts';
 import { watchStartup, type StartupDialog, type StartupWatch } from './startup-dialogs.ts';
 import { agentNameOf, locateTranscript, piSessionModel, sessionFrom } from './transcript.ts';
 import type { RemoteRegistration } from './remote.ts';
+import { BARE, RoutesFileError, launchLine, readRoutes, resolveRoute, routeConfig, routeLaunch, type RouteConfig, type RouteLaunch, type RoutesFile } from './routes.ts';
 import { openChildTab, parseWorkspaces, placeChild, undoChildTab, type ChildTab, type WorkspaceEntry } from './workspace.ts';
-import type { ChildRecord, Harness, ModelPair, ParentRecord } from './types.ts';
+import type { ChildRecord, ChildRoute, Harness, ModelPair, ParentRecord } from './types.ts';
 
 /** How deep a Bellwether child may spawn. The design starts at 2. */
 export { DEFAULT_MAX_DEPTH } from './depth.ts';
@@ -35,6 +36,13 @@ export interface SpawnOptions {
   cwd?: string;
   prompt?: string;
   model?: string;
+  /**
+   * The route to launch through: a name from this machine's routes file, or
+   * `none` for a bare start. On a route, model names the route's tier.
+   */
+  via?: string;
+  /** A file holding the key the route's launcher runs under. Its path travels, never its contents. */
+  keyFile?: string;
   /** The pi provider for the model. pi needs both, so one without the other is refused. */
   provider?: string;
   /** The provider and model the parent runs on, which a pi child inherits when the caller names neither. */
@@ -258,8 +266,14 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
   const spawnerCeiling = options.spawnerCeiling ?? maxDepth;
   if (depth > spawnerCeiling) throw new Error(tooDeep(parent, spawnerCeiling, options.name));
 
-  // Refused before the record, so half a pair leaves nothing behind.
-  const chosen = chooseChildModel(options);
+  // Refused before the record, so a wrong route or half a pair leaves nothing behind.
+  const routes = routesFor(options.via);
+  const resolved = resolveRoute({ name: options.name, kind: options.kind, via: options.via, model: options.model, keyFile: options.keyFile, host: options.host }, routes);
+  if (resolved.route && options.provider) throw new Error(`${options.name} was not started: provider applies to a bare pi start, and on route ${resolved.route.name} the tier picks the model. Drop provider, or pass via ${BARE}.`);
+  // On a route the tier goes to the launcher, so the harness gets no model of its own.
+  const harnessOptions: SpawnOptions = { ...options, model: resolved.harnessModel };
+  const chosen = resolved.route ? undefined : chooseChildModel(harnessOptions);
+  const launchVia = resolved.route ? { route: resolved.route, config: routeConfig(routes, resolved.route, options.name) } : undefined;
   // The workspace is settled before the record too, so a name that matches
   // nothing leaves nothing behind. Nothing is created yet.
   const host = options.host ?? LOCAL_HOST;
@@ -275,6 +289,7 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
   const now = new Date().toISOString();
   const child: ChildRecord = {
     ...(chosen ? { model: chosen } : {}),
+    ...(resolved.route ? { route: resolved.route } : {}),
     id: newChildId(),
     name: options.name,
     kind: options.kind,
@@ -330,7 +345,8 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
     // 3. Start the harness in the tab's root pane. A tab answers tab.create
     // before its shell is at a prompt, so herdr refuses the start with
     // agent_pane_busy until the shell is ready.
-    await startWithRetry(client, { name: child.name, kind: options.kind, paneId: tab.paneId, args: childArgs(options.kind, { ...options, ...(chosen ? { provider: chosen.provider, model: chosen.id } : {}) }, { briefFile, mcpConfigFile, piExtension }) }, signal);
+    const args = childArgs(options.kind, { ...harnessOptions, ...(chosen ? { provider: chosen.provider, model: chosen.id } : {}) }, { briefFile, mcpConfigFile, piExtension });
+    await startHarness(client, { name: child.name, kind: options.kind, paneId: tab.paneId, args, ...(launchVia ? { launch: routeLaunch(launchVia.config, launchVia.route, options.kind, args) } : {}) }, signal);
   } catch (error) {
     startup?.close();
     await abandon(client, parent.id, child, opened, hooks, registered);
@@ -445,6 +461,148 @@ export function childEnv(parent: ParentRecord, child: ChildRecord, piExtension?:
     BELLWETHER_HARNESS: child.harness,
     ...(piExtension ? { [PI_EXTENSION_ENV]: piExtension } : {}),
   };
+}
+
+/**
+ * This machine's routes, for a request. A broken routes file stops a start
+ * that names a route, and the error names the file. A bare start goes on
+ * without it, because it needs the file only to catch a tier passed without via.
+ */
+export function routesFor(via: string | undefined): RoutesFile {
+  try {
+    return readRoutes();
+  } catch (error) {
+    if (via && via !== BARE) throw error;
+    if (error instanceof RoutesFileError) return { file: '', routes: {} };
+    throw error;
+  }
+}
+
+/** What a resume or restart asks to change about how a child starts. */
+export interface RouteChange {
+  /** A route name, `none` to leave a route, or undefined to keep the child's. */
+  via?: string;
+  /** The tier on a route, or the harness's model on a bare start. */
+  model?: string;
+  /** A key file for the route. Without one, a child that stays on its route keeps the key file it had. */
+  keyFile?: string;
+  /** The pi provider for a bare pi start. */
+  provider?: string;
+}
+
+/** How a resumed or restarted child starts. */
+export interface NextLaunch {
+  /** The route it starts on, or undefined for a bare start. */
+  route?: ChildRoute;
+  config?: RouteConfig;
+  /** The harness's own model on a bare start. */
+  harnessModel?: string;
+  /** The pi provider on a bare start. */
+  provider?: string;
+}
+
+/**
+ * Decide the route a resume or restart starts a child on. A call that names
+ * no route keeps the child's, with its tier and key file, so a resume never
+ * drops a route without being asked. `via: none` leaves the route, and a route
+ * name moves the child onto that route. The session stays the same either way:
+ * only the launcher in front of the harness changes.
+ */
+export function nextLaunch(child: Pick<ChildRecord, 'name' | 'kind' | 'host' | 'route' | 'model'>, change: RouteChange, verb: string): NextLaunch {
+  const via = change.via?.trim() || child.route?.name;
+  const staying = via !== undefined && via === child.route?.name;
+  const routes = routesFor(via);
+  const resolved = resolveRoute(
+    {
+      name: child.name,
+      kind: child.kind,
+      via,
+      model: change.model ?? (staying ? child.route?.tier : undefined),
+      keyFile: change.keyFile ?? (staying ? child.route?.keyFile : undefined),
+      host: child.host,
+      verb,
+    },
+    routes,
+  );
+  if (resolved.route) {
+    if (change.provider) throw new Error(`${child.name} was not ${verb}: provider applies to a bare pi start, and on route ${resolved.route.name} the tier picks the model. Drop provider, or pass via ${BARE}.`);
+    return { route: resolved.route, config: routeConfig(routes, resolved.route, child.name) };
+  }
+  if (child.kind !== 'pi') return resolved.harnessModel ? { harnessModel: resolved.harnessModel } : {};
+  // A pi session records its provider, so a pi child that leaves a route needs
+  // a provider the bare pi can reach, and Bellwether does not guess one.
+  const provider = change.provider ?? (change.model ? undefined : child.model?.provider);
+  const model = resolved.harnessModel ?? (change.provider ? undefined : child.model?.id);
+  if (child.route && !(provider && model)) {
+    throw new Error(`${child.name} was not ${verb}: it ran on route ${child.route.name}, and its pi session names that route's provider, which a bare pi cannot reach. Pass model and provider for the bare start, or keep the route.`);
+  }
+  if (provider && !model) throw new Error(`${child.name} was not ${verb}: pi needs a model with the provider ${provider}. Pass model too.`);
+  if (model && !provider) throw new Error(`${child.name} was not ${verb}: pi needs a provider with the model ${model}. Pass provider too.`);
+  return model && provider ? { harnessModel: model, provider } : {};
+}
+
+/** How long a routed start waits for herdr to detect the harness behind the launcher. */
+export const ROUTED_START_MS = 30_000;
+
+export interface HarnessStart {
+  name: string;
+  kind: string;
+  paneId: string;
+  /** The harness's own arguments. */
+  args: string[];
+  /** The route's launch, when the child starts through one. Without it, herdr starts the harness bare. */
+  launch?: RouteLaunch;
+  /** How long a routed start waits for the harness. Tests shorten it. */
+  timeoutMs?: number;
+}
+
+/**
+ * Start a child's harness in a pane that sits at its shell prompt: bare with
+ * herdr's agent.start, or through a route's launcher.
+ */
+export async function startHarness(client: HerdrClient, params: HarnessStart, signal?: AbortSignal): Promise<void> {
+  if (!params.launch) {
+    await startWithRetry(client, { name: params.name, kind: params.kind, paneId: params.paneId, args: params.args }, signal);
+    return;
+  }
+  const launch = params.launch;
+  const timeoutMs = params.timeoutMs ?? ROUTED_START_MS;
+  const controller = new AbortController();
+  signal?.addEventListener('abort', () => controller.abort(), { once: true });
+  let detected!: () => void;
+  const seen = new Promise<void>((resolve) => {
+    detected = resolve;
+  });
+  // The watch opens before the line is typed, so the detection cannot slip past it.
+  const subscription = await client.subscribe(
+    [{ type: 'pane.agent_detected', pane_id: params.paneId }],
+    (event) => {
+      if (event.data['pane_id'] !== params.paneId) return;
+      const agent = event.data['agent'];
+      if (agent === undefined || agent === null || agent === params.kind) detected();
+    },
+    controller.signal,
+  );
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    // TODO(api): herdr's agent.start runs only a kind's own executable, so a
+    // launcher in front of the harness has to be typed at the shell prompt of
+    // the pane this spawn just created. An agent.start that took a launcher
+    // argv prefix and environment read from files would retire this input.
+    await client.sendInput(params.paneId, launchLine(launch), ['Enter'], signal);
+    await Promise.race([
+      seen,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`herdr detected no ${params.kind} in pane ${params.paneId} within ${Math.round(timeoutMs / 1000)} s of starting it through ${launch.argv[0]}. Check that the launcher runs ${params.kind} on this machine.`)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+    subscription.close();
+    controller.abort();
+  }
+  // agent.start names the agent; a typed start has to name it after herdr finds it.
+  await client.agentRename(params.paneId, params.name, signal).catch(() => {});
 }
 
 /** herdr refuses a start until the new tab's shell reaches its prompt. */

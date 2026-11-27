@@ -40,6 +40,8 @@ export const FEATURES: readonly Feature[] = [
   { name: 'child_prompt', kind: 'notice', protocol: 4, version: '0.1.5' },
   // An older daemon would start the child in the parent's workspace and say nothing.
   ...['agent_spawn.workspace', 'agent_spawn.workspace_label'].map((name) => ({ name, kind: 'argument' as const, protocol: 4, version: '0.1.5' })),
+  // An older daemon would start the child bare, off the route it was asked for, and say nothing.
+  ...['agent_spawn.via', 'agent_spawn.key_file', 'agent_restart.via', 'agent_restart.model', 'agent_restart.key_file', 'agent_restart.provider'].map((name) => ({ name, kind: 'argument' as const, protocol: 4, version: '0.1.5' })),
 ];
 
 /**

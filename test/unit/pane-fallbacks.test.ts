@@ -17,7 +17,7 @@ const SCANNED = ['src', 'bin'];
 const CLIENT = path.join('src', 'core', 'herdr-client.ts');
 
 /** HerdrClient calls that read a pane's screen or type into it. */
-const PANE_CALL = /\.(paneRead|sendKeys)\(/;
+const PANE_CALL = /\.(paneRead|sendKeys|sendInput)\(/;
 /** herdr methods and subscriptions that read a screen or send input, which only the client may name. */
 const RAW_PANE_METHOD = /['"](pane\.(read|send_text|send_keys|send_input|wait_for_output|output_matched|run|selection\.read)|agent\.(read|send_keys))['"]/;
 const TODO = /TODO\(api\):\s*(.*)/;
@@ -71,7 +71,7 @@ function scanSource(file: string, source: string): PaneCall[] {
     const match = PANE_CALL.exec(line);
     if (!match) return;
     // The wrapper definitions themselves, not calls.
-    if (file === CLIENT && /^\s*(async\s+)?(paneRead|sendKeys)\(/.test(line)) return;
+    if (file === CLIENT && /^\s*(async\s+)?(paneRead|sendKeys|sendInput)\(/.test(line)) return;
     const note = annotation(lines, index);
     const todo = TODO.exec(note);
     const feature = FEATURE.exec(note);

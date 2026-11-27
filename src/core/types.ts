@@ -30,6 +30,21 @@ export interface ChildSession {
 }
 
 /**
+ * How a child was launched through a route: a launcher wrapper from this
+ * machine's routes file. A child with no route started bare. The key file is
+ * kept by path only, never by contents, so a person debugging routing can see
+ * that two children ran under different keys.
+ */
+export interface ChildRoute {
+  /** The route's name in the routes file. */
+  name: string;
+  /** The tier the launcher got. */
+  tier?: string;
+  /** The absolute path of the key file the launcher ran under. */
+  keyFile?: string;
+}
+
+/**
  * One child of a parent session. The record is written before herdr creates
  * anything, so a crash still leaves a trace of what was asked for.
  */
@@ -49,6 +64,8 @@ export interface ChildRecord {
    * when neither named one and pi chose its default.
    */
   model?: ModelPair & { source: 'caller' | 'parent' | 'session' };
+  /** The route the child was launched through, or absent for a bare start. A restart or resume that changes route rewrites it. */
+  route?: ChildRoute;
   /** The herdr agent kind: pi, claude, codex, opencode or cline. */
   kind: string;
   harness: Harness | 'other';
@@ -146,6 +163,13 @@ export interface ChildRecord {
    * that stops mid-wait finishes it on its next start.
    */
   restartRequestedAt?: string;
+  /**
+   * What a requested restart changes about the route: `via` names a route, or
+   * `none` to leave one, with the tier or model, key file and pi provider.
+   * Absent, the restart keeps the route on the record. It sits on the record
+   * with the request, so a daemon that stops mid-wait keeps it.
+   */
+  restartRoute?: { via?: string; model?: string; keyFile?: string; provider?: string };
   /** When the daemon last restarted the child in a new tab, on the same session. */
   restartedAt?: string;
   /**

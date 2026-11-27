@@ -36,6 +36,15 @@ export function mcpConfigPath(childId: string): string {
   return path.join(mcpDir(), `${slug(childId)}.json`);
 }
 
+/**
+ * Each spawned Cline child's data directory, which Cline's sandbox mode uses
+ * in place of ~/.cline/data: its session store and messages. It outlives the
+ * child, so agent_read still answers once the child exits.
+ */
+export function clineDataDir(childId: string): string {
+  return path.join(bellwetherHome(), 'cline', slug(childId));
+}
+
 /** Each Claude Code child's own settings, passed with --settings: its Notification hook, and a duplicate Bellwether plugin turned off. */
 export function claudeSettingsDir(): string {
   return path.join(bellwetherHome(), 'claude-settings');

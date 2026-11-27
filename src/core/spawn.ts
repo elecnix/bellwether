@@ -255,10 +255,11 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
     localWorkspaces: hooks.localWorkspaces,
   });
   const now = new Date().toISOString();
+  const id = newChildId();
   const child: ChildRecord = {
     ...(chosen ? { model: chosen } : {}),
     ...(resolved.route ? { route: resolved.route } : {}),
-    id: newChildId(),
+    id,
     name: options.name,
     kind: options.kind,
     harness: entry.harness,
@@ -276,7 +277,7 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
     inactiveMs: resolveInactiveMs(options.inactiveMinutes),
     // herdr reports no session for a harness with a store of its own, so the spawn names it.
     // A harness that takes a session id on its launch line gets one minted here.
-    ...(store ? { ...(store.mint ? { session: { kind: 'id' as const, value: store.mint() } } : {}), store: store.storePath(harnessHooks) } : {}),
+    ...(store ? { ...(store.mint ? { session: { kind: 'id' as const, value: store.mint() } } : {}), store: store.storePath(harnessHooks, { id }) } : {}),
   };
   // 1. The record lands before herdr is asked for anything.
   upsertChild(parent.id, child);

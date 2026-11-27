@@ -8,7 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { channelEntry } from '../../src/core/mcp-config.ts';
-import { CLINE_OPT_IN_NOTE, CLINE_REFUSAL, clineDbPath, clineLastMessage, clineMcpSettings, clineOptedIn, clineSessionState, findClineSession, liveClineSession } from '../../src/core/harnesses/cline.ts';
+import { CLINE_OPT_IN_NOTE, clineDbPath, clineLastMessage, clineMcpSettings, clineOptedIn, clineProviderSettingsPath, clineSandboxNote, clineSessionState, clineSettingsDir, findClineSession, liveClineSession } from '../../src/core/harnesses/cline.ts';
 import { addClineSession, clineStore } from '../fixtures/cline-db.ts';
 
 function scratch(t: test.TestContext): { dir: string; db: string; cwd: string } {
@@ -83,20 +83,26 @@ test("a child's MCP settings name one stdio server, Bellwether's, with the child
   assert.deepEqual(servers[0]?.transport, { type: 'stdio', command: process.execPath, args: ['--disable-warning=ExperimentalWarning', channelEntry(), '--child', 'child-1'], env: { BELLWETHER_CHILD: 'child-1' } });
 });
 
-test('only -y or --yolo opens the door, and the texts name the hub and the costs', () => {
+test('only -y or --yolo turns on benchmark mode, and each note names only what belongs to its launch', () => {
   assert.equal(clineOptedIn([]), false);
   assert.equal(clineOptedIn(['--model', 'example-model']), false);
   assert.equal(clineOptedIn(['-y']), true);
   assert.equal(clineOptedIn(['--yolo']), true);
-  assert.match(CLINE_REFUSAL, /shared background hub/);
-  assert.match(CLINE_REFUSAL, /credited to the first/);
-  assert.match(CLINE_REFUSAL, /outlives the child/);
-  assert.match(CLINE_REFUSAL, /operator's own Cline sessions/);
-  // Each text names only what belongs to its launch: the refusal the hub, the note the -y costs.
-  assert.doesNotMatch(CLINE_REFUSAL, /-y|benchmark/);
-  assert.match(CLINE_OPT_IN_NOTE, /own process, not in Cline's shared hub/);
+  const sandbox = clineSandboxNote('/b/cline/c-1', '/home/u/.cline/data/settings');
+  assert.match(sandbox, /sandbox mode, with its own data directory at \/b\/cline\/c-1/);
+  assert.match(sandbox, /outside Cline's shared hub/);
+  assert.match(sandbox, /keeps Cline's default mode/);
+  assert.match(sandbox, /through a link to \/home\/u\/\.cline\/data\/settings/);
+  assert.doesNotMatch(sandbox, /-y|benchmark/);
   assert.match(CLINE_OPT_IN_NOTE, /agent_send reaches it/);
   assert.match(CLINE_OPT_IN_NOTE, /benchmark mode: a different system prompt, six built-in tools .* plus its MCP tools, where the default mode offers 26/);
   assert.match(CLINE_OPT_IN_NOTE, /DANGEROUS: use only in sandboxed environments/);
-  assert.doesNotMatch(CLINE_OPT_IN_NOTE, /credited|outlives|operator's own/);
+});
+
+test("the provider settings the sandbox links to follow Cline's own rule, and only a providers.json can be linked", () => {
+  assert.equal(clineProviderSettingsPath({ HOME: '/home/u' }), '/home/u/.cline/data/settings/providers.json');
+  assert.equal(clineProviderSettingsPath({ HOME: '/home/u', CLINE_DIR: '/c' }), '/c/data/settings/providers.json');
+  assert.equal(clineProviderSettingsPath({ HOME: '/home/u', CLINE_DATA_DIR: '/d' }), '/d/settings/providers.json');
+  assert.equal(clineSettingsDir({ HOME: '/home/u', CLINE_PROVIDER_SETTINGS_PATH: '/p/providers.json' }), '/p');
+  assert.throws(() => clineSettingsDir({ HOME: '/home/u', CLINE_PROVIDER_SETTINGS_PATH: '/p/mine.json' }), /names \/p\/mine\.json, .* only from a file named providers\.json/);
 });

@@ -16,9 +16,9 @@ import { defaultServiceFactory, parentIdOf, type ParentService, type ServiceFact
 import { acquire, isAlive, readLock, release } from './lock.ts';
 import { RelayOutbox } from './relay.ts';
 import { RelayLinks } from './relay-links.ts';
-import { hostOf } from '../core/machine.ts';
+import { LOCAL_HOST, hostOf } from '../core/machine.ts';
 import { acceptLocalReport, isReportStatus, localParentOf, routeReport, type ReportInput } from '../core/report.ts';
-import { readRelayRecord } from '../core/relay-records.ts';
+import { readRelayRecord, updateRelayRecord } from '../core/relay-records.ts';
 import { claimPane } from '../core/pane-claims.ts';
 import { adoptedParentOf, type SessionReach } from '../core/adopted-session.ts';
 import { lastAssistantMessage } from '../core/transcript.ts';
@@ -198,7 +198,8 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
     return older ? 'older' : 'none';
   };
 
-  const inbox: Inbox = (child, message) => {
+  /** Put a message in the session of a child whose Bellwether adapter is connected to this daemon. */
+  const sessionInbox = (child: { id: string; name: string; kind: string }, message: InboxMessage): Promise<InboxAnswer> => {
     const socket = inboxSocket(child.id);
     if (!socket) return Promise.resolve({ delivered: false, reason: `no session of ${child.name} that takes messages is connected to this machine's Bellwether daemon: its harness has not started its Bellwether ${harnessFor(child.kind)?.inbox.via === 'claude-channel' ? 'channel server' : 'extension'} yet, or that copy predates messages` });
     return new Promise<InboxAnswer>((resolve) => {
@@ -220,14 +221,39 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
     });
   };
 
+  /**
+   * A parent's message: to the session of a child on this machine, or over
+   * the relay to the daemon on the child's machine, which answers whether
+   * that session took it. A far daemon that predates relay-message, or a
+   * machine out of reach, gives the reason the caller records for typing.
+   */
+  const inbox: Inbox = async (parentId, child, message) => {
+    const host = hostOf(child);
+    if (host === LOCAL_HOST) return sessionInbox(child, message);
+    try {
+      const answer = await links.message(host, parentId, child.id, message);
+      return answer.delivered ? answer : { delivered: false, reason: `machine ${host} answered: ${answer.reason}` };
+    } catch (error) {
+      return { delivered: false, reason: (error as Error).message };
+    }
+  };
+
+  /** Keep a message that crossed from the parent's machine on the child's relay record until its model reads it, or drop it. */
+  const keepRelayMessage = (childId: string, message: InboxMessage | undefined, drop?: string): void => {
+    updateRelayRecord(childId, (record) => {
+      const kept = (record.messages ?? []).filter((entry) => entry.id !== (message?.id ?? drop));
+      if (message) kept.push({ id: message.id, text: message.text, from: message.from, at: message.at });
+      if (kept.length) record.messages = kept.slice(-20);
+      else delete record.messages;
+    });
+  };
+
   /** Put each message a child's session has not read in front of that session again, after it connects. */
   const replayMessages = (socket: net.Socket, childId: string): void => {
     const found = localParentOf(childId);
-    if (!found) return;
-    for (const message of unreadSessionMessages(found.child)) {
-      const push: InboxMessage = { id: message.id, from: message.from ?? 'your parent', text: message.text ?? '', at: message.at };
-      if (socket.writable) socket.write(formatReply({ type: 'message', message: push, replay: true }));
-    }
+    // A child of a parent on another machine keeps its unread messages on its relay record here.
+    const unread: InboxMessage[] = found ? unreadSessionMessages(found.child).map((message) => ({ id: message.id, from: message.from ?? 'your parent', text: message.text ?? '', at: message.at })) : (readRelayRecord(childId)?.messages ?? []);
+    for (const message of unread) if (socket.writable) socket.write(formatReply({ type: 'message', message, replay: true }));
   };
 
   /** An adapter's answer about one message. A read lands on the child's record, whichever daemon pushed it. */
@@ -241,8 +267,16 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
     if (!wait && ack.outcome === 'queued' && lapsed.has(ack.id)) log(`message ${ack.id} reached the child's session after its wait ran out, so the child also has the typed copy`);
     if (ack.outcome !== 'read') return;
     const childId = attached.get(socket)?.parent.childId;
-    const found = childId ? localParentOf(childId) : undefined;
-    if (!found || !childId) return;
+    if (!childId) return;
+    const found = localParentOf(childId);
+    if (!found) {
+      // The parent runs on another machine: the read crosses back in the relay outbox, delivered once like a report.
+      const record = readRelayRecord(childId);
+      if (!record?.messages?.some((entry) => entry.id === ack.id)) return;
+      keepRelayMessage(childId, undefined, ack.id);
+      outbox.messageRead(record, ack.id);
+      return;
+    }
     updateChild(found.parent.id, childId, (child) => {
       const message = child.messages?.find((entry) => entry.id === ack.id);
       if (!message || message.readAt) return;
@@ -421,6 +455,18 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
     if (route.kind !== 'local') return { refused: `this machine holds no parent ${report.parentId} with child ${report.childId}` };
     // A report the child left on the machine it moved away from still counts.
     if (hostOf(route.child) !== host && route.child.movedFrom?.host !== host) return { refused: `child ${report.childId} runs on machine ${hostOf(route.child)}, not ${host}` };
+    if (report.messageRead) {
+      // Not a report: the child's model read a message this daemon sent over the relay.
+      updateChild(route.parent.id, route.child.id, (child) => {
+        const message = child.messages?.find((entry) => entry.id === report.messageRead);
+        if (!message || message.readAt) return;
+        message.readAt = report.at;
+        delete message.text;
+        delete message.from;
+      });
+      log(`message ${report.messageRead} reached the model of child ${report.childId} on machine ${host}`);
+      return {};
+    }
     const { duplicate } = acceptLocalReport(route.parent, route.child, { parentId: report.parentId, childId: report.childId, receipt: report.receipt, status: report.status, text: report.text });
     if (duplicate) log(`report ${report.receipt} for child ${report.childId} from machine ${host} was already accepted, so the copy was dropped`);
     else log(`report ${report.receipt} from child ${report.childId} on machine ${host} accepted for parent ${report.parentId}`);
@@ -534,6 +580,21 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
         } catch (error) {
           reply({ type: 'result', id: request.id, error: (error as Error).message, code: 'pane_watched' });
         }
+        return;
+      }
+      if (request.type === 'relay-message') {
+        // A parent's daemon on another machine, for a child this machine holds a relay record for.
+        const record = readRelayRecord(request.childId);
+        if (!record || record.parentId !== request.parentId || record.retiredAt) {
+          reply({ type: 'result', id: request.id, text: JSON.stringify({ delivered: false, reason: `this machine holds no running child ${request.childId} for parent ${request.parentId}` }) });
+          return;
+        }
+        // Kept before the push, so a read that comes back at once finds it.
+        keepRelayMessage(request.childId, request.message);
+        const answer = await sessionInbox({ id: record.childId, name: record.name, kind: record.kind }, request.message);
+        if (!answer.delivered) keepRelayMessage(request.childId, undefined, request.message.id);
+        log(`relay-message ${request.message.id} for child ${request.childId}: ${answer.delivered ? `taken by its session (${answer.via})` : answer.reason}`);
+        reply({ type: 'result', id: request.id, text: JSON.stringify(answer) });
         return;
       }
       if (request.type === 'message-ack') {

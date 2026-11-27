@@ -18,7 +18,7 @@ import { spawnChild, type SpawnHooks } from '../../src/core/spawn.ts';
 import { Watcher } from '../../src/core/watcher.ts';
 import { runBellwetherTool, type ToolContext } from '../../src/integrations/tools.ts';
 import { writeRollout } from '../fixtures/codex-rollout.ts';
-import { startFakeHerdr, type FakeHerdr } from '../fixtures/fake-herdr.ts';
+import { startFakeHerdr, type FakeHerdr, harnessStarts, harnessStart } from '../fixtures/fake-herdr.ts';
 import { fakeWorld, type FakePane, type FakeWorld } from '../fixtures/fake-world.ts';
 import { isolate } from '../fixtures/isolated.ts';
 
@@ -62,10 +62,10 @@ function hooks(space: Room): SpawnHooks {
 }
 
 function startArgs(fake: FakeHerdr): string[] {
-  const start = fake.requests.find((request) => request.method === 'agent.start');
+  const start = harnessStarts(fake)[0];
   assert.ok(start, 'herdr was never asked to start the agent');
-  assert.equal(start.params['kind'], 'codex');
-  return start.params['args'] as string[];
+  assert.equal(start.kind, 'codex');
+  return start.args as string[];
 }
 
 test('a codex spawn starts Codex with its own server and trust on the launch line, and finds its session in the rollouts', async (t) => {
@@ -85,8 +85,8 @@ test('a codex spawn starts Codex with its own server and trust on the launch lin
   assert.equal(saved?.harness, 'codex');
   assert.deepEqual(saved?.session, { kind: 'id', value: `0000-${child.paneId}` });
   assert.equal(saved?.store, space.home);
-  // Nothing typed into the pane: no Codex dialog is answered by a key.
-  assert.equal(space.fake.requests.filter((request) => request.method === 'agent.send_keys' || request.method === 'pane.send_input').length, 0);
+  // Nothing typed into the pane but the launch line: no Codex dialog is answered by a key.
+  assert.equal(space.fake.requests.filter((request) => request.method === 'agent.send_keys' || (request.method === 'pane.send_input' && harnessStart(request) === undefined)).length, 0);
 });
 
 test('a codex spawn whose session never reaches the rollouts fails naming the sessions directory, and keeps the brief', async (t) => {
@@ -105,7 +105,8 @@ test('Codex on its hooks review fails the spawn by name, and no key answers it',
   const screen = ['  Hooks need review', '  1 hook is new or changed.', '  Hooks can run outside the sandbox after you trust them.', '› 1. Review hooks', '  2. Trust all and continue', "  3. Continue without trusting (hooks won't run)"].join('\n');
   codexWrites(space, { write: false, screen });
   await assert.rejects(spawnChild(space.client, readParent(space.parentId)!, { kind: 'codex', name: 'cx', prompt: 'the brief', cwd: space.cwd }, undefined, hooks(space)), /Codex (in pane \S+ )?stopped on the "Hooks need review" dialog, which Bellwether never answers: trusting a hook lets it run outside the sandbox/);
-  assert.equal(space.fake.requests.filter((request) => request.method === 'agent.send_keys' || request.method === 'pane.send_input').length, 0);
+  // The launch line is the only input the pane gets.
+  assert.equal(space.fake.requests.filter((request) => request.method === 'agent.send_keys' || (request.method === 'pane.send_input' && harnessStart(request) === undefined)).length, 0);
   assert.deepEqual(readParent(space.parentId)?.children, []);
 });
 

@@ -9,9 +9,13 @@
 // The answer is driven by the child's status events. The watch opens before
 // the harness starts, so the first blocked event cannot slip past it. The
 // screen is read when a status arrives, and again after each key, until no
-// dialog is left. A key goes out only toward the accepting option, and Enter
-// only once the screen shows that option selected, so a dialog whose shape
-// changed fails the spawn instead of taking a stray Enter.
+// dialog is left. An accepting option that the screen numbers is answered with
+// its digit, which selects and confirms it wherever the cursor is, so a longer
+// list or a cursor that starts lower cannot turn the answer into another
+// option (issue #133). An option without a number is walked to with the
+// arrows, and Enter goes out only once the screen shows that option selected,
+// so a dialog whose shape changed fails the spawn instead of taking a stray
+// Enter.
 import type { HerdrClient, Subscription } from './herdr-client.ts';
 
 /** A startup dialog's id within its harness's set, such as `trust`. */
@@ -39,7 +43,13 @@ export interface StartupDialogSet {
 // Claude Code marks the selected option with ❯, and Codex with ›.
 const SELECTED = /^\s*[❯›>]\s/u;
 
-/** Claude Code's two: the folder-trust question, and the development-channel confirmation. */
+/**
+ * Claude Code's two: the folder-trust question, and the development-channel
+ * confirmation. The channel question numbers its options, so it takes the
+ * digit 1. The trust question shows no numbers and ignores a digit (Claude
+ * Code 2.1.318), so it is walked with the arrows, which is safe there because
+ * Enter waits for the screen to show "Yes, I trust this folder" selected.
+ */
 export const CLAUDE_STARTUP: StartupDialogSet = {
   harness: 'Claude Code',
   dialogs: [
@@ -77,8 +87,29 @@ export class StartupDialogRefused extends Error {
 }
 
 /**
- * The key that moves a selection list toward `wanted`, or confirms it once it
- * is selected. Undefined when the screen shows neither the option nor a
+ * The key that answers a selection list with `wanted`. When the screen numbers
+ * the option, as in `1. I am using this for local development`, it is that
+ * digit, which Claude Code takes as select and confirm in one key wherever
+ * the cursor is. Otherwise it is the arrow that moves the selection toward
+ * the option, or Enter once it is selected. Undefined when the screen shows
+ * neither the option nor a selection, which happens while a dialog is still
+ * drawing.
+ */
+export function answerKey(screen: string, wanted: string): string | undefined {
+  const line = screen.split('\n').find((candidate) => candidate.includes(wanted));
+  const numbered = line?.replace(SELECTED, '').match(/^\s*(\d)\.\s+(.*)$/);
+  if (numbered && numbered[2]?.trim().startsWith(wanted)) return numbered[1];
+  return keyToward(screen, wanted);
+}
+
+/** Whether a key from answerKey confirms the option, rather than moving toward it. */
+export function confirms(key: string): boolean {
+  return key === 'Enter' || /^\d$/.test(key);
+}
+
+/**
+ * The arrow that moves a selection list toward `wanted`, or Enter once it is
+ * selected. Undefined when the screen shows neither the option nor a
  * selection, which happens while a dialog is still drawing.
  */
 export function keyToward(screen: string, wanted: string): 'Enter' | 'Up' | 'Down' | undefined {
@@ -179,14 +210,14 @@ export async function watchStartup(client: HerdrClient, paneId: string, signal?:
         dialog = detectDialog(screen, set);
         if (dialog) {
           const wanted = set.dialogs.find((entry) => entry.id === dialog)?.accept ?? '';
-          const key = keyToward(screen, wanted);
+          const key = answerKey(screen, wanted);
           if (key) {
             // TODO(api): keys typed into the pane answer a question no API reaches. A
             // documented way to pre-answer Claude Code's development-channel and
             // folder-trust questions, or a managed-settings allowlist (`channelsEnabled`,
             // `allowedChannelPlugins`) that removes the channel question, would retire them.
             await client.sendKeys(paneId, [key]);
-            if (key === 'Enter' && !answered.includes(dialog)) answered.push(dialog);
+            if (confirms(key) && !answered.includes(dialog)) answered.push(dialog);
           }
           await sleep(redrawMs);
           continue;

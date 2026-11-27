@@ -259,6 +259,17 @@ export function routeLaunch(config: RouteConfig, route: ChildRoute, kind: string
   return { envFromFile, argv: [...config.launcher, ...keyArgs, ...tierArgs, kind, ...(config.harnessArgs?.[kind] ?? []), ...harnessArgs] };
 }
 
+/**
+ * The launch for a bare child: the harness's own executable, behind the
+ * shell's `command` builtin. The pane's shell resolves the name on its PATH
+ * and skips a function or alias of the same name, which an operator's startup
+ * files may define to add flags of their own, so the child gets exactly the
+ * arguments Bellwether chose.
+ */
+export function bareLaunch(kind: string, harnessArgs: string[]): RouteLaunch {
+  return { envFromFile: {}, argv: ['command', kind, ...harnessArgs] };
+}
+
 /** Quote one word for a POSIX shell. */
 export function shellQuote(word: string): string {
   if (/^[A-Za-z0-9_@%+=:,./-]+$/.test(word)) return word;

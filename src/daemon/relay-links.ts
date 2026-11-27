@@ -20,7 +20,7 @@ import { relayHostsPath } from '../core/paths.ts';
 import { listParents } from '../core/registry.ts';
 import { farErrorLine, relayBridgeArgv, releaseAdvice } from '../core/ssh.ts';
 import type { ChildRecord } from '../core/types.ts';
-import { DAEMON_PROTOCOL, MAX_DAEMON_FRAME_BYTES, formatRequest, type DaemonReply, type DaemonRequest, type RelayAdoptAnswer, type RelayHostState, type RelayReport } from './protocol.ts';
+import { DAEMON_PROTOCOL, MAX_DAEMON_FRAME_BYTES, formatRequest, type DaemonReply, type DaemonRequest, type InboxMessage, type RelayMessageAnswer, type RelayAdoptAnswer, type RelayHostState, type RelayReport } from './protocol.ts';
 import { featureNamed } from './features.ts';
 import type { PaneClaim } from '../core/pane-claims.ts';
 
@@ -49,7 +49,7 @@ export type AcceptRelayed = (host: string, report: RelayReport) => { refused?: s
 
 interface PendingRead {
   /** The request type, so a far daemon that does not know it can be answered for the requests it refused. */
-  type: 'relay-read' | 'relay-adopt';
+  type: 'relay-read' | 'relay-adopt' | 'relay-message';
   resolve: (text: string) => void;
   reject: (error: Error) => void;
   timer: NodeJS.Timeout;
@@ -204,6 +204,20 @@ export class RelayLinks {
     return { childId: answer.childId, held: answer.held === true, ...(answer.session === 'tools' || answer.session === 'older' || answer.session === 'none' ? { session: answer.session } : {}) };
   }
 
+  /**
+   * Hand a parent's message to the daemon on the child's machine, which puts
+   * it in the child's session there, over the open connection. The answer
+   * says whether that session took it. A daemon there that predates the
+   * request is refused by name, and the caller types the message instead.
+   */
+  async message(host: string, parentId: string, childId: string, message: InboxMessage): Promise<RelayMessageAnswer> {
+    if (host === LOCAL_HOST) throw new Error('a message to a child on this machine goes to its session here');
+    const text = await this.ask(host, 'relay-message', (id) => ({ type: 'relay-message', id, parentId, childId, message }));
+    const answer = JSON.parse(text) as Partial<{ delivered: boolean; via: string; reason: string }>;
+    if (answer.delivered === true && typeof answer.via === 'string') return { delivered: true, via: answer.via };
+    return { delivered: false, reason: typeof answer.reason === 'string' && answer.reason ? answer.reason : 'its session did not take the message' };
+  }
+
   /** Send one request over a host's connection, opening it for the call when no child holds it open, and wait for its result. */
   private async ask(host: string, type: PendingRead['type'], build: (id: string) => DaemonRequest): Promise<string> {
     const known = this.links.get(host);
@@ -217,7 +231,7 @@ export class RelayLinks {
       return await new Promise<string>((resolve, reject) => {
         const timer = setTimeout(() => {
           link.reads.delete(id);
-          reject(new Error(`machine ${host} did not answer ${type === 'relay-read' ? 'a read' : 'an adoption'} within ${this.readTimeoutMs} ms`));
+          reject(new Error(`machine ${host} did not answer ${type === 'relay-read' ? 'a read' : type === 'relay-adopt' ? 'an adoption' : 'a message'} within ${this.readTimeoutMs} ms`));
         }, this.readTimeoutMs);
         timer.unref?.();
         link.reads.set(id, { type, resolve, reject, timer });

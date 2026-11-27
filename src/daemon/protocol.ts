@@ -23,6 +23,11 @@ export type { RelayHostState, RelayLinkStatus } from '../core/types.ts';
 //    message-ack, so the message enters the child's session rather than its
 //    pane. A daemon that predates it never pushes one, and an adapter that
 //    predates it never names it, so either side falls back to typing.
+//    Later, without a bump: a parent's daemon hands a message for a child on
+//    another machine to that machine's daemon (relay-message), and the read
+//    crosses back in the relay outbox as a relay report that names
+//    `messageRead`. A far daemon that predates it answers unknown_type, and
+//    the parent types the message instead.
 //
 // Change the wire additively: a new request type, or a new optional field,
 // needs no bump, because a daemon answers a request it does not know with
@@ -230,6 +235,24 @@ export interface RelayAdoptRequest {
   session?: string;
 }
 
+/**
+ * From a parent's daemon on another machine: put a parent's message in the
+ * session of a child this machine holds a relay record for. The answer is a
+ * result whose text is the JSON of `RelayMessageAnswer`. Added without a
+ * protocol bump: a daemon that predates it answers unknown_type, and the
+ * parent types the message into the pane instead.
+ */
+export interface RelayMessageRequest {
+  type: 'relay-message';
+  id: string;
+  parentId: string;
+  childId: string;
+  message: InboxMessage;
+}
+
+/** The text of a relay-message result: the child's session took it, through which adapter, or why not. */
+export type RelayMessageAnswer = { delivered: true; via: string } | { delivered: false; reason: string };
+
 /** The text of a relay-adopt result: the child id the claim stands under, and whether this parent already held it. */
 export interface RelayAdoptAnswer {
   childId: string;
@@ -298,7 +321,7 @@ export interface AncestryRequest {
   agent: string;
 }
 
-export type DaemonRequest = HelloRequest | CallRequest | ReceiptRequest | ByeRequest | DrainRequest | WatchRequest | ReportRequest | RelaySubscribeRequest | RelayAckRequest | RelayReadRequest | RelayAdoptRequest | RelayStatusRequest | SessionsRequest | AncestryRequest | MessageAckRequest;
+export type DaemonRequest = HelloRequest | CallRequest | ReceiptRequest | ByeRequest | DrainRequest | WatchRequest | ReportRequest | RelaySubscribeRequest | RelayAckRequest | RelayReadRequest | RelayAdoptRequest | RelayStatusRequest | SessionsRequest | AncestryRequest | MessageAckRequest | RelayMessageRequest;
 
 export interface HelloReply {
   type: 'hello';
@@ -473,6 +496,11 @@ export interface RelayReport {
   status: ReportStatus;
   text: string;
   at: string;
+  /**
+   * Set on an entry that carries no report but the read of a parent's
+   * message: its id. Only a parent's daemon that sent relay-message gets one.
+   */
+  messageRead?: string;
 }
 
 
@@ -559,6 +587,17 @@ export function parseRequest(line: string): DaemonRequest {
       const name = text(value['name']) || paneId;
       const session = text(value['session']);
       return { type: 'relay-adopt', id, parentId, childId, name, kind, paneId, ...(session ? { session } : {}) };
+    }
+    case 'relay-message': {
+      const id = text(value['id']);
+      const parentId = text(value['parentId']);
+      const childId = text(value['childId']);
+      const message = value['message'];
+      if (!id || !parentId || !childId || !isRecord(message)) throw new ProtocolError('invalid_message', 'a relay message needs an id, a parent id, a child id and a message');
+      const messageId = text(message['id']);
+      const body = typeof message['text'] === 'string' ? message['text'] : '';
+      if (!messageId || !body.trim()) throw new ProtocolError('invalid_message', 'a relay message needs a message id and text');
+      return { type: 'relay-message', id, parentId, childId, message: { id: messageId, text: body, from: text(message['from']) || 'your parent', at: text(message['at']) || new Date().toISOString() } };
     }
     case 'relay-status': {
       const id = text(value['id']);

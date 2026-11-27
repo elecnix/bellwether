@@ -10,6 +10,7 @@
 // agent in it ends. The adoption recorded the harness session herdr reported
 // in the pane, and the adapter names its own session in its hello, so a
 // session that is not the adopted one is never handed a parent.
+import { harnessNamed } from './harnesses/index.ts';
 import { LOCAL_HOST } from './machine.ts';
 import { claimantOf } from './pane-claims.ts';
 import { listParents } from './registry.ts';
@@ -69,4 +70,13 @@ export function adoptedParentOf(hello: SessionHello): AdoptedParent | undefined 
   if (holder?.where !== 'away' || !holder.record.adopted) return undefined;
   if (!sameSession(hello.session, holder.record.session)) return undefined;
   return { parentId: holder.record.parentId, childId: holder.record.childId, name: holder.record.name, where: 'away' };
+}
+
+/**
+ * Why the Bellwether adapter connected from an adopted pane takes no message,
+ * from its harness's entry, in the words a typed message's reason uses.
+ */
+export function adoptedInboxGap(harness: string): { adapter: string; why: string } {
+  const inbox = harnessNamed(harness)?.inbox;
+  return inbox && inbox.via !== 'none' ? inbox.adopted : { adapter: 'server or extension', why: 'takes no messages' };
 }

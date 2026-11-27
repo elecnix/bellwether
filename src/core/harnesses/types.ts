@@ -140,7 +140,20 @@ export type ReportPath =
  * harness with neither says why, and its messages are typed into the pane
  * through herdr's agent.prompt.
  */
-export type InboxPath = { via: 'claude-channel' | 'pi-message' } | { via: 'none'; reason: string };
+export type InboxPath = { via: 'claude-channel' | 'pi-message'; adopted: AdoptedInboxGap } | { via: 'none'; reason: string };
+
+/**
+ * Why the Bellwether adapter in a session of this harness that a parent
+ * adopted can take no message, for the case where it takes none (issue #168).
+ * `adapter` and `why` finish the reason a typed message gives, as in "<name>
+ * is an adopted session whose Bellwether <adapter> <why>". `reply` is the
+ * sentence the adoption's reply ends with.
+ */
+export interface AdoptedInboxGap {
+  adapter: 'server' | 'extension';
+  why: string;
+  reply: string;
+}
 
 /** Where a child's session id comes from. */
 export type SessionSource =

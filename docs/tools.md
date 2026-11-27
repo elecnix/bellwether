@@ -49,6 +49,8 @@ That adapter connects to the daemon on its own machine. It says which herdr pane
 
 Once adoption takes that pane, the daemon on the pane's machine sends the adapter a new tool list, and the list now has `parent_report`. The daemon sends it over the adapter's open connection. Claude Code hears `notifications/tools/list_changed`, and pi registers the new tool. A report from that session goes to the parent that adopted it.
 
+A message from `agent_send` enters that session over the same connection when its adapter takes messages. The pi extension takes them in any session from 0.1.8 on. Claude Code puts a server's message in a session only when the session started with that server as a channel. A Claude Code session that Bellwether didn't start never did, so `agent_send` types into its pane, and the reply says why.
+
 On the same machine, the daemon finds the parent by the pane. On another machine, the daemon there finds the claim that the parent left at the adoption. It keeps the report in its relay outbox for the parent's daemon to collect.
 
 The adoption compares the harness session in the pane with the one the adapter names. herdr reuses a pane id once its agent ends, so a later session in the same pane doesn't get a parent.
@@ -57,7 +59,8 @@ The `agent_adopt` reply says which case applies:
 
 | The adopted session | What the parent gets |
 | -- | -- |
-| has a Bellwether adapter from 0.1.7 on | its status changes, and its `parent_report` |
+| has the pi extension from 0.1.8 on | its status changes, its `parent_report`, and each `agent_send` message in its session |
+| has the pi extension from 0.1.7, or a Claude Code server | its status changes and its `parent_report`, while `agent_send` types into its pane |
 | has an older adapter | its status changes, and its `parent_report` after its next connection to the daemon, such as the one after an upgrade that transfers the daemon to a new process |
 | doesn't have a Bellwether adapter | its status changes, and `agent_send` types into its pane. It can't report |
 
@@ -78,6 +81,7 @@ Even a `claude`, `pi` or `omp` child can receive a message in its pane. That hap
 - The child runs on another machine whose Bellwether predates `relay-message`, or the connection to it is down. [remote-machines.md](remote-machines.md#messages-to-a-child-there) gives the path a message takes there.
 - The child is `blocked`. herdr refuses the prompt and shows the dialog, as before.
 - No Bellwether session of the child holds a connection to this daemon.
+- The child is an adopted session whose adapter takes no message, and the reason names that adapter.
 - The session doesn't take the message within 5 seconds.
 
 The reply gives the reason for the pane fallback. Each message takes exactly one of the two paths.

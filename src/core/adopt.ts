@@ -30,7 +30,7 @@ export interface AdoptOptions {
    * For a pane on another machine: ask that machine's daemon to record the
    * adoption, which refuses a pane someone there already watches.
    */
-  claim?: (host: string, claim: PaneClaim) => Promise<{ childId: string; held: boolean; session?: SessionReach }>;
+  claim?: (host: string, claim: PaneClaim) => Promise<{ childId: string; held: boolean; session?: SessionReach; messages?: boolean }>;
 }
 
 export interface AdoptResult {
@@ -40,6 +40,8 @@ export interface AdoptResult {
   already: boolean;
   /** For a pane on another machine: how its session can report, as that machine's daemon answered. Absent when that daemon predates the answer. */
   session?: SessionReach;
+  /** For a pane on another machine: whether the adapter connected there takes a parent's message. Absent when none is connected, or that daemon predates the answer. */
+  messages?: boolean;
 }
 
 /** Where a pane sits, in the words an error uses. */
@@ -71,13 +73,14 @@ export async function adoptPane(client: HerdrClient, parent: ParentRecord, optio
   const name = options.name ?? pane.name ?? pane.label ?? pane.paneId;
   let id = newChildId();
   let reach: SessionReach | undefined;
+  let messages: boolean | undefined;
   if (host === LOCAL_HOST) {
     // A parent on another machine may have adopted this pane: its claim sits in this machine's relay records.
     const decision = decideClaim({ parentId: parent.id, paneId: pane.paneId, session: pane.agentSessionId }, claimantOf(pane.paneId));
     if (decision.kind === 'refuse') throw new Error(`Pane ${pane.paneId} on local cannot be adopted: ${decision.reason}.`);
   } else {
     if (!options.claim) throw new Error(`This session holds no relay connection to machine ${host}, so it cannot ask that machine who watches pane ${pane.paneId}.`);
-    let answer: { childId: string; held: boolean; session?: SessionReach };
+    let answer: { childId: string; held: boolean; session?: SessionReach; messages?: boolean };
     try {
       answer = await options.claim(host, { parentId: parent.id, childId: id, name, kind: pane.agent, paneId: pane.paneId, ...(pane.agentSessionId ? { session: pane.agentSessionId } : {}) });
     } catch (error) {
@@ -86,6 +89,7 @@ export async function adoptPane(client: HerdrClient, parent: ParentRecord, optio
     // The far daemon already held this pane for this parent, from an adoption whose record this machine lost: keep its child id.
     id = answer.childId;
     reach = answer.session;
+    messages = answer.messages;
   }
 
   const now = new Date().toISOString();
@@ -120,5 +124,5 @@ export async function adoptPane(client: HerdrClient, parent: ParentRecord, optio
     inactiveMs: resolveInactiveMs(undefined),
   };
   upsertChild(parent.id, child);
-  return { child, link: herdrLink('pane', child.paneId), already: false, ...(reach ? { session: reach } : {}) };
+  return { child, link: herdrLink('pane', child.paneId), already: false, ...(reach ? { session: reach } : {}), ...(messages === undefined ? {} : { messages }) };
 }

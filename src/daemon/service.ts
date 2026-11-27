@@ -46,6 +46,8 @@ export interface ServiceDeps {
   inbox?: Inbox;
   /** Whether a Bellwether adapter from a pane on this machine is connected, so an adoption can say whether the session can report. */
   sessionReach?: (paneId: string) => SessionReach;
+  /** Whether the adapter connected from an adopted pane on this machine takes a parent's message, or undefined when none is. */
+  sessionMessages?: (paneId: string) => boolean | undefined;
 }
 
 export type ServiceFactory = (parent: ParentHello, id: string, deps: ServiceDeps) => ParentService;
@@ -81,7 +83,7 @@ export function createHerdrService(parent: ParentHello, id: string, deps: Servic
       restartJobs.set(key, running);
     },
   };
-  const context: ToolContext = { client, clientFor, parentId: record.id, watcher, remote, relayState, restart, log: deps.log, inbox: deps.inbox, ...(deps.sessionReach ? { sessionReach: deps.sessionReach } : {}) };
+  const context: ToolContext = { client, clientFor, parentId: record.id, watcher, remote, relayState, restart, log: deps.log, inbox: deps.inbox, ...(deps.sessionReach ? { sessionReach: deps.sessionReach } : {}), ...(deps.sessionMessages ? { sessionMessages: deps.sessionMessages } : {}) };
   const paneWatches = new Set<{ close: () => void }>();
   watcher.start();
   // Finish a restart a daemon stopped part of the way through.

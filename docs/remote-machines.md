@@ -82,7 +82,7 @@ When the machine answers again, the watcher takes a fresh snapshot and the child
 
 An adopted child on that machine can call `parent_report` when its session loaded Bellwether at its start, through pi's package or Claude Code's plugin. That machine must also run Bellwether 0.1.7 or later.
 
-The adapter in the session already has a connection open to the daemon there. That daemon gives the adapter `parent_report` once the claim arrives. It then keeps each report from that session under the adoption's child id in its relay outbox.
+The adapter in the session already has a connection open to the daemon there. That daemon gives the adapter `parent_report` once the claim arrives. It then keeps each report from that session under the adoption's child id in its relay outbox. A message from `agent_send` crosses to that session over the relay when its adapter takes messages, and that machine runs Bellwether 0.1.8 or later.
 
 The parent's daemon collects it over the same connection as a report from a spawned child. A session that didn't load a Bellwether adapter can't report, and the `agent_adopt` reply says which kind of session the parent adopted. [tools.md](tools.md#adopted-sessions) covers both kinds, on this machine and on another.
 

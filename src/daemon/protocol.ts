@@ -278,6 +278,13 @@ export interface RelayAdoptAnswer {
    * Added without a protocol bump: a daemon that predates it leaves it out.
    */
   session?: SessionReach;
+  /**
+   * Whether the adapter connected from that pane takes a parent's message,
+   * absent when none is connected. Added in 0.1.8 without a protocol bump: a
+   * daemon that predates it leaves it out, and the parent then promises
+   * nothing about messages.
+   */
+  messages?: boolean;
 }
 
 export type { SessionReach };

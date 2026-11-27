@@ -14,6 +14,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 import { DaemonClient } from '../../daemon/client.ts';
 import { resolveSocketPath } from '../../core/herdr-client.ts';
 import { hostName } from '../../core/spawn.ts';
+import { childLabel } from '../../core/label.ts';
 import type { OutboxEntry } from '../../core/types.ts';
 import { childTools, parentTools } from '../tools.ts';
 import { ReceiptScan, claudeConfigDir } from './transcript.ts';
@@ -73,13 +74,13 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
 
 /** One channel event's text. The receipt rides in the text, not only in meta. */
 function compose(entry: OutboxEntry): string {
-  return `[bellwether] ${entry.name} (${entry.kind}, ${entry.paneId}) ${entry.event} — receipt ${entry.receipt}\n${entry.text}\n\nRead more with agent_read. Reply with agent_send.`;
+  return `[bellwether] ${childLabel({ name: entry.name, paneId: entry.paneId, id: entry.childId })} ${entry.event}, a ${entry.kind} agent — receipt ${entry.receipt}\n${entry.text}\n\nRead more with agent_read. Reply with agent_send.`;
 }
 
 async function push(entry: OutboxEntry): Promise<void> {
   await mcp.notification({
     method: 'notifications/claude/channel',
-    params: { content: compose(entry), meta: { child: entry.name, event: entry.event, receipt: entry.receipt } },
+    params: { content: compose(entry), meta: { child: entry.name, pane: entry.paneId, child_id: entry.childId, event: entry.event, receipt: entry.receipt } },
   });
 }
 

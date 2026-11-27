@@ -7,6 +7,7 @@ import os from 'node:os';
 import { DaemonClient } from '../../daemon/client.ts';
 import { resolveSocketPath } from '../../core/herdr-client.ts';
 import { hostName } from '../../core/spawn.ts';
+import { childLabel } from '../../core/label.ts';
 import type { OutboxEntry } from '../../core/types.ts';
 import { childTools, parentTools } from '../tools.ts';
 
@@ -45,7 +46,7 @@ function compose(entries: OutboxEntry[]): string {
   if (!entries.length) return '';
   const head = entries.length === 1 ? '[bellwether]' : `[bellwether] ${entries.length} children changed`;
   const body = entries
-    .map((entry) => `${entry.name} (${entry.kind}, ${entry.paneId}) ${entry.event} — receipt ${entry.receipt}\n${entry.text}`)
+    .map((entry) => `${childLabel({ name: entry.name, paneId: entry.paneId, id: entry.childId })} ${entry.event}, a ${entry.kind} agent — receipt ${entry.receipt}\n${entry.text}`)
     .join('\n\n');
   return `${head}\n${body}\n\nRead more with agent_read. Reply with agent_send.`;
 }

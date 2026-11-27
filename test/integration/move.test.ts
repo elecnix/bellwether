@@ -34,6 +34,7 @@ import { startFakeHerdr, type FakeHerdr, type RecordedRequest } from '../fixture
 import { fakeWorld, type FakeWorld } from '../fixtures/fake-world.ts';
 import { installFakeSsh, type FakeSsh } from '../fixtures/fake-ssh.ts';
 import { LIVE_HOME } from '../fixtures/isolation.ts';
+import { findBinaries } from '../../src/core/session-state.ts';
 
 interface Machine {
   /** That machine's HOME. */
@@ -105,7 +106,12 @@ async function world(t: test.TestContext, respond: { here?: Parameters<typeof ma
   fs.mkdirSync(bin, { recursive: true });
   fs.writeFileSync(path.join(bin, 'claude'), FAKE_CLAUDE, { mode: 0o755 });
   fs.writeFileSync(path.join(bin, 'pi'), FAKE_PI, { mode: 0o755 });
-  const keys = ['HOME', 'BELLWETHER_HOME', 'BELLWETHER_DAEMON_SOCKET', 'CLAUDE_CONFIG_DIR', 'PI_CODING_AGENT_DIR', 'PI_CODING_AGENT_SESSION_DIR', 'PATH'] as const;
+  // node alone, not the directory it was installed in: npm puts a global
+  // claude or pi beside node, and that real harness would answer the probe.
+  const nodeBin = path.join(root, 'node-bin');
+  fs.mkdirSync(nodeBin, { recursive: true });
+  fs.symlinkSync(process.execPath, path.join(nodeBin, 'node'));
+  const keys = ['HOME', 'BELLWETHER_HOME', 'BELLWETHER_DAEMON_SOCKET', 'CLAUDE_CONFIG_DIR', 'PI_CODING_AGENT_DIR', 'PI_CODING_AGENT_SESSION_DIR', 'PATH', 'BELLWETHER_HARNESS_DIRS'] as const;
   const saved = new Map(keys.map((key) => [key, process.env[key]]));
   process.env['BELLWETHER_HOME'] = here.home;
   process.env['BELLWETHER_DAEMON_SOCKET'] = path.join(here.home, 'daemon.sock');
@@ -115,7 +121,14 @@ async function world(t: test.TestContext, respond: { here?: Parameters<typeof ma
   // Only the fake harnesses, the fake ssh and node: a real claude or pi on this
   // machine would answer for both fake machines, which share one filesystem.
   process.env['HOME'] = here.user;
-  process.env['PATH'] = [bin, ssh.dir, path.dirname(process.execPath), '/usr/bin', '/bin'].join(path.delimiter);
+  process.env['PATH'] = [bin, ssh.dir, nodeBin, '/usr/bin', '/bin'].join(path.delimiter);
+  // The probe also tries the usual install places, such as Homebrew's, which PATH does not reach. Ask it for none.
+  process.env['BELLWETHER_HARNESS_DIRS'] = '';
+  // Each case decides which harness each machine has, so the only claude and pi the probe can find are the fakes.
+  for (const name of ['claude', 'pi']) {
+    const found = findBinaries(name);
+    assert.deepEqual(found, [path.join(bin, name)], `a ${name} outside the test's own fakes is reachable, so a case that needs it missing cannot pass: ${found.join(', ')}`);
+  }
   t.after(() => {
     for (const [key, value] of saved) {
       if (value === undefined) delete process.env[key];

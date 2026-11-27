@@ -12,11 +12,11 @@ function post(url: string, path: string, body: unknown): Promise<Response> {
 test('the Anthropic endpoint answers a non-stream request with the scripted text', async () => {
   const models = await startScriptedModels({ text: 'scripted reply' });
   try {
-    const response = await post(models.url, '/v1/messages', { model: 'scripted-model', stream: false, messages: [] });
+    const response = await post(models.url, '/v1/messages', { model: 'stub-model', stream: false, messages: [] });
     const body = (await response.json()) as { content: { type: string; text?: string }[] };
     assert.equal(body.content[0]?.type, 'text');
     assert.equal(body.content[0]?.text, 'scripted reply');
-    assert.equal(models.requests.at(-1)?.model, 'scripted-model');
+    assert.equal(models.requests.at(-1)?.model, 'stub-model');
   } finally {
     await models.stop();
   }
@@ -25,7 +25,7 @@ test('the Anthropic endpoint answers a non-stream request with the scripted text
 test('the Anthropic endpoint streams the scripted text', async () => {
   const models = await startScriptedModels({ text: 'streamed reply' });
   try {
-    const response = await post(models.url, '/v1/messages', { model: 'scripted-model', stream: true, messages: [] });
+    const response = await post(models.url, '/v1/messages', { model: 'stub-model', stream: true, messages: [] });
     const text = await response.text();
     assert.match(text, /message_start/);
     assert.match(text, /streamed reply/);
@@ -38,7 +38,7 @@ test('the Anthropic endpoint streams the scripted text', async () => {
 test('the OpenAI endpoint answers a stream request with the scripted text', async () => {
   const models = await startScriptedModels({ text: 'openai reply' });
   try {
-    const response = await post(models.url, '/v1/chat/completions', { model: 'scripted-model', stream: true, messages: [] });
+    const response = await post(models.url, '/v1/chat/completions', { model: 'stub-model', stream: true, messages: [] });
     const text = await response.text();
     assert.match(text, /openai reply/);
     assert.match(text, /\[DONE\]/);
@@ -51,7 +51,7 @@ test('the OpenAI endpoint answers a stream request with the scripted text', asyn
 test('the OpenAI endpoint answers a non-stream request with the scripted text', async () => {
   const models = await startScriptedModels({ text: 'openai reply' });
   try {
-    const response = await post(models.url, '/v1/chat/completions', { model: 'scripted-model', stream: false, messages: [] });
+    const response = await post(models.url, '/v1/chat/completions', { model: 'stub-model', stream: false, messages: [] });
     const body = (await response.json()) as { choices: { message: { content: string } }[] };
     assert.equal(body.choices[0]?.message.content, 'openai reply');
   } finally {
@@ -62,7 +62,7 @@ test('the OpenAI endpoint answers a non-stream request with the scripted text', 
 test('a tool call reply carries the tool name and its input', async () => {
   const models = await startScriptedModels({ tool: { name: 'Bash', input: { command: 'echo hi' } } });
   try {
-    const response = await post(models.url, '/v1/messages', { model: 'scripted-model', stream: false, messages: [] });
+    const response = await post(models.url, '/v1/messages', { model: 'stub-model', stream: false, messages: [] });
     const body = (await response.json()) as { content: { type: string; name?: string; input?: { command?: string } }[] };
     assert.equal(body.content[0]?.type, 'tool_use');
     assert.equal(body.content[0]?.name, 'Bash');
@@ -75,7 +75,7 @@ test('a tool call reply carries the tool name and its input', async () => {
 test('count_tokens answers without a reply script', async () => {
   const models = await startScriptedModels({ text: 'unused' });
   try {
-    const response = await post(models.url, '/v1/messages/count_tokens', { model: 'scripted-model', messages: [] });
+    const response = await post(models.url, '/v1/messages/count_tokens', { model: 'stub-model', messages: [] });
     const body = (await response.json()) as { input_tokens: number };
     assert.equal(body.input_tokens, 100);
   } finally {
@@ -87,7 +87,7 @@ test('a stalled reply holds its body open until the test releases it', async () 
   const models = await startScriptedModels();
   try {
     models.reply({ stall: true });
-    const response = await post(models.url, '/v1/messages', { model: 'scripted-model', stream: true, messages: [] });
+    const response = await post(models.url, '/v1/messages', { model: 'stub-model', stream: true, messages: [] });
     assert.equal(response.status, 200);
 
     let finished = false;

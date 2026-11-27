@@ -303,13 +303,13 @@ test('a resume that fails on the target rolls back: the child runs again where i
 
 test('a pi child moves the other way, from the other machine to this one, into a different directory', async (t) => {
   const w = await world(t);
-  harness(w.here, { pi: '1.6.1', models: ['ollama-cloud/deepseek-v4.1-flash'] });
+  harness(w.here, { pi: '1.6.1', models: ['example-hosted/deepseek-v4.1-flash'] });
   harness(w.box, { pi: '1.6.1' });
   const boxCwd = dir(w.box.user, 'work', 'repo');
   const hereCwd = dir(w.here.user, 'Source', 'repo', 'main');
   const name = '2026-11-16T01-38-19-939Z_01a1e201.jsonl';
   const boxFile = path.join(dir(w.box.pi, 'sessions', piSessionDirName(boxCwd)), name);
-  const body = [JSON.stringify({ type: 'session', version: 3, id: '01a1e201', cwd: boxCwd }), '{"type":"model_change","provider":"ollama-cloud","modelId":"deepseek-v4.1-flash"}', '{"type":"message","message":{"role":"assistant","content":"done so far"}}', ''].join('\n');
+  const body = [JSON.stringify({ type: 'session', version: 3, id: '01a1e201', cwd: boxCwd }), '{"type":"model_change","provider":"example-hosted","modelId":"deepseek-v4.1-flash"}', '{"type":"message","message":{"role":"assistant","content":"done so far"}}', ''].join('\n');
   fs.writeFileSync(boxFile, body);
   w.box.world.add({ pane_id: 'w9:p4', tab_id: 'w9:t4', agent: 'pi', name: 'worker', agent_status: 'idle', agent_session: { agent: 'pi', kind: 'path', source: 'herdr:pi', value: boxFile } });
   upsertChild(w.parentId, child({ kind: 'pi', harness: 'pi', host: 'box', paneId: 'w9:p4', tabId: 'w9:t4', cwd: boxCwd, session: { kind: 'path', value: boxFile } }));
@@ -339,13 +339,13 @@ test('a pi child whose provider and model the target lacks is refused before any
   harness(w.box, { pi: '1.6.1' });
   const boxCwd = dir(w.box.user, 'work', 'repo');
   const boxFile = path.join(dir(w.box.pi, 'sessions', piSessionDirName(boxCwd)), 's_abc.jsonl');
-  fs.writeFileSync(boxFile, `${JSON.stringify({ type: 'session', version: 3, id: 'abc', cwd: boxCwd })}\n{"type":"model_change","provider":"ollama-cloud","modelId":"deepseek-v4.1-flash"}\n`);
+  fs.writeFileSync(boxFile, `${JSON.stringify({ type: 'session', version: 3, id: 'abc', cwd: boxCwd })}\n{"type":"model_change","provider":"example-hosted","modelId":"deepseek-v4.1-flash"}\n`);
   w.box.world.add({ pane_id: 'w9:p4', tab_id: 'w9:t4', agent: 'pi', agent_status: 'idle', agent_session: { agent: 'pi', kind: 'path', source: 'herdr:pi', value: boxFile } });
   upsertChild(w.parentId, child({ kind: 'pi', harness: 'pi', host: 'box', paneId: 'w9:p4', tabId: 'w9:t4', cwd: boxCwd, session: { kind: 'path', value: boxFile } }));
 
   const failure = await moveChild(w.deps, w.parentId, { child: 'worker', cwd: dir(w.here.user, 'repo') }).catch((error: unknown) => error);
   assert.ok(failure instanceof MoveRefusedError, String(failure));
-  assert.match(failure.message, /ollama-cloud\/deepseek-v4\.1-flash/);
+  assert.match(failure.message, /example-hosted\/deepseek-v4\.1-flash/);
   assert.ok(failure.message.includes(path.join(w.here.pi, 'models.json')), failure.message);
   assert.ok(w.box.world.panes.has('w9:p4'), 'the child still runs');
   assert.equal(w.box.herdr.requests.filter((request) => request.method === 'tab.close').length, 0);

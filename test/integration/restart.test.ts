@@ -356,14 +356,14 @@ test('a pi child restarts with the extension and the provider and model it was s
   const rig = await herdr(t);
   const id = parent('restart-pi-child');
   const session = '/sessions/2026-11-27T00-00-00_pi-child.jsonl';
-  upsertChild(id, worker({ kind: 'pi', harness: 'pi', session: { kind: 'path', value: session }, model: { provider: 'openrouter', id: 'cheap-model', source: 'parent' } }));
+  upsertChild(id, worker({ kind: 'pi', harness: 'pi', session: { kind: 'path', value: session }, model: { provider: 'openrouter', id: 'example-cheap', source: 'parent' } }));
   rig.world.add({ pane_id: 'w1:p3', tab_id: 'w1:t3', agent: 'pi', name: 'worker', agent_status: 'idle', agent_session: { agent: 'pi', kind: 'path', source: 'herdr:pi', value: session } });
 
   const text = await context(id, rig).tool('agent_restart', { target: 'worker' });
   assert.match(text, /Restarted worker \(child child-worker\): closed pane w1:p3, started pi/);
   const extension = piExtensionEntry();
   const args = lastStart(rig.fake).params['args'] as string[];
-  assert.deepEqual(args, ['--provider', 'openrouter', '--model', 'cheap-model', '-e', extension, '--session', session], 'the same launch a spawn gives a pi child, on its own session');
+  assert.deepEqual(args, ['--provider', 'openrouter', '--model', 'example-cheap', '-e', extension, '--session', session], 'the same launch a spawn gives a pi child, on its own session');
   const env = calls(rig.fake, 'tab.create')[0]?.params['env'] as Record<string, string>;
   assert.equal(env[PI_EXTENSION_ENV], extension);
   assert.equal(env['BELLWETHER_CHILD'], 'child-worker');

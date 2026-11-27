@@ -15,7 +15,7 @@ import { describeDecisions, mutateParent, readParent, recordDecisions, takeUntol
 import { detectDialog, dialogName, watchStartup } from './startup-dialogs.ts';
 import { harnessFor, harnessNamed } from './harnesses/index.ts';
 import { detectModal } from './modal.ts';
-import { shownScreen } from './screen.ts';
+import { BLANK_SCREEN, shownScreen } from './screen.ts';
 import { agentNameOf, lastAssistantMessage, sessionFrom } from './transcript.ts';
 import { keepsBriefs } from './brief-history.ts';
 import { removeChildFiles } from './mcp-config.ts';
@@ -807,9 +807,8 @@ export class Watcher {
         // as evidence. The same text names the dialog for the parent.
         const dialog = await this.clientFor(hostOf(child))
           .then((client) => client.paneRead({ paneId: child.paneId, source: 'detection', lines: 30 }))
-          .then((read) => read.content)
-          .catch(() => '');
-        if (this.answerStartupDialog(child, dialog)) continue;
+          .catch(() => BLANK_SCREEN);
+        if (this.answerStartupDialog(child, dialog.plain)) continue;
         this.offer(child, event, this.describeBlocked(child, detectModal(dialog)));
         continue;
       }
@@ -830,17 +829,17 @@ export class Watcher {
         // daemon. A Claude Code hook that fires as any dialog opens, with no
         // delay, or a herdr status that maps every harness's dialog to blocked,
         // would retire the rest.
-        // Faint text is a suggestion the harness drew, so only content can be a dialog.
+        // detectModal decides a dialog first, on every line, and needs its marker
+        // or y/n question solid, so a faint suggestion in the box is no dialog.
         const screen = await this.clientFor(hostOf(child))
           .then((client) => client.paneRead({ paneId: child.paneId, source: 'detection', lines: 30 }))
-          .then((read) => read.content)
-          .catch(() => '');
+          .catch(() => BLANK_SCREEN);
         const line = detectModal(screen);
         if (line) {
           // The turn stays unreported, so the idle event still comes once the
           // dialog closes and the child settles.
           const held: ClassifierState = { ...next, reportedFor: state.reportedFor, prompt: line, promptSince: now, firedBlocked: true };
-          if (this.answerStartupDialog(child, screen)) {
+          if (this.answerStartupDialog(child, screen.plain)) {
             this.states.set(child.id, state);
             continue;
           }
@@ -1064,8 +1063,7 @@ export class Watcher {
       // Pane feature: the parent's event text names the dialog its child is blocked on.
       const dialog = await this.clientFor(hostOf(child))
         .then((client) => client.paneRead({ paneId: child.paneId, source: 'detection', lines: 30 }))
-        .then((read) => read.content)
-        .catch(() => '');
+        .catch(() => BLANK_SCREEN);
       return this.describeBlocked(child, detectModal(dialog));
     }
     // Measure the quiet period on the classifier's own clock. The registry's

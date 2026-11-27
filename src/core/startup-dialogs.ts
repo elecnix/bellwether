@@ -17,6 +17,8 @@
 // so a dialog whose shape changed fails the spawn instead of taking a stray
 // Enter.
 import type { HerdrClient, Subscription } from './herdr-client.ts';
+import type { ModalView } from './modal.ts';
+import { BLANK_SCREEN, type Screen } from './screen.ts';
 import type { DialogDecision } from './types.ts';
 
 /** A startup dialog's id within its harness's set, such as `trust`. */
@@ -214,11 +216,16 @@ export class StartupDialogRefused extends Error {
  * neither the option nor a selection, which happens while a dialog is still
  * drawing.
  */
-export function answerKey(screen: string, wanted: string): string | undefined {
-  const lines = screen.split('\n');
+export function answerKey(screen: ModalView, wanted: string): string | undefined {
+  const lines = views(screen).plain.split('\n');
   const at = optionLine(lines, wanted);
   const digit = at >= 0 ? /^(?:[❯›>]\s*)?(\d)\.\s/u.exec(unframed(lines[at] ?? ''))?.[1] : undefined;
   return digit ?? keyToward(screen, wanted);
+}
+
+/** Both views of a screen; a bare string is both. */
+function views(screen: ModalView): { plain: string; content: string } {
+  return typeof screen === 'string' ? { plain: screen, content: screen } : screen;
 }
 
 /** Whether a key from answerKey confirms the option, rather than moving toward it. */
@@ -231,12 +238,15 @@ export function confirms(key: string): boolean {
  * selected. Undefined when the screen shows neither the option nor a
  * selection, which happens while a dialog is still drawing.
  */
-export function keyToward(screen: string, wanted: string): 'Enter' | 'Up' | 'Down' | undefined {
-  const lines = screen.split('\n');
+export function keyToward(screen: ModalView, wanted: string): 'Enter' | 'Up' | 'Down' | undefined {
+  const { plain, content } = views(screen);
   // An option line, not any line that mentions the label: a dialog's own
-  // text can hold a word such as "No".
-  const target = optionLine(lines, wanted);
-  const selected = lines.findIndex((line) => SELECTED.test(line));
+  // text can hold a word such as "No". The option may be drawn faint, as a
+  // dialog dims the options it has not selected, but the selection marker
+  // must be solid: a faint marker is a suggestion, and Enter on it would
+  // answer a question nobody chose an answer to.
+  const target = optionLine(plain.split('\n'), wanted);
+  const selected = content.split('\n').findIndex((line) => SELECTED.test(line));
   if (target < 0 || selected < 0) return undefined;
   if (target === selected) return 'Enter';
   return target < selected ? 'Up' : 'Down';
@@ -333,6 +343,7 @@ export async function watchStartup(client: HerdrClient, paneId: string, signal?:
       const deadline = Date.now() + timeoutMs;
       const answered: StartupDialog[] = [];
       let screen = '';
+      let read: Screen = BLANK_SCREEN;
       let dialog: StartupDialog | undefined;
       let unknown: { question: string; reads: number } | undefined;
       /** The decision whose keys are going out, until its Enter. */
@@ -344,9 +355,11 @@ export async function watchStartup(client: HerdrClient, paneId: string, signal?:
         // pre-answers the folder-trust and development-channel questions would retire
         // this read, as would `channelsEnabled` with `allowedChannelPlugins` in managed
         // settings for the channel question (docs/probes.md, section 7).
-        // A faint line is a suggestion the harness drew, never an option it offers, so
-        // the dialog is read from the screen's content.
-        screen = (await client.paneRead({ paneId, source: 'visible', lines: 40 }).then((read) => read.content).catch(() => screen));
+        // Whether a question is up is decided on every line, faint or not, and
+        // only then which option answers it: answerKey presses Enter only on a
+        // solid selection marker, so a faint line never counts as an answer.
+        read = await client.paneRead({ paneId, source: 'visible', lines: 40 }).catch(() => read);
+        screen = read.plain;
         // A dialog that grants a permission is never answered, and herdr can
         // read the pane as idle while it waits, so it is checked first.
         const refused = detectRefused(screen, set);
@@ -356,7 +369,7 @@ export async function watchStartup(client: HerdrClient, paneId: string, signal?:
           unknown = undefined;
           const known = set.dialogs.find((entry) => entry.id === dialog);
           const wanted = known ? chosenLabel(screen, known.accept) : '';
-          const key = answerKey(screen, wanted);
+          const key = answerKey(read, wanted);
           if (key) {
             // TODO(api): keys typed into the pane answer a question no API reaches. A
             // documented way to pre-answer Claude Code's development-channel and

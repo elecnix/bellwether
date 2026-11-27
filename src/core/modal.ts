@@ -35,32 +35,49 @@ function isOption(line: string, column: number): boolean {
 }
 
 /**
+ * A screen in its two views: `plain` holds every character, and `content`
+ * holds the same lines with faint text blanked (src/core/screen.ts). A bare
+ * string is both.
+ */
+export type ModalView = string | { plain: string; content: string };
+
+/**
  * The one-line name of the modal dialog at the bottom of `screen`, or
  * undefined when the screen shows none. A dialog is either a selection list
  * with at least two aligned options, one of them marked, or a question that
  * asks for y/n. The name is the dialog's first line and its question, when
  * they differ, cut to MODAL_LINE_LIMIT.
+ *
+ * The selection marker and the y/n question must be drawn solid: a faint one
+ * is a suggestion in an input box, such as Claude Code's, and not a question
+ * the screen asks. The other options and the header may be faint, because a
+ * dialog often dims the options it has not selected.
  */
-export function detectModal(screen: string): string | undefined {
-  const all = screen.split('\n').map((line) => line.replace(BORDER, '').trimEnd());
-  while (all.length && !all[all.length - 1]?.trim()) all.pop();
-  const lines = all.slice(-WINDOW);
-  if (!lines.length) return undefined;
+export function detectModal(screen: ModalView): string | undefined {
+  const view = typeof screen === 'string' ? { plain: screen, content: screen } : screen;
+  const split = (text: string): string[] => text.split('\n').map((line) => line.replace(BORDER, '').trimEnd());
+  let plainAll = split(view.plain);
+  let solidAll = split(view.content);
+  while (plainAll.length && !plainAll[plainAll.length - 1]?.trim()) plainAll.pop();
+  solidAll = solidAll.slice(0, plainAll.length);
+  const plain = plainAll.slice(-WINDOW);
+  const solid = solidAll.slice(-WINDOW);
+  if (!plain.length) return undefined;
 
-  const tail = lines.filter((line) => line.trim()).slice(-4);
+  const tail = solid.filter((line) => line.trim()).slice(-4);
   const yesNo = tail.find((line) => YES_NO.test(line));
   if (yesNo) return clip(yesNo);
 
-  for (let index = lines.length - 1; index >= 0; index -= 1) {
-    const match = SELECTED.exec(lines[index] ?? '');
+  for (let index = solid.length - 1; index >= 0; index -= 1) {
+    const match = SELECTED.exec(solid[index] ?? '');
     if (!match) continue;
     const column = (match[1]?.length ?? 0) + (match[2]?.length ?? 0) + (match[3]?.length ?? 0);
-    const before = lines[index - 1] ?? '';
-    const after = lines[index + 1] ?? '';
+    const before = plain[index - 1] ?? '';
+    const after = plain[index + 1] ?? '';
     if (!isOption(before, column) && !isOption(after, column)) continue;
     let first = index;
-    while (first > 0 && isOption(lines[first - 1] ?? '', column)) first -= 1;
-    return nameAbove(lines, first);
+    while (first > 0 && isOption(plain[first - 1] ?? '', column)) first -= 1;
+    return nameAbove(plain, first);
   }
   return undefined;
 }

@@ -418,7 +418,7 @@ export class HerdrClient {
   async paneRead(params: { paneId: string; source: 'visible' | 'recent' | 'recent_unwrapped' | 'detection'; lines?: number }, signal?: AbortSignal): Promise<Screen> {
     const result = await this.request('pane.read', { pane_id: params.paneId, source: params.source, lines: params.lines ?? null, format: 'ansi' }, { signal, timeoutMs: 8000 });
     const { text, format } = paneText(result);
-    return parseScreen(text, format, (content) => detectModal(content) !== undefined);
+    return parseScreen(text, format, (view) => detectModal(view) !== undefined);
   }
 
   agentPrompt(target: string, text: string, signal?: AbortSignal): Promise<void> {

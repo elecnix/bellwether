@@ -123,11 +123,21 @@ export async function watchStartup(client: HerdrClient, paneId: string, signal?:
       let screen = '';
       let dialog: StartupDialog | undefined;
       while (Date.now() < deadline && !controller.signal.aborted) {
+        // TODO(api): the screen is the only evidence of which startup question is
+        // up, because herdr's blocked status does not name the dialog and Claude Code
+        // has no API for either question. A documented flag or setting that
+        // pre-answers the folder-trust and development-channel questions would retire
+        // this read, as would `channelsEnabled` with `allowedChannelPlugins` in managed
+        // settings for the channel question (docs/probes.md, section 7).
         screen = await client.paneRead({ paneId, source: 'visible', lines: 40 }).catch(() => screen);
         dialog = detectDialog(screen);
         if (dialog) {
           const key = keyToward(screen, dialog === 'trust' ? TRUST_ACCEPT : CHANNEL_ACCEPT);
           if (key) {
+            // TODO(api): keys typed into the pane answer a question no API reaches. A
+            // documented way to pre-answer Claude Code's development-channel and
+            // folder-trust questions, or a managed-settings allowlist (`channelsEnabled`,
+            // `allowedChannelPlugins`) that removes the channel question, would retire them.
             await client.sendKeys(paneId, [key]);
             if (key === 'Enter' && !answered.includes(dialog)) answered.push(dialog);
           }

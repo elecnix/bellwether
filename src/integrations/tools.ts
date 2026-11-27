@@ -281,10 +281,12 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
 
   if (name === 'agent_read') {
     const lines = typeof args['lines'] === 'number' ? (args['lines'] as number) : undefined;
+    // Pane feature: agent_read with lines, a screen the parent asked to see.
     if (lines) return (await herdr.paneRead({ paneId: child.paneId, source: 'recent_unwrapped', lines })).trim();
     if (hostOf(child) !== LOCAL_HOST) return readRemoteChild(ctx, child, herdr);
     const message = child.transcript ? lastAssistantMessage(child.transcript) : undefined;
     if (message) return message;
+    // Pane feature: agent_read for a child whose transcript holds no message yet.
     return (await herdr.paneRead({ paneId: child.paneId, source: 'recent_unwrapped', lines: 40 })).trim();
   }
 
@@ -292,6 +294,7 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
     const text = optionalString(args['text']);
     const keys = Array.isArray(args['keys']) ? (args['keys'] as string[]) : undefined;
     if (keys?.length) {
+      // Pane feature: agent_send keys, which the parent chose to send.
       await herdr.sendKeys(child.paneId, keys);
       return `Sent ${keys.join(' ')} to ${child.name}.`;
     }
@@ -301,6 +304,7 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
 
   if (name === 'agent_stop') {
     if (!args['force'] && (child.lastStatus === 'working' || child.lastStatus === 'blocked')) {
+      // Pane feature: agent_stop shows the parent what the busy child is doing.
       const tail = await herdr.paneRead({ paneId: child.paneId, source: 'recent_unwrapped', lines: 20 }).catch(() => '');
       return `${child.name} is ${child.lastStatus}, so agent_stop refused to close it. Pass force to close it anyway.\n${tail.trim()}`;
     }
@@ -346,6 +350,7 @@ async function readRemoteChild(ctx: ToolContext, child: ChildRecord, herdr: Herd
   const why = hopError ? `Its transcript on machine ${child.host} could not be read (${hopError}).` : `Machine ${child.host} has no transcript message for it.`;
   if (child.lastReport) return `${why} Its last report, ${child.lastReport.status} at ${child.lastReport.at}:\n${child.lastReport.text}`;
   if (!child.exitedAt) {
+    // Pane feature: agent_read on a remote child with no transcript and no report.
     const screen = await herdr.paneRead({ paneId: child.paneId, source: 'recent_unwrapped', lines: 40 }).catch(() => '');
     if (screen.trim()) return screen.trim();
   }

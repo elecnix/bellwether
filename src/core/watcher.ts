@@ -477,6 +477,11 @@ export class Watcher {
         continue;
       }
       if (event === 'blocked') {
+        // TODO(api): the screen decides whether this blocked child is on a Claude
+        // Code startup question, which the watcher answers itself. herdr's blocked
+        // status does not say which dialog is up. A field on the status event, or in
+        // Claude Code's hooks, naming the pending dialog would retire the read as
+        // evidence. The same text reaches the parent as the dialog to answer.
         const dialog = await this.clientFor(hostOf(child))
           .then((client) => client.paneRead({ paneId: child.paneId, source: 'detection', lines: 30 }))
           .catch(() => '');
@@ -604,6 +609,11 @@ export class Watcher {
     if (now - last < this.screenPollMs) return false;
     this.screenReadAt.set(child.id, now);
     try {
+      // TODO(api): a screen diff stands in for an activity signal on a harness with
+      // no transcript. herdr's schema lists a `pane_output_changed` event carrying the
+      // pane's output revision, but herdr 0.9.5 offers it neither in events.subscribe
+      // nor in events.wait, which answers that it supports only agent status matches.
+      // A subscribable `pane_output_changed` would replace this read.
       const screen = await (await this.clientFor(hostOf(child))).paneRead({ paneId: child.paneId, source: 'recent_unwrapped', lines: 40 });
       const lines = screen.split('\n').filter((line) => line.trim().length > 0 && !/⏱|\[\d+% ·/.test(line));
       const previous = this.lastScreen.get(child.id);
@@ -627,6 +637,7 @@ export class Watcher {
     const age = this.age(Date.parse(child.startedAt));
     if (event === 'exited') return this.describeExit(child, child.exitCode);
     if (event === 'blocked') {
+      // Pane feature: the parent's event text shows the dialog its child is blocked on.
       const dialog = await this.clientFor(hostOf(child))
         .then((client) => client.paneRead({ paneId: child.paneId, source: 'detection', lines: 30 }))
         .catch(() => '');
@@ -649,6 +660,8 @@ export class Watcher {
   }
 
   private async screenTail(child: ChildRecord, lines = 40): Promise<string> {
+    // Pane feature: the last screen lines go into the parent's event text, for a
+    // stuck or inactive child, or an idle one with no report and no transcript.
     return this.clientFor(hostOf(child))
       .then((client) => client.paneRead({ paneId: child.paneId, source: 'recent_unwrapped', lines }))
       .catch(() => '');

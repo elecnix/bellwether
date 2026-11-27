@@ -55,6 +55,8 @@ export const kilo: HarnessEntry = {
     }),
     remoteRefusal: 'a kilo child runs on this machine only for now, because its store and its version are read where it runs',
   },
+  // Kilo has no inbound path: it loads Bellwether as an ordinary MCP server, and its MCP client takes no message from a server into the session, so a parent's message is typed into its pane.
+  inbox: { via: 'none', reason: 'Kilo loads Bellwether as an ordinary MCP server, and its MCP client takes no message from a server into the session' },
   conversation: {
     locate: noTranscript('Kilo'),
     lastMessage(child) {

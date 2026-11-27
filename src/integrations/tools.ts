@@ -6,12 +6,12 @@ import { spawnChild, type RegisterRemote, type SpawnOptions } from '../core/spaw
 import { agentKinds, harnessFor, harnessNamed, locateTranscript } from '../core/harnesses/index.ts';
 import { GRANT_DEPTH_TOOL, REQUEST_DEPTH_TOOL, ceilingOf, childCeiling, describeDepth, grantDepth, raiseTree, requestDepth } from '../core/depth.ts';
 import { removeChildFiles } from '../core/mcp-config.ts';
-import { PROMPT_NOTICE, notePromptForCaller, reportForCaller } from '../core/report.ts';
+import { PROMPT_NOTICE, localParentOf, notePromptForCaller, reportForCaller } from '../core/report.ts';
 import { childById, mutateParent, readParent, updateChild } from '../core/registry.ts';
 import { adoptPane } from '../core/adopt.ts';
 import { LOCAL_HOST, hostOf, knownHosts, type ClientFor } from '../core/machine.ts';
 import { spawnResume } from '../core/spawn-resume.ts';
-import { promptChild } from '../core/send.ts';
+import { describeMessages, messageChild, type Inbox } from '../core/send.ts';
 import { RESTART_TOOL, runAgentRestart, type RestartHooks } from '../core/restart.ts';
 import { RETIRE_TOOL, realRetireOps, requestRetirement, type RetireOps } from '../core/retire.ts';
 import type { RemoteOps } from '../core/remote.ts';
@@ -45,6 +45,8 @@ export interface ToolContext {
   knownHosts?: () => Promise<string[]>;
   /** The daemon's log. */
   log?: (message: string) => void;
+  /** The daemon's way into a child's own session, for a parent's message. Without it, a message is typed into the pane. */
+  inbox?: Inbox;
 }
 
 function clientFor(ctx: ToolContext, host: string): Promise<HerdrClient> {
@@ -115,7 +117,7 @@ export const parentTools: ToolDefinition[] = [
   },
   {
     name: 'agent_list',
-    description: 'List this session\'s children with status, age and unread events.',
+    description: 'List this session\'s children with status, age and unread events, then each child\'s depth requests and its newest messages from you, with the path each took and whether its model has read it.',
     schema: { type: 'object', properties: {} },
   },
   {
@@ -132,12 +134,12 @@ export const parentTools: ToolDefinition[] = [
   },
   {
     name: 'agent_send',
-    description: 'Prompt a child with herdr agent.prompt. herdr refuses a blocked child, so for one this returns the dialog and takes keys to answer it instead.',
+    description: "Send a child a message. A claude, pi or omp child on this machine gets it in its session, through its own Bellwether channel or extension, as a message rather than typing: an idle child starts a turn on it, and a busy one takes it after the tool calls in flight, before its next model call, the same moment typed input would reach it. Any other child, a child on another machine, and a child whose Bellwether session does not take the message within 5 s get it typed into their pane through herdr's agent.prompt instead. The reply says which path carried it and why, and agent_list shows each message's path and whether the child's model has read it; a child that exits before reading a session message gets an exit event that names the message. herdr refuses a blocked child, so for one this returns the dialog and takes keys to answer it instead.",
     schema: {
       type: 'object',
       properties: {
         child: { type: 'string', description: 'The child\'s name, its pane id, or the id agent_spawn returned.' },
-        text: { type: 'string', description: 'The prompt to submit.' },
+        text: { type: 'string', description: 'The message to send.' },
         keys: { type: 'array', items: { type: 'string' }, description: 'Key presses to send instead of a prompt, named as ctrl+c or enter.' },
       },
       required: ['child'],
@@ -417,6 +419,8 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
       focus: args['focus'] === true,
       registerRemote: registrar(ctx, record),
       cleanupRemote: remoteCleanup(ctx),
+      inbox: ctx.inbox,
+      from: senderName(record),
     });
     const { child } = result;
     const lines = result.corrected ? [result.corrected] : [];
@@ -502,7 +506,8 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
     if (!record.children.length) return 'No children yet. Start one with agent_spawn.';
     const header = 'name\tkind\troute\tstate\tage\thost\tworkspace\tpane\tdepth\tunread\tcwd';
     const depth = record.children.flatMap((child) => describeDepth(child));
-    return [header, ...record.children.map((child) => describeChild(child, ctx.watcher, ctx.relayState)), ...(depth.length ? ['', 'Depth requests and grants:', ...depth] : [])].join('\n');
+    const messages = record.children.flatMap((child) => describeMessages(child));
+    return [header, ...record.children.map((child) => describeChild(child, ctx.watcher, ctx.relayState)), ...(depth.length ? ['', 'Depth requests and grants:', ...depth] : []), ...(messages.length ? ['', 'Messages to children, newest three each:', ...messages] : [])].join('\n');
   }
 
   if (name === 'agent_move') {
@@ -581,7 +586,7 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
       return `Sent ${keys.join(' ')} to ${child.name}.`;
     }
     if (!text) throw new Error('agent_send needs text or keys');
-    return promptChild(herdr, child, text);
+    return (await messageChild({ herdr, parentId: ctx.parentId, from: senderName(record), child, text, inbox: ctx.inbox })).text;
   }
 
   if (name === 'agent_stop') {
@@ -632,15 +637,26 @@ function transcriptFromSession(parentId: string, child: ChildRecord): string | u
   return found.path;
 }
 
+/** Who a message comes from, as the child reads it: the sender's own name under its parent, or its session. */
+function senderName(record: { harness: string; session: string; childId?: string }): string {
+  const own = record.childId ? localParentOf(record.childId)?.child.name : undefined;
+  return own ? `your parent, ${own}` : `your parent, ${record.harness} session ${record.session}`;
+}
+
 /**
- * Give a child the answer to its depth request through herdr's agent.prompt,
- * as agent_send does. The answer comes from the chain above it, which its own
- * parent started. A child that has gone keeps the answer on its record.
+ * Give a child the answer to its depth request the way agent_send gives a
+ * message: into its session where it can, typed into its pane otherwise. The
+ * grant itself is already on the record before the child is told, so the
+ * path changes only how the child hears of it, not what it means. The answer
+ * comes from the chain above it, which its own parent started. A child that
+ * has gone keeps the answer on its record.
  */
 async function tellChild(ctx: ToolContext, child: ChildRecord, text: string): Promise<void> {
   if (child.exitedAt || !child.paneId) return;
+  const parentId = localParentOf(child.id)?.parent.id ?? ctx.parentId;
   try {
-    await promptChild(await clientFor(ctx, hostOf(child)), child, text);
+    const outcome = await messageChild({ herdr: await clientFor(ctx, hostOf(child)), parentId, from: 'Bellwether depth grant', child, text, inbox: ctx.inbox });
+    ctx.log?.(`depth: told ${child.name} by ${outcome.message.path === 'session' ? `its session (${outcome.message.via})` : `keystrokes in pane ${child.paneId} (${outcome.message.reason})`}, as message ${outcome.message.id}`);
   } catch (error) {
     ctx.log?.(`depth: could not tell ${child.name} in pane ${child.paneId}: ${(error as Error).message}`);
   }

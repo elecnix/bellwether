@@ -18,6 +18,8 @@ herdr reports `working`, `idle`, `blocked` and `done` for every kind it detects.
 
 Codex doesn't ask its folder-trust question, because its launch line marks the folder trusted for that run.
 
+A `claude`, `pi` or `omp` child takes a parent's message in its session, and herdr types it into the pane of any other kind. [tools.md](tools.md#messages-to-a-child) gives the cases and the record.
+
 ## Each kind in three lines
 
 Each kind has the same three bullets, so a reader can line up two kinds. The bullets give the child's abilities and limits, then say how it gets its Bellwether tools.

@@ -43,6 +43,7 @@ export const envHarness: HarnessEntry = {
     remote: 'mcpConfig',
     remoteEnv: [READY],
   },
+  inbox: { via: 'none', reason: 'env-agent is a test harness with no inbound path' },
   conversation: { locate: () => ({ missing: 'env-agent keeps no transcript' }) },
   classify: { status: 'herdr', dialogs: { from: 'screen', marker: 'detectModal' }, activity: 'transcript' },
   movable: false,

@@ -74,3 +74,20 @@ test('an ancestry request carries the agent, and one without it is refused', () 
   assert.deepEqual(parseRequest(JSON.stringify({ type: 'ancestry', id: 'a1', agent: ' claude:abc ' })), { type: 'ancestry', id: 'a1', agent: 'claude:abc' });
   assert.throws(() => parseRequest(JSON.stringify({ type: 'ancestry', id: 'a1' })), (error: unknown) => error instanceof ProtocolError && error.code === 'invalid_ancestry');
 });
+
+test('a hello keeps what the session accepts, and an older hello without it parses as before', () => {
+  const parsed = parseRequest(JSON.stringify({ ...hello, parent: { ...hello.parent, childId: 'child-1', accepts: ['message', 7, ''] } }));
+  assert.equal(parsed.type, 'hello');
+  if (parsed.type !== 'hello') return;
+  assert.deepEqual(parsed.parent.accepts, ['message']);
+  const older = parseRequest(JSON.stringify(hello));
+  if (older.type !== 'hello') return;
+  assert.equal(older.parent.accepts, undefined, 'a session that names nothing gets no message pushed');
+});
+
+test('a message acknowledgement carries its outcome, and a bad one is refused by name', () => {
+  assert.deepEqual(parseRequest(JSON.stringify({ type: 'message-ack', id: 'm-1', outcome: 'queued', via: 'claude-channel' })), { type: 'message-ack', id: 'm-1', outcome: 'queued', via: 'claude-channel' });
+  assert.deepEqual(parseRequest(JSON.stringify({ type: 'message-ack', id: 'm-1', outcome: 'refused', reason: 'no handler' })), { type: 'message-ack', id: 'm-1', outcome: 'refused', reason: 'no handler' });
+  assert.throws(() => parseRequest(JSON.stringify({ type: 'message-ack', id: 'm-1', outcome: 'seen' })), (error: unknown) => error instanceof ProtocolError && error.code === 'invalid_ack');
+  assert.throws(() => parseRequest(JSON.stringify({ type: 'message-ack', outcome: 'read' })), (error: unknown) => error instanceof ProtocolError && error.code === 'invalid_ack');
+});

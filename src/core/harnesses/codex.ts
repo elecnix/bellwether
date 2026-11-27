@@ -121,6 +121,8 @@ export const codex: HarnessEntry = {
     }),
     remoteRefusal: "a codex child runs on this machine only for now, because its session is found in Codex's rollouts where it runs",
   },
+  // Codex has no inbound path: it loads Bellwether as an ordinary MCP server, and its MCP client takes no message from a server into the session, so a parent's message is typed into its pane.
+  inbox: { via: 'none', reason: 'Codex loads Bellwether as an ordinary MCP server, and its MCP client takes no message from a server into the session' },
   conversation: {
     locate(session) {
       const file = session ? findRollout(codexHome(), session) : undefined;

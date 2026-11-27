@@ -92,3 +92,8 @@ test('the byline gives the version and a reading time', () => {
   const version = JSON.parse(readFileSync('package.json', 'utf8')).version as string;
   assert.match(page('releasing.html'), new RegExp(`<p class="byline">Bellwether ${version.replaceAll('.', '\\.')} · ≈ \\d+ min read`));
 });
+
+test('only a paragraph right under the page title becomes the lead', () => {
+  assert.match(page('index.html'), /<p class="lead">Bellwether lets a coding agent/);
+  assert.doesNotMatch(page('recovery.html'), /class="lead"/);
+});

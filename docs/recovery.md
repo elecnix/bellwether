@@ -65,7 +65,7 @@ With an `inactive` event, the child has been inactive for its threshold. It may 
 
 ## Retiring a child
 
-A child that has finished calls `request_retirement`, then closes its own tab. The call only records the request. It reports which checks already pass, such as uncommitted changes, stashes on the branch, and whether its commits exist anywhere else.
+A child that has finished calls `request_retirement`, then closes its own tab. The call only records the request. It reports which checks already pass, such as uncommitted changes, stashes on the branch, and whether its commits exist anywhere else. A parent can close the tab instead with `agent_stop`. Both the stop and herdr's report that the pane closed start the cleanup. It runs once, from whichever finds the pane gone first, and never waits for a daemon restart.
 
 Once herdr reports the pane gone, the daemon removes the worktree and the branch, but only when all of these hold:
 
@@ -77,6 +77,8 @@ Once herdr reports the pane gone, the daemon removes the worktree and the branch
 Bellwether refuses a child it adopted, a child on another machine, a detached HEAD and any main worktree. A worktree counts as main when its git directory is the repository itself, when git lists it first, when it has the default branch checked out, or when its name is `main` or `master`.
 
 On the child record, `retireOutcome` shows `removed` or `refused`. After a refusal, `retireReason` states the failed check and what a person would do about it. Each outcome also goes to `~/.bellwether/retire.log` as one JSON line. After a restart mid-retirement, the daemon finishes the remaining steps. Resuming a child cancels its request.
+
+A child that `agent_stop` closes without having asked for retirement keeps its worktree and branch. Its record shows it exited, with no retirement fields. The daemon leaves `retire.log` alone too, because that log records retirements and nobody asked for one.
 
 ## Pruning old parent records, briefs and logs
 

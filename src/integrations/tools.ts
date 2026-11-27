@@ -13,7 +13,7 @@ import { LOCAL_HOST, hostOf, knownHosts, type ClientFor } from '../core/machine.
 import { spawnResume } from '../core/spawn-resume.ts';
 import { promptChild } from '../core/send.ts';
 import { RESTART_TOOL, runAgentRestart, type RestartHooks } from '../core/restart.ts';
-import { RETIRE_TOOL, realRetireOps, requestRetirement, type RetireOps } from '../core/retire.ts';
+import { RETIRE_TOOL, realRetireOps, requestRetirement, retirementPending, type RetireOps } from '../core/retire.ts';
 import type { RemoteOps } from '../core/remote.ts';
 import { lastAssistantMessage } from '../core/transcript.ts';
 import { moveChild } from '../core/move.ts';
@@ -602,16 +602,21 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
       return undefined;
     });
     const roomNote = released === 'kept' ? ` Its workspace ${workspaceName(child)} stays open, because it still holds another tab.` : '';
+    // The stop marked the exit, so the pane_closed that follows finds it
+    // recorded. The cleanup starts here as well, and the first to see the pane
+    // gone does it, once. Issue #120.
+    ctx.watcher.childStopped(child.id);
+    const retireNote = retirementPending(child) ? ` It asked to be retired, so Bellwether removes its worktree and branch once herdr no longer lists its pane, and writes the outcome to retire.log.` : '';
     // A child on another machine has its brief, config and relay record there.
     if (hostOf(child) !== LOCAL_HOST && ctx.remote) {
       try {
         await ctx.remote.cleanup(child);
       } catch (error) {
         ctx.log?.(`agent_stop: could not remove ${child.name}'s files on machine ${hostOf(child)}: ${(error as Error).message}`);
-        return `Closed ${child.name}.${roomNote} Its brief, MCP config and relay record on machine ${hostOf(child)} could not be removed, and stay there until \`bellwether relay-cleanup --child ${child.id}\` runs on that machine: ${(error as Error).message}`;
+        return `Closed ${child.name}.${roomNote}${retireNote} Its brief, MCP config and relay record on machine ${hostOf(child)} could not be removed, and stay there until \`bellwether relay-cleanup --child ${child.id}\` runs on that machine: ${(error as Error).message}`;
       }
     }
-    return `Closed ${child.name}.${roomNote}`;
+    return `Closed ${child.name}.${roomNote}${retireNote}`;
   }
 
   throw new UnknownTool(name);

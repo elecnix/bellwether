@@ -13,6 +13,7 @@ import type { CallerIdentity, OutboxEntry } from '../core/types.ts';
 import type { ParentHello } from './protocol.ts';
 import type { RelayLinks } from './relay-links.ts';
 import type { Inbox } from '../core/send.ts';
+import type { SessionReach } from '../core/adopted-session.ts';
 
 export interface ParentService {
   /** Run one Bellwether tool for a client, and return its text. `caller` says who asked. */
@@ -35,6 +36,8 @@ export interface ServiceDeps {
   log?: (message: string) => void;
   /** The daemon's way into a child's own session, for a parent's message. */
   inbox?: Inbox;
+  /** Whether a Bellwether adapter from a pane on this machine is connected, so an adoption can say whether the session can report. */
+  sessionReach?: (paneId: string) => SessionReach;
 }
 
 export type ServiceFactory = (parent: ParentHello, id: string, deps: ServiceDeps) => ParentService;
@@ -70,7 +73,7 @@ export function createHerdrService(parent: ParentHello, id: string, deps: Servic
       restartJobs.set(key, running);
     },
   };
-  const context: ToolContext = { client, clientFor, parentId: record.id, watcher, remote, relayState, restart, log: deps.log, inbox: deps.inbox };
+  const context: ToolContext = { client, clientFor, parentId: record.id, watcher, remote, relayState, restart, log: deps.log, inbox: deps.inbox, ...(deps.sessionReach ? { sessionReach: deps.sessionReach } : {}) };
   const paneWatches = new Set<{ close: () => void }>();
   watcher.start();
   // Finish a restart a daemon stopped part of the way through.

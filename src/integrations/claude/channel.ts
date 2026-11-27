@@ -317,8 +317,9 @@ ready = (async () => {
       childId,
       ...(maxDepth === undefined ? {} : { maxDepth }),
       ...(reportsTo ? { reportsTo } : {}),
-      // A child takes its parent's messages through this channel.
-      ...(childId ? { accepts: ['message'] } : {}),
+      // A child takes its parent's messages through this channel, and any
+      // session takes a new tool list, such as parent_report once a parent adopts it.
+      accepts: childId ? ['message', 'tools'] : ['tools'],
     }, { log });
     daemon.onEvents((entries) => schedule(entries));
     daemon.onTools((served) => {

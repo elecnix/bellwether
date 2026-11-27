@@ -18,6 +18,8 @@ import { RELAY_SCHEMA, readRelayRecord, saveRelayRecord } from '../../src/core/r
 import { remoteOps } from '../../src/core/remote.ts';
 import type { ChildRecord, OutboxEntry } from '../../src/core/types.ts';
 import { Watcher } from '../../src/core/watcher.ts';
+import { DaemonClient } from '../../src/daemon/client.ts';
+import type { RelayReport } from '../../src/daemon/protocol.ts';
 import { RelayLinks } from '../../src/daemon/relay-links.ts';
 import { runBellwetherTool, type ToolContext } from '../../src/integrations/tools.ts';
 import { stopDaemonsUnder } from '../fixtures/daemons.ts';
@@ -90,7 +92,7 @@ function inHome<T>(home: string, fn: () => T): T {
 const profiles: MachineProfile[] = [{ id: 'child-box', label: 'child-box', target: 'child-box', session: 'default', enabled: true }];
 const resolve = async (label: string): Promise<MachineProfile> => pickMachine(profiles, label);
 
-async function world(t: test.TestContext, options: { farDaemon?: (socketPath: string) => Promise<() => Promise<void>> } = {}): Promise<World> {
+async function world(t: test.TestContext, options: { farDaemon?: (socketPath: string) => Promise<() => Promise<void>>; accept?: (host: string, report: RelayReport) => { refused?: string } } = {}): Promise<World> {
   // Under /tmp, because macOS caps a Unix socket path at 104 bytes.
   const root = fs.mkdtempSync('/tmp/bw-adopt-');
   assert.ok(!root.startsWith(LIVE_HOME));
@@ -126,7 +128,7 @@ async function world(t: test.TestContext, options: { farDaemon?: (socketPath: st
 
   const logs: string[] = [];
   const links = new RelayLinks({ resolve, initialDelayMs: 50, maxDelayMs: 200, readTimeoutMs: 10_000, heartbeatMs: 1_000, log: (line) => logs.push(line) });
-  links.start(() => ({ refused: 'this case carries no reports' }));
+  links.start(options.accept ?? (() => ({ refused: 'this case carries no reports' })));
   saveParent(emptyParent('claude-code', 'the-parent', '/work', { paneId: 'w1:p1' }));
   const published: OutboxEntry[] = [];
   let skew = 0;
@@ -219,7 +221,7 @@ test('a pane on another machine is adopted, its record names that machine and it
   const w = await world(t);
   const text = await adopt(w);
   assert.match(text, /Adopted first-mate, a claude agent on machine child-box in pane w1:p5, as child \S+\. Bellwether watches it from now on\. Its harness session is sess-far-0001\./);
-  assert.match(text, /cannot call parent_report/);
+  assert.match(text, /Its session holds no Bellwether server or extension connected to the daemon on machine child-box, so it cannot call parent_report\./);
 
   const record = child(w);
   assert.ok(record, 'the parent holds the child');
@@ -244,6 +246,42 @@ test('a pane on another machine is adopted, its record names that machine and it
 
   // Adopting it again is the same child, and the far machine agrees.
   assert.match(await adopt(w, { target: PANE, machine: 'child-box' }), /already a child of this session/);
+});
+
+test('an adopted session on another machine whose Bellwether adapter is already connected there gains parent_report, and its report reaches the adopter over the relay', async (t) => {
+  const reports: { host: string; report: RelayReport }[] = [];
+  const w = await world(t, { accept: (host, report) => (reports.push({ host, report }), {}) });
+  // The session in w1:p5 on child-box loaded Bellwether at its start, from a plugin or pi's package: its adapter said hello there with its pane and its own session, and no child id.
+  const far = await DaemonClient.connect({ harness: 'claude-code', session: SESSION, cwd: '/far/work', host: 'child-box', paneId: PANE, depth: 0, herdrSocket: path.join(w.root, 'far-herdr.sock'), accepts: ['tools'] }, { home: w.childHome, socketPath: path.join(w.childHome, 'daemon.sock') });
+  t.after(() => far.close());
+  const changed: string[][] = [];
+  far.onTools((tools) => changed.push(tools.map((tool) => tool.name)));
+  assert.ok(!far.tools().some((tool) => tool.name === 'parent_report'), 'before the adoption, the session reports to nobody');
+
+  const text = await adopt(w);
+  assert.match(text, /Its session holds a Bellwether server or extension, connected to the daemon on machine child-box, which now offers it parent_report: a report from it reaches this session\./, text);
+  await until('the far session to gain parent_report', () => far.tools().some((tool) => tool.name === 'parent_report'));
+  assert.ok(changed.some((names) => names.includes('parent_report')), 'the adapter heard the tool list change, as Claude Code and pi do');
+
+  const id = child(w)!.id;
+  await until('the relay to hold child-box open for the child', () => w.links.state('child-box')?.status === 'connected' && (w.links.state('child-box')?.children ?? []).includes(id));
+  const answer = await far.tool('parent_report', { status: 'done', text: 'Rebased and pushed.' });
+  assert.equal(answer, 'Reported done to the parent on another machine, as first-mate.');
+  await until('the report to cross the relay', () => reports.length > 0, 10_000, () => w.logs.slice(-5));
+  assert.equal(reports[0]?.host, 'child-box');
+  assert.equal(reports[0]?.report.childId, id, 'the report stands under the child id the adoption gave it');
+  assert.equal(reports[0]?.report.parentId, PARENT_ID);
+  assert.equal(reports[0]?.report.text, 'Rebased and pushed.');
+});
+
+test('a session in an adopted pane on another machine whose harness session is not the adopted one gains nothing, and its report is refused there', async (t) => {
+  const w = await world(t);
+  const far = await DaemonClient.connect({ harness: 'pi', session: 'sess-later-0002', cwd: '/far/work', host: 'child-box', paneId: PANE, depth: 0, herdrSocket: path.join(w.root, 'far-herdr.sock'), accepts: ['tools'] }, { home: w.childHome, socketPath: path.join(w.childHome, 'daemon.sock') });
+  t.after(() => far.close());
+  assert.match(await adopt(w), /Its session holds no Bellwether server or extension connected to the daemon on machine child-box, so it cannot call parent_report\./);
+  await delay(200);
+  assert.ok(!far.tools().some((tool) => tool.name === 'parent_report'));
+  await assert.rejects(far.tool('parent_report', { status: 'done', text: 'not mine to send' }), /parent_report has nobody to report to/);
 });
 
 test('an unknown machine, an empty pane and a pane another parent watches there are each refused by name', async (t) => {

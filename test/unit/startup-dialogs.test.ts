@@ -3,7 +3,7 @@
 // cases read screens copied from a real Claude Code 2.1.332 pane.
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { answerKey, confirms, detectDialog, dialogQuestion, keyToward } from '../../src/core/startup-dialogs.ts';
+import { answerKey, confirms, detectDialog, dialogPath, dialogQuestion, keyToward } from '../../src/core/startup-dialogs.ts';
 import { CHANNEL_ACCEPT_SELECTED, CHANNEL_EXIT_SELECTED, CHANNEL_FIVE_EXIT_SELECTED, CLAUDE_PROMPT, DANGEROUS_RM_QUESTION, OUTSIDE_READ_QUESTION, PERMISSION_QUESTION, TRUST_NO_SELECTED, TRUST_YES_SELECTED, UNKNOWN_STARTUP_QUESTION } from '../fixtures/claude-screens.ts';
 
 const TRUST_ACCEPT = 'Yes, I trust this folder';
@@ -91,4 +91,10 @@ test('an option without a number is walked to with the arrows, and Enter waits f
   assert.equal(confirms('Down'), false);
   // A screen still drawing gets no key at all.
   assert.equal(answerKey('drawing…', TRUST_ACCEPT), undefined);
+});
+
+test('a declined read keeps the path its dialog shows', () => {
+  assert.equal(dialogPath(OUTSIDE_READ_QUESTION), '/var/tmp/example-other-repo/eslint.config.js');
+  assert.equal(dialogPath('│ Read file │\n│ /srv/example/skill/SKILL.md │\n Allow?'), '/srv/example/skill/SKILL.md');
+  assert.equal(dialogPath(DANGEROUS_RM_QUESTION), undefined);
 });

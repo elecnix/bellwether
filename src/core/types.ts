@@ -47,6 +47,15 @@ export interface DialogDecision {
   at: string;
   /** Which part of Bellwether answered. */
   by: 'spawn' | 'resume' | 'restart' | 'watcher';
+  /**
+   * `declined` when the answer refused what the child asked to do, such as a
+   * read beyond its read set, and `accepted` otherwise. A parent that reads a
+   * declined read widens the child's set with `reads`, rather than send the
+   * same instruction again.
+   */
+  outcome: 'accepted' | 'declined';
+  /** For a declined read, the path the child asked to read, as the dialog showed it. */
+  path?: string;
   /** Set once the parent has been told. */
   told?: boolean;
 }
@@ -241,6 +250,12 @@ export interface ChildRecord {
    * parent as blocked.
    */
   decisions?: DialogDecision[];
+  /**
+   * The paths this child reads beside its working directory and the
+   * Bellwether home, as its spawn or a restart named them in `reads`. Its
+   * launch settings list them, and a resume or restart keeps them.
+   */
+  reads?: string[];
   /** This child's own stuck threshold, when its spawn set one. */
   stuckMs?: number;
   /**
@@ -266,7 +281,7 @@ export interface ChildRecord {
    * Absent, the restart keeps the route on the record. It sits on the record
    * with the request, so a daemon that stops mid-wait keeps it.
    */
-  restartRoute?: { via?: string; model?: string; keyFile?: string; provider?: string };
+  restartRoute?: { via?: string; model?: string; keyFile?: string; provider?: string; reads?: string[] };
   /** When the daemon last restarted the child in a new tab, on the same session. */
   restartedAt?: string;
   /**

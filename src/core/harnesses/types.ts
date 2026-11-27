@@ -113,7 +113,7 @@ export type ReportPath =
   | {
       via: 'mcp-config' | 'extension' | 'harness-config';
       /** Write the files that give a child on this machine its tools. */
-      local(child: Pick<ChildRecord, 'id' | 'cwd' | 'host' | 'store'>, context: LocalContext): ChildFiles;
+      local(child: Pick<ChildRecord, 'id' | 'cwd' | 'host' | 'store' | 'reads'>, context: LocalContext): ChildFiles;
       /**
        * What `bellwether relay-register` on another machine must hand back for
        * the child to report from there. Without it, a child on another machine
@@ -233,6 +233,12 @@ export interface HarnessEntry {
   };
   /** The startup dialogs a spawn answers for the person, which no API reaches. */
   startup?: StartupDialogSet;
+  /**
+   * Set when the harness's launch takes the child's read set, as Claude Code's
+   * settings file does. A spawn or restart that names `reads` for a harness
+   * without it is refused, because nothing would carry the paths.
+   */
+  launchReads?: true;
   /**
    * The line the harness prints when it stops at startup on an error it
    * cannot recover from, and then waits at its prompt. With it, a spawn waits

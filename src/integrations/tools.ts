@@ -9,6 +9,7 @@ import { keepsBriefs, type NextBrief } from '../core/brief-history.ts';
 import { removeChildFiles } from '../core/mcp-config.ts';
 import { PROMPT_NOTICE, localParentOf, notePromptForCaller, reportForCaller } from '../core/report.ts';
 import { childById, describeDecisions, mutateParent, readParent, updateChild } from '../core/registry.ts';
+import { checkReads } from '../core/reads.ts';
 import { adoptPane } from '../core/adopt.ts';
 import { LOCAL_HOST, hostOf, knownHosts, type ClientFor } from '../core/machine.ts';
 import { spawnResume } from '../core/spawn-resume.ts';
@@ -96,6 +97,7 @@ export const parentTools: ToolDefinition[] = [
         provider: { type: 'string', description: 'The pi provider for model. Pass both or neither.' },
         args: { type: 'array', items: { type: 'string' }, description: 'Extra arguments for the child harness, passed through unchanged and appended last.' },
         focus: { type: 'boolean', description: 'Move your view to the new tab. Defaults to false, so the child does not steal focus.' },
+        reads: { type: 'array', items: { type: 'string' }, description: 'Absolute paths the child reads beside its working directory and the Bellwether home, which holds its brief: a directory with everything under it, or one file. Name what the brief needs, such as another checkout\'s lint config; the root and the operator\'s home are refused. A claude child\'s launch settings list them, so Claude Code never asks about a read there, and a resume or restart keeps them. A read anywhere else is asked about, and Bellwether answers No and tells you which path it declined. Refused for a harness whose launch takes no read set.' },
         stuck_minutes: { type: 'number', description: 'How long the child may be quiet before it counts as stuck. Defaults to 10.' },
         inactive_minutes: { type: 'number', description: 'How long the child may show no activity of any kind, blocked included, before you are told. Defaults to 5. Clamped to between 1 and 1440. It cannot be turned off.' },
         max_depth: { type: 'number', description: 'The deepest generation the child\'s own descendants may reach: with 2, your child may spawn children but they may not. Defaults to 2. From the session at the top of the tree, it also sets the tree\'s ceiling, which no grant goes past, and it gates this call: the child itself, one level down, must fit under it, so max_depth 0 refuses the spawn. From any other session, it is held to your own ceiling. A child in a workspace of its own counts the same depth as any other.' },
@@ -202,6 +204,7 @@ export const parentTools: ToolDefinition[] = [
         model: { type: 'string', description: 'For a child: the tier on a route, or the harness model on a bare start.' },
         key_file: { type: 'string', description: 'For a child on a route: a file that holds the key the launcher runs under. Without it, a child that stays on its route keeps its key file.' },
         provider: { type: 'string', description: 'For a pi child restarted bare: the provider for model. A pi child leaving a route needs both, because its session names the route\'s provider.' },
+        reads: { type: 'array', items: { type: 'string' }, description: 'For a child: the absolute paths it reads beside its working directory and the Bellwether home, replacing the list it had; [] clears it. Use it when an event says Bellwether declined a read the brief needs: the child restarts on the same session with that path in its launch settings. Omit it to keep the list.' },
       },
     },
   },
@@ -414,7 +417,7 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
 
   if (name === RESTART_TOOL) {
     // Routed by the caller's identity and the records this daemon holds.
-    const change = { via: optionalString(args['via']), model: optionalString(args['model']), keyFile: optionalString(args['key_file']), provider: optionalString(args['provider']) };
+    const change = { via: optionalString(args['via']), model: optionalString(args['model']), keyFile: optionalString(args['key_file']), provider: optionalString(args['provider']), reads: checkReads(args['reads']) };
     return runAgentRestart(ctx.client, ctx.parentId, caller, { ...(ctx.restart ?? {}), reset: (childId) => ctx.watcher.reset(childId) }, optionalString(args['target']), typeof args['wait_seconds'] === 'number' ? (args['wait_seconds'] as number) : undefined, change);
   }
 
@@ -472,6 +475,7 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
       args: Array.isArray(args['args']) ? (args['args'] as string[]) : undefined,
       focus: args['focus'] === true,
       stuckMinutes: typeof args['stuck_minutes'] === 'number' ? (args['stuck_minutes'] as number) : undefined,
+      reads: checkReads(args['reads']),
       inactiveMinutes: typeof args['inactive_minutes'] === 'number' ? (args['inactive_minutes'] as number) : undefined,
       maxDepth: depth.ceiling,
       spawnerCeiling: depth.spawnerCeiling,

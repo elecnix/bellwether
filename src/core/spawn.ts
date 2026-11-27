@@ -50,6 +50,8 @@ export interface SpawnOptions {
   focus?: boolean;
   /** Minutes of quiet before the child counts as stuck. */
   stuckMinutes?: number;
+  /** Paths the child reads beside its working directory and the Bellwether home, checked by `checkReads`. */
+  reads?: string[];
   /**
    * Minutes of no observable activity before the parent is told. Defaults to
    * five and is clamped to one minute through twenty-four hours. It cannot
@@ -227,6 +229,11 @@ export async function childStartFiles(parent: ParentRecord, child: ChildRecord, 
   };
 }
 
+/** Why a child of this harness cannot take `reads`. */
+export function readsRefusal(entry: Pick<HarnessEntry, 'label'>, name: string): string {
+  return `${name} was not started: reads lists paths for the child's launch settings, and a ${entry.label} child's launch takes no read set. Drop reads, or name the paths in the brief.`;
+}
+
 /**
  * Refuse a spawn of a kind whose child could not report, or whose harness
  * says it cannot work here, before anything is written.
@@ -234,6 +241,7 @@ export async function childStartFiles(parent: ParentRecord, child: ChildRecord, 
 async function checkHarness(entry: HarnessEntry, options: SpawnOptions, model: string | undefined, hooks: HarnessHooks, herdr: HerdrClient): Promise<void> {
   const refused = spawnRefusal(entry, options.name);
   if (refused) throw new Error(refused);
+  if (options.reads?.length && !entry.launchReads) throw new Error(readsRefusal(entry, options.name));
   await entry.preflight?.({ name: options.name, cwd: options.cwd, model, host: options.host ?? LOCAL_HOST, herdr, args: options.args ?? [] }, hooks);
 }
 
@@ -288,6 +296,7 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
     depth,
     maxDepth,
     stuckMs: options.stuckMinutes === undefined ? undefined : Math.max(1_000, Math.round(options.stuckMinutes * 60_000)),
+    ...(options.reads?.length ? { reads: options.reads } : {}),
     inactiveMs: resolveInactiveMs(options.inactiveMinutes),
     // The record names the brief's file, so a resume can tell whether the child read it.
     ...(options.prompt ? { briefs: [{ n: 1, file: promptPath(id), at: now }] } : {}),
@@ -522,6 +531,11 @@ export interface RouteChange {
   keyFile?: string;
   /** The pi provider for a bare pi start. */
   provider?: string;
+  /**
+   * The child's read set beside its working directory and the Bellwether
+   * home, replacing the one it had. An empty list clears it. Undefined keeps it.
+   */
+  reads?: string[];
 }
 
 /** How a resumed or restarted child starts. */

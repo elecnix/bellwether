@@ -47,7 +47,7 @@ export const claude: HarnessEntry = {
     // child on another machine gets the files its own machine writes when the
     // spawn registers it there, without the hook.
     local(child, { farEnd }) {
-      const tools = writeChildToolFiles(child.id, child.cwd, { hook: !farEnd && (child.host ?? LOCAL_HOST) === LOCAL_HOST });
+      const tools = writeChildToolFiles(child.id, child.cwd, { hook: !farEnd && (child.host ?? LOCAL_HOST) === LOCAL_HOST, reads: child.reads });
       return { mcpConfigFile: tools.mcpConfig, ...(tools.claudeSettings ? { claudeSettingsFile: tools.claudeSettings } : {}), toolSource: tools.toolSource };
     },
     remote: 'mcpConfig',
@@ -61,6 +61,7 @@ export const claude: HarnessEntry = {
     fromTranscript: (file) => ({ value: path.basename(file, '.jsonl'), kind: 'id' }),
   },
   startup: CLAUDE_STARTUP,
+  launchReads: true,
   classify: { status: 'herdr', dialogs: { from: 'hook' }, activity: 'transcript' },
   movable: true,
 };

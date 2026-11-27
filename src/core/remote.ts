@@ -54,8 +54,9 @@ export interface RemoteOps {
 }
 
 /** The arguments `bellwether relay-register` takes on the child's machine. */
-export function registerFlags(parent: Pick<ParentRecord, 'id'>, child: Pick<ChildRecord, 'id' | 'name' | 'kind' | 'cwd'>, withBrief = false): string[] {
-  return ['relay-register', '--child', child.id, '--name', child.name, '--kind', child.kind, '--parent', parent.id, ...(child.cwd ? ['--cwd', child.cwd] : []), ...(withBrief ? ['--brief-stdin', 'yes'] : [])];
+export function registerFlags(parent: Pick<ParentRecord, 'id'>, child: Pick<ChildRecord, 'id' | 'name' | 'kind' | 'cwd' | 'reads'>, withBrief = false): string[] {
+  // A far daemon that predates --reads refuses the flag, so it goes only with a child that names reads.
+  return ['relay-register', '--child', child.id, '--name', child.name, '--kind', child.kind, '--parent', parent.id, ...(child.cwd ? ['--cwd', child.cwd] : []), ...(child.reads?.length ? ['--reads', JSON.stringify(child.reads)] : []), ...(withBrief ? ['--brief-stdin', 'yes'] : [])];
 }
 
 /**

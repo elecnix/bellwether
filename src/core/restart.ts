@@ -28,7 +28,7 @@ import { childOfCaller } from './report.ts';
 import { listParents, mutateParent, readParent, recordDecisions, updateChild } from './registry.ts';
 import { resumeArgs, sessionOf, type HarnessSession } from './resume.ts';
 import { clearRetirement } from './retire.ts';
-import { STARTUP_HOLD_MS, STARTUP_TIMEOUT_MS, childArgs, childEnv, childStartFiles, herdrLink, hostName, nextLaunch, startHarness, startWithRetry, type NextLaunch, type RouteChange } from './spawn.ts';
+import { STARTUP_HOLD_MS, STARTUP_TIMEOUT_MS, childArgs, childEnv, childStartFiles, herdrLink, readsRefusal, hostName, nextLaunch, startHarness, startWithRetry, type NextLaunch, type RouteChange } from './spawn.ts';
 import { launchLine, routeLabel, routeLaunch } from './routes.ts';
 import { watchStartup, type StartupWatch } from './startup-dialogs.ts';
 import { sessionFrom } from './transcript.ts';
@@ -313,7 +313,19 @@ async function restartChildLocked(client: HerdrClient, parentId: string, childId
   if (!session) throw new RestartRefused(`${child.name} (child ${child.id}, pane ${child.paneId || 'none'}) has no recorded session, so agent_restart cannot reopen it. Resume it once with agent_spawn and resume, which records the session herdr reports.`);
   const resume = resumeArgs(child.kind, session);
   // Decided before the old pane closes, so a refused route leaves the child running.
-  const launch = nextLaunch(child, options.change ?? child.restartRoute ?? {}, 'restarted');
+  const change = options.change ?? child.restartRoute ?? {};
+  const launch = nextLaunch(child, change, 'restarted');
+  // A new read set goes on the record before the start files are written, which list it.
+  if (change.reads !== undefined) {
+    const entry = requireHarness(child.kind);
+    if (change.reads.length && !entry.launchReads) throw new RestartRefused(readsRefusal(entry, child.name));
+    if (change.reads.length) child.reads = change.reads;
+    else delete child.reads;
+    updateChild(parentId, child.id, (record) => {
+      if (change.reads?.length) record.reads = change.reads;
+      else delete record.reads;
+    });
+  }
 
   let waitedMs: number | undefined;
   if (options.wait && child.paneId) {
@@ -654,7 +666,7 @@ export async function runAgentRestart(client: HerdrClient, ownParentId: string, 
     const outcome = await restartChild(client, resolved.parent.id, resolved.child.id, hooks, { wait: true, waitTimeoutMs, ...(changing ? { change } : {}) });
     return `Restarted ${outcome.name} (child ${outcome.id}): closed pane ${outcome.oldPane}, started ${outcome.kind} in ${paneWords(outcome)} with ${outcome.command}.${outcome.route ? ` ${outcome.route}` : ''} ${matchNote(outcome.sessionMatched)}${waitNote(outcome)}\nherdr link: ${herdrLink('pane', outcome.newPane)}`;
   }
-  if (changing) throw new RestartRefused(`via, model, key_file and provider change how a child starts, and ${resolved.kind === 'parent' ? `session ${resolved.parent.id} is a parent session` : `pane ${resolved.pane.paneId} holds no child of a Bellwether registry`}. Drop them to restart it as it runs, or name a child.`);
+  if (changing) throw new RestartRefused(`via, model, key_file, provider and reads change how a child starts, and ${resolved.kind === 'parent' ? `session ${resolved.parent.id} is a parent session` : `pane ${resolved.pane.paneId} holds no child of a Bellwether registry`}. Drop them to restart it as it runs, or name a child.`);
   if (resolved.kind === 'parent') {
     if (resolved.self) return deferParentRestart(client, resolved.parent, caller, hooks);
     const outcome = await restartParent(client, resolved.parent.id, hooks, { wait: true, waitTimeoutMs });
@@ -674,8 +686,9 @@ function deferChildRestart(client: HerdrClient, parent: ParentRecord, childNow: 
   const session = sessionOf(child);
   if (!session) throw new RestartRefused(`${child.name} (child ${child.id}, pane ${child.paneId || 'none'}) has no recorded session, so agent_restart cannot reopen it. Resume it once with agent_spawn and resume, which records the session herdr reports.`);
   const resume = resumeArgs(child.kind, session);
-  // A wrong route is refused now, while the caller can still read why.
+  // A wrong route, or reads for a harness that takes none, is refused now, while the caller can still read why.
   const launch = nextLaunch(child, change ?? {}, 'restarted');
+  if (change?.reads?.length && !requireHarness(child.kind).launchReads) throw new RestartRefused(readsRefusal(requireHarness(child.kind), child.name));
   const paneId = caller.paneId ?? child.paneId;
   if (!paneId) throw new RestartRefused(`${child.name} (child ${child.id}) is in no pane the daemon can watch, so it cannot tell when this turn ends. Ask the parent to restart it with agent_restart.`);
   updateChild(parent.id, child.id, (entry) => {

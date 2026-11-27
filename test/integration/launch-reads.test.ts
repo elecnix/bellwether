@@ -312,11 +312,24 @@ test('a read question Bellwether knows is answered No, recorded on the child, an
     assert.deepEqual(decision?.keys, ['3']);
     assert.equal(decision?.by, 'watcher');
     assert.match(decision?.decided ?? '', /declined the read/);
+    // A refusal, told apart from an answered question, with the path the child asked for.
+    assert.equal(decision?.outcome, 'declined');
+    assert.equal(decision?.path, '/var/tmp/example-other-repo/eslint.config.js');
 
     // No blocked event: the parent hears what was decided, with the idle that followed.
     assert.deepEqual(r.published.filter((entry) => entry.event === 'blocked'), []);
     const idle = r.published.find((entry) => entry.event === 'idle');
-    assert.match(idle?.text ?? '', /Bellwether answered the question about a read outside the working directories for kid \(w1:p1\), "Allow this read outside the working directories\?", with "No, and ask again next time" \(keys 3\)/);
+    assert.match(idle?.text ?? '', /Bellwether declined kid \(w1:p1\)'s read of \/var\/tmp\/example-other-repo\/eslint\.config\.js: the question about a read outside the working directories, answered "No, and ask again next time" \(keys 3\)/);
+    assert.match(idle?.text ?? '', /agent_restart with reads \["\/var\/tmp\/example-other-repo"\] keeps its session/);
+
+    // The parent sends the same instruction, the child reaches for the same file, and meets the same No.
+    const idles = r.published.filter((entry) => entry.event === 'idle').length;
+    pane.ask('outside-read');
+    pane.setStatus('blocked');
+    await until(() => r.published.filter((entry) => entry.event === 'idle').length > idles);
+    const again = r.published.filter((entry) => entry.event === 'idle').at(-1);
+    assert.match(again?.text ?? '', /This is the second time Bellwether declined that path for it, so the brief needs it\./);
+    assert.deepEqual(r.published.filter((entry) => entry.event === 'blocked'), [], 'no person is paged for either');
     assert.equal(readParent(r.parent.id)?.children.find((entry) => entry.id === child.id)?.decisions?.[0]?.told, true);
   } finally {
     await r.stop();
@@ -375,6 +388,24 @@ test('a startup question nobody knows fails the spawn at once, and the failure q
     assert.deepEqual(pane.keys, [], 'no key went to a question nobody knows');
     assert.ok(r.fake.requests.some((request) => request.method === 'tab.close'));
     assert.deepEqual(readParent(r.parent.id)?.children, []);
+  } finally {
+    await r.stop();
+  }
+});
+
+test('a spawn that names reads lets the child read there without a question, and a checkout it did not name still asks', async () => {
+  machineSettings(undefined);
+  const pane = new ClaudePane();
+  const r = await rig(pane);
+  try {
+    // The brief says to copy a lint rule from another checkout.
+    const other = fs.mkdtempSync(path.join(os.tmpdir(), 'example-other-checkout-'));
+    const { child } = await spawnChild(r.client, r.parent, { kind: 'claude', name: 'kid', prompt: 'go', cwd: r.worktree, reads: [other], redrawMs: 10, startupTimeoutMs: 5_000 });
+    assert.deepEqual(readParent(r.parent.id)?.children.find((entry) => entry.id === child.id)?.reads, [other]);
+    assert.deepEqual(launchSettings(pane).permissions.additionalDirectories, [path.resolve(process.env['BELLWETHER_HOME'] ?? ''), other]);
+    assert.equal(pane.asksToRead(path.join(other, 'eslint.config.js')), false, 'the rule the brief names reads without a question');
+    assert.equal(pane.asksToRead('/var/tmp/example-other-repo/eslint.config.js'), true, 'a checkout the brief did not name still asks');
+    fs.rmSync(other, { recursive: true, force: true });
   } finally {
     await r.stop();
   }

@@ -1126,9 +1126,9 @@ export class Watcher {
   private offer(child: ChildRecord, event: ChildEventKind, given: string): void {
     // The parent hears each answer Bellwether gave for the child once, with
     // the first event after it, right under the event's first line.
-    const decisions = takeUntoldDecisions(this.parentId, child.id);
+    const { taken, earlier } = takeUntoldDecisions(this.parentId, child.id);
     const [headline = '', ...rest] = given.split('\n');
-    const text = decisions.length ? [headline, describeDecisions(childLabel(child), decisions), ...rest].join('\n') : given;
+    const text = taken.length ? [headline, describeDecisions(childLabel(child), taken, earlier), ...rest].join('\n') : given;
     const state = event === 'blocked' || event === 'stuck' || event === 'idle' ? { status: child.lastStatus, stateChangeSeq: child.stateChangeSeq } : {};
     this.outbox.offer({ childId: child.id, name: child.name, kind: child.kind, paneId: child.paneId, event, text, at: new Date().toISOString(), ...state });
     this.outbox.prune();

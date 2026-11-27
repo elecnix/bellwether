@@ -55,6 +55,10 @@ export interface KnownDialog {
    * every Claude Code child gets have none: their answer is the same each time.
    */
   decides?: string;
+  /** Whether the answer refuses what the child asked: a decision's `outcome`. Accepted by default. */
+  outcome?: DialogDecision['outcome'];
+  /** Whether the dialog asks about a path, which the decision then keeps. */
+  names?: 'path';
 }
 
 // Claude Code marks the selected option with ❯, and Codex with ›.
@@ -87,6 +91,8 @@ export const CLAUDE_STARTUP: StartupDialogSet = {
       shows: /Allow this read outside the working directories\?/,
       accept: 'No, and ask again next time',
       decides: 'declined the read, which is outside the directories its launch allowed, and saved nothing to the settings',
+      outcome: 'declined',
+      names: 'path',
     },
     {
       id: 'dangerous-rm',
@@ -94,6 +100,7 @@ export const CLAUDE_STARTUP: StartupDialogSet = {
       shows: /Dangerous rm operation/,
       accept: ['No, and tell Claude what to do differently', 'No'],
       decides: 'declined the shell command, which Claude Code could not prove safe and asks a person to approve',
+      outcome: 'declined',
     },
   ],
   last: 'channel',
@@ -150,6 +157,20 @@ export function dialogQuestion(screen: string): string | undefined {
 /** A screen line without the frame drawn around a dialog. */
 function unframed(line: string): string {
   return line.replace(FRAME, '');
+}
+
+/**
+ * The path a dialog asks about: the argument of the tool call it shows, such
+ * as `Read(/srv/other/eslint.config.js)`, or failing that the first line that
+ * holds only an absolute path. Undefined when the screen shows neither.
+ */
+export function dialogPath(screen: string): string | undefined {
+  const call = /\b[A-Z][A-Za-z]*\((\/[^)\n]*)\)/.exec(screen)?.[1];
+  if (call) return call.trim();
+  return screen
+    .split('\n')
+    .map(unframed)
+    .find((line) => /^\/\S+$/.test(line));
 }
 
 /** The label among `accept` that the screen lists as an option, or the first one. */
@@ -344,7 +365,8 @@ export async function watchStartup(client: HerdrClient, paneId: string, signal?:
             await client.sendKeys(paneId, [key]);
             if (known?.decides) {
               // Every key goes on the record, so the parent learns exactly what was typed.
-              pending ??= { dialog: known.id, name: known.name, question: dialogQuestion(screen) ?? known.name, answer: wanted, decided: known.decides, keys: [], at: '', by };
+              const asked = known.names === 'path' ? dialogPath(screen) : undefined;
+              pending ??= { dialog: known.id, name: known.name, question: dialogQuestion(screen) ?? known.name, answer: wanted, decided: known.decides, keys: [], at: '', by, outcome: known.outcome ?? 'accepted', ...(asked ? { path: asked } : {}) };
               pending.keys.push(key);
             }
             if (confirms(key)) {

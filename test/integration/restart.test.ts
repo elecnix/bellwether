@@ -7,6 +7,7 @@
 // session, and a mid-turn pane that never settles. Each case runs in its own root.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { HerdrClient } from '../../src/core/herdr-client.ts';
@@ -563,4 +564,26 @@ test('a child whose own workspace still holds another tab restarts in that same 
   assert.equal(calls(rig.fake, 'tab.create')[0]?.params['workspace_id'], 'w5');
   assert.equal(children(id)[0]?.workspaceId, 'w5');
   assert.equal(children(id)[0]?.ownsWorkspace, true);
+});
+
+test('a restart with reads widens the read set in the child\'s launch settings, and a resume keeps it', async (t) => {
+  isolate(t, 'bellwether-restart-');
+  const rig = await herdr(t);
+  const id = parent('restart-reads');
+  upsertChild(id, worker());
+  liveWorker(rig.world);
+  const other = path.join(os.tmpdir(), 'example-other-checkout', 'lint');
+
+  await context(id, rig).tool('agent_restart', { target: 'worker', reads: [other] });
+  assert.deepEqual(children(id)[0]?.reads, [other], 'the record keeps the paths');
+  const settingsFile = lastStart(rig.fake).args.find((arg) => arg.startsWith('--settings='))?.slice('--settings='.length) ?? '';
+  const settings = JSON.parse(fs.readFileSync(settingsFile, 'utf8')) as { permissions: { additionalDirectories: string[] }; sandbox: { filesystem: { allowRead: string[] } } };
+  assert.deepEqual(settings.permissions.additionalDirectories, [path.resolve(bellwetherHome()), other]);
+  assert.deepEqual(settings.sandbox.filesystem.allowRead, [path.resolve(bellwetherHome()), other]);
+
+  // The operator's home is refused before anything closes.
+  const before = calls(rig.fake, 'tab.close').length;
+  await assert.rejects(context(id, rig).tool('agent_restart', { target: 'worker', reads: [os.homedir()] }), /holds the operator's home/);
+  assert.equal(calls(rig.fake, 'tab.close').length, before, 'nothing was closed');
+  assert.deepEqual(children(id)[0]?.reads, [other]);
 });

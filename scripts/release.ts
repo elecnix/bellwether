@@ -5,7 +5,8 @@
 // Each run reads where the release stands and carries it one stage further, so a
 // second run after an interruption continues from the stage that stopped:
 //
-//   1. The version is on npm: bump the Homebrew formula in the tap, and stop.
+//   1. The version is on npm: bump the Homebrew formula in the tap, then wait
+//      for the documentation site to name the version, and stop.
 //   2. The version is staged on npm: wait out `validating`, then print the
 //      `npm stage approve` command for a person to run with a one-time code.
 //   3. origin/main carries the version: build that commit, install its tarball
@@ -25,6 +26,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
+import { bylineVersion, SITE_URL } from './site-version.ts';
 
 export const PACKAGE = '@elecnix/bellwether';
 export const REPO = 'elecnix/bellwether';
@@ -38,6 +40,8 @@ export interface RunOptions { cwd?: string; inherit?: boolean }
 export interface ReleaseDeps {
   run(cmd: string, args: string[], options?: RunOptions): Promise<RunResult>;
   fetchBytes(url: string): Promise<Uint8Array>;
+  /** GET a page as text. A network failure rejects; an HTTP error status resolves. */
+  fetchText(url: string): Promise<{ status: number; text: string }>;
   sleep(ms: number): Promise<void>;
   log(line: string): void;
   cwd: string;
@@ -51,11 +55,20 @@ export interface ReleaseOptions {
   validateTimeoutMs?: number;
   /** Skip the Homebrew tap once the version is on npm. */
   skipTap?: boolean;
+  /** Skip reading the deployed documentation site, as on a machine with no network. */
+  skipSite?: boolean;
+  /** How often to read the deployed site while it still names another version. */
+  sitePollMs?: number;
+  /** How long the deployed site may keep naming another version. */
+  siteTimeoutMs?: number;
 }
 
 export type Outcome =
   | { state: 'awaiting-approval'; stageId: string; approve: string; protocolChange?: ProtocolChange }
-  | { state: 'published'; formula: 'current' | 'merged' | 'skipped'; tapPr?: string };
+  | { state: 'published'; formula: 'current' | 'merged' | 'skipped'; tapPr?: string; site: SiteCheck };
+
+/** current: the deployed site names the version. skipped: --skip-site. superseded: npm serves a newer version, which the site names. */
+export type SiteCheck = 'current' | 'skipped' | 'superseded';
 
 export interface ProtocolChange { from: number; to: number }
 
@@ -63,6 +76,23 @@ interface StageItem { id: string; packageName: string; version: string; status: 
 interface PullRequest { number: number; state: 'OPEN' | 'CLOSED' | 'MERGED'; url: string }
 
 export class ReleaseError extends Error {}
+
+/**
+ * How long the deployed site may keep naming another version. The pages
+ * workflow builds and deploys in about two minutes, and GitHub Pages serves
+ * each page with `cache-control: max-age=600`, so a reader can get a copy up to
+ * ten minutes old after the deploy. Fifteen minutes covers both with margin;
+ * a site still stale after that has a deploy that failed or never ran.
+ */
+export const SITE_TIMEOUT_MS = 15 * 60_000;
+const SITE_POLL_MS = 30_000;
+
+/** The error for a deployed site that never named the released version. */
+export function staleSiteMessage(version: string, url: string, shown: string, minutes: number): string {
+  return `${PACKAGE}@${version} is on npm, but the documentation site at ${url} still shows ${shown} after ${minutes} minutes, not ${version}. `
+    + `Re-run the pages workflow with \`gh workflow run pages.yml -R ${REPO} --ref main\` and read its log, or run \`npm run site\` on origin/main and inspect _site/index.html. `
+    + `Then run \`npm run release -- ${version}\` again. Pass --skip-site only on a machine that cannot reach the site.`;
+}
 
 const VERSION = /^\d+\.\d+\.\d+$/;
 
@@ -137,6 +167,8 @@ class Release {
   private readonly branch: string;
   private readonly pollMs: number;
   private readonly validateTimeoutMs: number;
+  private readonly sitePollMs: number;
+  private readonly siteTimeoutMs: number;
   private readonly options: ReleaseOptions;
   private readonly deps: ReleaseDeps;
 
@@ -148,6 +180,8 @@ class Release {
     this.branch = `release/${options.version}`;
     this.pollMs = options.pollMs ?? 15_000;
     this.validateTimeoutMs = options.validateTimeoutMs ?? 30 * 60_000;
+    this.sitePollMs = options.sitePollMs ?? SITE_POLL_MS;
+    this.siteTimeoutMs = options.siteTimeoutMs ?? SITE_TIMEOUT_MS;
   }
 
   async run(): Promise<Outcome> {
@@ -405,15 +439,59 @@ class Release {
   // --- the Homebrew tap --------------------------------------------------
 
   private async afterPublish(): Promise<Outcome> {
-    if (this.options.skipTap) return { state: 'published', formula: 'skipped' };
     const latest = await this.latest();
     if (latest && compareVersions(this.version, latest) < 0) {
-      this.deps.log(`${this.version} is older than ${latest}, the version npm serves as latest, so the tap formula stays where it is`);
-      return { state: 'published', formula: 'skipped' };
+      this.deps.log(`${this.version} is older than ${latest}, the version npm serves as latest, so the tap formula stays where it is and the site keeps naming ${latest}`);
+      return { state: 'published', formula: 'skipped', site: 'superseded' };
     }
+    const tap = await this.bumpTap();
+    const site = await this.verifySite();
+    return { state: 'published', ...tap, site };
+  }
+
+  /**
+   * Read the deployed documentation site until its byline names this version.
+   * The pages workflow deploys it from main, which carries the version since
+   * the release pull request merged, so a stale site after the bound means the
+   * deploy failed or never ran.
+   */
+  private async verifySite(): Promise<SiteCheck> {
+    if (this.options.skipSite) {
+      this.deps.log(`--skip-site: the documentation site at ${SITE_URL} was not read, so nothing checked that it names ${this.version}`);
+      return 'skipped';
+    }
+    let waited = 0;
+    for (;;) {
+      const shown = await this.readSite();
+      if (shown === this.version) {
+        this.deps.log(`the documentation site at ${SITE_URL} names ${this.version}`);
+        return 'current';
+      }
+      if (waited >= this.siteTimeoutMs) {
+        throw new ReleaseError(staleSiteMessage(this.version, SITE_URL, shown, Math.round(waited / 60_000)));
+      }
+      this.deps.log(`the documentation site at ${SITE_URL} shows ${shown}; reading it again in ${Math.round(this.sitePollMs / 1000)} s`);
+      await this.deps.sleep(this.sitePollMs);
+      waited += this.sitePollMs;
+    }
+  }
+
+  /** What the deployed site's byline names, or why it could not be read. */
+  private async readSite(): Promise<string> {
+    try {
+      const page = await this.deps.fetchText(SITE_URL);
+      if (page.status !== 200) return `an HTTP ${page.status} answer`;
+      return bylineVersion(page.text) ?? 'a page with no version in its byline';
+    } catch (error) {
+      return `no page (${error instanceof Error ? error.message : String(error)})`;
+    }
+  }
+
+  private async bumpTap(): Promise<{ formula: 'current' | 'merged' | 'skipped'; tapPr?: string }> {
+    if (this.options.skipTap) return { formula: 'skipped' };
     const formula = await this.readFormula('main');
     const tarball = (await this.must('npm', ['view', `${PACKAGE}@${this.version}`, 'dist.tarball'])).trim();
-    if (formula.text.includes(`url "${tarball}"`)) return { state: 'published', formula: 'current' };
+    if (formula.text.includes(`url "${tarball}"`)) return { formula: 'current' };
 
     const tapBranch = `bellwether-${this.version}`;
     let pr = await this.findPr(TAP, tapBranch);
@@ -443,7 +521,7 @@ class Release {
       this.deps.log(`opened ${pr.url}`);
     }
     await this.mergeWhenGreen(TAP, pr);
-    return { state: 'published', formula: 'merged', tapPr: pr.url };
+    return { formula: 'merged', tapPr: pr.url };
   }
 
   private async readFormula(ref: string): Promise<{ text: string; sha: string }> {
@@ -492,7 +570,7 @@ function runCommand(cmd: string, args: string[], options: RunOptions = {}): Prom
 async function main(argv: string[]): Promise<number> {
   const version = argv.find((arg) => !arg.startsWith('-'));
   if (!version || argv.includes('--help')) {
-    console.log('Usage: npm run release -- <version> [--skip-tap]');
+    console.log('Usage: npm run release -- <version> [--skip-tap] [--skip-site]');
     return version ? 0 : 2;
   }
   const deps: ReleaseDeps = {
@@ -502,12 +580,16 @@ async function main(argv: string[]): Promise<number> {
       if (!response.ok) throw new ReleaseError(`GET ${url} answered ${response.status}`);
       return new Uint8Array(await response.arrayBuffer());
     },
+    fetchText: async (url) => {
+      const response = await fetch(url, { cache: 'no-store', signal: AbortSignal.timeout(30_000) });
+      return { status: response.status, text: await response.text() };
+    },
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     log: (line) => console.log(`release: ${line}`),
     cwd: process.cwd(),
   };
   try {
-    const outcome = await release({ version, skipTap: argv.includes('--skip-tap') }, deps);
+    const outcome = await release({ version, skipTap: argv.includes('--skip-tap'), skipSite: argv.includes('--skip-site') }, deps);
     if (outcome.state === 'awaiting-approval') {
       console.log(`\n${PACKAGE}@${version} is staged as ${outcome.stageId} and passed the registry's review.`);
       if (outcome.protocolChange) {
@@ -517,6 +599,7 @@ async function main(argv: string[]): Promise<number> {
     } else {
       const formula = outcome.formula === 'merged' ? `the tap formula moved to ${version} in ${outcome.tapPr}` : outcome.formula === 'current' ? `the tap formula already points at ${version}` : 'the tap was skipped';
       console.log(`\n${installNotice(version, formula)}`);
+      if (outcome.site === 'skipped') console.log(`The documentation site at ${SITE_URL} was not checked. Open it and confirm its byline names ${version}.`);
     }
     return 0;
   } catch (error) {

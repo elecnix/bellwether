@@ -4,7 +4,8 @@ import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { approvalNotice, bumpFormula, compareVersions, installNotice, prBody, protocolOf, release, ReleaseError, type ReleaseDeps, type RunOptions, type RunResult } from '../../scripts/release.ts';
+import { approvalNotice, bumpFormula, compareVersions, installNotice, prBody, protocolOf, release, ReleaseError, SITE_TIMEOUT_MS, staleSiteMessage, type ReleaseDeps, type RunOptions, type RunResult } from '../../scripts/release.ts';
+import { bylineOpening, SITE_URL } from '../../scripts/site-version.ts';
 
 const TARBALL = 'https://registry.npmjs.org/@elecnix/bellwether/-/bellwether-0.1.4.tgz';
 const FORMULA = [
@@ -29,7 +30,12 @@ interface World {
   installOver?: RunResult;
   /** What the installed `bellwether --version` prints. */
   installedVersion?: string;
+  /** The version each read of the deployed site names, in order; the last one repeats. */
+  site: string[];
 }
+
+/** A documentation page as the pages workflow deploys it, with the byline that names `version`. */
+const sitePage = (version: string): string => `<main><h1 id="bellwether">Bellwether</h1>${bylineOpening(version)}≈ 3 min read · </p></main>`;
 
 /** A scripted npm, git and gh. Each call is recorded as one line, and the world answers it. */
 async function harness(overrides: Partial<World> = {}) {
@@ -46,11 +52,13 @@ async function harness(overrides: Partial<World> = {}) {
     dirty: '',
     ciConclusion: 'success',
     formulaOnMain: FORMULA,
+    site: ['0.1.4'],
     ...overrides,
   };
   const calls: string[] = [];
   const logs: string[] = [];
   let sleeps = 0;
+  const siteReads: string[] = [];
   const ok = (stdout = ''): RunResult => ({ code: 0, stdout, stderr: '' });
   const content = (text: string) => ok(JSON.stringify({ content: Buffer.from(text).toString('base64'), sha: 'blob1' }));
 
@@ -133,11 +141,16 @@ async function harness(overrides: Partial<World> = {}) {
   const deps: ReleaseDeps = {
     run,
     fetchBytes: async () => new TextEncoder().encode('tarball'),
+    fetchText: async (url) => {
+      siteReads.push(url);
+      const version = world.site.length > 1 ? world.site.shift()! : world.site[0]!;
+      return { status: 200, text: sitePage(version) };
+    },
     sleep: async () => { sleeps++; },
     log: (line) => logs.push(line),
     cwd: top,
   };
-  return { deps, world, calls, logs, root, sleeps: () => sleeps };
+  return { deps, world, calls, logs, root, siteReads, sleeps: () => sleeps };
 }
 
 test('a version that is not three numbers is refused before any command runs', async () => {
@@ -233,7 +246,7 @@ test('a review that never finishes times out with an instruction to run again', 
 test('a published version opens and merges the tap pull request with the new url and sha256', async () => {
   const h = await harness({ published: ['0.1.3', '0.1.4'], latest: '0.1.4' });
   const outcome = await release({ version: '0.1.4' }, h.deps);
-  assert.deepEqual(outcome, { state: 'published', formula: 'merged', tapPr: 'https://github.com/elecnix/homebrew-tap/pull/7' });
+  assert.deepEqual(outcome, { state: 'published', formula: 'merged', tapPr: 'https://github.com/elecnix/homebrew-tap/pull/7', site: 'current' });
   const put = h.calls.find((call) => call.startsWith('gh api -X PUT'))!;
   const text = Buffer.from(put.split('content=')[1]!, 'base64').toString('utf8');
   assert.match(text, new RegExp(`url "${TARBALL}"`));
@@ -244,15 +257,16 @@ test('a published version opens and merges the tap pull request with the new url
 test('a published version whose formula already points at it changes nothing', async () => {
   const h = await harness({ published: ['0.1.3', '0.1.4'], latest: '0.1.4', formulaOnMain: bumpFormula(FORMULA, TARBALL, 'b'.repeat(64)) });
   const outcome = await release({ version: '0.1.4' }, h.deps);
-  assert.deepEqual(outcome, { state: 'published', formula: 'current' });
+  assert.deepEqual(outcome, { state: 'published', formula: 'current', site: 'current' });
   assert.ok(!h.calls.some((call) => call.startsWith('gh pr') || call.includes('-X')));
 });
 
 test('an older published version leaves the tap alone, so the formula never moves backwards', async () => {
   const h = await harness({ published: ['0.1.3', '0.1.4'], latest: '0.1.4' });
   const outcome = await release({ version: '0.1.3' }, h.deps);
-  assert.deepEqual(outcome, { state: 'published', formula: 'skipped' });
+  assert.deepEqual(outcome, { state: 'published', formula: 'skipped', site: 'superseded' });
   assert.ok(!h.calls.some((call) => call.startsWith('gh')));
+  assert.deepEqual(h.siteReads, [], 'the site names the newer version, so it is not read');
 });
 
 test('a registry that cannot be reached stops the release instead of reading as unpublished', async () => {
@@ -335,4 +349,43 @@ test('an installed release that reports another version or lacks relay-bridge st
   const h = await harness({ mainVersion: '0.1.4', installedVersion: '0.1.3' });
   await assert.rejects(release({ version: '0.1.4' }, h.deps), /into an empty global prefix.*prints 0\.1\.3, not 0\.1\.4/s);
   assert.ok(!h.calls.some((call) => call.includes('stage publish')));
+});
+
+const CURRENT_FORMULA = bumpFormula(FORMULA, TARBALL, 'b'.repeat(64));
+
+test('a published release ends once the deployed site names the new version', async () => {
+  const h = await harness({ published: ['0.1.3', '0.1.4'], latest: '0.1.4', formulaOnMain: CURRENT_FORMULA, site: ['0.1.3', '0.1.3', '0.1.4'] });
+  const outcome = await release({ version: '0.1.4', sitePollMs: 30_000 }, h.deps);
+  assert.deepEqual(outcome, { state: 'published', formula: 'current', site: 'current' });
+  assert.deepEqual(h.siteReads, [SITE_URL, SITE_URL, SITE_URL]);
+  assert.equal(h.sleeps(), 2, 'one wait between each pair of reads');
+  assert.ok(h.logs.includes(`the documentation site at ${SITE_URL} names 0.1.4`), h.logs.join('\n'));
+});
+
+test('a deployed site that keeps the old version past the bound fails the release, naming the url and both versions', async () => {
+  const h = await harness({ published: ['0.1.3', '0.1.4'], latest: '0.1.4', formulaOnMain: CURRENT_FORMULA, site: ['0.1.3'] });
+  await assert.rejects(release({ version: '0.1.4' }, h.deps), (error: Error) => {
+    assert.ok(error instanceof ReleaseError);
+    assert.equal(error.message, staleSiteMessage('0.1.4', SITE_URL, '0.1.3', 15));
+    assert.match(error.message, /https:\/\/elecnix\.github\.io\/bellwether\/ still shows 0\.1\.3 after 15 minutes, not 0\.1\.4/);
+    assert.match(error.message, /gh workflow run pages\.yml/);
+    assert.match(error.message, /npm run site/);
+    return true;
+  });
+  assert.equal(h.sleeps(), SITE_TIMEOUT_MS / 30_000, 'the default bound is fifteen minutes of thirty-second waits');
+  assert.equal(h.siteReads.length, h.sleeps() + 1);
+});
+
+test('--skip-site ends the release without reading the site, and says so', async () => {
+  const h = await harness({ published: ['0.1.3', '0.1.4'], latest: '0.1.4', formulaOnMain: CURRENT_FORMULA, site: ['0.1.3'] });
+  const outcome = await release({ version: '0.1.4', skipSite: true }, h.deps);
+  assert.deepEqual(outcome, { state: 'published', formula: 'current', site: 'skipped' });
+  assert.deepEqual(h.siteReads, []);
+  assert.ok(h.logs.some((line) => line.startsWith('--skip-site:') && line.includes(SITE_URL)), h.logs.join('\n'));
+});
+
+test('a site that cannot be read counts as stale, and the error says what the read found', async () => {
+  const h = await harness({ published: ['0.1.3', '0.1.4'], latest: '0.1.4', formulaOnMain: CURRENT_FORMULA });
+  h.deps.fetchText = async () => { throw new Error('getaddrinfo ENOTFOUND elecnix.github.io'); };
+  await assert.rejects(release({ version: '0.1.4', sitePollMs: 1, siteTimeoutMs: 2 }, h.deps), /still shows no page \(getaddrinfo ENOTFOUND elecnix\.github\.io\)/);
 });

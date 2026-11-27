@@ -12,6 +12,7 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, posix, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Marked, type Token, type Tokens } from 'marked';
+import { bylineOpening, bylineVersion, SITE_NAME } from './site-version.ts';
 
 export interface Page {
   source: string;
@@ -32,7 +33,6 @@ export const PAGES: readonly Page[] = [
 ];
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const SITE_NAME = 'Bellwether';
 
 interface Heading { depth: number; id: string; text: string }
 
@@ -176,7 +176,7 @@ export function buildSite({ outDir, root = REPO_ROOT }: BuildOptions): BuiltPage
 
   return pages.map((p) => {
     const minutes = readingMinutes(p.body);
-    const byline = `<p class="byline">${SITE_NAME} ${escapeHtml(version)} · ≈ ${minutes} min read · `
+    const byline = `${bylineOpening(escapeHtml(version))}≈ ${minutes} min read · `
       + `<a href="${repo}/blob/main/${p.page.source}">${escapeHtml(p.page.source)} on GitHub</a></p>\n`;
     const title = p.page.output === 'index.html' ? SITE_NAME : `${p.title} · ${SITE_NAME}`;
     const html = fill(template, {
@@ -185,6 +185,12 @@ export function buildSite({ outDir, root = REPO_ROOT }: BuildOptions): BuiltPage
       nav: navHtml(pages, p),
       content: p.body.replace('{{byline}}', () => byline),
     });
+    // The release checks the deployed site by this byline, so a page that does
+    // not name the package's version fails the build rather than the release.
+    const shown = bylineVersion(html);
+    if (shown !== version) {
+      throw new Error(`${p.page.output}: the byline names ${shown ?? 'no version'}, not ${version} from package.json. Check that site/template.html keeps {{content}} and that scripts/site-version.ts matches the byline.`);
+    }
     writeFileSync(join(outDir, p.page.output), html);
     return { output: p.page.output, title };
   });

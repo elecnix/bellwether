@@ -2,8 +2,7 @@
 // naming the operation and the release that brought it.
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { FEATURES, featureNamed, missingFeatureMessage, missingFrom, routeArgumentRefusal, serves, unknownTo } from '../../src/daemon/features.ts';
-import { describePairing } from '../../src/daemon/upgrade-status.ts';
+import { FEATURES, featureNamed, missingFeatureMessage, missingFrom, serves, unknownTo, unservedArgument } from '../../src/daemon/features.ts';
 import { refusalMessage } from '../../src/daemon/client.ts';
 import { DAEMON_PROTOCOL, MIN_CLIENT_PROTOCOL, ProtocolError, parseRequest } from '../../src/daemon/protocol.ts';
 import { daemonCallNames, toolNames } from '../../src/integrations/tools.ts';
@@ -39,7 +38,7 @@ test('a daemon that lists its features is judged by its list, and an older one b
   // A build between releases carries the previous release's number, so the version proves nothing.
   assert.equal(serves({ protocol: 4, version: '0.1.4' }, move), true);
   assert.equal(serves({ protocol: 3, version: '0.1.4' }, move), false);
-  assert.deepEqual(missingFrom({ protocol: 3, version: '0.1.4' }, 'tool').map((feature) => feature.name), ['agent_restart', 'agent_move']);
+  assert.deepEqual(missingFrom({ protocol: 3, version: '0.1.4' }, 'tool').map((feature) => feature.name), ['agent_restart', 'agent_move', 'agent_request_depth', 'agent_grant_depth']);
   assert.deepEqual(unknownTo({ protocol: 5, features: ['agent_list', 'agent_clone'] }), ['agent_clone']);
 });
 
@@ -54,11 +53,22 @@ test('a refusal quotes the range the daemon serves and names the install to upda
   assert.match(old, /Upgrade the Bellwether install that started that daemon/);
 });
 
-test('a call with via or key_file is refused before it reaches a daemon that would ignore them and start the child bare', () => {
-  const older = { protocol: 4, version: '0.1.5', features: FEATURES.filter((feature) => feature.name !== 'via').map((feature) => feature.name) };
-  assert.equal(routeArgumentRefusal({ kind: 'claude', name: 'a', via: 'example-router' }, older), '`via` needs Bellwether 0.1.5 (protocol 4); this daemon is an earlier build on protocol 4 (Bellwether 0.1.5). Upgrade the machine holding the daemon when convenient. Every other tool keeps working.');
-  assert.ok(routeArgumentRefusal({ kind: 'claude', name: 'a', key_file: '/k' }, older));
-  assert.equal(routeArgumentRefusal({ kind: 'claude', name: 'a' }, older), undefined, 'a call without a route argument still goes');
-  assert.equal(routeArgumentRefusal({ via: 'example-router' }, { protocol: 4, version: '0.1.5', features: FEATURES.map((feature) => feature.name) }), undefined);
-  assert.ok(describePairing({ version: '0.1.5', protocol: 4, minClientProtocol: 2 }, older).some((line) => /the daemon would ignore the via \(protocol 4, Bellwether 0\.1\.5\) argument, so this install refuses a call that passes it/.test(line)));
+test('an argument an older daemon would ignore is refused by name before the call, and an unset one passes', () => {
+  const old = { protocol: 3, version: '0.1.4' };
+  assert.equal(unservedArgument(old, 'agent_spawn', { kind: 'pi', name: 'x', workspace: 'new' }), 'agent_spawn.workspace');
+  assert.equal(unservedArgument(old, 'agent_spawn', { kind: 'pi', name: 'x', workspace: undefined }), undefined);
+  // A daemon from before this argument, on the same protocol, lists what it reads.
+  assert.equal(unservedArgument({ protocol: 4, version: '0.1.5', features: ['agent_spawn'] }, 'agent_spawn', { workspace_label: 'x' }), 'agent_spawn.workspace_label');
+  assert.equal(unservedArgument({ protocol: 4, features: FEATURES.map((feature) => feature.name) }, 'agent_spawn', { workspace: 'new', workspace_label: 'x' }), undefined);
+  assert.equal(
+    missingFeatureMessage('agent_spawn.workspace', old),
+    '`agent_spawn.workspace` needs protocol 4 (Bellwether 0.1.5); this daemon serves protocol 3 (Bellwether 0.1.4). Upgrade the machine holding the daemon when convenient. Every other tool keeps working.',
+  );
+
+  // An older daemon would drop via and key_file and start the child bare, so each is refused by name.
+  const beforeRoutes = { protocol: 4, version: '0.1.5', features: FEATURES.filter((feature) => !/\.(via|key_file)$/.test(feature.name)).map((feature) => feature.name) };
+  assert.equal(unservedArgument(beforeRoutes, 'agent_spawn', { kind: 'claude', name: 'x', via: 'example-router' }), 'agent_spawn.via');
+  assert.equal(unservedArgument(beforeRoutes, 'agent_spawn', { kind: 'claude', name: 'x', key_file: '/k' }), 'agent_spawn.key_file');
+  assert.equal(unservedArgument(beforeRoutes, 'agent_restart', { target: 'x', via: 'none' }), 'agent_restart.via');
+  assert.equal(unservedArgument(beforeRoutes, 'agent_spawn', { kind: 'claude', name: 'x' }), undefined);
 });

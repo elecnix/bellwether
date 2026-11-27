@@ -95,6 +95,7 @@ export function shellWords(line: string): string[] {
 
 export function fakeWorld(workspace = 'w1'): FakeWorld {
   const panes = new Map<string, FakePane>();
+  const labels = new Map<string, string>();
   let next = 10;
   const agents = (): FakePane[] => [...panes.values()].filter((pane) => pane.agent);
   const add = (pane: Partial<FakePane> & { pane_id: string }): FakePane => {
@@ -143,6 +144,20 @@ export function fakeWorld(workspace = 'w1'): FakeWorld {
           next += 1;
           add({ pane_id: id, tab_id: tab, cwd: typeof params['cwd'] === 'string' ? params['cwd'] : undefined });
           return { type: 'tab_created', tab: { tab_id: tab }, root_pane: { pane_id: id } };
+        }
+        case 'workspace.create': {
+          // herdr makes a workspace with one tab and its root pane. The
+          // workspace lives as long as one of its panes does.
+          const id = `w${next}`;
+          next += 1;
+          const label = typeof params['label'] === 'string' ? params['label'] : id;
+          labels.set(id, label);
+          add({ pane_id: `${id}:p1`, tab_id: `${id}:t1`, workspace_id: id, cwd: typeof params['cwd'] === 'string' ? params['cwd'] : undefined });
+          return { type: 'workspace_created', workspace: { workspace_id: id, label }, tab: { tab_id: `${id}:t1`, workspace_id: id }, root_pane: { pane_id: `${id}:p1` } };
+        }
+        case 'workspace.list': {
+          const ids = [...new Set([workspace, ...[...panes.values()].map((pane) => pane.workspace_id)])];
+          return { type: 'workspace_list', workspaces: ids.map((id) => ({ workspace_id: id, label: labels.get(id) ?? id, tab_count: new Set([...panes.values()].filter((pane) => pane.workspace_id === id).map((pane) => pane.tab_id)).size })) };
         }
         case 'agent.start': {
           const pane = panes.get(String(params['pane_id']));

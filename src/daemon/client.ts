@@ -8,7 +8,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { BELLWETHER_BUILD_ID, BELLWETHER_PACKAGE_DIR, BELLWETHER_VERSION } from '../core/version.ts';
-import { routeArgumentRefusal, missingFeatureMessage, featureNamed, serves, type DaemonOffer } from './features.ts';
+import { missingFeatureMessage, featureNamed, serves, unservedArgument, type DaemonOffer } from './features.ts';
 import { DAEMON_PROTOCOL, MAX_DAEMON_FRAME_BYTES, MIN_DAEMON_PROTOCOL, formatRequest, type DaemonReply, type ParentHello, type RelayHostState, type ReportRequest, type SessionsReply } from './protocol.ts';
 import { isAlive, readLock } from './lock.ts';
 import { HANDOVER_TIMEOUT_MS, decideHandOver, type DaemonIdentity } from './handover.ts';
@@ -203,9 +203,11 @@ export class DaemonClient {
   async tool(name: string, args: Record<string, unknown>, model?: ModelPair): Promise<string> {
     if (this.stopped) throw new Error('the daemon client is closed');
     await this.ensure();
-    // A daemon that does not know routes would ignore via and start the child bare, so the call stops here.
-    const refusal = routeArgumentRefusal(args, this.offer);
-    if (refusal) throw new Error(refusal);
+    // An older daemon ignores an argument it does not know, so the call would
+    // run without it. Refuse it here, by name, instead.
+    const offer = this.offer ?? (this.daemon ? { ...this.daemon } : undefined);
+    const unserved = offer ? unservedArgument(offer, name, args) : undefined;
+    if (unserved && offer) throw new Error(missingFeatureMessage(unserved, offer));
     const id = `c${++this.sequence}`;
     // The caller identity travels with every call, so the daemon routes by its
     // own records whichever client process asked.

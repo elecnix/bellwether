@@ -14,8 +14,9 @@ export interface Feature {
   name: string;
   /**
    * A tool a model calls, a request on the wire, a notice an adapter sends as
-   * a call that no model sees, or an argument a tool takes that an older
-   * daemon would ignore rather than refuse.
+   * a call that no model sees, or an argument of a tool, named `tool.argument`.
+   * An older daemon ignores an argument it does not know rather than refusing
+   * it, so the client checks an argument before it sends the call.
    */
   kind: 'tool' | 'request' | 'notice' | 'argument';
   /** The first protocol whose daemons serve it. */
@@ -33,25 +34,27 @@ export const FEATURES: readonly Feature[] = [
   // 0.1.5, protocol 4: the relay turned round, and doctor lists sessions.
   ...['relay-subscribe', 'relay-ack', 'relay-read', 'relay-status', 'sessions'].map((name) => ({ name, kind: 'request' as const, protocol: 4, version: '0.1.5' })),
   ...['agent_restart', 'agent_move'].map((name) => ({ name, kind: 'tool' as const, protocol: 4, version: '0.1.5' })),
+  // A child at its depth ceiling asks for more, and a parent grants or refuses.
+  ...['agent_request_depth', 'agent_grant_depth'].map((name) => ({ name, kind: 'tool' as const, protocol: 4, version: '0.1.5' })),
   // A pi child's extension reports an open dialog; an older daemon refuses it, and the extension ignores the refusal.
   { name: 'child_prompt', kind: 'notice', protocol: 4, version: '0.1.5' },
-  // A daemon without routes would drop `via` and `key_file` and start the child bare, so the client refuses the call first.
-  { name: 'via', kind: 'argument', protocol: 4, version: '0.1.5' },
+  // An older daemon would start the child in the parent's workspace and say nothing.
+  ...['agent_spawn.workspace', 'agent_spawn.workspace_label'].map((name) => ({ name, kind: 'argument' as const, protocol: 4, version: '0.1.5' })),
+  // An older daemon would start the child bare, off the route it was asked for, and say nothing.
+  ...['agent_spawn.via', 'agent_spawn.key_file', 'agent_restart.via', 'agent_restart.model', 'agent_restart.key_file', 'agent_restart.provider'].map((name) => ({ name, kind: 'argument' as const, protocol: 4, version: '0.1.5' })),
 ];
 
-/** The arguments that need the `via` feature, which an older daemon would ignore. */
-export const ROUTE_ARGUMENTS = ['via', 'key_file'] as const;
-
 /**
- * The refusal for a call that passes a route argument to a daemon that would
- * ignore it, or undefined when the call may go. Without it, the child would
- * start bare and nobody would hear why.
+ * The first argument of a call that the daemon would ignore, because it
+ * predates it, or undefined when the daemon serves every argument passed.
  */
-export function routeArgumentRefusal(args: Record<string, unknown>, daemon: DaemonOffer | undefined): string | undefined {
-  const routed = ROUTE_ARGUMENTS.some((key) => args[key] !== undefined && args[key] !== null && args[key] !== '');
-  const feature = featureNamed('via');
-  if (!routed || !feature || !daemon || serves(daemon, feature)) return undefined;
-  return missingFeatureMessage('via', daemon);
+export function unservedArgument(daemon: DaemonOffer, tool: string, args: Record<string, unknown>): string | undefined {
+  for (const [key, value] of Object.entries(args)) {
+    if (value === undefined || value === null || value === '') continue;
+    const feature = featureNamed(`${tool}.${key}`);
+    if (feature && !serves(daemon, feature)) return feature.name;
+  }
+  return undefined;
 }
 
 /** What a client knows of the daemon it reached. */

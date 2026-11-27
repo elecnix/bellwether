@@ -283,6 +283,9 @@ export async function moveChild(deps: MoveDeps, parentId: string, request: MoveR
       const moved: ChildRecord = { ...(readParent(parentId)?.children.find((entry) => entry.id === child.id) ?? child), host: target, cwd: targetCwd, session: targetSession(harness, resumable, sessionFile), exitedAt: at };
       delete moved.transcript;
       delete moved.transcriptMissing;
+      // A workspace id belongs to the source machine's herdr. A child with a
+      // workspace of its own gets a new one on the target, under the same label.
+      delete moved.workspaceId;
       upsertChild(parentId, moved);
       const parent = readParent(parentId);
       if (!parent) throw new Error(`the registry for ${parentId} disappeared`);

@@ -21,6 +21,7 @@ import { spoolPath } from './paths.ts';
 import { realRetireOps, reapChild, retirementPending, type RetireOps } from './retire.ts';
 import { isMoving } from './move-plan.ts';
 import type { AgentStatus, ChildEventKind, ChildRecord, OutboxEntry, RelayHostState, SpoolReport } from './types.ts';
+import { releaseWorkspace } from './workspace.ts';
 
 /** herdr's status for a pane, or the child's last known status. */
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -331,8 +332,37 @@ export class Watcher {
   /** The tab of a child whose harness already ended was closed: forget the pane, and say nothing. */
   private closeQuietly(child: ChildRecord): void {
     removeChildFiles(child.id);
+    void this.releaseWorkspace(child);
     void this.retire(child.id);
   }
+
+  /**
+   * Close the workspace Bellwether made for a child once nothing is left in
+   * it. A tab kept open on the child's last screen, another child, or a
+   * person's shell keeps it, and a workspace Bellwether did not make is never
+   * touched.
+   */
+  private async releaseWorkspace(child: ChildRecord): Promise<void> {
+    if (!child.ownsWorkspace || !child.workspaceId) return;
+    // An exit can arrive as a pane event and again from a reconcile, so one
+    // release per workspace runs at a time, and a closed one is not closed again.
+    const key = `${hostOf(child)}:${child.workspaceId}`;
+    if (this.releasing.has(key)) return;
+    this.releasing.add(key);
+    let outcome: Awaited<ReturnType<typeof releaseWorkspace>> | undefined;
+    try {
+      outcome = await releaseWorkspace(await this.clientFor(hostOf(child)), child);
+      if (outcome === 'closed') this.log(`closed workspace ${child.workspaceId}, which Bellwether made for ${child.name} and which nothing else used`);
+    } catch (error) {
+      this.log(`could not check ${child.name}'s workspace ${child.workspaceId}: ${(error as Error).message}`);
+    } finally {
+      // A workspace another tab kept, or one the check failed on, may be released later.
+      if (outcome !== 'closed' && outcome !== 'gone') this.releasing.delete(key);
+    }
+  }
+
+  /** Workspaces whose release is running or done, by host and id. */
+  private readonly releasing = new Set<string>();
 
   private markExited(child: ChildRecord, code: number | undefined, ended?: 'in-pane'): void {
     // A child that exits between two looks wrote its file after the last one,
@@ -354,6 +384,7 @@ export class Watcher {
       this.cleanupRemote(child).catch((error: unknown) => this.log(`could not remove ${child.name}'s files on machine ${hostOf(child)}: ${(error as Error).message}`));
     }
     this.offer(child, 'exited', this.describeExit(child, code, beforeStart));
+    void this.releaseWorkspace(child);
     void this.retire(child.id);
   }
 

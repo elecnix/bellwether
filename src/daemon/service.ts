@@ -39,8 +39,10 @@ export type ServiceFactory = (parent: ParentHello, id: string, deps: ServiceDeps
 /** The herdr-backed service, one per parent session. */
 export function createHerdrService(parent: ParentHello, id: string, deps: ServiceDeps = {}): ParentService {
   const existing = readParent(id);
-  const record = existing ?? saveParent(emptyParent(parent.harness, parent.session, parent.cwd, { host: parent.host, paneId: parent.paneId, workspaceId: parent.workspaceId, depth: parent.depth }));
-  if (!existing) saveParent(record);
+  const identity = { ...(parent.childId ? { childId: parent.childId } : {}), ...(parent.maxDepth === undefined || parent.depth === 0 ? {} : { maxDepth: parent.maxDepth }) };
+  const record = existing ?? saveParent(emptyParent(parent.harness, parent.session, parent.cwd, { host: parent.host, paneId: parent.paneId, workspaceId: parent.workspaceId, depth: parent.depth, ...identity }));
+  // A session resumed under a new spawn carries the child id and ceiling that spawn gave it.
+  if (existing && Object.entries(identity).some(([key, value]) => existing[key as keyof typeof identity] !== value)) saveParent(Object.assign(existing, identity));
   const client = new HerdrClient({ socketPath: parent.herdrSocket });
   let handler: ((entries: OutboxEntry[]) => void) | undefined;
   // One client per herdr host, shared by the tools and the watcher, so a

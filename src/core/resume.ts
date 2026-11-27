@@ -9,6 +9,7 @@ import { LOCAL_HOST } from './machine.ts';
 import { newChildId } from './outbox.ts';
 import { readParent, removeChild, updateChild, upsertChild } from './registry.ts';
 import { clearRetirement } from './retire.ts';
+import { openChildTab, returnPlacement, undoChildTab, type ChildTab } from './workspace.ts';
 import { STARTUP_HOLD_MS, STARTUP_TIMEOUT_MS, childArgs, childEnv, childStartFiles, harnessOf, herdrLink, nextLaunch, startHarness, type RegisterRemote } from './spawn.ts';
 import { routeLaunch } from './routes.ts';
 import { watchStartup, type StartupDialog, type StartupWatch } from './startup-dialogs.ts';
@@ -150,7 +151,7 @@ export async function resumeChild(client: HerdrClient, parent: ParentRecord, tar
         depth: parent.depth + 1,
         inactiveMs: resolveInactiveMs(undefined),
       };
-  const previous = existing ? { paneId: existing.paneId, tabId: existing.tabId, exitedAt: existing.exitedAt ?? now, exitCode: existing.exitCode, route: existing.route, model: existing.model } : undefined;
+  const previous = existing ? { paneId: existing.paneId, tabId: existing.tabId, workspaceId: existing.workspaceId, workspaceLabel: existing.workspaceLabel, exitedAt: existing.exitedAt ?? now, exitCode: existing.exitCode, route: existing.route, model: existing.model } : undefined;
   // The record says how this run starts, so a later resume or restart replays it.
   if (launch.route) {
     child.route = launch.route;
@@ -192,6 +193,8 @@ export async function resumeChild(client: HerdrClient, parent: ParentRecord, tar
       delete entry.startingUntil;
       entry.paneId = previous.paneId;
       entry.tabId = previous.tabId;
+      entry.workspaceId = previous.workspaceId;
+      entry.workspaceLabel = previous.workspaceLabel;
       entry.exitedAt = previous.exitedAt;
       entry.exitCode = previous.exitCode;
       if (previous.route) entry.route = previous.route;
@@ -203,8 +206,11 @@ export async function resumeChild(client: HerdrClient, parent: ParentRecord, tar
 
   // 2. A new tab, with the same environment the child first started with.
   // The prompt goes to a private file, like a spawn's brief, never into argv.
-  const workspaceId = options.workspaceId ?? (child.host === LOCAL_HOST ? parent.workspaceId : undefined);
+  // A child in a workspace Bellwether made for it goes back to that
+  // workspace, or to a new one of its own once herdr has closed it.
+  const fallback = options.workspaceId ?? (child.host === LOCAL_HOST ? parent.workspaceId : undefined);
   let tabId: string | undefined;
+  let opened: ChildTab | undefined;
   let startup: StartupWatch | undefined;
   let reportWarning: string | undefined;
   try {
@@ -214,12 +220,15 @@ export async function resumeChild(client: HerdrClient, parent: ParentRecord, tar
     const { briefFile, mcpConfigFile, piExtension } = files;
     registered = files.registered;
     reportWarning = files.warning;
-    const tab = await client.tabCreate({ workspaceId, cwd: child.cwd, label: child.name, env: childEnv(parent, child, piExtension), focus: options.focus ?? false }, signal);
+    const placement = await returnPlacement(client, child, fallback, signal);
+    const tab = await openChildTab(client, placement, { cwd: child.cwd, label: child.name, env: childEnv(parent, child, piExtension), focus: options.focus ?? false }, signal);
+    opened = tab;
     tabId = tab.tabId ?? tab.paneId;
     if (!tab.paneId) throw new Error('herdr created no pane for the resumed tab');
     child.tabId = tab.tabId;
     child.paneId = tab.paneId;
-    child.workspaceId = workspaceId;
+    child.workspaceId = tab.workspaceId;
+    if (tab.workspaceLabel) child.workspaceLabel = tab.workspaceLabel;
     // A resumed Claude Code child paints the same development-channel dialog
     // as a new one, so the watcher holds its events while the resume answers.
     if (kind === 'claude') {
@@ -234,7 +243,7 @@ export async function resumeChild(client: HerdrClient, parent: ParentRecord, tar
     await startHarness(client, { name: child.name, kind, paneId: tab.paneId, args: harnessArgs, ...(launch.route && launch.config ? { launch: routeLaunch(launch.config, launch.route, kind, harnessArgs) } : {}) }, signal);
   } catch (error) {
     startup?.close();
-    if (tabId) await client.tabClose(tabId).catch(() => {});
+    await undoChildTab(client, opened);
     delete child.startingUntil;
     restore();
     throw error;
@@ -248,7 +257,7 @@ export async function resumeChild(client: HerdrClient, parent: ParentRecord, tar
       answered = await startup.answer();
     } catch (error) {
       startup.close();
-      await client.tabClose(tabId ?? child.paneId).catch(() => {});
+      await undoChildTab(client, opened ?? { tabId: tabId ?? child.paneId });
       restore();
       throw error;
     }

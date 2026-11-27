@@ -5,6 +5,7 @@
 // Claude channel run, and prints one line per child event, so a supervisor can
 // read the stream instead of polling herdr.
 import { describeRoutes, readRoutes } from './core/routes.ts';
+import { workspaceColumn } from './core/workspace.ts';
 import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
@@ -225,6 +226,7 @@ async function doctor(): Promise<number> {
     const live = parent.children.filter((child) => !child.exitedAt);
     if (!live.length) continue;
     console.log(`  ${parent.id}: ${live.length} live of ${parent.children.length} children, updated ${parent.updatedAt}`);
+    for (const child of live) console.log(`    ${child.name} on ${machineLabel(hostOf(child))}, workspace ${workspaceColumn(child)}`);
   }
   // Each route a child can start on, and what a child on it sees that a bare one does not.
   const routeLines = describeRoutes(() => readRoutes(), listParents().flatMap((parent) => parent.children).filter((child) => !child.exitedAt));
@@ -329,7 +331,8 @@ async function main(): Promise<number> {
     console.log('  daemon [--socket PATH]                   run the local daemon in the foreground');
     console.log('  drain  [--socket PATH]                   stop the running daemon once its calls finish, so the next session starts the installed one');
     console.log('  version                                  print the installed version (also --version); doctor names the commit it was built from');
-    console.log('  spawn  --kind KIND --name NAME [--cwd DIR] [--prompt TEXT] [--model M] [--parent ID] [--focus]');
+    console.log('  spawn  --kind KIND --name NAME [--cwd DIR] [--prompt TEXT] [--model M] [--provider P] [--machine M] [--stuck-minutes N] [--inactive-minutes N] [--max-depth N] [--workspace new|ID|LABEL [--workspace-label L]] [--parent ID] [--focus]');
+    console.log('         --workspace new                   start the child in a workspace of its own, on its machine, where its own children open too; Bellwether closes it once it is empty');
     console.log('  watch  [--parent ID] [--tick-ms N]      one line per child event, then keeps reading');
     console.log('  list   [--parent ID]');
     console.log('  read   CHILD [--lines N]');
@@ -423,10 +426,14 @@ async function main(): Promise<number> {
         cwd: str(flags, 'cwd'),
         prompt: str(flags, 'prompt'),
         model: str(flags, 'model'),
+        provider: str(flags, 'provider'),
+        machine: str(flags, 'machine'),
         focus: flags['focus'] === true,
-        stuckMinutes: num(flags, 'stuck-minutes'),
+        stuck_minutes: num(flags, 'stuck-minutes'),
         inactive_minutes: num(flags, 'inactive-minutes'),
-        maxDepth: num(flags, 'max-depth'),
+        max_depth: num(flags, 'max-depth'),
+        workspace: str(flags, 'workspace'),
+        workspace_label: str(flags, 'workspace-label'),
         args: str(flags, 'args')?.split('\u0000'),
       }));
     } else if (command === 'list') {

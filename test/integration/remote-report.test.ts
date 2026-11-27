@@ -383,9 +383,10 @@ test('an over-long report already waiting on the child machine is set aside as r
 
   const { links: relayLinks } = await parentDaemon(w);
   await delay(2_500);
-  assert.equal(dials(w), 1, `the parent dialled the child's machine ${dials(w)} times: the over-long report cut each connection and came back on the next`);
-  assert.ok(connected(relayLinks));
+  // Under load the one connection can still be opening after the delay, so it is waited for; a redial in that time still fails the count below.
+  await until(() => connected(relayLinks), 'the connection to the child machine');
   await until(() => spoolOf(w.parentHome, PARENT_ID).length === 1, 'the report after it to arrive');
+  assert.equal(dials(w), 1, `the parent dialled the child's machine ${dials(w)} times: the over-long report cut each connection and came back on the next`);
   assert.equal(spoolOf(w.parentHome, PARENT_ID)[0]?.text, 'the one after it', 'the report behind it is not held up');
   const kept = waitingOn(w.childHome).find((entry) => entry.receipt === receipt) ?? inHome(w.childHome, () => listForwards()).find((entry) => entry.receipt === receipt);
   assert.match(kept?.refused ?? '', /too long to cross/, 'it stays on disk, marked refused');

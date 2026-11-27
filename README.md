@@ -30,7 +30,7 @@ A Claude Code child asks two questions before its prompt: whether to trust the f
 
 At delivery, the watcher drops an unread `blocked` or `stuck` event once the child has moved on. A dialog someone already answered stays out of the parent's next turn.
 
-The registry keeps each child's harness session, `session.kind` and `session.value`, and its transcript path after the child exits. To resume a retired Claude Code child, run `claude --resume <value>`.
+The registry keeps each child's harness session, `session.kind` and `session.value`, and its transcript path after the child exits. To resume a retired child, call `agent_spawn` with `resume`. By hand, a retired Claude Code child resumes with `claude --resume <value>`.
 
 The inactivity threshold defaults to 5 minutes. `agent_spawn` takes `inactive_minutes` to set it for one child. A value is clamped to 1 minute through 24 hours, and no value turns the notice off. The notice fires once per quiet period. Output or a report starts a new one.
 
@@ -38,8 +38,7 @@ The inactivity threshold defaults to 5 minutes. `agent_spawn` takes `inactive_mi
 
 | Tool | Who gets it | What it does |
 | -- | -- | -- |
-| `agent_spawn` | any session | starts a child in a new tab, on this machine or on a saved herdr machine named by `machine` |
-| `agent_resume` | any session | reopens an exited child's harness session in a new tab on the machine it ran on, under the same child id, and refuses a session that still runs |
+| `agent_spawn` | any session | starts a child in a new tab, on this machine or on a saved herdr machine named by `machine`, or with `resume` messages an earlier child, reopening its session in a new tab when herdr no longer has it |
 | `agent_adopt` | any session | makes a running agent this session did not start into its child, such as one `herdr-spawn.sh` started, and refuses a pane another session watches |
 | `agent_list` | any session | lists this session's children with status, age and unread events |
 | `agent_read` | any session | returns a child's last assistant message, or its screen when you pass `lines` |
@@ -50,6 +49,21 @@ The inactivity threshold defaults to 5 minutes. `agent_spawn` takes `inactive_mi
 Bellwether sends input only to panes that belong to this parent: the ones it started, resumed or adopted.
 
 Each adapter sends its session's identity with every tool call: the herdr pane it runs in, and the child id its spawn gave it. The daemon matches that identity against the child records it keeps, so a `parent_report` reaches the parent whose registry lists the child, whichever client process made the call. Adapters read the parent from the daemon's records, never from an environment variable. When no record matches, the error gives the pane and the path of the MCP config file the spawn should have written.
+
+### Resume through `agent_spawn`
+
+`agent_spawn` accepts a `resume` target: a child's name, its id or its session id. It also takes the same `prompt` as any spawn. herdr, not the registry, decides what happens next.
+
+- When herdr shows the child's session in the pane this parent started for it, the prompt goes to that pane as an ordinary message. No tab opens, and the child keeps its id.
+- When herdr has no pane for the session, Bellwether treats the child as retired. It opens a tab on the child's original machine and starts the harness with `--resume` for Claude Code or `--session` for Pi. The child keeps its id, so its events and receipts continue, and Bellwether passes the prompt in a file with mode 0600.
+- When the registry and herdr disagree, herdr wins, and the reply opens with a line that says so. Bellwether resumes a record still marked running whose session herdr no longer has. For a record marked exited whose session herdr still shows in its own pane, Bellwether sends the message and clears the exit mark.
+- When the session runs in a pane this parent did not start, Bellwether refuses. The refusal gives the child, the pane and `agent_adopt`. Bellwether never types into that pane.
+
+When the call passes `kind` with a session id that this parent's children did not run, Bellwether starts a new child, with `name`, `cwd` and `machine` as for a spawn.
+
+Bellwether also refuses a live agent that isn't a child, a harness without a resume flag, or a retired child whose session was never recorded, along with a target that doesn't match any child or session. Each refusal tells the caller what to pass instead.
+
+A lock file under `~/.bellwether/locks/`, one per child, covers the decision and the resume. A second call for the same child fails at once with the process that holds the lock, so two callers open one tab between them. Bellwether takes over a lock whose process has exited or that is older than five minutes.
 
 A child on another machine runs on that machine's herdr. Bellwether reaches it the way `herdr --machine` does, through `herdr remote-api-bridge` over SSH to the saved profile's target, so the profile must exist in `herdr machine list` and SSH must log in without a prompt. That child's `parent_report` writes to its own machine's disk, which the parent never reads, so Bellwether follows it through herdr status alone.
 
@@ -82,7 +96,7 @@ claude --dangerously-load-development-channels plugin:bellwether@bellwether
 
 The plugin runs `bin/bellwether-mcp.js` as an MCP server and enables it as a channel, and that declaration is what delivers child events. Load the server as a plain MCP server and the tools arrive, with events waiting in the outbox.
 
-The plugin is for a parent session, one you start yourself. You don't set anything up for a child: `agent_spawn` and `agent_resume` start each Claude Code child with its own server, passed as `--mcp-config=~/.bellwether/mcp/<child id>.json`. The file has mode 0600 and lists one server, which runs this package's channel entry point with `--child <child id>`. Bellwether deletes it when the child exits or the spawn fails. A child on another machine doesn't get a file, because the daemon on that machine doesn't store a record of it.
+The plugin is for a parent session, one you start yourself. You don't set anything up for a child: `agent_spawn`, with or without `resume`, starts each Claude Code child with its own server, passed as `--mcp-config=~/.bellwether/mcp/<child id>.json`. The file has mode 0600 and lists one server, which runs this package's channel entry point with `--child <child id>`. Bellwether deletes it when the child exits or the spawn fails. A child on another machine doesn't get a file, because the daemon on that machine doesn't store a record of it.
 
 You don't need a `mcpServers` entry in your Claude Code settings for children. A user-level `bellwether` entry is harmless, and children don't use it. For the tools in a session you start by hand, install the plugin above.
 

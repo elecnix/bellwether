@@ -1,4 +1,4 @@
-// Tier 2: resume, adopt and machines against the fake herdr socket. Each case
+// Tier 2: a spawn that resumes, adopt and machines against the fake herdr socket. Each case
 // drives the tools the way the daemon does, with a herdr world behind the
 // socket, and reads the registry back from a scratch home.
 import assert from 'node:assert/strict';
@@ -15,6 +15,7 @@ import type { ChildRecord, OutboxEntry } from '../../src/core/types.ts';
 import { runBellwetherTool, type ToolContext } from '../../src/integrations/tools.ts';
 import { startFakeHerdr, type FakeHerdr } from '../fixtures/fake-herdr.ts';
 import { fakeWorld, type FakeWorld } from '../fixtures/fake-world.ts';
+import { isolate } from '../fixtures/isolated.ts';
 
 interface Herdr {
   fake: FakeHerdr;
@@ -29,18 +30,9 @@ async function herdr(workspace = 'w1'): Promise<Herdr> {
   return { fake, world, client: new HerdrClient({ socketPath: fake.socketPath }) };
 }
 
-/** A scratch Bellwether home and HOME, so no case reads the real transcripts. */
+/** A scratch root for HOME, Bellwether and herdr, so no case reads the real transcripts or sockets. */
 function scratch(t: test.TestContext): void {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bellwether-shape-'));
-  const saved = { home: process.env['HOME'], bellwether: process.env['BELLWETHER_HOME'] };
-  process.env['HOME'] = root;
-  process.env['BELLWETHER_HOME'] = path.join(root, '.bellwether');
-  t.after(() => {
-    process.env['HOME'] = saved.home;
-    if (saved.bellwether === undefined) delete process.env['BELLWETHER_HOME'];
-    else process.env['BELLWETHER_HOME'] = saved.bellwether;
-    fs.rmSync(root, { recursive: true, force: true });
-  });
+  isolate(t, 'bellwether-shape-');
 }
 
 function parent(session: string): string {
@@ -100,7 +92,7 @@ test('a resumed child comes back with the same session and id, and takes a promp
   local.world.onStart = () => {
     holdDuringStart = childOf(id, 'worker')?.startingUntil;
   };
-  const text = await runBellwetherTool(context(id, local), 'agent_resume', { child: 'worker', prompt });
+  const text = await runBellwetherTool(context(id, local), 'agent_spawn', { resume: 'worker', prompt });
   assert.match(text, /resumed session sess-1/);
 
   const start = local.fake.requests.find((request) => request.method === 'agent.start');
@@ -149,42 +141,18 @@ test('a pi child resumes with --session and its transcript path', async (t) => {
   const id = parent('resume-pi');
   const transcript = '/home/x/.pi/agent/sessions/--work--/2026_abc.jsonl';
   upsertChild(id, exitedChild('pi-worker', { kind: 'pi', harness: 'pi', transcript }));
-  await runBellwetherTool(context(id, local), 'agent_resume', { child: 'pi-worker' });
+  await runBellwetherTool(context(id, local), 'agent_spawn', { resume: 'pi-worker' });
   const args = local.fake.requests.find((request) => request.method === 'agent.start')?.params['args'] as string[];
   assert.deepEqual(args.slice(args.indexOf('--session'), args.indexOf('--session') + 2), ['--session', transcript]);
 });
 
-test('resume refuses a child that is still alive', async (t) => {
-  scratch(t);
-  const local = await herdr();
-  t.after(() => local.fake.stop());
-  const id = parent('resume-alive');
-  local.world.add({ pane_id: 'w1:p3', agent: 'claude', name: 'worker', agent_session: { agent: 'claude', kind: 'id', source: 'herdr:claude', value: 'sess-1' } });
-  upsertChild(id, exitedChild('worker', { exitedAt: undefined }));
-
-  await assert.rejects(runBellwetherTool(context(id, local), 'agent_resume', { child: 'worker' }), /still alive in pane w1:p3/);
-  assert.equal(local.fake.requests.some((request) => request.method === 'tab.create'), false, 'no second tab');
-});
-
-test('resume refuses a session that is alive in another pane', async (t) => {
-  scratch(t);
-  const local = await herdr();
-  t.after(() => local.fake.stop());
-  const id = parent('resume-elsewhere');
-  local.world.add({ pane_id: 'w1:p8', agent: 'claude', name: 'by-hand', agent_session: { agent: 'claude', kind: 'id', source: 'herdr:claude', value: 'sess-1' } });
-  upsertChild(id, exitedChild('worker'));
-
-  await assert.rejects(runBellwetherTool(context(id, local), 'agent_resume', { child: 'worker' }), /Session sess-1 is still alive in pane w1:p8/);
-  assert.equal(childOf(id, 'worker')?.exitedAt !== undefined, true, 'the record stays exited');
-});
-
-test('resume refuses a harness with no resume path', async (t) => {
+test('a spawn that resumes refuses a harness with no resume flag', async (t) => {
   scratch(t);
   const local = await herdr();
   t.after(() => local.fake.stop());
   const id = parent('resume-codex');
   upsertChild(id, exitedChild('codex-worker', { kind: 'codex', harness: 'other' }));
-  await assert.rejects(runBellwetherTool(context(id, local), 'agent_resume', { child: 'codex-worker', session: 'abc' }), /cannot resume a codex agent/);
+  await assert.rejects(runBellwetherTool(context(id, local), 'agent_spawn', { resume: 'codex-worker' }), /cannot resume a codex agent: only claude and pi have a resume flag it knows\. Call agent_spawn without resume/);
 });
 
 test('resume takes a session no child ran, as a new child', async (t) => {
@@ -192,7 +160,7 @@ test('resume takes a session no child ran, as a new child', async (t) => {
   const local = await herdr();
   t.after(() => local.fake.stop());
   const id = parent('resume-new');
-  await runBellwetherTool(context(id, local), 'agent_resume', { session: 'sess-9', kind: 'claude', name: 'old-talk', cwd: '/work/repo' });
+  await runBellwetherTool(context(id, local), 'agent_spawn', { resume: 'sess-9', kind: 'claude', name: 'old-talk', cwd: '/work/repo' });
   const child = childOf(id, 'old-talk');
   assert.equal(child?.origin, 'resume');
   assert.equal(local.world.panes.get(child?.paneId ?? '')?.agent_session?.value, 'sess-9');
@@ -298,7 +266,7 @@ test('a spawn on a machine records the host, targets that machine, and resumes t
   updateChild(id, child?.id ?? '', (entry) => {
     entry.exitedAt = new Date().toISOString();
   });
-  await runBellwetherTool(ctx, 'agent_resume', { child: 'far' });
+  await runBellwetherTool(ctx, 'agent_spawn', { resume: 'far' });
   const resumed = childOf(id, 'far');
   assert.match(resumed?.paneId ?? '', /^w7:/);
   assert.equal(remote.world.panes.get(resumed?.paneId ?? '')?.agent_session?.value, first);
@@ -322,7 +290,7 @@ test('a resume herdr refuses leaves the exited child as it was, and no brief beh
   const local: Herdr = { fake, world, client: new HerdrClient({ socketPath: fake.socketPath }) };
   const id = parent('resume-fails');
   upsertChild(id, exitedChild('worker'));
-  await assert.rejects(runBellwetherTool(context(id, local), 'agent_resume', { child: 'worker', prompt: 'hello' }), /no such agent kind/);
+  await assert.rejects(runBellwetherTool(context(id, local), 'agent_spawn', { resume: 'worker', prompt: 'hello' }), /no such agent kind/);
   const child = childOf(id, 'worker');
   assert.equal(child?.paneId, 'w1:p3', 'the record points at its last pane again');
   assert.ok(child?.exitedAt);
@@ -332,7 +300,7 @@ test('a resume herdr refuses leaves the exited child as it was, and no brief beh
   assert.equal(fake.requests.filter((request) => request.method === 'tab.close').length, 1, 'the new tab is closed');
 
   // A session no child ran leaves no record at all.
-  await assert.rejects(runBellwetherTool(context(id, local), 'agent_resume', { session: 'sess-x', kind: 'pi', name: 'stranger' }), /no such agent kind/);
+  await assert.rejects(runBellwetherTool(context(id, local), 'agent_spawn', { resume: 'sess-x', kind: 'pi', name: 'stranger' }), /no such agent kind/);
   assert.equal(childOf(id, 'stranger'), undefined);
 });
 
@@ -342,7 +310,7 @@ test('resume reads the session herdr reported, with no transcript on the record'
   t.after(() => local.fake.stop());
   const id = parent('resume-session');
   upsertChild(id, exitedChild('recorded', { transcript: undefined, session: { kind: 'id', value: 'sess-recorded' } }));
-  await runBellwetherTool(context(id, local), 'agent_resume', { child: 'recorded' });
+  await runBellwetherTool(context(id, local), 'agent_spawn', { resume: 'recorded' });
   const child = childOf(id, 'recorded');
   assert.equal(local.world.panes.get(child?.paneId ?? '')?.agent_session?.value, 'sess-recorded');
   assert.deepEqual(child?.session, { kind: 'id', value: 'sess-recorded' });

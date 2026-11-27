@@ -22,6 +22,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { withChildLock } from './child-lock.ts';
 import { LOCAL_HOST, hostOf, type ClientFor } from './machine.ts';
+import { harnessFor } from './harnesses/index.ts';
+import { missingIntegration } from './herdr-integration.ts';
 import { removeChildFiles } from './mcp-config.ts';
 import { bellwetherHome } from './paths.ts';
 import { childById, readParent, updateChild, upsertChild } from './registry.ts';
@@ -185,7 +187,9 @@ export async function moveChild(deps: MoveDeps, parentId: string, request: MoveR
     const moveInFlight = child.moving && isMoving(child, now.getTime()) ? { to: child.moving.to, since: child.moving.since } : undefined;
 
     // 1-2. What can be refused from the record alone is refused before any machine is reached.
-    const base: RefusalInput = { childName: child.name, harness: child.harness, requestedHarness, status: child.lastStatus, exited: Boolean(child.exitedAt) || !child.paneId, source: hostOf(child), target, moveInFlight, hasSession: Boolean(session) };
+    // With no session, herdr on the child's machine says whether its integration for the harness is why.
+    const missing = session ? undefined : await missingIntegration(await deps.clientFor(hostOf(child)).catch(() => undefined), harnessFor(child.kind));
+    const base: RefusalInput = { childName: child.name, harness: child.harness, requestedHarness, status: child.lastStatus, exited: Boolean(child.exitedAt) || !child.paneId, source: hostOf(child), target, moveInFlight, hasSession: Boolean(session), ...(missing ? { missingIntegration: missing } : {}) };
     const early = moveRefusals(base);
     // A route is this machine's launcher, which the other machine's routes file does not hold.
     if (child.route && target !== LOCAL_HOST) early.push(`${child.name} runs on route ${child.route.name}, a launcher this machine's routes file defines, so it cannot resume behind it on ${where(target)}. Restart it with agent_restart and via none first, then move it.`);

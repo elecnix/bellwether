@@ -22,6 +22,7 @@
 //   (session/session-manager.ts, session/session-entries.ts).
 import fs from 'node:fs';
 import { LOCAL_HOST } from '../machine.ts';
+import { integrationWorks, listIntegrations } from '../herdr-integration.ts';
 import { piExtensionEntry } from '../pi-extension.ts';
 import { lastAssistantMessage, locateSessionPath } from '../transcript.ts';
 import type { ModelPair } from '../types.ts';
@@ -69,16 +70,13 @@ export function ompSessionModel(file: string): ModelPair | undefined {
 export async function requireOmpIntegration(herdr: HerdrRequester | undefined, name: string, host: string): Promise<void> {
   const where = host === LOCAL_HOST ? 'this machine' : `machine ${host}`;
   if (!herdr) throw new Error(`${name} was not started: Bellwether could not ask herdr on ${where} whether its omp integration is installed.`);
-  let result: unknown;
+  let states: Map<string, string>;
   try {
-    result = await herdr.request('integration.list', {});
+    states = await listIntegrations(herdr);
   } catch (error) {
     throw new Error(`${name} was not started: herdr on ${where} did not list its integrations, so Bellwether cannot tell whether herdr would watch an omp child: ${(error as Error).message}`);
   }
-  const list = typeof result === 'object' && result !== null ? (result as Record<string, unknown>)['integrations'] : undefined;
-  const omp = Array.isArray(list) ? list.find((entry) => typeof entry === 'object' && entry !== null && (entry as Record<string, unknown>)['target'] === 'omp') : undefined;
-  const state = omp ? (omp as Record<string, unknown>)['state'] : undefined;
-  if (state === 'current' || state === 'outdated') return;
+  if (integrationWorks(states, 'omp')) return;
   throw new Error(`${name} was not started: herdr on ${where} has no omp integration, so it would report neither the child's state nor its session file. Run herdr integration install omp there, then spawn again.`);
 }
 
@@ -103,7 +101,7 @@ export const omp: HarnessEntry = {
   async preflight({ name, host, herdr }) {
     await requireOmpIntegration(herdr, name, host);
   },
-  session: { from: 'herdr', kind: 'path' },
+  session: { from: 'herdr', kind: 'path', integration: 'omp' },
   reports: {
     via: 'extension',
     // omp does not read pi's settings, so the guard against an old copy in them does not apply.

@@ -5,6 +5,7 @@ import os from 'node:os';
 import { HerdrApiError, type HerdrClient } from './herdr-client.ts';
 import { BLANK_SCREEN } from './screen.ts';
 import { LOCAL_HOST } from './machine.ts';
+import { missingIntegration, noSessionWarning } from './herdr-integration.ts';
 import { newChildId } from './outbox.ts';
 import { PI_EXTENSION_ENV } from './pi-extension.ts';
 import { writeBrief, writeBriefIn } from './brief.ts';
@@ -103,6 +104,8 @@ export interface SpawnResult {
   startNote?: string;
   /** Which path carried the brief, for the spawn reply. */
   briefNote?: string;
+  /** A warning that herdr on the child's machine lacks the integration that reports its session, for the spawn reply. */
+  integrationNote?: string;
 }
 
 /** How long the watcher holds the events of a new child that shows startup dialogs. Longer than the dialog wait. */
@@ -279,6 +282,9 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
   const store = entry.session.from === 'store' ? entry.session : undefined;
   // On a route the tier picks the model, so the check sees the model the harness itself gets.
   await checkHarness(entry, options, harnessOptions.model, harnessHooks, client);
+  // A warning, not a refusal: the child runs and reports, but without the
+  // integration herdr reports no session, so nothing can reopen it later.
+  const unseen = await missingIntegration(client, entry);
   // The workspace is settled before the record too, so a name that matches
   // nothing leaves nothing behind. Nothing is created yet.
   const host = options.host ?? LOCAL_HOST;
@@ -498,7 +504,8 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
   const harnessNote = entry.spawnNote?.(child, options.args ?? []);
   const decisions = startup?.decisions.length ? startup.decisions : undefined;
   const startNote = started.confirmed ? undefined : unconfirmedNote(child, entry.label, started.waitedMs);
-  return { child, link: herdrLink('pane', child.paneId), answered, ...(decisions ? { decisions } : {}), ...(note ? { modelNote: note } : {}), ...(harnessNote ? { harnessNote } : {}), ...(envNote ? { envNote } : {}), ...(startNote ? { startNote } : {}), ...(briefNote ? { briefNote } : {}) };
+  const integrationNote = unseen ? noSessionWarning(unseen, host, child.name) : undefined;
+  return { child, link: herdrLink('pane', child.paneId), answered, ...(decisions ? { decisions } : {}), ...(note ? { modelNote: note } : {}), ...(harnessNote ? { harnessNote } : {}), ...(envNote ? { envNote } : {}), ...(startNote ? { startNote } : {}), ...(briefNote ? { briefNote } : {}), ...(integrationNote ? { integrationNote } : {}) };
 }
 
 /** What a spawn says of a child that was running but had not shown herdr a status when the wait ended. */

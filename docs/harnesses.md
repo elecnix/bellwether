@@ -16,6 +16,8 @@ Each `agent_spawn` kind names the harness a child runs in, and Bellwether's harn
 
 herdr reports `working`, `idle`, `blocked` and `done` for every kind it detects. Some dialogs show as `idle`. Where the child has an adapter of its own, pi's extension or Claude Code's hook names such a dialog; otherwise Bellwether reads the screen before an `idle` event, looking for a marked selection or a y/n question. Bellwether reports a dialog and never answers it, apart from Claude Code's startup questions and the two questions it declines for a child it started ([tools](tools.md#questions-bellwether-answers-for-a-child-it-started)).
 
+herdr reports a `pi`, `claude` or `omp` session only through its own integration for that harness, which `herdr integration install pi`, `claude` or `omp` writes on each machine. `herdr integration status` lists what a machine has. Without that integration, herdr shows the child's pane with no session, so Bellwether records none, and the child can't move, restart or resume by its session. `agent_spawn` asks herdr on the child's machine and warns in its reply when the integration is missing. A move, a restart or a resume that then refuses for the missing session gives the integration and the command that installs it. An `omp` spawn refuses outright, because herdr would report none of that child's states either.
+
 Codex doesn't ask its folder-trust question, because its launch line marks the folder trusted for that run.
 
 A `claude`, `pi` or `omp` child takes a parent's message, and its brief, in its session, and herdr types a message into the pane of any other kind. [tools.md](tools.md#messages-to-a-child) gives the cases and the record, and [the brief](tools.md#the-brief) gives the order a spawn takes.

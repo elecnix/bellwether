@@ -8,6 +8,7 @@
 import path from 'node:path';
 import type { HerdrClient, HerdrPane } from './herdr-client.ts';
 import { withChildLock } from './child-lock.ts';
+import { withSessionCause } from './herdr-integration.ts';
 import { LOCAL_HOST, hostOf } from './machine.ts';
 import { readParent, updateChild } from './registry.ts';
 import type { NextBrief } from './brief-history.ts';
@@ -145,7 +146,7 @@ export async function spawnResume(clientFor: (host: string) => Promise<HerdrClie
         return { action: 'messaged', child, reply, link: herdrLink('pane', child.paneId) };
       }
       resumeArgs(child.kind, { value: '', kind: 'id' });
-      throw new Error(`${child.name} (child ${child.id}) has no recorded session, and herdr shows no running agent this session can tie to it in pane ${child.paneId}, so there is no conversation to reopen. Pass resume with the session id and kind to reopen it as a new child, or call agent_spawn without resume for a fresh one.`);
+      throw new Error(await withSessionCause(`${child.name} (child ${child.id}) has no recorded session, and herdr shows no running agent this session can tie to it in pane ${child.paneId}, so there is no conversation to reopen. Pass resume with the session id and kind to reopen it as a new child, or call agent_spawn without resume for a fresh one.`, client, harnessFor(child.kind), child));
     }
 
     // herdr has no pane for the session: the child is retired.

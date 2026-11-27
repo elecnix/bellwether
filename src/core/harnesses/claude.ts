@@ -38,7 +38,8 @@ export const claude: HarnessEntry = {
       ...extra,
     ];
   },
-  session: { from: 'herdr', kind: 'id' },
+  // herdr learns the session id from its Claude Code hook, which `herdr integration install claude` writes.
+  session: { from: 'herdr', kind: 'id', integration: 'claude' },
   reports: {
     via: 'mcp-config',
     // A server and the hook talk to the daemon on their own machine, so a

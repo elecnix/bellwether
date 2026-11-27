@@ -81,3 +81,44 @@ export function sessionValueFrom(agentSession: unknown): string | undefined {
   }
   return undefined;
 }
+
+/** The text of a transcript message body: a string, or the text parts of a list. */
+export function messageText(value: unknown): string | undefined {
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value)) {
+    const parts = value.map((entry) => (typeof entry === 'string' ? entry : typeof entry === 'object' && entry !== null && typeof (entry as Record<string, unknown>)['text'] === 'string' ? String((entry as Record<string, unknown>)['text']) : '')).filter(Boolean);
+    return parts.length ? parts.join('\n') : undefined;
+  }
+  return undefined;
+}
+
+/**
+ * The last assistant message in a Pi or Claude Code transcript, which is where
+ * a finished child's answer sits. Undefined when the file is missing or holds none.
+ */
+export function lastAssistantMessage(file: string): string | undefined {
+  let content: string;
+  try {
+    content = fs.readFileSync(file, 'utf8');
+  } catch {
+    return undefined;
+  }
+  const lines = content.split('\n').filter((line) => line.trim().length > 0);
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    let entry: unknown;
+    try {
+      entry = JSON.parse(lines[index] ?? 'null');
+    } catch {
+      continue;
+    }
+    if (typeof entry !== 'object' || entry === null) continue;
+    const record = entry as Record<string, unknown>;
+    const message = record['message'];
+    const role = record['type'] === 'assistant' ? 'assistant' : typeof message === 'object' && message !== null ? (message as Record<string, unknown>)['role'] : undefined;
+    if (role !== 'assistant') continue;
+    const body = typeof message === 'object' && message !== null ? (message as Record<string, unknown>)['content'] : record['content'];
+    const text = messageText(body);
+    if (text?.trim()) return text;
+  }
+  return undefined;
+}

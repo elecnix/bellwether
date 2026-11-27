@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { DAEMON_PROTOCOL, MAX_DAEMON_FRAME_BYTES, formatRequest, type DaemonReply, type ParentHello } from './protocol.ts';
+import { DAEMON_PROTOCOL, MAX_DAEMON_FRAME_BYTES, formatRequest, type DaemonReply, type ParentHello, type ReportRequest } from './protocol.ts';
 import { canConnect } from './server.ts';
 import type { OutboxEntry } from '../core/types.ts';
 
@@ -394,64 +394,153 @@ export class DaemonClient {
   }
 
   /** Start a daemon, with a marker so two clients do not start two. */
-  private async startDaemon(): Promise<void> {
-    fs.mkdirSync(this.home, { recursive: true });
-    const marker = path.join(this.home, 'daemon.starting');
-    const acquired = this.takeStartingMarker(marker);
-    if (acquired) {
-      // From the sources this file is client.ts and the entry is main.ts; from the build, both end in .js.
-      const entry = this.entry ?? fileURLToPath(new URL(`./main${path.extname(import.meta.url)}`, import.meta.url));
-      const child = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', entry, '--socket', this.socketPath], {
-        detached: true,
-        stdio: 'ignore',
-        // Never the caller's directory, which for a child is its worktree.
-        cwd: this.home,
-        env: daemonEnv(process.env, this.home),
-      });
-      child.unref();
-      try {
-        await this.waitForSocket();
-      } finally {
-        fs.rmSync(marker, { force: true });
-      }
-      return;
-    }
-    await this.waitForSocket();
+  private startDaemon(): Promise<void> {
+    return startDaemonProcess(this.home, this.socketPath, this.entry);
   }
+}
 
-  private takeStartingMarker(marker: string): boolean {
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      try {
-        const fd = fs.openSync(marker, 'wx', 0o600);
-        fs.writeSync(fd, `${JSON.stringify({ pid: process.pid, at: Date.now() })}\n`);
-        fs.closeSync(fd);
-        return true;
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-        const holder = this.readMarker(marker);
-        if (holder && holder.pid !== process.pid && alive(holder.pid) && Date.now() - holder.at < 30_000) return false;
-        fs.rmSync(marker, { force: true });
-      }
-    }
-    return false;
-  }
-
-  private readMarker(marker: string): { pid: number; at: number } | undefined {
+/** Start a detached daemon on a socket, with a marker so two clients do not start two. */
+export async function startDaemonProcess(home: string, socketPath: string, entry?: string): Promise<void> {
+  fs.mkdirSync(home, { recursive: true });
+  const marker = path.join(home, 'daemon.starting');
+  if (takeStartingMarker(marker)) {
+    // From the sources this file is client.ts and the entry is main.ts; from the build, both end in .js.
+    const main = entry ?? fileURLToPath(new URL(`./main${path.extname(import.meta.url)}`, import.meta.url));
+    const child = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', main, '--socket', socketPath], {
+      detached: true,
+      stdio: 'ignore',
+      // Never the caller's directory, which for a child is its worktree.
+      cwd: home,
+      env: daemonEnv(process.env, home),
+    });
+    child.unref();
     try {
-      const parsed = JSON.parse(fs.readFileSync(marker, 'utf8')) as { pid?: number; at?: number };
-      return typeof parsed.pid === 'number' ? { pid: parsed.pid, at: parsed.at ?? 0 } : undefined;
-    } catch {
-      return undefined;
+      await waitForSocket(socketPath);
+    } finally {
+      fs.rmSync(marker, { force: true });
+    }
+    return;
+  }
+  await waitForSocket(socketPath);
+}
+
+function takeStartingMarker(marker: string): boolean {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const fd = fs.openSync(marker, 'wx', 0o600);
+      fs.writeSync(fd, `${JSON.stringify({ pid: process.pid, at: Date.now() })}\n`);
+      fs.closeSync(fd);
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      const holder = readMarker(marker);
+      if (holder && holder.pid !== process.pid && alive(holder.pid) && Date.now() - holder.at < 30_000) return false;
+      fs.rmSync(marker, { force: true });
     }
   }
+  return false;
+}
 
-  private async waitForSocket(): Promise<void> {
-    const deadline = Date.now() + START_TIMEOUT_MS;
-    while (Date.now() < deadline) {
-      if (await canConnect(this.socketPath)) return;
-      await new Promise((resolve) => setTimeout(resolve, 20));
+function readMarker(marker: string): { pid: number; at: number } | undefined {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(marker, 'utf8')) as { pid?: number; at?: number };
+    return typeof parsed.pid === 'number' ? { pid: parsed.pid, at: parsed.at ?? 0 } : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function waitForSocket(socketPath: string): Promise<void> {
+  const deadline = Date.now() + START_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    if (await canConnect(socketPath)) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`the daemon did not answer on ${socketPath}`);
+}
+
+/** The daemon took the report and refused it, which no retry changes. */
+export class ReportRefused extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ReportRefused';
+  }
+}
+
+export interface PostedReport {
+  text: string;
+  duplicate: boolean;
+}
+
+/**
+ * Post one report to this machine's daemon, starting it when nothing answers.
+ * It needs no session, which is what lets `bellwether report` run as the far
+ * end of an SSH hop. A daemon from an older release is drained first, as a
+ * session's client does.
+ */
+export async function postReport(report: ReportRequest['report'], options: ConnectOptions = {}): Promise<PostedReport> {
+  const home = options.home ?? process.env['BELLWETHER_HOME'] ?? path.join(os.homedir(), '.bellwether');
+  const socketPath = options.socketPath ?? process.env['BELLWETHER_DAEMON_SOCKET'] ?? defaultDaemonSocket(home);
+  const line = formatRequest({ type: 'report', id: 'r1', protocol: DAEMON_PROTOCOL, report });
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    if (!(await canConnect(socketPath))) {
+      if (options.spawn === false) throw new Error(`no daemon answers on ${socketPath}`);
+      await startDaemonProcess(home, socketPath, options.entry);
     }
-    throw new Error(`the daemon did not answer on ${this.socketPath}`);
+    const reply = await askOnce(socketPath, line, options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+    if (reply.type === 'result') {
+      if (reply.error !== undefined) throw new ReportRefused(reply.error);
+      return { text: reply.text ?? '', duplicate: reply.duplicate === true };
+    }
+    if (reply.type === 'error' && (reply.code === 'unknown_type' || (reply.code === 'protocol_mismatch' && (reply.protocol ?? 0) < DAEMON_PROTOCOL)) && attempt === 0) {
+      options.log?.(`draining the daemon on ${socketPath}, which predates the report request`);
+      await drainSocket(socketPath);
+      continue;
+    }
+    if (reply.type === 'error') throw new Error(`${reply.code}: ${reply.message}`);
+    throw new Error(`the daemon answered ${reply.type} to a report`);
+  }
+  throw new Error(`the daemon on ${socketPath} did not take the report`);
+}
+
+/** Send one line on a fresh connection and resolve with the first reply. */
+function askOnce(socketPath: string, line: string, timeoutMs: number): Promise<DaemonReply> {
+  return new Promise((resolve, reject) => {
+    const socket = net.createConnection(socketPath);
+    let buffer = '';
+    const timer = setTimeout(() => {
+      socket.destroy();
+      reject(new Error(`the daemon did not answer the report within ${timeoutMs} ms`));
+    }, timeoutMs);
+    timer.unref?.();
+    socket.setEncoding('utf8');
+    socket.once('error', (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    socket.on('data', (chunk: string) => {
+      buffer += chunk;
+      const index = buffer.indexOf('\n');
+      if (index < 0) return;
+      clearTimeout(timer);
+      socket.end();
+      try {
+        resolve(JSON.parse(buffer.slice(0, index)) as DaemonReply);
+      } catch (error) {
+        reject(error as Error);
+      }
+    });
+    socket.once('connect', () => socket.write(line));
+  });
+}
+
+/** Ask the daemon on a socket to drain, and wait until it stops answering. */
+async function drainSocket(socketPath: string): Promise<void> {
+  await askOnce(socketPath, formatRequest({ type: 'drain' }), START_TIMEOUT_MS).catch(() => undefined);
+  const deadline = Date.now() + START_TIMEOUT_MS;
+  while (await canConnect(socketPath)) {
+    if (Date.now() > deadline) throw new Error(`the daemon on ${socketPath} did not drain within ${START_TIMEOUT_MS} ms`);
+    await new Promise((resolve) => setTimeout(resolve, 50));
   }
 }
 

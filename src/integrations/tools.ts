@@ -1,7 +1,6 @@
 // The Bellwether tools, in one list, so the Pi extension and the Claude
 // MCP channel server register exactly the same names and schemas.
 import os from 'node:os';
-import fs from 'node:fs';
 import type { HerdrClient } from '../core/herdr-client.ts';
 import { AGENT_KINDS, DEFAULT_MAX_DEPTH, spawnChild, type SpawnOptions } from '../core/spawn.ts';
 import { removeChildFiles } from '../core/mcp-config.ts';
@@ -12,6 +11,8 @@ import { LOCAL_HOST, hostOf, type ClientFor } from '../core/machine.ts';
 import { spawnResume } from '../core/spawn-resume.ts';
 import { promptChild } from '../core/send.ts';
 import { RETIRE_TOOL, realRetireOps, requestRetirement, type RetireOps } from '../core/retire.ts';
+import type { RemoteOps } from '../core/remote.ts';
+import { lastAssistantMessage } from '../core/transcript.ts';
 import type { Watcher } from '../core/watcher.ts';
 import type { CallerIdentity, ChildRecord, ReportStatus } from '../core/types.ts';
 
@@ -24,6 +25,8 @@ export interface ToolContext {
   watcher: Watcher;
   /** git, gh and the process table, for the retirement request. Tests pass a fake. */
   retireOps?: RetireOps;
+  /** SSH to a child's machine: registering it there, and reading its transcript. */
+  remote?: RemoteOps;
 }
 
 function clientFor(ctx: ToolContext, host: string): Promise<HerdrClient> {
@@ -31,7 +34,7 @@ function clientFor(ctx: ToolContext, host: string): Promise<HerdrClient> {
   return host === LOCAL_HOST ? Promise.resolve(ctx.client) : Promise.reject(new Error(`This session cannot reach herdr machine ${host}.`));
 }
 
-const MACHINE_DESCRIPTION = 'A saved herdr machine, by label or id as `herdr machine list` shows it. Omit it for this machine. A child on another machine cannot call parent_report, because its report lands on that machine\'s disk, so Bellwether follows it through herdr status alone.';
+const MACHINE_DESCRIPTION = 'A saved herdr machine, by label or id as `herdr machine list` shows it. Omit it for this machine. A claude or pi child on another machine is registered there over SSH, and that machine\'s Bellwether daemon carries its parent_report back to this one, so the machine needs Bellwether installed.';
 
 export interface ToolDefinition {
   name: string;
@@ -210,6 +213,7 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
       model: optionalString(args['model']),
       args: Array.isArray(args['args']) ? (args['args'] as string[]) : undefined,
       focus: args['focus'] === true,
+      registerRemote: registrar(ctx, record),
     });
     const { child } = result;
     const lines = result.corrected ? [result.corrected] : [];
@@ -221,6 +225,7 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
     ctx.watcher.reset(child.id);
     const where = child.host === LOCAL_HOST ? '' : ` on machine ${child.host}`;
     lines.push(`${child.name} resumed session ${result.session.value}${where} in pane ${child.paneId}, as the same child ${child.id}.`, 'Bellwether watches it again, and its earlier events and receipts carry on.', `herdr link: ${result.link}`);
+    if (result.reportWarning) lines.push(result.reportWarning);
     return lines.join('\n');
   }
 
@@ -242,9 +247,10 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
     if (!options.name) throw new Error('agent_spawn needs a name for a new child, or resume to message an earlier one.');
     // Resolve the machine before anything is written, so a typo leaves no record.
     const client = await clientFor(ctx, options.host ?? LOCAL_HOST);
-    const { child, link } = await spawnChild(client, record, options, undefined, { forget: (childId) => ctx.watcher.forget(childId) });
+    const { child, link, reportWarning } = await spawnChild(client, record, options, undefined, { forget: (childId) => ctx.watcher.forget(childId), registerRemote: registrar(ctx, record) });
     const where = child.host === LOCAL_HOST ? '' : ` on machine ${child.host}`;
     const lines = [`${child.name} started as a ${child.kind} agent${where} in pane ${child.paneId}, tab ${child.tabId ?? child.paneId}.`, `Bellwether watches it, and your next turn starts when it changes state.`, `herdr link: ${link}`];
+    if (reportWarning) lines.push(reportWarning);
     return lines.join('\n');
   }
 
@@ -275,33 +281,9 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
   if (name === 'agent_read') {
     const lines = typeof args['lines'] === 'number' ? (args['lines'] as number) : undefined;
     if (lines) return (await herdr.paneRead({ paneId: child.paneId, source: 'recent_unwrapped', lines })).trim();
-    if (child.transcript) {
-      try {
-        const content = fs.readFileSync(child.transcript, 'utf8');
-        const messages = content
-          .split('\n')
-          .filter(Boolean)
-          .map((line) => {
-            try {
-              return JSON.parse(line) as Record<string, unknown>;
-            } catch {
-              return undefined;
-            }
-          })
-          .filter((entry): entry is Record<string, unknown> => entry !== undefined);
-        for (let index = messages.length - 1; index >= 0; index -= 1) {
-          const entry = messages[index] as Record<string, unknown>;
-          const message = entry['message'];
-          const role = entry['type'] === 'assistant' ? 'assistant' : typeof message === 'object' && message !== null ? (message as Record<string, unknown>)['role'] : undefined;
-          if (role !== 'assistant') continue;
-          const body = typeof message === 'object' && message !== null ? (message as Record<string, unknown>)['content'] : entry['content'];
-          const text = typeof body === 'string' ? body : Array.isArray(body) ? body.map((part) => (typeof part === 'object' && part !== null && typeof (part as Record<string, unknown>)['text'] === 'string' ? String((part as Record<string, unknown>)['text']) : '')).filter(Boolean).join('\n') : '';
-          if (text.trim()) return text;
-        }
-      } catch {
-        // Fall through to the screen.
-      }
-    }
+    if (hostOf(child) !== LOCAL_HOST) return readRemoteChild(ctx, child, herdr);
+    const message = child.transcript ? lastAssistantMessage(child.transcript) : undefined;
+    if (message) return message;
     return (await herdr.paneRead({ paneId: child.paneId, source: 'recent_unwrapped', lines: 40 })).trim();
   }
 
@@ -331,6 +313,35 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
   }
 
   throw new Error(`Bellwether has no tool named ${name}`);
+}
+
+function registrar(ctx: ToolContext, record: { id: string }): ((child: ChildRecord) => Promise<{ mcpConfig?: string }>) | undefined {
+  const remote = ctx.remote;
+  return remote ? (child) => remote.register(record, child) : undefined;
+}
+
+/**
+ * Read a child on another machine. Its transcript sits on that machine's disk,
+ * so the read goes over the same SSH hop as its reports and works after the
+ * child exits, while the transcript is still there. When the hop fails, the
+ * last report the child sent is what this machine holds, and then the screen,
+ * which only a live child has.
+ */
+async function readRemoteChild(ctx: ToolContext, child: ChildRecord, herdr: HerdrClient): Promise<string> {
+  let hopError: string | undefined;
+  try {
+    const message = await ctx.remote?.lastMessage(child);
+    if (message?.trim()) return message;
+  } catch (error) {
+    hopError = (error as Error).message;
+  }
+  const why = hopError ? `Its transcript on machine ${child.host} could not be read (${hopError}).` : `Machine ${child.host} has no transcript message for it.`;
+  if (child.lastReport) return `${why} Its last report, ${child.lastReport.status} at ${child.lastReport.at}:\n${child.lastReport.text}`;
+  if (!child.exitedAt) {
+    const screen = await herdr.paneRead({ paneId: child.paneId, source: 'recent_unwrapped', lines: 40 }).catch(() => '');
+    if (screen.trim()) return screen.trim();
+  }
+  return `${why} It never reported${child.exitedAt ? ', and it has exited, so there is no screen to read' : ''}.`;
 }
 
 export function hostEnv(): Record<string, string> {

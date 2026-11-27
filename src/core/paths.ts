@@ -57,3 +57,27 @@ export function spoolPath(id: string): string {
 export function slug(value: string): string {
   return value.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 120) || 'unnamed';
 }
+
+/** What this machine's daemon holds for children whose parent runs on another machine. */
+export function relayDir(): string {
+  return path.join(bellwetherHome(), 'relay');
+}
+
+/** One record per child whose reports this daemon carries to another machine. */
+export function relayChildPath(childId: string): string {
+  return path.join(relayDir(), 'children', `${slug(childId)}.json`);
+}
+
+/** Reports waiting to reach another machine, one file each, named by receipt. */
+export function relayOutboxDir(): string {
+  return path.join(relayDir(), 'outbox');
+}
+
+export function relayOutboxPath(receipt: string): string {
+  return path.join(relayOutboxDir(), `${slug(receipt)}.json`);
+}
+
+/** The machine settings an operator may write by hand. */
+export function configPath(): string {
+  return path.join(bellwetherHome(), 'config.json');
+}

@@ -10,7 +10,7 @@ import { LOCAL_HOST } from './machine.ts';
 import { newChildId } from './outbox.ts';
 import { readParent, removeChild, updateChild, upsertChild } from './registry.ts';
 import { clearRetirement } from './retire.ts';
-import { STARTUP_HOLD_MS, STARTUP_TIMEOUT_MS, childArgs, childEnv, childMcpConfig, harnessOf, herdrLink, startWithRetry } from './spawn.ts';
+import { STARTUP_HOLD_MS, STARTUP_TIMEOUT_MS, childArgs, childEnv, childReportPath, harnessOf, herdrLink, startWithRetry, type RegisterRemote } from './spawn.ts';
 import { watchStartup, type StartupDialog, type StartupWatch } from './startup-dialogs.ts';
 import { resolveTranscript, sessionFrom } from './transcript.ts';
 import type { ChildRecord, ParentRecord } from './types.ts';
@@ -74,12 +74,16 @@ export interface ResumeOptions {
   startupTimeoutMs?: number;
   /** How long a screen takes to redraw after a key. Tests shorten it. */
   redrawMs?: number;
+  /** Register a child on another machine again, so its reports still come back. */
+  registerRemote?: RegisterRemote;
 }
 
 export interface ResumeResult {
   child: ChildRecord;
   session: HarnessSession;
   link: string;
+  /** Why a child on another machine cannot call parent_report, when its registration there failed. */
+  reportWarning?: string;
   /** The startup dialogs the resume answered, in order. */
   answered?: StartupDialog[];
 }
@@ -172,10 +176,13 @@ export async function resumeChild(client: HerdrClient, parent: ParentRecord, tar
   const workspaceId = options.workspaceId ?? (child.host === LOCAL_HOST ? parent.workspaceId : undefined);
   let tabId: string | undefined;
   let startup: StartupWatch | undefined;
+  let reportWarning: string | undefined;
   try {
     const briefFile = options.prompt ? writeBrief(child.id, options.prompt) : undefined;
     // The same child id as before, so the server resolves to the same record.
-    const mcpConfigFile = childMcpConfig({ id: child.id, kind, host: child.host });
+    const reportPath = await childReportPath({ ...child, kind }, options.registerRemote);
+    const mcpConfigFile = reportPath.mcpConfigFile;
+    reportWarning = reportPath.warning;
     const tab = await client.tabCreate({ workspaceId, cwd: child.cwd, label: child.name, env: childEnv(parent, child), focus: options.focus ?? false }, signal);
     tabId = tab.tabId ?? tab.paneId;
     if (!tab.paneId) throw new Error('herdr created no pane for the resumed tab');
@@ -241,5 +248,5 @@ export async function resumeChild(client: HerdrClient, parent: ParentRecord, tar
   });
 
   const saved = readParent(parent.id)?.children.find((entry) => entry.id === child.id) ?? child;
-  return { child: saved, session, link: herdrLink('pane', child.paneId), answered };
+  return { child: saved, session, link: herdrLink('pane', child.paneId), answered, ...(reportWarning ? { reportWarning } : {}) };
 }

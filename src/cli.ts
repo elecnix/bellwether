@@ -9,10 +9,15 @@ import path from 'node:path';
 import { HerdrClient, resolveSocketPath } from './core/herdr-client.ts';
 import { bellwetherHome } from './core/paths.ts';
 import { emptyParent, listParents, readParent, saveParent } from './core/registry.ts';
-import { reportToParent, writeReport } from './core/report.ts';
-import { DaemonClient } from './daemon/client.ts';
+import { isReportStatus } from './core/report.ts';
+import { RELAY_SCHEMA, saveRelayRecord } from './core/relay-records.ts';
+import { relayChildPath } from './core/paths.ts';
+import { writeMcpConfig } from './core/mcp-config.ts';
+import { REFUSED_EXIT } from './core/ssh.ts';
+import { lastAssistantMessage, resolveTranscript } from './core/transcript.ts';
+import { DaemonClient, ReportRefused, postReport } from './daemon/client.ts';
 import { daemonIsLive, startDaemon } from './daemon/server.ts';
-import type { OutboxEntry, ReportStatus } from './core/types.ts';
+import type { OutboxEntry } from './core/types.ts';
 
 interface Flags {
   [key: string]: string | number | boolean | undefined;
@@ -43,6 +48,24 @@ function parseArgs(argv: string[]): { positional: string[]; flags: Flags } {
     index += 1;
   }
   return { positional, flags };
+}
+
+/**
+ * Parse flags that each take the next word verbatim, whatever it starts with.
+ * A report's text arrives from another machine and may begin with dashes.
+ */
+function exactFlags(argv: string[], names: readonly string[]): Record<string, string> {
+  const values: Record<string, string> = {};
+  for (let index = 0; index < argv.length; index += 1) {
+    const token = argv[index] as string;
+    const name = token.startsWith('--') ? token.slice(2) : '';
+    if (!names.includes(name)) throw new Error(`unknown argument ${token}; expected ${names.map((entry) => `--${entry}`).join(', ')}`);
+    const value = argv[index + 1];
+    if (value === undefined) throw new Error(`${token} needs a value`);
+    values[name] = value;
+    index += 1;
+  }
+  return values;
 }
 
 function str(flags: Flags, key: string): string | undefined {
@@ -189,7 +212,9 @@ async function main(): Promise<number> {
     console.log('  read   CHILD [--lines N]');
     console.log('  send   CHILD [--text TEXT | --keys KEY,...]');
     console.log('  stop   CHILD [--force]');
-    console.log('  report --status done|needs-input|progress --text TEXT');
+    console.log('  report --child ID --status done|needs-input|progress --text TEXT [--parent ID] [--receipt ID]');
+    console.log('  relay-register --child ID --name NAME --kind KIND --parent ID --parent-host SSH_TARGET [--cwd DIR]');
+    console.log('  last-message --harness pi|claude-code --session ID [--cwd DIR]');
     return 0;
   }
 
@@ -211,17 +236,9 @@ async function main(): Promise<number> {
     return 0;
   }
 
-  if (command === 'report') {
-    const status = (str(flags, 'status') ?? 'progress') as ReportStatus;
-    const text = str(flags, 'text') ?? '';
-    if (!text) throw new Error('report needs --text');
-    if (!reportToParent(status, text)) {
-      const parentId = str(flags, 'parent');
-      if (!parentId) throw new Error('report needs BELLWETHER_PARENT or --parent');
-      writeReport({ parentId, childName: process.env['BELLWETHER_CHILD_NAME'] ?? 'child', status, text });
-    }
-    return 0;
-  }
+  if (command === 'report') return report(rest);
+  if (command === 'relay-register') return relayRegister(rest);
+  if (command === 'last-message') return lastMessage(rest);
 
   const { id: parentId } = parentFor(flags);
   const parent = readParent(parentId);
@@ -295,6 +312,69 @@ async function main(): Promise<number> {
   } finally {
     await daemon.close();
   }
+  return 0;
+}
+
+/**
+ * Post one report to this machine's daemon. The far end of a relay hop runs
+ * it with every flag set; a child's own shell may leave out --child, which
+ * then comes from the BELLWETHER_CHILD its tab carries. The daemon checks the
+ * child, and the parent when given, against its own records.
+ */
+async function report(argv: string[]): Promise<number> {
+  const values = exactFlags(argv, ['parent', 'child', 'receipt', 'status', 'text']);
+  const childId = values['child'] ?? process.env['BELLWETHER_CHILD'];
+  const status = values['status'] ?? 'progress';
+  const text = values['text'] ?? '';
+  if (!childId) throw new Error('report needs --child, or a BELLWETHER_CHILD in the environment');
+  if (!isReportStatus(status)) throw new Error('report --status must be done, needs-input or progress');
+  if (!text.trim()) throw new Error('report needs --text');
+  try {
+    const posted = await postReport({ childId, status, text, ...(values['parent'] ? { parentId: values['parent'] } : {}), ...(values['receipt'] ? { receipt: values['receipt'] } : {}) });
+    console.log(posted.text);
+    return 0;
+  } catch (error) {
+    console.error(`bellwether report: ${(error as Error).message}`);
+    // A refusal is final; anything else is worth another try by the sender.
+    return error instanceof ReportRefused ? REFUSED_EXIT : 1;
+  }
+}
+
+/**
+ * Record, on this machine, a child whose parent runs on another machine. A
+ * parent's daemon runs it here over SSH before it creates the child's tab.
+ * It prints the record path and, for a Claude Code child, the MCP config the
+ * child starts with, as one JSON line.
+ */
+function relayRegister(argv: string[]): number {
+  const values = exactFlags(argv, ['child', 'name', 'kind', 'parent', 'parent-host', 'cwd']);
+  const childId = values['child'];
+  const parentId = values['parent'];
+  const parentHost = values['parent-host']?.trim();
+  if (!childId || !parentId || !parentHost) throw new Error('relay-register needs --child, --parent and --parent-host');
+  saveRelayRecord({ schema: RELAY_SCHEMA, childId, name: values['name'] ?? childId, kind: values['kind'] ?? 'other', parentId, parentHost, ...(values['cwd'] ? { cwd: values['cwd'] } : {}), registeredAt: new Date().toISOString() });
+  const mcpConfig = values['kind'] === 'claude' ? writeMcpConfig(childId) : undefined;
+  console.log(JSON.stringify({ record: relayChildPath(childId), ...(mcpConfig ? { mcpConfig } : {}) }));
+  return 0;
+}
+
+/** Print a harness session's last assistant message from this machine's transcript. */
+function lastMessage(argv: string[]): number {
+  const values = exactFlags(argv, ['harness', 'session', 'cwd']);
+  const harness = values['harness'];
+  const session = values['session'];
+  if (!harness || !session) throw new Error('last-message needs --harness and --session');
+  const transcript = resolveTranscript(harness, session, values['cwd']);
+  if (!transcript) {
+    console.error(`no transcript for ${harness} session ${session} on this machine`);
+    return 1;
+  }
+  const text = lastAssistantMessage(transcript);
+  if (!text) {
+    console.error(`the transcript ${transcript} holds no assistant message`);
+    return 1;
+  }
+  process.stdout.write(text);
   return 0;
 }
 

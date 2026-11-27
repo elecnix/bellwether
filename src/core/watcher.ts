@@ -13,7 +13,7 @@ import { LOCAL_HOST, hostOf, type ClientFor } from './machine.ts';
 import { Outbox } from './outbox.ts';
 import { mutateParent, readParent, updateChild } from './registry.ts';
 import { DIALOG_NAMES, detectDialog, watchStartup } from './startup-dialogs.ts';
-import { resolveTranscript, sessionFrom } from './transcript.ts';
+import { lastAssistantMessage, resolveTranscript, sessionFrom } from './transcript.ts';
 import { removeChildFiles } from './mcp-config.ts';
 import { childLabel } from './label.ts';
 import { spoolPath } from './paths.ts';
@@ -623,25 +623,7 @@ export class Watcher {
   /** The child's last assistant message, read from its transcript. */
   private async lastMessage(child: ChildRecord): Promise<string | undefined> {
     const transcript = await this.transcriptFor(child);
-    if (!transcript) return undefined;
-    try {
-      const content = fs.readFileSync(transcript, 'utf8');
-      const lines = content.split('\n').filter((line) => line.trim().length > 0);
-      for (let index = lines.length - 1; index >= 0; index -= 1) {
-        const entry: unknown = JSON.parse(lines[index] ?? 'null');
-        if (typeof entry !== 'object' || entry === null) continue;
-        const record = entry as Record<string, unknown>;
-        const message = record['message'];
-        const role = record['type'] === 'assistant' ? 'assistant' : typeof message === 'object' && message !== null ? (message as Record<string, unknown>)['role'] : undefined;
-        if (role !== 'assistant') continue;
-        const body = typeof message === 'object' && message !== null ? (message as Record<string, unknown>)['content'] : record['content'];
-        const text = flatten(body);
-        if (text) return text;
-      }
-    } catch {
-      return undefined;
-    }
-    return undefined;
+    return transcript ? lastAssistantMessage(transcript) : undefined;
   }
 
   private offer(child: ChildRecord, event: ChildEventKind, text: string): void {
@@ -736,15 +718,6 @@ export class Watcher {
     if (minutes < 90) return `${minutes} min`;
     return `${Math.round(minutes / 60)} h`;
   }
-}
-
-function flatten(value: unknown): string | undefined {
-  if (typeof value === 'string') return value;
-  if (Array.isArray(value)) {
-    const parts = value.map((entry) => (typeof entry === 'string' ? entry : typeof entry === 'object' && entry !== null && typeof (entry as Record<string, unknown>)['text'] === 'string' ? String((entry as Record<string, unknown>)['text']) : '')).filter(Boolean);
-    return parts.length ? parts.join('\n') : undefined;
-  }
-  return undefined;
 }
 
 function trim(value: string, limit = 3000): string {

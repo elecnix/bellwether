@@ -4,6 +4,7 @@
 // client of the session, and tests pass a fake in its place.
 import { HerdrClient } from '../core/herdr-client.ts';
 import { machineClients } from '../core/machine.ts';
+import { remoteOps } from '../core/remote.ts';
 import { emptyParent, parentId, readParent, saveParent } from '../core/registry.ts';
 import { Watcher } from '../core/watcher.ts';
 import { runBellwetherTool, type ToolContext } from '../integrations/tools.ts';
@@ -37,7 +38,7 @@ export function createHerdrService(parent: ParentHello, id: string): ParentServi
   // machine's bridge is dialled per request and its profile looked up once.
   const clientFor = machineClients(client);
   const watcher = new Watcher({ client, clientFor, parentId: record.id, onEntries: (entries) => handler?.(entries) });
-  const context: ToolContext = { client, clientFor, parentId: record.id, watcher };
+  const context: ToolContext = { client, clientFor, parentId: record.id, watcher, remote: remoteOps() };
   const paneWatches = new Set<{ close: () => void }>();
   watcher.start();
   return {

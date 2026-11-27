@@ -59,6 +59,8 @@ export interface SpawnOptions {
 export interface SpawnResult {
   child: ChildRecord;
   link: string;
+  /** Why a child on another machine cannot call parent_report, when its registration there failed. */
+  reportWarning?: string;
   /** The startup dialogs the spawn answered, in order. */
   answered?: StartupDialog[];
 }
@@ -89,9 +91,38 @@ export function childArgs(kind: string, options: SpawnOptions, briefFile?: strin
   return args;
 }
 
+/**
+ * Record a child on the machine it runs on, so that machine's daemon carries
+ * its reports back here. It resolves with the MCP config path on that machine
+ * for a Claude Code child.
+ */
+export type RegisterRemote = (child: ChildRecord) => Promise<{ mcpConfig?: string }>;
+
 export interface SpawnHooks {
   /** Drop whatever the watcher holds for a child whose spawn failed. */
   forget?: (childId: string) => void;
+  /** Register a child on another machine. Without it, such a child cannot report. */
+  registerRemote?: RegisterRemote;
+}
+
+/**
+ * How a child will reach parent_report: the MCP config it starts with, and a
+ * warning when it cannot report at all. A child on this machine gets a config
+ * here. A Claude Code or Pi child on another machine is registered there
+ * first, and its config is the one that machine wrote. A failed registration
+ * does not stop the spawn: herdr status still follows the child, and the
+ * warning says why its reports cannot arrive.
+ */
+export async function childReportPath(child: ChildRecord, register?: RegisterRemote): Promise<{ mcpConfigFile?: string; warning?: string }> {
+  if ((child.host ?? LOCAL_HOST) === LOCAL_HOST) return { mcpConfigFile: childMcpConfig(child) };
+  if (child.harness !== 'claude-code' && child.harness !== 'pi') return {};
+  if (!register) return { warning: `${child.name} runs on machine ${child.host}, and this session cannot register it there, so it cannot call parent_report.` };
+  try {
+    const { mcpConfig } = await register(child);
+    return { mcpConfigFile: child.kind === 'claude' ? mcpConfig : undefined };
+  } catch (error) {
+    return { warning: `${child.name} could not be registered on machine ${child.host}, so it cannot call parent_report: ${(error as Error).message}` };
+  }
 }
 
 export async function spawnChild(client: HerdrClient, parent: ParentRecord, options: SpawnOptions, signal?: AbortSignal, hooks: SpawnHooks = {}): Promise<SpawnResult> {
@@ -122,9 +153,12 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
 
   let tabId: string | undefined;
   let startup: StartupWatch | undefined;
+  let reportWarning: string | undefined;
   try {
     const briefFile = options.prompt ? writeBrief(child.id, options.prompt) : undefined;
-    const mcpConfigFile = childMcpConfig(child);
+    const reportPath = await childReportPath(child, hooks.registerRemote);
+    const mcpConfigFile = reportPath.mcpConfigFile;
+    reportWarning = reportPath.warning;
 
     // 2. The tab carries the environment the child needs to find its parent.
     const env = childEnv(parent, child);
@@ -204,7 +238,7 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
     delete entry.startingUntil;
   });
 
-  return { child, link: herdrLink('pane', child.paneId), answered };
+  return { child, link: herdrLink('pane', child.paneId), answered, ...(reportWarning ? { reportWarning } : {}) };
 }
 
 /**
@@ -220,10 +254,9 @@ async function abandon(client: HerdrClient, parentId: string, childId: string, t
 }
 
 /**
- * Write a Claude Code child's MCP configuration, when its server can resolve
- * the child. A server talks to the daemon on its own machine, and only this
- * machine's daemon holds the child record, so a child on another machine gets
- * none.
+ * Write a Claude Code child's MCP configuration on this machine. A server
+ * talks to the daemon on its own machine, so a child on another machine gets
+ * the config its own machine writes when the spawn registers it there.
  */
 export function childMcpConfig(child: Pick<ChildRecord, 'id' | 'kind' | 'host'>): string | undefined {
   if (child.kind !== 'claude' || (child.host ?? LOCAL_HOST) !== LOCAL_HOST) return undefined;

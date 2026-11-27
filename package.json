@@ -1,6 +1,6 @@
 {
   "name": "@elecnix/bellwether",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Give an agent in herdr tools to start child agents in other tabs, and a new turn when a child changes state.",
   "license": "MIT",
   "type": "module",

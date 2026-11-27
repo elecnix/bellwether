@@ -75,7 +75,7 @@ export const codex: HarnessEntry = {
   since: { protocol: 4, version: '0.1.5' },
   // Codex has no file attachment, so the prompt is a sentence that names the
   // brief. Under -a never it reads the file without asking.
-  brief: { where: 'prompts', argument: briefSentence },
+  brief: { where: 'prompts', launch: briefSentence },
   chosenBy: 'flag',
   launchArgs({ model, extra = [], resume = [], files }) {
     const args = [

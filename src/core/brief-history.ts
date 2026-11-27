@@ -10,7 +10,7 @@ import fs from 'node:fs';
 import { promptPath } from './paths.ts';
 import type { ChildBrief, ChildRecord } from './types.ts';
 
-type BriefFacts = Pick<ChildRecord, 'id' | 'startedAt' | 'briefs' | 'lastReport' | 'turnNotified'>;
+type BriefFacts = Pick<ChildRecord, 'id' | 'startedAt' | 'briefs' | 'lastReport' | 'turnNotified'> & Partial<Pick<ChildRecord, 'messages'>>;
 
 /**
  * The briefs a record names. A record written before briefs were numbered
@@ -29,6 +29,9 @@ export function briefRead(child: BriefFacts, brief: ChildBrief): boolean {
   if (report >= Date.parse(brief.at)) return true;
   const turn = child.turnNotified;
   if (turn && (brief.paneId === undefined || turn.paneId === brief.paneId)) return true;
+  // A brief that went in as a session message is read once its adapter says the model took it.
+  const message = brief.delivery?.message;
+  if (brief.delivery?.path === 'session' && message && child.messages?.some((entry) => entry.id === message && entry.readAt)) return true;
   return false;
 }
 

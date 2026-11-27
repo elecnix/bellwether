@@ -25,9 +25,9 @@ export const envHarness: HarnessEntry = {
   harness: 'env-agent',
   label: 'Env Agent',
   since: { protocol: 4, version: '0.1.5' },
-  brief: { where: 'prompts', argument: (file) => `@${file}` },
+  brief: { where: 'prompts' },
   chosenBy: 'flag',
-  launchArgs: ({ extra = [], resume = [], files }) => [...(files.mcpConfigFile ? [`--mcp-config=${files.mcpConfigFile}`] : []), ...(files.briefFile ? [`@${files.briefFile}`] : []), ...resume, ...extra],
+  launchArgs: ({ extra = [], resume = [], files }) => [...(files.mcpConfigFile ? [`--mcp-config=${files.mcpConfigFile}`] : []), ...resume, ...extra],
   session: { from: 'herdr', kind: 'path' },
   reports: {
     via: 'mcp-config',

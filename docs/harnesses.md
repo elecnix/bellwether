@@ -6,10 +6,10 @@ Each `agent_spawn` kind names the harness a child runs in, and Bellwether's harn
 
 | Kind | Starts | Brief | Session | Conversation | Reports through | Dialogs | Resume | Move | Other machine |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `pi` | yes | `@file`, attached | herdr, as a file path | session file | the Bellwether pi extension, loaded with `-e` | pi's extension | `--session` | yes | yes |
-| `claude` | yes | `@file`, attached | herdr, as an id | transcript file | its own MCP server, through `--mcp-config` | a `Notification` hook | `--resume` | yes | yes |
+| `pi` | yes | a message through the Bellwether pi extension, typed as the fallback | herdr, as a file path | session file | the Bellwether pi extension, loaded with `-e` | pi's extension | `--session` | yes | yes |
+| `claude` | yes | a message through its own Bellwether server, typed as the fallback | herdr, as an id | transcript file | its own MCP server, through `--mcp-config` | a `Notification` hook | `--resume` | yes | yes |
 | `opencode` | yes | a sentence that references a file in the working directory | the spawn picks the id and finds it in OpenCode's store | OpenCode's store | its own MCP server, named in `OPENCODE_CONFIG` | the screen | no | no | no |
-| `omp` | yes, after you run `herdr integration install omp` | `@file`, attached | herdr, as a file path | session file | the Bellwether pi extension, loaded with `-e` | herdr's omp integration, then the screen | `--session` | no | yes |
+| `omp` | yes, after you run `herdr integration install omp` | a message through the Bellwether pi extension, typed as the fallback | herdr, as a file path | session file | the Bellwether pi extension, loaded with `-e` | herdr's omp integration, then the screen | `--session` | no | yes |
 | `codex` | yes | a sentence that references a file | the spawn finds it in Codex's rollouts | the rollout | its own MCP server, defined in a `-c` override on its launch line | the screen | `codex resume` | no | no |
 | `kilo` | yes, on the native binary | a sentence that references a file in the working directory | found in kilo's store by directory, start time and prompt | kilo's store | its own MCP server, named in `KILO_CONFIG` | herdr's screen rule for kilo | `--session` | no | no |
 | `cline` | yes, in Cline's sandbox mode | a sentence that references a file | in the child's own `sessions.db` | the child's `sessions.db` | its own MCP server, named in `CLINE_MCP_SETTINGS_PATH` | the screen | no | no | no |
@@ -18,7 +18,7 @@ herdr reports `working`, `idle`, `blocked` and `done` for every kind it detects.
 
 Codex doesn't ask its folder-trust question, because its launch line marks the folder trusted for that run.
 
-A `claude`, `pi` or `omp` child takes a parent's message in its session, and herdr types it into the pane of any other kind. [tools.md](tools.md#messages-to-a-child) gives the cases and the record.
+A `claude`, `pi` or `omp` child takes a parent's message, and its brief, in its session, and herdr types a message into the pane of any other kind. [tools.md](tools.md#messages-to-a-child) gives the cases and the record, and [the brief](tools.md#the-brief) gives the order a spawn takes.
 
 ## Each kind in three lines
 
@@ -126,7 +126,7 @@ When a release changes a kind's entry, the running daemon must serve the argumen
 
 The [OpenCode](opencode.md) and [Codex](codex.md) topics cover the launch arguments, the session lookup and the refusals, and so does the [kilo](kilo.md) topic.
 
-An omp child starts as `omp [--model provider/id] -e <pi extension> @<brief>`. omp takes the model as one value, either `provider/id` or a name it matches, so `agent_spawn` refuses a separate `provider` for this kind.
+An omp child starts as `omp [--model provider/id] -e <pi extension>`, and takes its brief as a message once it runs. omp takes the model as one value, either `provider/id` or a name it matches, so `agent_spawn` refuses a separate `provider` for this kind.
 
 Without a model, omp uses the default in its own settings. `agent_list` shows the model once omp writes the first `model_change` entry to its session file.
 

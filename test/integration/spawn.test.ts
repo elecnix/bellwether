@@ -14,7 +14,7 @@ import { mcpConfigPath, promptPath } from '../../src/core/paths.ts';
 import { emptyParent, readParent, saveParent } from '../../src/core/registry.ts';
 import { spawnChild } from '../../src/core/spawn.ts';
 import type { ParentRecord } from '../../src/core/types.ts';
-import { startFakeHerdr, type FakeHerdr, type FakeHerdrOptions, harnessStarts, harnessStart } from '../fixtures/fake-herdr.ts';
+import { startFakeHerdr, type FakeHerdr, type FakeHerdrOptions, harnessStarts, harnessStart, prompted } from '../fixtures/fake-herdr.ts';
 import { FAKE_KIND } from '../fixtures/fake-harness.ts';
 
 const brief = 'Publish the package.\n\nRun the gates first, then tag the release.\nTell the parent when it is done.';
@@ -53,7 +53,7 @@ function startArgs(herdr: FakeHerdr): string[] {
   return start.args as string[];
 }
 
-test('a multi-line prompt reaches Claude Code as an @ mention of a private file', async () => {
+test('a multi-line prompt stays in a private file, and Claude Code starts with no brief on its command line', async () => {
   // The child reaches its prompt with no dialog, and herdr reports it idle,
   // which is what lets the spawn return.
   let herdr: FakeHerdr | undefined;
@@ -68,8 +68,14 @@ test('a multi-line prompt reaches Claude Code as an @ mention of a private file'
     const { child } = await spawnChild(space.client, space.parent, { kind: 'claude', name: 'npm-publish', prompt: brief });
     const file = promptPath(child.id);
     const args = startArgs(space.herdr);
-    assert.ok(args.includes(`@${file}`), `no @ mention of ${file} in ${JSON.stringify(args)}`);
+    // The brief arrives after the start, as a message (issue #162), so the launch line names neither it nor its file.
+    assert.ok(!args.some((arg) => arg.includes(file) || arg.startsWith('@')), `the launch line points at the brief: ${JSON.stringify(args)}`);
     assert.ok(!args.some((arg) => arg.includes('Publish the package')), 'the prompt text reached the command line');
+    // No daemon carries this call, so the brief is typed, whole, and the record says why.
+    assert.deepEqual(prompted(space.herdr, child.paneId), [brief]);
+    const delivery = readParent(space.parent.id)?.children.find((entry) => entry.id === child.id)?.briefs?.[0]?.delivery;
+    assert.equal(delivery?.path, 'keystrokes');
+    assert.match(delivery?.reason ?? '', /no Bellwether daemon carries this call/);
     assert.equal(fs.readFileSync(file, 'utf8'), brief);
     assert.equal(fs.statSync(file).mode & 0o777, 0o600);
     assert.equal(fs.statSync(path.dirname(file)).mode & 0o777, 0o700);
@@ -78,14 +84,19 @@ test('a multi-line prompt reaches Claude Code as an @ mention of a private file'
   }
 });
 
-test('Pi gets the same @ mention, and a harness that attaches no file a one-line pointer', async () => {
+test('Pi and a harness with no adapter start with no brief on the launch line, and get it typed when no session takes it', async () => {
   const space = await room();
   try {
     const { child: pi } = await spawnChild(space.client, space.parent, { kind: 'pi', name: 'pi-child', prompt: brief });
-    assert.ok(startArgs(space.herdr).includes(`@${promptPath(pi.id)}`));
+    assert.ok(!startArgs(space.herdr).some((arg) => arg.includes(promptPath(pi.id))), 'pi was pointed at its brief file');
+    assert.deepEqual(prompted(space.herdr, pi.paneId), [brief]);
     space.herdr.requests.length = 0;
     const { child: other } = await spawnChild(space.client, readParent(space.parent.id) ?? space.parent, { kind: FAKE_KIND, name: 'other-child', prompt: brief });
-    assert.deepEqual(startArgs(space.herdr), [`--mcp-config=${mcpConfigPath(other.id)}`, `Your task is in ${promptPath(other.id)}. Read it, then do what it says.`]);
+    assert.deepEqual(startArgs(space.herdr), [`--mcp-config=${mcpConfigPath(other.id)}`]);
+    assert.deepEqual(prompted(space.herdr, other.paneId), [brief]);
+    const delivery = readParent(space.parent.id)?.children.find((entry) => entry.id === other.id)?.briefs?.[0]?.delivery;
+    assert.equal(delivery?.path, 'keystrokes');
+    assert.match(delivery?.reason ?? '', /fake-agent is a test harness with no inbound path/);
   } finally {
     await space.close();
   }

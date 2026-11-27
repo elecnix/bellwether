@@ -26,7 +26,7 @@ import { harnessFor, resolveTranscript } from '../core/harnesses/index.ts';
 import type { CallerIdentity, OutboxEntry } from '../core/types.ts';
 import type { RosterChild } from '../core/roster.ts';
 import type { InboxMessage, MessageAckRequest, RelayHostState, RelayReport, ServedTool } from './protocol.ts';
-import { unreadSessionMessages, type Inbox, type InboxAnswer } from '../core/send.ts';
+import { BRIEF_SESSION_WAIT_MS, unreadSessionMessages, type Inbox, type InboxAnswer } from '../core/send.ts';
 import { updateChild } from '../core/registry.ts';
 import { UnknownTool, servedTools, type ToolScope } from '../integrations/tools.ts';
 import { FEATURES } from './features.ts';
@@ -79,6 +79,8 @@ export interface DaemonOptions {
   pruneDelayMs?: number;
   /** How long a child's session has to take a parent's message before it is typed instead. Default 5 s. */
   messageAckMs?: number;
+  /** How long a start's brief waits for the child's session to connect before it is typed instead. Default 30 s. */
+  sessionWaitMs?: number;
   /** The tools a session gets, by its hello. Default the feature table's tools for its identity; a test passes a newer table. */
   tools?: (parent: ParentHello) => ServedTool[];
 }
@@ -175,6 +177,9 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
   const inboxWaits = new Map<string, { socket: net.Socket; settle: (answer: InboxAnswer) => void }>();
   /** Messages whose wait ran out, so a late acceptance is logged as a second copy. */
   const lapsed = new Set<string>();
+  // A start's brief waits here for the child's session to say hello.
+  const sessionWaitMs = options.sessionWaitMs ?? BRIEF_SESSION_WAIT_MS;
+  const arrivals = new Map<string, Set<() => void>>();
 
   /** The newest connection of a child's own session that takes messages. */
   const inboxSocket = (childId: string): net.Socket | undefined => {
@@ -211,10 +216,35 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
     return older ? 'older' : 'none';
   };
 
+  /**
+   * Wait until a session of this child that takes messages is connected, or
+   * the bound runs out. A hello wakes the wait, so nothing polls.
+   */
+  const awaitSession = (childId: string, ms: number): Promise<boolean> => {
+    if (inboxSocket(childId)) return Promise.resolve(true);
+    if (ms <= 0) return Promise.resolve(false);
+    return new Promise<boolean>((resolve) => {
+      const set = arrivals.get(childId) ?? new Set<() => void>();
+      arrivals.set(childId, set);
+      const finish = (connected: boolean): void => {
+        clearTimeout(timer);
+        set.delete(arrive);
+        if (set.size === 0) arrivals.delete(childId);
+        resolve(connected);
+      };
+      const arrive = (): void => finish(true);
+      const timer = setTimeout(() => finish(false), ms);
+      timer.unref?.();
+      set.add(arrive);
+    });
+  };
+
   /** Put a message in the session of a child whose Bellwether adapter is connected to this daemon. */
-  const sessionInbox = (child: { id: string; name: string; kind: string }, message: InboxMessage): Promise<InboxAnswer> => {
+  const sessionInbox = async (child: { id: string; name: string; kind: string }, message: InboxMessage, waitMs = 0): Promise<InboxAnswer> => {
+    await awaitSession(child.id, waitMs);
     const socket = inboxSocket(child.id);
-    if (!socket) return Promise.resolve({ delivered: false, reason: `no session of ${child.name} that takes messages is connected to this machine's Bellwether daemon: its harness has not started its Bellwether ${harnessFor(child.kind)?.inbox.via === 'claude-channel' ? 'channel server' : 'extension'} yet, or that copy predates messages` });
+    const connected = waitMs > 0 ? `connected to this machine's Bellwether daemon within ${Math.round(waitMs / 100) / 10} s of the start` : "is connected to this machine's Bellwether daemon";
+    if (!socket) return { delivered: false, reason: `no session of ${child.name} that takes messages ${connected}: its harness has not started its Bellwether ${harnessFor(child.kind)?.inbox.via === 'claude-channel' ? 'channel server' : 'extension'} yet, or that copy predates messages` };
     return new Promise<InboxAnswer>((resolve) => {
       const timer = setTimeout(() => {
         inboxWaits.delete(message.id);
@@ -240,11 +270,11 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
    * that session took it. A far daemon that predates relay-message, or a
    * machine out of reach, gives the reason the caller records for typing.
    */
-  const inbox: Inbox = async (parentId, child, message) => {
+  const inbox: Inbox = async (parentId, child, message, options = {}) => {
     const host = hostOf(child);
-    if (host === LOCAL_HOST) return sessionInbox(child, message);
+    if (host === LOCAL_HOST) return sessionInbox(child, message, options.awaitSession ? sessionWaitMs : 0);
     try {
-      const answer = await links.message(host, parentId, child.id, message);
+      const answer = await links.message(host, parentId, child.id, message, options);
       return answer.delivered ? answer : { delivered: false, reason: `machine ${host} answered: ${answer.reason}` };
     } catch (error) {
       return { delivered: false, reason: (error as Error).message };
@@ -603,6 +633,10 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
           reply({ type: 'result', id: request.id, text: JSON.stringify({ delivered: false, reason: `this machine holds no running child ${request.childId} for parent ${request.parentId}` }) });
           return;
         }
+        // A start's brief waits for the child's session first. It is kept on
+        // the relay record only once that session is here, so the hello's
+        // replay cannot hand the session a second copy.
+        if (request.awaitSession) await awaitSession(request.childId, sessionWaitMs);
         // Kept before the push, so a read that comes back at once finds it.
         keepRelayMessage(request.childId, request.message);
         const answer = await sessionInbox({ id: record.childId, name: record.name, kind: record.kind }, request.message);
@@ -635,7 +669,11 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
         const pending = session.service.pending();
         reply({ type: 'hello', protocol: DAEMON_PROTOCOL, parentId: session.parentId, pid, pending, ...rosterFor(session.service, pending), version: BELLWETHER_VERSION, build: BELLWETHER_BUILD_ID, minProtocol: MIN_CLIENT_PROTOCOL, features: SERVED, tools });
         // A child's session that reconnects, after a hand-over or a restart of its server, takes again what it has not read.
-        if (request.parent.childId && request.parent.accepts?.includes('message')) replayMessages(socket, request.parent.childId);
+        if (request.parent.childId && request.parent.accepts?.includes('message')) {
+          replayMessages(socket, request.parent.childId);
+          // A start that waits to hand this child its brief goes on now.
+          for (const arrive of [...(arrivals.get(request.parent.childId) ?? [])]) arrive();
+        }
         return;
       }
       if (request.type === 'bye') {

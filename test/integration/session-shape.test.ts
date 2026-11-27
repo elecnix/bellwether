@@ -109,10 +109,13 @@ test('a resumed child comes back with the same session and id, and takes a promp
   assert.deepEqual(args.slice(args.indexOf('--resume'), args.indexOf('--resume') + 2), ['--resume', 'sess-1']);
   // The prompt travels in a private file, never on the command line.
   assert.equal(args.some((arg) => arg.includes('What did you tell me')), false, 'no prompt text in the arguments');
-  const pointer = args.find((arg) => arg.startsWith('@'));
-  assert.ok(pointer, 'the harness gets a pointer to the brief');
-  const briefFile = pointer.slice(1);
+  assert.equal(args.some((arg) => arg.startsWith('@')), false, 'the launch line points at no brief: it arrives as a message (issue #162)');
+  const resumed = childOf(id, 'worker');
+  const briefFile = resumed?.briefs?.at(-1)?.file ?? '';
   assert.equal(fs.readFileSync(briefFile, 'utf8'), prompt);
+  // This context carries no daemon, so the start typed the brief into the new pane, once.
+  const typed = local.fake.requests.filter((request) => request.method === 'agent.prompt').map((request) => [request.params['target'], request.params['text']]);
+  assert.deepEqual(typed, [[resumed?.paneId, prompt]]);
   assert.equal(fs.statSync(briefFile).mode & 0o777, 0o600);
 
   // A resumed Claude child gets its own MCP server again, named by the same child id.

@@ -17,10 +17,9 @@ export const claude: HarnessEntry = {
   kind: 'claude',
   harness: 'claude-code',
   label: 'Claude Code',
-  // Claude Code reads a mention out of the prompt text, so a path with a space
-  // needs quotes there. The file is attached to the first message, so the
-  // child spends no tool call reading it.
-  brief: { where: 'prompts', argument: (file) => (/\s/.test(file) ? `@"${file}"` : `@${file}`) },
+  // The brief arrives through the child's own channel as a message, after the
+  // startup dialogs, so the pane shows the task rather than a path to it.
+  brief: { where: 'prompts' },
   chosenBy: 'flag',
   launchArgs({ model, extra = [], resume = [], files }) {
     return [
@@ -35,7 +34,6 @@ export const claude: HarnessEntry = {
       // next flag, so the two-argument form swallowed the prompt that follows
       // it. The equals form pins the flag to one value.
       CLAUDE_CHANNEL_ARG,
-      ...(files.briefFile ? [claude.brief.argument(files.briefFile)] : []),
       ...resume,
       ...extra,
     ];

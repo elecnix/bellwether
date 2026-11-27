@@ -11,7 +11,7 @@
 // hello as the pi adapter, which is what it is; the child's record keeps omp.
 //
 // What each line rests on, in omp 19.2.1's sources (can1357/oh-my-pi):
-// - `-e`, `@file`, `--model`, `--session <path>`: packages/coding-agent/src/cli/args.ts
+// - `-e`, `--model`, `--session <path>`: packages/coding-agent/src/cli/args.ts
 //   and flag-tables.ts, and docs/cli-reference.md.
 // - No folder-trust question: omp has no per-directory trust gate
 //   (extensibility/extensions/types.ts, `isProjectTrusted`).
@@ -87,15 +87,14 @@ export const omp: HarnessEntry = {
   harness: 'omp',
   label: 'omp',
   since: { protocol: 4, version: '0.1.5' },
-  // omp reads an @file argument itself at startup and attaches its text, with no question about the directory.
-  brief: { where: 'prompts', argument: (file) => `@${file}` },
+  // The brief arrives through the child's Bellwether extension as a message.
+  brief: { where: 'prompts' },
   // omp takes the model alone, as `provider/id` or a name it matches; --provider is its legacy flag.
   chosenBy: 'flag',
   launchArgs({ model, extra = [], resume = [], files }) {
     return [
       ...modelFlag(model, extra),
       ...(files.piExtension ? ['-e', files.piExtension] : []),
-      ...(files.briefFile ? [omp.brief.argument(files.briefFile)] : []),
       ...resume,
       ...extra,
     ];

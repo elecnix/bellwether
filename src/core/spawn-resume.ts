@@ -51,6 +51,8 @@ export type SpawnResumeResult =
       corrected?: string;
       /** The brief the child started on, and the unread one it repeats. */
       brief?: NextBrief;
+      /** Which path carried the brief. */
+      briefNote?: string;
     };
 
 function sessionTarget(value: string): HarnessSession {
@@ -87,7 +89,7 @@ export async function spawnResume(clientFor: (host: string) => Promise<HerdrClie
     // this one may have just brought the child back.
     const record = readParent(parentId) ?? first;
     const panes = await client.agentList(signal);
-    const options: ResumeOptions = { prompt: request.prompt, model: request.model, via: request.via, keyFile: request.keyFile, provider: request.provider, args: request.args, focus: request.focus, startupTimeoutMs: request.startupTimeoutMs, redrawMs: request.redrawMs, registerRemote: request.registerRemote, cleanupRemote: request.cleanupRemote };
+    const options: ResumeOptions = { prompt: request.prompt, model: request.model, via: request.via, keyFile: request.keyFile, provider: request.provider, args: request.args, focus: request.focus, startupTimeoutMs: request.startupTimeoutMs, redrawMs: request.redrawMs, registerRemote: request.registerRemote, cleanupRemote: request.cleanupRemote, inbox: request.inbox, from: request.from ?? parentId };
 
     if (!known) {
       const wanted = sessionTarget(request.target);
@@ -100,7 +102,7 @@ export async function spawnResume(clientFor: (host: string) => Promise<HerdrClie
       }
       resumeArgs(request.kind, wanted);
       const resumed = await resumeChild(client, record, { session: wanted, kind: request.kind, name: request.name, cwd: request.cwd, host }, options, signal);
-      return { action: 'resumed', child: resumed.child, session: resumed.session, link: resumed.link, ...(resumed.brief ? { brief: resumed.brief } : {}) };
+      return { action: 'resumed', child: resumed.child, session: resumed.session, link: resumed.link, ...(resumed.brief ? { brief: resumed.brief } : {}), ...(resumed.briefNote ? { briefNote: resumed.briefNote } : {}) };
     }
 
     const child = record.children.find((entry) => entry.id === known.id) ?? known;
@@ -158,6 +160,6 @@ export async function spawnResume(clientFor: (host: string) => Promise<HerdrClie
       child.exitedAt = at;
     }
     const resumed = await resumeChild(client, record, { child }, options, signal);
-    return { action: 'resumed', child: resumed.child, session: resumed.session, link: resumed.link, corrected, ...(resumed.brief ? { brief: resumed.brief } : {}) };
+    return { action: 'resumed', child: resumed.child, session: resumed.session, link: resumed.link, corrected, ...(resumed.brief ? { brief: resumed.brief } : {}), ...(resumed.briefNote ? { briefNote: resumed.briefNote } : {}) };
   });
 }

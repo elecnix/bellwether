@@ -138,6 +138,11 @@ export function harnessStart(request: RecordedRequest): HarnessStartRequest | un
   return { request, paneId, kind: words[1] as string, args: words.slice(2), via: 'typed' };
 }
 
+/** What herdr was asked to type into one pane with agent.prompt, in order. */
+export function prompted(fake: Pick<FakeHerdr, 'requests'>, paneId: string): string[] {
+  return fake.requests.filter((request) => request.method === 'agent.prompt' && request.params['target'] === paneId).map((request) => String(request.params['text']));
+}
+
 /** Every harness start the fake herdr received, in order. */
 export function harnessStarts(fake: Pick<FakeHerdr, 'requests'>): HarnessStartRequest[] {
   return fake.requests.map(harnessStart).filter((start): start is HarnessStartRequest => start !== undefined);

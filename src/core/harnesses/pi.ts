@@ -14,8 +14,8 @@ export const pi: HarnessEntry = {
   kind: 'pi',
   harness: 'pi',
   label: 'pi',
-  // Pi takes the argument whole and strips only the @, and attaches the file.
-  brief: { where: 'prompts', argument: (file) => `@${file}` },
+  // The brief arrives through the child's Bellwether extension as a message.
+  brief: { where: 'prompts' },
   chosenBy: 'pair',
   launchArgs({ model, provider, extra = [], resume = [], files }) {
     return [
@@ -24,7 +24,6 @@ export const pi: HarnessEntry = {
       ...modelFlag(model, extra),
       // A pi child loads the extension it is given, whatever the host's pi settings hold.
       ...(files.piExtension ? ['-e', files.piExtension] : []),
-      ...(files.briefFile ? [pi.brief.argument(files.briefFile)] : []),
       ...resume,
       ...extra,
     ];

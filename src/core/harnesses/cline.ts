@@ -340,7 +340,7 @@ export const cline: HarnessEntry = {
   // An older daemon refuses cline without -y, or starts it without a sandbox.
   since: { protocol: 4, version: '0.1.5' },
   // Cline's read_files reads a file outside the working directory without a question.
-  brief: { where: 'prompts', argument: briefSentence },
+  brief: { where: 'prompts', launch: briefSentence },
   chosenBy: 'flag',
   launchArgs: ({ model, extra = [], files }) => [...modelFlag(model, extra), '-i', ...(files.briefFile ? [briefSentence(files.briefFile)] : []), ...extra],
   // herdr reports no agent_session for Cline, and `--id` only reopens a session

@@ -79,7 +79,7 @@ test('a pi spawn starts the child with -e naming the extension in the running pa
   const space = await room(t);
   const { child } = await spawnChild(space.client, readParent(space.parentId)!, { kind: 'pi', name: 'pi-drill', prompt: 'report back', cwd: space.cwd });
   const extension = piExtensionEntry();
-  assert.deepEqual(startArgs(space.fake), ['-e', extension, `@${promptPath(child.id)}`]);
+  assert.deepEqual(startArgs(space.fake), ['-e', extension]);
   assert.ok(fs.existsSync(extension), `${extension} is not in the package`);
   // The file the package declares to pi, from the sources rather than dist/.
   const manifest = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')) as { pi: { extensions: string[] } };
@@ -119,10 +119,10 @@ test('a pi spawn on a host whose pi settings load a Bellwether copy without the 
   assert.equal(space.fake.requests.some((request) => request.method === 'tab.create'), false);
 });
 
-test('a Claude child starts exactly as before, with no pi extension', async (t) => {
+test('a Claude child starts with no pi extension and no brief on its launch line', async (t) => {
   const space = await room(t);
   const { child } = await spawnChild(space.client, readParent(space.parentId)!, { kind: 'claude', name: 'claude-child', prompt: 'report back', startupTimeoutMs: 2_000, redrawMs: 10 });
-  assert.deepEqual(startArgs(space.fake), [`--mcp-config=${mcpConfigPath(child.id)}`, `--settings=${claudeSettingsPath(child.id)}`, '--dangerously-load-development-channels=server:bellwether', `@${promptPath(child.id)}`]);
+  assert.deepEqual(startArgs(space.fake), [`--mcp-config=${mcpConfigPath(child.id)}`, `--settings=${claudeSettingsPath(child.id)}`, '--dangerously-load-development-channels=server:bellwether']);
   const create = space.fake.requests.find((request) => request.method === 'tab.create');
   assert.equal((create?.params['env'] as Record<string, string>)[PI_EXTENSION_ENV], undefined);
 });

@@ -15,5 +15,5 @@
     "skipLibCheck": true,
     "noEmit": true
   },
-  "include": ["src", "test", "bin", "scripts/*.ts"]
+  "include": ["src", "test", "bin", "scripts/*.ts", "scripts/relay-check/*.ts"]
 }

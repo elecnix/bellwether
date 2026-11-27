@@ -24,11 +24,18 @@ import { adoptedParentOf, type SessionReach } from '../core/adopted-session.ts';
 import { lastAssistantMessage } from '../core/transcript.ts';
 import { harnessFor, resolveTranscript } from '../core/harnesses/index.ts';
 import type { CallerIdentity, OutboxEntry } from '../core/types.ts';
+import type { RosterChild } from '../core/roster.ts';
 import type { InboxMessage, MessageAckRequest, RelayHostState, RelayReport, ServedTool } from './protocol.ts';
 import { unreadSessionMessages, type Inbox, type InboxAnswer } from '../core/send.ts';
 import { updateChild } from '../core/registry.ts';
 import { UnknownTool, servedTools, type ToolScope } from '../integrations/tools.ts';
 import { FEATURES } from './features.ts';
+
+/** The roster a hello carries, from a service that keeps one. A test's fake service may not. */
+function rosterOf(service: ParentService): { roster?: RosterChild[] } {
+  const roster = service.roster?.();
+  return roster ? { roster } : {};
+}
 
 /** What this daemon serves, by name, sent in its hello so a client and doctor need not infer it. */
 const SERVED = FEATURES.map((feature) => feature.name);
@@ -301,10 +308,10 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
     }
   };
 
-  const push = (parentId: string, entries: OutboxEntry[]): void => {
+  const push = (parentId: string, entries: OutboxEntry[], roster: RosterChild[] | undefined): void => {
     const set = subscribers.get(parentId);
     if (!set || entries.length === 0) return;
-    const line = formatReply({ type: 'events', entries });
+    const line = formatReply(roster ? { type: 'events', entries, roster } : { type: 'events', entries });
     for (const socket of set) if (socket.writable) socket.write(line);
   };
 
@@ -315,7 +322,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
     const service = factory(parent, id, { links, log, inbox, sessionReach });
     services.set(id, service);
     service.onEvents((entries) => {
-      push(id, entries);
+      push(id, entries, service.roster?.());
       // A child that started or exited changes which hosts need a connection.
       links.sync();
     });
@@ -618,7 +625,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
         subscribers.set(session.parentId, set);
         const tools = sessionTools(request.parent);
         attached.set(socket, { parentId: session.parentId, parent: request.parent, client: request.client, ...(request.build ? { build: request.build } : {}), protocol: request.protocol, connectedAt: new Date(now()).toISOString(), tools: JSON.stringify(tools) });
-        reply({ type: 'hello', protocol: DAEMON_PROTOCOL, parentId: session.parentId, pid, pending: session.service.pending(), version: BELLWETHER_VERSION, build: BELLWETHER_BUILD_ID, minProtocol: MIN_CLIENT_PROTOCOL, features: SERVED, tools });
+        reply({ type: 'hello', protocol: DAEMON_PROTOCOL, parentId: session.parentId, pid, pending: session.service.pending(), ...rosterOf(session.service), version: BELLWETHER_VERSION, build: BELLWETHER_BUILD_ID, minProtocol: MIN_CLIENT_PROTOCOL, features: SERVED, tools });
         // A child's session that reconnects, after a hand-over or a restart of its server, takes again what it has not read.
         if (request.parent.childId && request.parent.accepts?.includes('message')) replayMessages(socket, request.parent.childId);
         return;

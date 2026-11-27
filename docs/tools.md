@@ -183,6 +183,22 @@ Bellwether marks an event read once its own message is in front of the model. A 
 
 The inactivity threshold defaults to 5 minutes. Pass `inactive_minutes` to `agent_spawn` to change it for one child, from 1 minute to 24 hours. No setting turns this notice off. Bellwether sends it once per quiet period, and output or a report starts a new one.
 
+### The other children
+
+An event mentions only the children that changed, so a reader sees the rest only in the trailing line. If the parent has other children still running, the message ends with one line about them, placed before the closing line:
+
+```
+children 5: 2 working, fix-ci idle 12m, docs blocked 3m
+```
+
+Each child that has not exited enters the count, among them those the message names. Next, the line counts the children at work together. Other children get their name, their state and how long they have been in that state, listed longest first. The line names at most four of them and counts the rest, as in `and 3 more`. It never repeats a child the message already names, and it never lists a child that exited.
+
+Each child's state comes from its record at the moment of the push, so the latest state replaces any older event. A child with a dialog open reads `blocked`, and a child whose turn ended reads `idle`.
+
+When no other child is running, the line is absent and the message reads as it did before. A parent with one child never sees the line. The Claude Code channel sends one notification per event, so only the last notification of a burst includes the line.
+
+The line hints that a call to `agent_list` or `agent_read` may be worth making. It never arrives on its own. A quiet child is the job of the inactivity notice, which names that child once per quiet period.
+
 ## A child's environment
 
 A child started by `agent_spawn` gets these variables, for its own scripts and for the `bellwether report` command, which reads `--child` from `BELLWETHER_CHILD` when the flag is absent.

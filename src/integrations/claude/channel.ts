@@ -21,9 +21,10 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 import { DaemonClient } from '../../daemon/client.ts';
 import { resolveSocketPath } from '../../core/herdr-client.ts';
 import { hostName } from '../../core/spawn.ts';
-import { childLabel } from '../../core/label.ts';
 import { maxDepthFromEnv } from '../../core/report.ts';
-import { byEventTime, lateNote } from '../../core/notice.ts';
+import { byEventTime } from '../../core/notice.ts';
+import { rosterLine } from '../../core/roster.ts';
+import { composeEvent } from '../alert.ts';
 import type { OutboxEntry } from '../../core/types.ts';
 import type { InboxMessage } from '../../daemon/protocol.ts';
 import { BELLWETHER_VERSION } from '../../core/version.ts';
@@ -104,11 +105,6 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 });
 
-/** One channel event's text. The receipt rides in the text, not only in meta. A late event says so. */
-function compose(entry: OutboxEntry): string {
-  return `[bellwether] ${childLabel({ name: entry.name, paneId: entry.paneId, id: entry.childId })} ${entry.event}, a ${entry.kind} agent — receipt ${entry.receipt}${lateNote(entry)}\n${entry.text}\n\nRead more with agent_read. Reply with agent_send.`;
-}
-
 /** The channel path's name, which the daemon records as how a message reached the session. */
 const VIA = 'claude-channel';
 
@@ -150,10 +146,11 @@ async function takeMessage(message: InboxMessage, replay: boolean): Promise<void
   }
 }
 
-async function push(entry: OutboxEntry): Promise<void> {
+/** Send one event. `roster` is the line for the last notification of a flush, and empty for any other. */
+async function push(entry: OutboxEntry, roster = ''): Promise<void> {
   await mcp.notification({
     method: 'notifications/claude/channel',
-    params: { content: compose(entry), meta: { child: entry.name, pane: entry.paneId, child_id: entry.childId, event: entry.event, receipt: entry.receipt } },
+    params: { content: composeEvent(entry, Date.now(), roster), meta: { child: entry.name, pane: entry.paneId, child_id: entry.childId, event: entry.event, receipt: entry.receipt } },
   });
 }
 
@@ -199,9 +196,11 @@ async function flush(): Promise<void> {
   burst = undefined;
   if (!daemon) return;
   const fresh = byEventTime(daemon.unread().filter((entry) => !entry.read && !sent.has(entry.receipt)));
+  // One roster line per flush, on its last notification, leaving out every child the flush names.
+  const roster = rosterLine(daemon.roster(), fresh.map((entry) => entry.childId), Date.now());
   for (const entry of fresh) {
     try {
-      await push(entry);
+      await push(entry, entry === fresh.at(-1) ? roster : '');
       sent.add(entry.receipt);
       log('pushed', entry.receipt, entry.name, entry.event);
       armResendCheck(entry.receipt);

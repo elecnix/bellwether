@@ -9,6 +9,7 @@ import { armPendingRestarts, type RestartHooks } from '../core/restart.ts';
 import { emptyParent, parentId, readParent, saveParent } from '../core/registry.ts';
 import { Watcher } from '../core/watcher.ts';
 import { runBellwetherTool, type ToolContext } from '../integrations/tools.ts';
+import { rosterOf, type RosterChild } from '../core/roster.ts';
 import type { CallerIdentity, OutboxEntry } from '../core/types.ts';
 import type { ParentHello } from './protocol.ts';
 import type { RelayLinks } from './relay-links.ts';
@@ -24,6 +25,8 @@ export interface ParentService {
   onEvents(handler: (entries: OutboxEntry[]) => void): void;
   /** Unread entries, ready to send again after a reconnect. */
   pending(): OutboxEntry[];
+  /** The parent's live children and their newest states, for the roster line an alert carries. */
+  roster?(): RosterChild[];
   /** Report one pane's status changes, and stop when the returned function runs. */
   watchPane(paneId: string, handler: (status: string) => void): () => void;
   stop(): void;
@@ -87,6 +90,8 @@ export function createHerdrService(parent: ParentHello, id: string, deps: Servic
       handler = next;
     },
     pending: () => watcher.pendingEntries().map((entry) => ({ ...entry, deliveredAt: undefined })),
+    // The registry file is the record of each child's newest state; the daemon is its only writer.
+    roster: () => rosterOf(readParent(record.id)?.children ?? []),
     watchPane: (paneId, handler) => {
       const controller = new AbortController();
       const watch = { close: () => controller.abort() };

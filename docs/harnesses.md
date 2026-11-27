@@ -9,6 +9,7 @@ Each `agent_spawn` kind names the harness a child runs in, and Bellwether's harn
 | `pi` | yes | `@file`, attached | herdr, as a file path | session file | the Bellwether pi extension, loaded with `-e` | pi's extension | `--session` | yes | yes |
 | `claude` | yes | `@file`, attached | herdr, as an id | transcript file | its own MCP server, through `--mcp-config` | a `Notification` hook | `--resume` | yes | yes |
 | `opencode` | yes | a sentence that references a file in the working directory | the spawn picks the id and finds it in OpenCode's store | OpenCode's store | its own MCP server, named in `OPENCODE_CONFIG` | the screen | no | no | no |
+| `omp` | yes, after you run `herdr integration install omp` | `@file`, attached | herdr, as a file path | session file | the Bellwether pi extension, loaded with `-e` | herdr's omp integration, then the screen | `--session` | no | no |
 | `codex` | no | none | none | none | not yet | the screen | no | no | none |
 | `cline` | no | none | none | none | not yet | the screen | no | no | none |
 
@@ -36,6 +37,12 @@ Each kind has the same three bullets, so a reader can line up two kinds. The bul
 - **Cannot:** run on another machine, or resume a session.
 - **How:** its own MCP server, configured in a per-child file that `OPENCODE_CONFIG` points to. Only the child's private server (`--standalone`) reads that file, so no other OpenCode session gets the tools.
 
+### `omp`
+
+- **Can:** report, request retirement, request depth, and start and message children of its own within its depth ceiling.
+- **Cannot:** start until you run `herdr integration install omp`, since only that integration reports the child's state and session file to herdr. It cannot run on another machine yet, because a child there doesn't get extra environment variables, so `OMP_SKIP_SETUP` never reaches it ([#96](https://github.com/elecnix/bellwether/issues/96)). It cannot move, because `agent_move` finds only pi and Claude Code session files.
+- **How:** the same Bellwether pi extension, passed with `-e`. omp runs pi extensions, and its extension API has every call this one makes. The extension stores this child's id, and the tab sets `OMP_SKIP_SETUP`, so omp's setup wizard doesn't block the brief. Bellwether answers no omp dialog.
+
 ### `codex` and `cline`
 
 - **Can:** `agent_adopt` takes their pane once they run, and their status changes still start your turns.
@@ -54,8 +61,14 @@ Codex and Cline are in that state. Bellwether can't start either one yet. herdr 
 
 ## An older daemon
 
-When a release changes a kind's entry, the running daemon must serve the argument `agent_spawn.kind=<kind>`. If the daemon predates the change, the call fails and reports the operation and the release that brought it. It never falls back to the old launch method ([upgrading](upgrading.md)). Bellwether has applied this check to OpenCode's kind since 0.1.5.
+When a release changes a kind's entry, the running daemon must serve the argument `agent_spawn.kind=<kind>`. If the daemon predates the change, the call fails and reports the operation and the release that brought it. It never falls back to the old launch method ([upgrading](upgrading.md)). Bellwether has applied this check to the OpenCode and omp kinds since 0.1.5.
 
 ## Launch details
 
 The topic for [OpenCode](opencode.md) covers the launch arguments, the store lookup and the refusals.
+
+An omp child starts as `omp [--model provider/id] -e <pi extension> @<brief>`. omp takes the model as one value, either `provider/id` or a name it matches, so `agent_spawn` refuses a separate `provider` for this kind.
+
+Without a model, omp uses the default in its own settings. `agent_list` shows the model once omp writes the first `model_change` entry to its session file.
+
+herdr's omp integration reports a tool approval and omp's `ask` tool as `blocked`, while a dialog from another omp extension shows as `idle`. The screen check names that dialog.

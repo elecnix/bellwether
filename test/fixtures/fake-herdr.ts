@@ -70,6 +70,8 @@ function defaultResult(request: RecordedRequest): unknown {
     }
     case 'tab.list':
       return { type: 'tab_list', tabs: [] };
+    case 'integration.list':
+      return { type: 'integration_list', integrations: [] };
     default:
       return { type: 'ok' };
   }

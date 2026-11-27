@@ -119,3 +119,23 @@ test('codex and cline are declared and refused until their entries give a child 
   }
   assert.deepEqual(readParent(space.parentId)?.children, []);
 });
+
+test("an entry's preflight asks herdr on the child's machine, and its refusal leaves nothing behind", async (t) => {
+  const space = await room(t);
+  // A harness that herdr watches only through an integration of its own checks for it before the record.
+  const checked: HarnessEntry = {
+    ...fakeHarness,
+    kind: 'fake-checked',
+    harness: 'fake-checked',
+    label: 'Fake Checked',
+    async preflight({ name, herdr }) {
+      const listed = (await herdr?.request('integration.list', {})) as { integrations?: { target: string }[] } | undefined;
+      if (!listed?.integrations?.some((entry) => entry.target === 'fake-checked')) throw new Error(`${name} was not started: herdr lists no fake-checked integration`);
+    },
+  };
+  t.after(registerHarness(checked));
+  await assert.rejects(spawnChild(space.client, readParent(space.parentId)!, { kind: 'fake-checked', name: 'unchecked', prompt: 'report back' }), /unchecked was not started: herdr lists no fake-checked integration/);
+  assert.ok(space.fake.requests.some((request) => request.method === 'integration.list'), 'the preflight reached herdr through the spawn');
+  assert.deepEqual(readParent(space.parentId)?.children, []);
+  assert.equal(space.fake.requests.some((request) => request.method === 'tab.create' || request.method === 'agent.start'), false);
+});

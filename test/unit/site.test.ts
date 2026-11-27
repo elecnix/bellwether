@@ -97,3 +97,11 @@ test('only a paragraph right under the page title becomes the lead', () => {
   assert.match(page('index.html'), /<p class="lead">Bellwether lets a coding agent/);
   assert.doesNotMatch(page('recovery.html'), /class="lead"/);
 });
+
+test('the rail stands 88px clear of the column, and the column keeps its 980px', () => {
+  // 236px rail + 88px gap + 980px column + two 16px gutters = 1336px.
+  const wrap = page('index.html').match(/\.wrap \{[^}]*\}/)?.[0] ?? '';
+  assert.match(wrap, /grid-template-columns: 236px minmax\(0, 980px\);/);
+  assert.match(wrap, /gap: 88px;/);
+  assert.match(wrap, /max-width: 1336px;/);
+});

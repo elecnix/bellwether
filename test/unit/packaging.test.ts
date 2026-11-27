@@ -56,19 +56,29 @@ test('the MCP entry point exists and carries its executable bit', () => {
   );
 });
 
-test('every pi extension path declared in package.json exists', () => {
-  const manifest = readJson<PackageManifest>('package.json');
+/** The source under src/ that the build compiles to a dist/ path. */
+function sourceOf(entry: string): string {
+  const relative = path.posix.normalize(entry);
+  assert.match(relative, /^dist\/.+\.js$/, `${entry} is not a build output under dist/`);
+  return relative.replace(/^dist\//, 'src/').replace(/\.js$/, '.ts');
+}
+
+test('every bin and pi extension in package.json is the build output of a source in src/', () => {
+  const manifest = readJson<{ bin?: Record<string, string>; pi?: { extensions?: string[] } }>('package.json');
   const extensions = manifest.pi?.extensions ?? [];
   assert.ok(extensions.length > 0, 'package.json declares no pi extensions');
-  for (const entry of extensions) {
-    assert.ok(fs.existsSync(path.resolve(root, entry)), `${entry} is missing`);
+  for (const entry of [...Object.values(manifest.bin ?? {}), ...extensions]) {
+    const source = sourceOf(entry);
+    assert.ok(fs.existsSync(path.join(root, source)), `${entry} has no source at ${source}`);
   }
 });
 
-test('the packed tarball carries every entry point and nothing outside the files list', () => {
-  const output = execFileSync('npm', ['pack', '--dry-run', '--json', '--ignore-scripts'], {
+test('the packed tarball carries the compiled entry points and no TypeScript', () => {
+  // Packing runs the prepare script, which builds dist/ first.
+  const output = execFileSync('npm', ['pack', '--dry-run', '--json'], {
     cwd: root,
     encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
   });
   const [pack] = JSON.parse(output) as { files: { path: string }[] }[];
   assert.ok(pack, 'npm pack printed no tarball');
@@ -86,16 +96,8 @@ test('the packed tarball carries every entry point and nothing outside the files
     assert.ok(packed.has(entry), `the tarball is missing ${entry}, so the package cannot start`);
   }
 
-  // Each binary imports a source file, so the tarball must hold its import target.
-  for (const bin of Object.values(manifest.bin ?? {})) {
-    const source = fs.readFileSync(path.join(root, bin), 'utf8');
-    for (const [, target] of source.matchAll(/import '([^']+)'/g)) {
-      const resolved = path.posix.normalize(path.posix.join(path.posix.dirname(bin), target!));
-      assert.ok(packed.has(resolved), `${bin} imports ${resolved}, which the tarball does not carry`);
-    }
-  }
-
-  const allowed = /^(package\.json|README\.md|LICENSE|bin\/[^/]+\.js|src\/.+\.ts)$/;
+  // Node will not strip types under node_modules, so a .ts file in the tarball cannot run.
+  const allowed = /^(package\.json|README\.md|LICENSE|dist\/.+\.js)$/;
   const stray = [...packed].filter((file) => !allowed.test(file));
-  assert.deepEqual(stray, [], 'the tarball carries files outside bin/, src/ and the three top-level files');
+  assert.deepEqual(stray, [], 'the tarball carries files outside dist/ and the three top-level files');
 });

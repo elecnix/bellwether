@@ -320,7 +320,8 @@ export class DaemonClient {
     const marker = path.join(this.home, 'daemon.starting');
     const acquired = this.takeStartingMarker(marker);
     if (acquired) {
-      const entry = this.entry ?? fileURLToPath(new URL('./main.ts', import.meta.url));
+      // From the sources this file is client.ts and the entry is main.ts; from the build, both end in .js.
+      const entry = this.entry ?? fileURLToPath(new URL(`./main${path.extname(import.meta.url)}`, import.meta.url));
       const child = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', entry, '--socket', this.socketPath], {
         detached: true,
         stdio: 'ignore',

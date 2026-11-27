@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 // The Claude Code channel: an MCP server over stdio that gives the parent
 // session the Bellwether tools, and pushes each child event into the session
 // as a notifications/claude/channel event. The core runs in the daemon; this

@@ -34,12 +34,14 @@ After the release, follow [upgrading.md](upgrading.md) on each machine.
 
 ## A release that changes the daemon protocol
 
-Changing `DAEMON_PROTOCOL` in `src/daemon/protocol.ts` drops support for the protocol two back, because a daemon serves only its own protocol and the one before it. `npm run release` compares the value with the published `latest`, and flags a change in the release pull request and beside the approve command. Prefer an additive change, which doesn't need a new number.
+Changing `DAEMON_PROTOCOL` in `src/daemon/protocol.ts` needs a new entry in `PROTOCOL_HISTORY` beside it. The entry says whether the change breaks the protocol before it. A daemon serves every protocol back to the newest breaking entry, so a change that only adds doesn't drop any session.
+
+`npm run release` compares the value with the published `latest`, and flags a change in the release pull request and beside the approve command. Prefer an additive change, which doesn't need a new number. A new request or tool still gets an entry in `src/daemon/features.ts`, with the protocol and release that bring it, so a newer session can name it when an older daemon refuses it.
 
 Before the person approves a release that changes the protocol, the releasing agent does this:
 
 1. Lists the live sessions with `bellwether doctor`, which gives the adapter version and protocol of each one.
 
-2. Tells the person which sessions run a protocol two back. Only those fail their tool calls after the upgrade, and each recovers when it restarts.
+2. Tells the person which sessions run a protocol below the new floor, if the change breaks one. Only those fail their tool calls after the upgrade, and each recovers when it restarts.
 
 3. After the install steps, starts a session from the new install, which hands the daemon over. It stops a child of a refused session that still has to report, and resumes it with `agent_spawn` and `resume`, which starts it on the new install.

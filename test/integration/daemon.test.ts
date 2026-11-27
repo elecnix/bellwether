@@ -326,11 +326,11 @@ test('a client newer than the running daemon drains it and starts its own', asyn
   }
 });
 
-test('a client older than the running daemon leaves it alone and says so', async () => {
+test('a client the running daemon refuses leaves it alone and says what that daemon serves', async () => {
   const space = workspace();
   const newer = await olderDaemon(space.socket, DAEMON_PROTOCOL + 1);
   try {
-    await assert.rejects(DaemonClient.connect(parent(), { home: space.home, spawn: false }), /newer than this client/);
+    await assert.rejects(DaemonClient.connect(parent(), { home: space.home, spawn: false }), new RegExp(`serves protocol ${DAEMON_PROTOCOL + 1}, and this session speaks protocols \\d+ to ${DAEMON_PROTOCOL}`));
     assert.equal(newer.drained(), false);
   } finally {
     await newer.close();

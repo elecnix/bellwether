@@ -313,4 +313,6 @@ export interface RelayHostState {
   farVersion?: string;
   /** That daemon's build, its commit, from its last relay-hello. One version number covers many builds. */
   farBuild?: string;
+  /** The newest protocol the daemon on that machine serves, from its last relay-hello. */
+  farProtocol?: number;
 }

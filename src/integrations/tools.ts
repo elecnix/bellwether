@@ -207,6 +207,24 @@ export function toolsFor(env: { parent?: string; child?: string }): ToolDefiniti
   return [...parentTools, ...(env.parent || env.child ? childTools : []), ...(env.child ? retireTools : [])];
 }
 
+/** A tool this install does not have. The daemon answers it with code unknown_tool, which a newer client names. */
+export class UnknownTool extends Error {
+  constructor(name: string) {
+    super(`Bellwether has no tool named ${name}`);
+    this.name = 'UnknownTool';
+  }
+}
+
+/** Every tool this install has, by name. */
+export function toolNames(): string[] {
+  return [...parentTools, ...childTools, ...retireTools].map((tool) => tool.name);
+}
+
+/** Every call the daemon runs: the tools, and the notices an adapter sends that no model sees. */
+export function daemonCallNames(): string[] {
+  return [...toolNames(), PROMPT_NOTICE];
+}
+
 export function toolSchema(name: string): Record<string, unknown> | undefined {
   return [...parentTools, ...childTools, ...retireTools].find((tool) => tool.name === name)?.schema;
 }
@@ -252,6 +270,8 @@ function describeChild(child: ChildRecord, watcher: Watcher, relayState?: ToolCo
  * this daemon holds, never by the daemon's own environment.
  */
 export async function runBellwetherTool(ctx: ToolContext, name: string, args: Record<string, unknown>, caller: CallerIdentity = {}): Promise<string> {
+  // Checked first, so a tool from a newer client gets a refusal the client can name, not a complaint about its arguments.
+  if (!daemonCallNames().includes(name)) throw new UnknownTool(name);
   if (name === 'parent_report') {
     const status = optionalString(args['status']) as ReportStatus | undefined;
     const text = optionalString(args['text']);
@@ -449,7 +469,7 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
     return `Closed ${child.name}.${roomNote}`;
   }
 
-  throw new Error(`Bellwether has no tool named ${name}`);
+  throw new UnknownTool(name);
 }
 
 /**

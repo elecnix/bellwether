@@ -151,7 +151,7 @@ export function prBody(version: string, previous: string | undefined, change: Pr
     '',
   ];
   if (change) {
-    lines.push(`The daemon protocol moves from ${change.from} to ${change.to}. The first session on the new install hands the old daemon over, and a session still on the old install keeps working, because a daemon serves the protocol before its own. A session two protocols behind fails its tool calls until it restarts. Before approving, follow [the steps for a protocol change](${DOCS_URL}/releasing.md#a-release-that-changes-the-daemon-protocol). [docs/upgrading.md](${DOCS_URL}/upgrading.md#daemon-protocol-changes) says what each session sees.`);
+    lines.push(`The daemon protocol moves from ${change.from} to ${change.to}. The first session on the new install hands the old daemon over, and a session still on the old install keeps working, because a daemon serves every protocol back to the last bump marked as breaking in PROTOCOL_HISTORY. Only a session below that floor fails its tool calls until it restarts. Before approving, follow [the steps for a protocol change](${DOCS_URL}/releasing.md#a-release-that-changes-the-daemon-protocol). [docs/upgrading.md](${DOCS_URL}/upgrading.md#daemon-protocol-changes) says what each session sees.`);
   } else {
     lines.push('The daemon protocol stays the same, so a running daemon keeps serving sessions after the upgrade.');
   }

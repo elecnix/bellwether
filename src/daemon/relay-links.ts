@@ -83,6 +83,8 @@ interface Wanted {
 }
 
 export class RelayLinks {
+  /** Each machine and reply type already logged as unknown, so a chatty far daemon is logged once. */
+  private readonly unknownReplies = new Set<string>();
   private readonly resolve: MachineResolver;
   private readonly ssh: string;
   private readonly log: (message: string) => void;
@@ -381,6 +383,7 @@ export class RelayLinks {
   private dispatch(link: Link, child: ChildProcess, reply: DaemonReply): void {
     if (reply.type === 'relay-hello') {
       const was = link.state.status;
+      if (typeof reply.protocol === 'number') link.state.farProtocol = reply.protocol;
       link.subscribed = true;
       link.answered = true;
       this.startHeartbeat(link);
@@ -424,9 +427,17 @@ export class RelayLinks {
       return;
     }
     if (reply.type === 'error') {
-      // The far end refused the subscribe: an older daemon, most likely. End the connection with its reason.
+      // The far end refused the subscribe: a daemon from before the relay, most likely. End the connection with its reason.
+      // The relay stays strict: it began at protocol 4, which is this daemon's own, so no older far daemon has one to speak down to.
       link.farError = `the daemon on machine ${link.host} answered ${reply.code}: ${reply.message}${reply.code === 'protocol_mismatch' || reply.code === 'unknown_type' ? '. Update @elecnix/bellwether on that machine.' : ''}`;
       child.kill('SIGTERM');
+      return;
+    }
+    // A newer far daemon may send what this one does not know: logged once per machine and type, and ignored.
+    const key = `${link.host} ${String((reply as { type?: unknown }).type)}`;
+    if (!this.unknownReplies.has(key)) {
+      this.unknownReplies.add(key);
+      this.log(`relay: machine ${link.host} sent ${JSON.stringify((reply as { type?: unknown }).type)}, which this daemon does not know; ignored`);
     }
   }
 

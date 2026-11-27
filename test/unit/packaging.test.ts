@@ -1,6 +1,7 @@
 // The two harnesses load these files by name, so a rename that misses one of
 // them fails at session start rather than here. These tests name the contract.
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
@@ -62,4 +63,39 @@ test('every pi extension path declared in package.json exists', () => {
   for (const entry of extensions) {
     assert.ok(fs.existsSync(path.resolve(root, entry)), `${entry} is missing`);
   }
+});
+
+test('the packed tarball carries every entry point and nothing outside the files list', () => {
+  const output = execFileSync('npm', ['pack', '--dry-run', '--json', '--ignore-scripts'], {
+    cwd: root,
+    encoding: 'utf8',
+  });
+  const [pack] = JSON.parse(output) as { files: { path: string }[] }[];
+  assert.ok(pack, 'npm pack printed no tarball');
+  const packed = new Set(pack.files.map((file) => file.path));
+
+  const manifest = readJson<{ bin?: Record<string, string>; pi?: { extensions?: string[] } }>('package.json');
+  const entries = [
+    'package.json',
+    'README.md',
+    'LICENSE',
+    ...Object.values(manifest.bin ?? {}),
+    ...(manifest.pi?.extensions ?? []),
+  ].map((entry) => path.posix.normalize(entry));
+  for (const entry of entries) {
+    assert.ok(packed.has(entry), `the tarball is missing ${entry}, so the package cannot start`);
+  }
+
+  // Each binary imports a source file, so the tarball must hold its import target.
+  for (const bin of Object.values(manifest.bin ?? {})) {
+    const source = fs.readFileSync(path.join(root, bin), 'utf8');
+    for (const [, target] of source.matchAll(/import '([^']+)'/g)) {
+      const resolved = path.posix.normalize(path.posix.join(path.posix.dirname(bin), target!));
+      assert.ok(packed.has(resolved), `${bin} imports ${resolved}, which the tarball does not carry`);
+    }
+  }
+
+  const allowed = /^(package\.json|README\.md|LICENSE|bin\/[^/]+\.js|src\/.+\.ts)$/;
+  const stray = [...packed].filter((file) => !allowed.test(file));
+  assert.deepEqual(stray, [], 'the tarball carries files outside bin/, src/ and the three top-level files');
 });

@@ -196,7 +196,7 @@ export async function resumeChild(client: HerdrClient, parent: ParentRecord, tar
     // The same child id as before, so the server resolves to the same record.
     // A child on another machine gets its brief there, or the resume fails.
     const files = await childStartFiles({ ...child, kind }, options.prompt || undefined, options.registerRemote, options.piExtension);
-    const { briefFile, mcpConfigFile, piExtension } = files;
+    const { briefFile, mcpConfigFile, claudeSettingsFile, piExtension } = files;
     registered = files.registered;
     reportWarning = files.warning;
     const placement = await returnPlacement(client, child, fallback, signal);
@@ -218,7 +218,7 @@ export async function resumeChild(client: HerdrClient, parent: ParentRecord, tar
     upsertChild(parent.id, child);
 
     // 3. Start the harness on the session.
-    await startWithRetry(client, { name: child.name, kind, paneId: tab.paneId, args: childArgs(kind, { kind, name: child.name, model: options.model, args: [...args, ...(options.args ?? [])] }, { briefFile, mcpConfigFile, piExtension }) }, signal);
+    await startWithRetry(client, { name: child.name, kind, paneId: tab.paneId, args: childArgs(kind, { kind, name: child.name, model: options.model, args: [...args, ...(options.args ?? [])] }, { briefFile, mcpConfigFile, claudeSettingsFile, piExtension }) }, signal);
   } catch (error) {
     startup?.close();
     await undoChildTab(client, opened);

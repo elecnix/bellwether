@@ -8,6 +8,8 @@ import path from 'node:path';
 import test from 'node:test';
 import { HerdrClient } from '../../src/core/herdr-client.ts';
 import { channelEntry } from '../../src/core/mcp-config.ts';
+import { DIALOG_NOTIFICATIONS, cliEntry } from '../../src/core/claude-hooks.ts';
+import { claudeSettingsPath } from '../../src/core/paths.ts';
 import { mcpConfigPath, promptPath } from '../../src/core/paths.ts';
 import { emptyParent, readParent, saveParent } from '../../src/core/registry.ts';
 import { spawnChild } from '../../src/core/spawn.ts';
@@ -165,6 +167,36 @@ test('a Claude Code spawn hands the child its own MCP server through a private -
   }
 });
 
+test('a Claude Code spawn gives the child its own settings, whose Notification hook reports a dialog and nothing else', async () => {
+  const idle = idleOnStart();
+  const space = await room(idle.options);
+  idle.bind(space.herdr);
+  try {
+    const { child } = await spawnChild(space.client, space.parent, { kind: 'claude', name: 'asker', prompt: brief });
+    const file = claudeSettingsPath(child.id);
+    const args = startArgs(space.herdr);
+    // The equals form, like --mcp-config, so the flag keeps one value.
+    assert.ok(args.includes(`--settings=${file}`), `no --settings=${file} in ${JSON.stringify(args)}`);
+    assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+    assert.equal(fs.statSync(path.dirname(file)).mode & 0o777, 0o700);
+
+    // One hook, on Notification, for the dialog types only. No PermissionRequest
+    // or PreToolUse hook, which could answer a permission question.
+    const settings = JSON.parse(fs.readFileSync(file, 'utf8')) as { hooks: Record<string, { matcher: string; hooks: { type: string; command: string }[] }[]> };
+    assert.deepEqual(Object.keys(settings), ['hooks']);
+    assert.deepEqual(Object.keys(settings.hooks), ['Notification']);
+    const [entry] = settings.hooks['Notification'] ?? [];
+    assert.ok(entry);
+    assert.deepEqual(entry.matcher.split('|').sort(), [...DIALOG_NOTIFICATIONS].sort());
+    assert.equal(entry.matcher.includes('idle_prompt'), false, 'a finished turn is not a dialog');
+    const command = entry.hooks[0]?.command ?? '';
+    assert.ok(command.includes(`'${cliEntry()}' 'claude-hook' '--child' '${child.id}'`), command);
+    assert.ok(command.startsWith(`'${process.execPath}'`), command);
+  } finally {
+    await space.close();
+  }
+});
+
 test('a Pi spawn gets no MCP config, because its extension is its adapter', async () => {
   const space = await room();
   try {
@@ -182,8 +214,10 @@ test('a failed Claude Code spawn removes its MCP config with its brief', async (
   });
   try {
     await assert.rejects(spawnChild(space.client, space.parent, { kind: 'claude', name: 'ghost', prompt: brief }), /no such agent kind/);
-    const dir = path.join(space.home, 'mcp');
-    assert.deepEqual(fs.existsSync(dir) ? fs.readdirSync(dir) : [], []);
+    for (const name of ['mcp', 'claude-settings']) {
+      const dir = path.join(space.home, name);
+      assert.deepEqual(fs.existsSync(dir) ? fs.readdirSync(dir) : [], [], `${name} kept a file`);
+    }
   } finally {
     await space.close();
   }

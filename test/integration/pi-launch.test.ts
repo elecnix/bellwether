@@ -9,7 +9,7 @@ import test from 'node:test';
 import { HerdrClient } from '../../src/core/herdr-client.ts';
 import { LOCAL_HOST } from '../../src/core/machine.ts';
 import { PI_EXTENSION_ENV, piExtensionEntry } from '../../src/core/pi-extension.ts';
-import { mcpConfigPath, promptPath } from '../../src/core/paths.ts';
+import { claudeSettingsPath, mcpConfigPath, promptPath } from '../../src/core/paths.ts';
 import { emptyParent, readParent, saveParent, upsertChild } from '../../src/core/registry.ts';
 import { spawnChild } from '../../src/core/spawn.ts';
 import type { ChildRecord } from '../../src/core/types.ts';
@@ -122,7 +122,7 @@ test('a pi spawn on a host whose pi settings load a Bellwether copy without the 
 test('a Claude child starts exactly as before, with no pi extension', async (t) => {
   const space = await room(t);
   const { child } = await spawnChild(space.client, readParent(space.parentId)!, { kind: 'claude', name: 'claude-child', prompt: 'report back', startupTimeoutMs: 2_000, redrawMs: 10 });
-  assert.deepEqual(startArgs(space.fake), [`--mcp-config=${mcpConfigPath(child.id)}`, '--dangerously-load-development-channels=server:bellwether', `@${promptPath(child.id)}`]);
+  assert.deepEqual(startArgs(space.fake), [`--mcp-config=${mcpConfigPath(child.id)}`, `--settings=${claudeSettingsPath(child.id)}`, '--dangerously-load-development-channels=server:bellwether', `@${promptPath(child.id)}`]);
   const create = space.fake.requests.find((request) => request.method === 'tab.create');
   assert.equal((create?.params['env'] as Record<string, string>)[PI_EXTENSION_ENV], undefined);
 });

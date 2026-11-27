@@ -10,6 +10,7 @@ import { briefArgument, writeBrief } from './brief.ts';
 import { DEFAULT_MAX_DEPTH, tooDeep } from './depth.ts';
 import { resolveInactiveMs } from './inactivity.ts';
 import { removeChildFiles, writeMcpConfig } from './mcp-config.ts';
+import { writeClaudeSettings } from './claude-hooks.ts';
 import { removeChild, updateChild, upsertChild } from './registry.ts';
 import { watchStartup, type StartupDialog, type StartupWatch } from './startup-dialogs.ts';
 import { agentNameOf, locateTranscript, piSessionModel, sessionFrom } from './transcript.ts';
@@ -95,6 +96,8 @@ export interface ChildLaunch {
   briefFile?: string;
   /** A Claude Code child's own Bellwether server. */
   mcpConfigFile?: string;
+  /** A Claude Code child's own settings, which hold the hook that reports its dialogs. */
+  claudeSettingsFile?: string;
   /** The Bellwether extension a pi child loads, on the machine it runs on. */
   piExtension?: string;
 }
@@ -104,7 +107,7 @@ export interface ChildLaunch {
  * the harness gets a one-line pointer to the file that holds it.
  */
 export function childArgs(kind: string, options: SpawnOptions, launch: ChildLaunch = {}): string[] {
-  const { briefFile, mcpConfigFile, piExtension } = launch;
+  const { briefFile, mcpConfigFile, claudeSettingsFile, piExtension } = launch;
   const args: string[] = [];
   // pi needs both flags. A flag the caller already put in args is not repeated.
   if (options.provider && kind === 'pi' && argValue(options.args, '--provider') === undefined) args.push('--provider', options.provider);
@@ -113,6 +116,9 @@ export function childArgs(kind: string, options: SpawnOptions, launch: ChildLaun
   if (kind === 'pi' && piExtension) args.push('-e', piExtension);
   // --mcp-config is a list flag too, so it takes the equals form for the same reason.
   if (kind === 'claude' && mcpConfigFile) args.push(`--mcp-config=${mcpConfigFile}`);
+  // Claude Code merges these settings with every other source, so the child
+  // gains its Notification hook and keeps the operator's own settings.
+  if (kind === 'claude' && claudeSettingsFile) args.push(`--settings=${claudeSettingsFile}`);
   // Claude Code reads this flag as a list and keeps taking values until the
   // next flag, so the two-argument form swallowed the prompt that follows it.
   // The equals form pins the flag to one value.
@@ -201,6 +207,8 @@ export interface ChildStartFiles {
   briefFile?: string;
   /** The MCP config's path on the child's own machine. */
   mcpConfigFile?: string;
+  /** A local Claude Code child's settings, with the hook that reports its dialogs. */
+  claudeSettingsFile?: string;
   /** The Bellwether extension a pi child loads, on its own machine. */
   piExtension?: string;
   /** Why the child's reports cannot reach this machine, when they cannot. */
@@ -227,7 +235,7 @@ export async function childStartFiles(child: ChildRecord, prompt: string | undef
   if ((child.host ?? LOCAL_HOST) === LOCAL_HOST) {
     // Resolved first, so a missing extension writes nothing.
     const extension = pi ? resolvePiExtension(piExtension()) : undefined;
-    return { briefFile: prompt !== undefined ? writeBrief(child.id, prompt) : undefined, mcpConfigFile: childMcpConfig(child), ...(extension ? { piExtension: extension } : {}), registered: false };
+    return { briefFile: prompt !== undefined ? writeBrief(child.id, prompt) : undefined, mcpConfigFile: childMcpConfig(child), claudeSettingsFile: childClaudeSettings(child), ...(extension ? { piExtension: extension } : {}), registered: false };
   }
   const reports = child.harness === 'claude-code' || child.harness === 'pi';
   if (!reports && prompt === undefined) return { registered: false };
@@ -301,7 +309,7 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
   let registered = false;
   try {
     const files = await childStartFiles(child, options.prompt || undefined, hooks.registerRemote, hooks.piExtension);
-    const { briefFile, mcpConfigFile, piExtension } = files;
+    const { briefFile, mcpConfigFile, claudeSettingsFile, piExtension } = files;
     registered = files.registered;
     reportWarning = files.warning;
 
@@ -330,7 +338,7 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
     // 3. Start the harness in the tab's root pane. A tab answers tab.create
     // before its shell is at a prompt, so herdr refuses the start with
     // agent_pane_busy until the shell is ready.
-    await startWithRetry(client, { name: child.name, kind: options.kind, paneId: tab.paneId, args: childArgs(options.kind, { ...options, ...(chosen ? { provider: chosen.provider, model: chosen.id } : {}) }, { briefFile, mcpConfigFile, piExtension }) }, signal);
+    await startWithRetry(client, { name: child.name, kind: options.kind, paneId: tab.paneId, args: childArgs(options.kind, { ...options, ...(chosen ? { provider: chosen.provider, model: chosen.id } : {}) }, { briefFile, mcpConfigFile, claudeSettingsFile, piExtension }) }, signal);
   } catch (error) {
     startup?.close();
     await abandon(client, parent.id, child, opened, hooks, registered);
@@ -428,6 +436,17 @@ async function abandon(client: HerdrClient, parentId: string, child: ChildRecord
 export function childMcpConfig(child: Pick<ChildRecord, 'id' | 'kind' | 'host'>): string | undefined {
   if (child.kind !== 'claude' || (child.host ?? LOCAL_HOST) !== LOCAL_HOST) return undefined;
   return writeMcpConfig(child.id);
+}
+
+/**
+ * Write a Claude Code child's settings on this machine, with the Notification
+ * hook that reports its dialogs. The hook tells the daemon on the child's own
+ * machine, and only a local child's record lives in that daemon, so a child on
+ * another machine starts without it and its dialogs are read off the screen.
+ */
+export function childClaudeSettings(child: Pick<ChildRecord, 'id' | 'kind' | 'host'>): string | undefined {
+  if (child.kind !== 'claude' || (child.host ?? LOCAL_HOST) !== LOCAL_HOST) return undefined;
+  return writeClaudeSettings(child.id);
 }
 
 /**

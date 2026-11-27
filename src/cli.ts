@@ -11,7 +11,9 @@ import path from 'node:path';
 import { HerdrClient, resolveSocketPath } from './core/herdr-client.ts';
 import { bellwetherHome } from './core/paths.ts';
 import { emptyParent, listParents, readParent, saveParent } from './core/registry.ts';
-import { isReportStatus } from './core/report.ts';
+import { PROMPT_NOTICE, isReportStatus } from './core/report.ts';
+import { HOOK_COMMAND, dialogFromHook } from './core/claude-hooks.ts';
+import { hostName } from './core/spawn.ts';
 import { RELAY_SCHEMA, listForwards, readRelayRecord, removeRelayRecord, saveRelayRecord, updateRelayRecord } from './core/relay-records.ts';
 import { relayChildPath, relayOutboxDir } from './core/paths.ts';
 import { removeBriefAt, writeBrief, writeBriefIn } from './core/brief.ts';
@@ -335,6 +337,7 @@ async function main(): Promise<number> {
     console.log('  stop   CHILD [--force]');
     console.log('  move   CHILD [--machine M] [--cwd DIR] [--reason TEXT]  move a live claude or pi child to another machine, keeping its id and conversation');
     console.log('  report --child ID --status done|needs-input|progress --text TEXT [--parent ID] [--receipt ID]');
+    console.log('  claude-hook --child ID                   a Claude Code child\'s Notification hook: the hook input on stdin, the dialog to the daemon, nothing on stdout');
     console.log('  relay-register --child ID --name NAME --kind KIND --parent ID [--cwd DIR] [--brief-stdin yes]');
     console.log('  relay-cleanup --child ID                 remove the brief and MCP config relay-register wrote');
     console.log('  relay-bridge [--heartbeat-ms N]          join stdin and stdout to this machine\'s daemon; a parent\'s daemon runs it over SSH');
@@ -372,6 +375,7 @@ async function main(): Promise<number> {
   }
 
   if (command === 'report') return report(rest);
+  if (command === HOOK_COMMAND) return claudeHook(rest);
   if (command === 'relay-register') return farEnd(command, () => relayRegister(rest));
   if (command === 'relay-cleanup') return farEnd(command, () => relayCleanup(rest));
   if (command === 'relay-bridge') return relayBridge(rest);
@@ -481,6 +485,65 @@ async function report(argv: string[]): Promise<number> {
     console.error(`bellwether report: ${(error as Error).message}`);
     // A refusal is final; anything else is worth another try by the sender.
     return error instanceof ReportRefused ? REFUSED_EXIT : 1;
+  }
+}
+
+/**
+ * A Claude Code child's Notification hook, which its spawn wrote into the
+ * child's own settings. It reads the hook input on standard input and, for a
+ * notification that means a dialog waits on the person, tells this machine's
+ * daemon, which records the dialog on the child's record as it does for a pi
+ * child's ui_prompt_start. Claude Code ignores a Notification hook's exit
+ * code, and a failure must never get in the child's way, so this always exits
+ * 0 and says why on standard error.
+ *
+ * It writes nothing to standard output, ever. A decision hook reads its
+ * decision from standard output, and approving a permission question is the
+ * operator's decision, not Bellwether's: do not print one here.
+ */
+async function claudeHook(argv: string[]): Promise<number> {
+  const quiet = (message: string): number => {
+    console.error(`bellwether ${HOOK_COMMAND}: ${message}`);
+    return 0;
+  };
+  let childId: string | undefined;
+  try {
+    childId = exactFlags(argv, ['child'])['child'] ?? process.env['BELLWETHER_CHILD'];
+  } catch (error) {
+    return quiet((error as Error).message);
+  }
+  if (!childId) return quiet('needs --child, or a BELLWETHER_CHILD in the environment');
+  let input = '';
+  try {
+    input = fs.readFileSync(0, 'utf8');
+  } catch (error) {
+    return quiet(`could not read the hook input: ${(error as Error).message}`);
+  }
+  const dialog = dialogFromHook(input);
+  if (!dialog) return 0;
+  const payload = JSON.parse(input) as { session_id?: unknown; cwd?: unknown };
+  let daemon: DaemonClient | undefined;
+  try {
+    // spawn: false, because a dialog is no reason to start a daemon: the
+    // child's own MCP server already connected to the one it reports to.
+    daemon = await DaemonClient.connect({
+      harness: 'claude-code',
+      session: typeof payload.session_id === 'string' ? payload.session_id : (process.env['CLAUDE_CODE_SESSION_ID'] ?? `pid-${process.ppid}`),
+      cwd: typeof payload.cwd === 'string' ? payload.cwd : process.cwd(),
+      host: hostName(),
+      paneId: process.env['HERDR_PANE_ID'],
+      workspaceId: process.env['HERDR_WORKSPACE_ID'],
+      depth: Number.parseInt(process.env['BELLWETHER_DEPTH'] ?? '0', 10) || 0,
+      herdrSocket: resolveSocketPath(),
+      childId,
+    }, { spawn: false, timeoutMs: 5_000, ...(process.env['BELLWETHER_DAEMON_SOCKET'] ? { socketPath: process.env['BELLWETHER_DAEMON_SOCKET'] } : {}), log: (message) => console.error('[bellwether]', message) });
+    await daemon.tool(PROMPT_NOTICE, { ...dialog, source: 'claude-code' });
+    return 0;
+  } catch (error) {
+    // An older daemon refuses the source argument; the screen check stands in.
+    return quiet((error as Error).message);
+  } finally {
+    await daemon?.close().catch(() => {});
   }
 }
 

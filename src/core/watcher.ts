@@ -62,6 +62,21 @@ export interface WatcherOptions {
 }
 
 /**
+ * Whether herdr's new status ends a dialog that a Claude Code child's
+ * Notification hook named. Claude Code sends no notice when a dialog closes,
+ * so the dialog holds until herdr sees the child work again, as an approval
+ * makes it, or sees it leave blocked, as a refusal does. herdr calling the
+ * child idle or blocked while the dialog is up, and the turn count that idle
+ * moves, are the same dialog.
+ */
+// TODO(api): a Claude Code hook that fires when a dialog closes would end the
+// wait exactly, including a dialog refused while herdr kept reporting idle,
+// which holds here until the child next works.
+export function hookDialogClosed(prompt: ChildRecord['prompt'], previous: AgentStatus, status: AgentStatus): boolean {
+  return prompt?.source === 'claude-code' && status !== previous && (status === 'working' || previous === 'blocked');
+}
+
+/**
  * How long a new child's harness has to show herdr it runs before the watcher
  * asks whether it ended. herdr detects a harness within a second or two, and
  * a harness loading a large session can take longer, so this is generous.
@@ -462,6 +477,7 @@ export class Watcher {
       updateChild(this.parentId, child.id, (entry) => {
         if (status !== 'unknown' && !entry.harnessSeenAt) entry.harnessSeenAt = new Date().toISOString();
         if (entry.prompt?.source === 'screen' && (entry.lastStatus !== status || (stateSeq !== undefined && stateSeq !== entry.stateChangeSeq))) delete entry.prompt;
+        if (hookDialogClosed(entry.prompt, entry.lastStatus, status)) delete entry.prompt;
         if (entry.lastStatus !== status) {
           entry.statusChangedAt = new Date().toISOString();
           // herdr 0.9.5 sends no state_change_seq on this event, so a seq
@@ -575,6 +591,7 @@ export class Watcher {
           const at = new Date().toISOString();
           // A dialog read off the screen holds only until herdr says something new.
           if (entry.prompt?.source === 'screen' && (status !== entry.lastStatus || (seq !== undefined && seq !== entry.completionSeq) || (stateSeq !== undefined && stateSeq !== entry.stateChangeSeq))) delete entry.prompt;
+          if (hookDialogClosed(entry.prompt, entry.lastStatus, status)) delete entry.prompt;
           if (entry.lastStatus !== status) entry.statusChangedAt = at;
           // A new turn is activity even when the status did not change. The
           // record keeps it, so a restarted parent does not lose the period.
@@ -654,9 +671,12 @@ export class Watcher {
         }
         // TODO(api): the screen decides whether this blocked child is on a Claude
         // Code startup question, which the watcher answers itself. herdr's blocked
-        // status does not say which dialog is up. A field on the status event, or in
-        // Claude Code's hooks, naming the pending dialog would retire the read as
-        // evidence. The same text names the dialog for the parent.
+        // status does not say which dialog is up, and Claude Code runs no hook for
+        // its startup questions: the Notification hook fires for a permission or
+        // MCP dialog only, about 6 s after it opens, which is after this event
+        // settles. A field on herdr's status event naming the pending dialog, or a
+        // Claude Code hook that fires as any dialog opens, would retire the read
+        // as evidence. The same text names the dialog for the parent.
         const dialog = await this.clientFor(hostOf(child))
           .then((client) => client.paneRead({ paneId: child.paneId, source: 'detection', lines: 30 }))
           .catch(() => '');
@@ -668,11 +688,19 @@ export class Watcher {
         // herdr reports a harness that waits on a dialog as idle when the
         // harness never told it otherwise, as pi does for an extension's dialog.
         // TODO(api): the screen tells a finished turn from a dialog for a harness
-        // that does not report its prompts. pi's ui_prompt_start event already
-        // retires this read for a local pi child, through the child's extension.
-        // Claude Code's Notification hook with notification_type permission_prompt,
-        // wired into each Claude Code child's settings, or a herdr status that maps
-        // every harness's dialog to blocked, would retire it for the rest.
+        // that does not report its prompts. A child whose harness reported one
+        // never gets here: the open prompt holds idle back. pi's ui_prompt_start
+        // retires this read for a local pi child, and the Notification hook in a
+        // local Claude Code child's own settings retires it for a permission or
+        // MCP dialog that outlasts Claude Code's 6 s wait before it notifies.
+        // Three cases still come here: a Claude Code dialog younger than that
+        // wait when idle settles at 5 s, a dialog Claude Code sends no notification
+        // for (its startup questions, a free-text box, a custom screen), a child
+        // started with CLAUDE_CODE_DISABLE_PERMISSION_PROMPT_NOTIFY_HOOKS, and any child on
+        // another machine, whose hook and pi notice reach only that machine's
+        // daemon. A Claude Code hook that fires as any dialog opens, with no
+        // delay, or a herdr status that maps every harness's dialog to blocked,
+        // would retire the rest.
         const screen = await this.clientFor(hostOf(child))
           .then((client) => client.paneRead({ paneId: child.paneId, source: 'detection', lines: 30 }))
           .catch(() => '');

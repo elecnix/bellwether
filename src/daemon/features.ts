@@ -38,6 +38,9 @@ export const FEATURES: readonly Feature[] = [
   ...['agent_request_depth', 'agent_grant_depth'].map((name) => ({ name, kind: 'tool' as const, protocol: 4, version: '0.1.5' })),
   // A pi child's extension reports an open dialog; an older daemon refuses it, and the extension ignores the refusal.
   { name: 'child_prompt', kind: 'notice', protocol: 4, version: '0.1.5' },
+  // A Claude Code child's Notification hook names its source. An older daemon
+  // would record the dialog as pi's, which only pi's own closing notice clears.
+  { name: 'child_prompt.source', kind: 'argument', protocol: 4, version: '0.1.5' },
   // An older daemon would start the child in the parent's workspace and say nothing.
   ...['agent_spawn.workspace', 'agent_spawn.workspace_label'].map((name) => ({ name, kind: 'argument' as const, protocol: 4, version: '0.1.5' })),
 ];

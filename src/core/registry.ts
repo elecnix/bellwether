@@ -5,7 +5,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { parentId, parentsDir, registryPath, slug } from './paths.ts';
-import { REGISTRY_SCHEMA, type ChildRecord, type Harness, type ParentRecord } from './types.ts';
+import { REGISTRY_SCHEMA, type ChildRecord, type DialogDecision, type Harness, type ParentRecord } from './types.ts';
 
 /** The host of a child started before the registry recorded one. */
 const LOCAL_HOST = 'local';
@@ -113,6 +113,35 @@ export function updateChild(id: string, childId: string, change: (child: ChildRe
     updated = child;
   });
   return updated;
+}
+
+/**
+ * Add the dialogs Bellwether answered to a child's record. `told` marks them
+ * as already given to the parent, as a spawn's reply does; otherwise the
+ * watcher puts them in the parent's next event about the child.
+ */
+export function recordDecisions(id: string, childId: string, decisions: readonly DialogDecision[], told = false): void {
+  if (!decisions.length) return;
+  updateChild(id, childId, (child) => {
+    child.decisions = [...(child.decisions ?? []), ...decisions.map((decision) => ({ ...decision, ...(told ? { told: true } : {}) }))];
+  });
+}
+
+/** Take the decisions the parent has not heard of, and mark them told. */
+export function takeUntoldDecisions(id: string, childId: string): DialogDecision[] {
+  let taken: DialogDecision[] = [];
+  updateChild(id, childId, (child) => {
+    taken = (child.decisions ?? []).filter((decision) => !decision.told);
+    for (const decision of taken) decision.told = true;
+  });
+  return taken.map(({ told: _told, ...decision }) => decision);
+}
+
+/** One sentence per answered dialog, for the parent. */
+export function describeDecisions(name: string, decisions: readonly DialogDecision[]): string {
+  return decisions
+    .map((decision) => `Bellwether answered ${decision.name} for ${name}, "${decision.question}", with "${decision.answer}" (keys ${decision.keys.join(', ')}): it ${decision.decided}.`)
+    .join('\n');
 }
 
 export function childById(record: ParentRecord, childId: string): ChildRecord | undefined {

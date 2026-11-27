@@ -14,13 +14,13 @@ import { resolveInactiveMs } from './inactivity.ts';
 import { removeChildFiles } from './mcp-config.ts';
 import { argValue } from './args.ts';
 import { requireHarness, spawnRefusal, type ChildFiles, type HarnessEntry, type HarnessHooks } from './harnesses/index.ts';
-import { removeChild, updateChild, upsertChild } from './registry.ts';
+import { recordDecisions, removeChild, updateChild, upsertChild } from './registry.ts';
 import { detectRefused, StartupDialogRefused, watchStartup, type StartupDialog, type StartupWatch } from './startup-dialogs.ts';
 import { agentNameOf, sessionFrom } from './transcript.ts';
 import type { RemoteRegistration } from './remote.ts';
 import { BARE, RoutesFileError, launchLine, readRoutes, resolveRoute, routeConfig, routeLaunch, type RouteConfig, type RouteLaunch, type RoutesFile } from './routes.ts';
 import { openChildTab, parseWorkspaces, placeChild, undoChildTab, type ChildTab, type WorkspaceEntry } from './workspace.ts';
-import type { ChildRecord, ChildRoute, ModelPair, ParentRecord } from './types.ts';
+import type { ChildRecord, ChildRoute, DialogDecision, ModelPair, ParentRecord } from './types.ts';
 
 /** How deep a Bellwether child may spawn. The design starts at 2. */
 export { DEFAULT_MAX_DEPTH } from './depth.ts';
@@ -89,6 +89,8 @@ export interface SpawnResult {
   link: string;
   /** The startup dialogs the spawn answered, in order. */
   answered?: StartupDialog[];
+  /** The answers that decided something, which the reply gives the parent. They are on the record, marked told. */
+  decisions?: DialogDecision[];
 }
 
 /** How long the watcher holds the events of a new child that shows startup dialogs. Longer than the dialog wait. */
@@ -371,6 +373,7 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
   if (startup) {
     try {
       answered = await startup.answer();
+      recordDecisions(parent.id, child.id, startup.decisions, true);
     } catch (error) {
       startup.close();
       await abandon(client, parent.id, child, opened, hooks, registered);
@@ -430,7 +433,8 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
 
   const note = modelNote(child);
   const harnessNote = entry.spawnNote?.(child, options.args ?? []);
-  return { child, link: herdrLink('pane', child.paneId), answered, ...(note ? { modelNote: note } : {}), ...(harnessNote ? { harnessNote } : {}), ...(envNote ? { envNote } : {}) };
+  const decisions = startup?.decisions.length ? startup.decisions : undefined;
+  return { child, link: herdrLink('pane', child.paneId), answered, ...(decisions ? { decisions } : {}), ...(note ? { modelNote: note } : {}), ...(harnessNote ? { harnessNote } : {}), ...(envNote ? { envNote } : {}) };
 }
 
 /**

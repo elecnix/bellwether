@@ -8,7 +8,7 @@ import { GRANT_DEPTH_TOOL, REQUEST_DEPTH_TOOL, ceilingOf, childCeiling, describe
 import { keepsBriefs, type NextBrief } from '../core/brief-history.ts';
 import { removeChildFiles } from '../core/mcp-config.ts';
 import { PROMPT_NOTICE, localParentOf, notePromptForCaller, reportForCaller } from '../core/report.ts';
-import { childById, mutateParent, readParent, updateChild } from '../core/registry.ts';
+import { childById, describeDecisions, mutateParent, readParent, updateChild } from '../core/registry.ts';
 import { adoptPane } from '../core/adopt.ts';
 import { LOCAL_HOST, hostOf, knownHosts, type ClientFor } from '../core/machine.ts';
 import { spawnResume } from '../core/spawn-resume.ts';
@@ -104,7 +104,7 @@ export const parentTools: ToolDefinition[] = [
   },
   {
     name: 'agent_adopt',
-    description: "Make a running agent that this session did not start into its child, such as one herdr-spawn.sh or a person started, on this machine or on a saved herdr machine. Bellwether then watches it like a spawned child, and its status changes start your turns. Refuses an unknown machine, a pane with no agent herdr recognizes, a pane another session already watches (on another machine, that machine's daemon answers who), and a machine whose Bellwether predates remote adoption. While the connection to that machine is down, agent_list shows the child unreachable, not exited, and it comes back when the connection does, with no second adoption. An adopted child cannot call parent_report, on this machine or another: adoption gives its session no child id, because Claude Code and pi load the Bellwether server or extension that carries one only when they start, so no daemon can tell which parent a report from it is for. A session Bellwether starts or restarts gets one; an adopted one would need its harness to take a new MCP server or extension while it runs.",
+    description: "Make a running agent that this session did not start into its child, such as one herdr-spawn.sh or a person started, on this machine or on a saved herdr machine. Bellwether then watches it like a spawned child, and its status changes start your turns. Refuses an unknown machine, a pane with no agent herdr recognizes, a pane another session already watches (on another machine, that machine's daemon answers who), and a machine whose Bellwether predates remote adoption. While the connection to that machine is down, agent_list shows the child unreachable, not exited, and it comes back when the connection does, with no second adoption. An adopted child cannot call parent_report, on this machine or another: adoption gives its session no child id, because Claude Code and pi load the Bellwether server or extension that carries one only when they start, so no daemon can tell which parent a report from it is for. A session Bellwether starts or restarts gets one; an adopted one would need its harness to take a new MCP server or extension while it runs. Bellwether never answers a dialog in an adopted child's pane, because its session started under settings Bellwether did not choose and its pane is not this session's to type into: when it stops at a question, even one Bellwether answers for a child it spawned, you get a blocked event that names the question, and the answer is yours, through agent_send keys.",
     schema: {
       type: 'object',
       properties: {
@@ -466,7 +466,7 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
     if (!options.name) throw new Error('agent_spawn needs a name for a new child, or resume to message an earlier one.');
     // Resolve the machine before anything is written, so a typo leaves no record.
     const client = await clientFor(ctx, options.host ?? LOCAL_HOST);
-    const { child, link, modelNote, harnessNote, envNote } = await spawnChild(client, record, options, undefined, {
+    const { child, link, modelNote, harnessNote, envNote, decisions } = await spawnChild(client, record, options, undefined, {
       forget: (childId) => ctx.watcher.forget(childId),
       registerRemote: registrar(ctx, record),
       cleanupRemote: remoteCleanup(ctx),
@@ -484,6 +484,7 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
     if (modelNote) lines.push(modelNote);
     if (harnessNote) lines.push(harnessNote);
     if (envNote) lines.push(envNote);
+    if (decisions?.length) lines.push(describeDecisions(child.name, decisions));
     return lines.join('\n');
   }
 

@@ -9,7 +9,7 @@ import { briefsOf, nextBrief, type NextBrief } from './brief-history.ts';
 import { removeChildFiles } from './mcp-config.ts';
 import { LOCAL_HOST } from './machine.ts';
 import { newChildId } from './outbox.ts';
-import { readParent, removeChild, updateChild, upsertChild } from './registry.ts';
+import { readParent, recordDecisions, removeChild, updateChild, upsertChild } from './registry.ts';
 import { clearRetirement } from './retire.ts';
 import { openChildTab, returnPlacement, undoChildTab, type ChildTab } from './workspace.ts';
 import { STARTUP_HOLD_MS, STARTUP_TIMEOUT_MS, childArgs, childEnv, childStartFiles, herdrLink, nextLaunch, startHarness, type RegisterRemote } from './spawn.ts';
@@ -248,7 +248,7 @@ export async function resumeChild(client: HerdrClient, parent: ParentRecord, tar
     if (dialogs) {
       const timeoutMs = options.startupTimeoutMs ?? STARTUP_TIMEOUT_MS;
       child.startingUntil = new Date(Date.now() + Math.max(STARTUP_HOLD_MS, timeoutMs + 15_000)).toISOString();
-      startup = await watchStartup(client, tab.paneId, signal, { timeoutMs, redrawMs: options.redrawMs, dialogs });
+      startup = await watchStartup(client, tab.paneId, signal, { timeoutMs, redrawMs: options.redrawMs, dialogs, by: 'resume' });
     }
     upsertChild(parent.id, child);
 
@@ -269,6 +269,7 @@ export async function resumeChild(client: HerdrClient, parent: ParentRecord, tar
   if (startup) {
     try {
       answered = await startup.answer();
+      recordDecisions(parent.id, child.id, startup.decisions);
     } catch (error) {
       startup.close();
       await undoChildTab(client, opened ?? { tabId: tabId ?? child.paneId });

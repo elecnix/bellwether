@@ -25,7 +25,7 @@ import { LOCAL_HOST, hostOf } from './machine.ts';
 import { bellwetherHome } from './paths.ts';
 import { readRelayRecord } from './relay-records.ts';
 import { childOfCaller } from './report.ts';
-import { listParents, mutateParent, readParent, updateChild } from './registry.ts';
+import { listParents, mutateParent, readParent, recordDecisions, updateChild } from './registry.ts';
 import { resumeArgs, sessionOf, type HarnessSession } from './resume.ts';
 import { clearRetirement } from './retire.ts';
 import { STARTUP_HOLD_MS, STARTUP_TIMEOUT_MS, childArgs, childEnv, childStartFiles, herdrLink, hostName, nextLaunch, startHarness, startWithRetry, type NextLaunch, type RouteChange } from './spawn.ts';
@@ -383,12 +383,13 @@ async function restartChildLocked(client: HerdrClient, parentId: string, childId
         entry.startingUntil = new Date(Date.now() + Math.max(STARTUP_HOLD_MS, timeoutMs + 15_000)).toISOString();
       });
       // The watch opens before the start: the dialog appears with the harness.
-      startup = await watchStartup(client, newPane, undefined, { timeoutMs, redrawMs: hooks.redrawMs, dialogs });
+      startup = await watchStartup(client, newPane, undefined, { timeoutMs, redrawMs: hooks.redrawMs, dialogs, by: 'restart' });
     }
     const harnessArgs = childArgs(child.kind, { model: launch.harnessModel, provider: launch.provider }, files, { resume });
     await startHarness(client, { name: child.name, kind: child.kind, paneId: newPane, args: harnessArgs, ...(launch.route && launch.config ? { launch: routeLaunch(launch.config, launch.route, child.kind, harnessArgs) } : {}) });
     if (startup) {
       await startup.answer();
+      recordDecisions(parentId, child.id, startup.decisions);
       startup.close();
     }
   } catch (error) {

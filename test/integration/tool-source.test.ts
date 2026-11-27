@@ -141,8 +141,8 @@ test('a Claude Code child with no Bellwether server in its environment gets its 
   const { child } = await spawnChild(new HerdrClient({ socketPath: herdr.socketPath }), parent, { kind: 'claude', name: 'plain-child', cwd, startupTimeoutMs: 2_000, redrawMs: 10 });
 
   const args = startArgs(herdr);
-  // The settings file holds the dialog hook alone: there is no plugin to turn off.
-  assert.deepEqual(Object.keys(readJson(flag(args, '--settings') ?? '')), ['hooks']);
+  // The settings file holds the dialog hook and the read set, and no plugin to turn off.
+  assert.deepEqual(Object.keys(readJson(flag(args, '--settings') ?? '')).sort(), ['hooks', 'permissions', 'sandbox']);
   assert.deepEqual(readParent(parent.id)?.children.find((entry) => entry.id === child.id)?.toolSource, { server: 'per-child', suppressed: [] });
 
   // The server Claude Code would start from the child's config, with nothing from the tab's environment.

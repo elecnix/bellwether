@@ -23,6 +23,34 @@ export interface ChildPrompt {
   since: string;
 }
 
+/**
+ * A dialog Bellwether answered for a child, and what the answer decided. The
+ * spawn, a resume, a restart or the watcher writes one for each answer whose
+ * dialog says what it decides (`KnownDialog.decides` in
+ * src/core/startup-dialogs.ts). The parent hears of each one once: in the
+ * spawn's reply, or in its next event about the child.
+ */
+export interface DialogDecision {
+  /** The dialog's id in its harness's set, such as `outside-read`. */
+  dialog: string;
+  /** The dialog's name in a message. */
+  name: string;
+  /** The question as the screen asked it. */
+  question: string;
+  /** The option chosen. */
+  answer: string;
+  /** What the answer decided, in one clause. */
+  decided: string;
+  /** Every key sent to the pane for this answer, in order. */
+  keys: string[];
+  /** When the answer went in. */
+  at: string;
+  /** Which part of Bellwether answered. */
+  by: 'spawn' | 'resume' | 'restart' | 'watcher';
+  /** Set once the parent has been told. */
+  told?: boolean;
+}
+
 /** What the parent is told about a child. */
 export type ChildEventKind = 'report' | 'idle' | 'blocked' | 'stuck' | 'inactive' | 'exited';
 
@@ -207,6 +235,12 @@ export interface ChildRecord {
    * herdr reports the child working, or leaving blocked.
    */
   prompt?: ChildPrompt;
+  /**
+   * Each dialog Bellwether answered for the child, oldest first. Only a child
+   * Bellwether started gets an answer: an adopted child's dialogs reach the
+   * parent as blocked.
+   */
+  decisions?: DialogDecision[];
   /** This child's own stuck threshold, when its spawn set one. */
   stuckMs?: number;
   /**

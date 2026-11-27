@@ -79,7 +79,7 @@ export function writeChildToolFiles(childId: string, cwd: string | undefined, op
   const plan = planToolSource(findAmbientServers(cwd));
   const mcp = writeMcpConfig(childId, plan.standDown);
   const settings = writeClaudeSettings(childId, { hook: options.hook, disablePlugins: plan.disablePlugins });
-  return { mcpConfig: mcp, ...(settings ? { claudeSettings: settings } : {}), toolSource: plan.source };
+  return { mcpConfig: mcp, claudeSettings: settings, toolSource: plan.source };
 }
 
 /**

@@ -24,7 +24,7 @@ export const kilo: HarnessEntry = {
   since: { protocol: 4, version: '0.1.5' },
   // kilo asks before it reads a file outside its directory, and a question at
   // startup is the interruption the brief exists to avoid.
-  brief: { where: 'workdir', argument: briefSentence },
+  brief: { where: 'workdir', launch: briefSentence },
   // The terminal UI takes --model as provider/model.
   chosenBy: 'flag',
   launchArgs: ({ model, files, resume = [], extra = [] }) => [...modelFlag(model, extra), ...resume, ...(files.briefFile ? ['--prompt', kiloBriefLine(files.briefFile)] : []), ...extra],

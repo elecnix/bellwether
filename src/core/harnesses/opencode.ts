@@ -18,7 +18,7 @@ export const opencode: HarnessEntry = {
   since: { protocol: 4, version: '0.1.5' },
   // OpenCode reads outside its directory only after a question, and a
   // question at startup is the interruption the brief exists to avoid.
-  brief: { where: 'workdir', argument: briefSentence },
+  brief: { where: 'workdir', launch: briefSentence },
   // The terminal UI takes no --model: the model rides in the child's
   // configuration file, as provider/model.
   chosenBy: 'config',

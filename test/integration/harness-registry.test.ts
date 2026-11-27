@@ -18,7 +18,7 @@ import { spawnChild } from '../../src/core/spawn.ts';
 import { Watcher } from '../../src/core/watcher.ts';
 import { FEATURES, kindFeatures, missingFeatureMessage, unservedArgument } from '../../src/daemon/features.ts';
 import { parentTools, runBellwetherTool, type ToolContext } from '../../src/integrations/tools.ts';
-import { startFakeHerdr, type FakeHerdr, harnessStarts, harnessStart } from '../fixtures/fake-herdr.ts';
+import { startFakeHerdr, type FakeHerdr, harnessStarts, harnessStart, prompted } from '../fixtures/fake-herdr.ts';
 import { FAKE_KIND, fakeHarness } from '../fixtures/fake-harness.ts';
 import { fakeWorld, type FakeWorld } from '../fixtures/fake-world.ts';
 import { isolate } from '../fixtures/isolated.ts';
@@ -59,7 +59,7 @@ function sessionFile(dir: string, text: string): string {
   return file;
 }
 
-test('the fourth entry spawns with its own launch line, MCP config and brief pointer, and agent_read reads its conversation', async (t) => {
+test('the fourth entry spawns with its own launch line and MCP config, gets its brief typed, and agent_read reads its conversation', async (t) => {
   const space = await room(t);
   const file = sessionFile(space.scratch, 'fake-agent finished the task');
   // herdr reports the session as the path of its file, as it does for pi.
@@ -69,7 +69,9 @@ test('the fourth entry spawns with its own launch line, MCP config and brief poi
   const { child } = await spawnChild(space.client, readParent(space.parentId)!, { kind: FAKE_KIND, name: 'fourth', prompt: 'report back', model: 'example-model' });
 
   assert.equal(child.harness, 'fake-agent');
-  assert.deepEqual(startArgs(space.fake), ['--model', 'example-model', `--mcp-config=${mcpConfigPath(child.id)}`, `Your task is in ${promptPath(child.id)}. Read it, then do what it says.`]);
+  assert.deepEqual(startArgs(space.fake), ['--model', 'example-model', `--mcp-config=${mcpConfigPath(child.id)}`]);
+  // The entry has no launch prompt and no inbox, so the brief is typed once the harness runs.
+  assert.deepEqual(prompted(space.fake, child.paneId), ['report back']);
   const start = harnessStarts(space.fake)[0];
   assert.equal(start?.kind, FAKE_KIND);
   // The child's own server carries its child id, so its parent_report reaches this parent.

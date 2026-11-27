@@ -10,19 +10,17 @@ import { lastAssistantMessage, locateSessionPath } from '../../src/core/transcri
 
 export const FAKE_KIND = 'fake-agent';
 
-const sentence = (file: string): string => `Your task is in ${file}. Read it, then do what it says.`;
-
 export const fakeHarness: HarnessEntry = {
   kind: FAKE_KIND,
   harness: 'fake-agent',
   label: 'Fake Agent',
   since: { protocol: 4, version: '0.1.5' },
-  brief: { where: 'prompts', argument: sentence },
+  // No launch prompt and no inbox: the spawn types the brief into its pane.
+  brief: { where: 'prompts' },
   chosenBy: 'flag',
   launchArgs: ({ model, extra = [], resume = [], files }) => [
     ...(model ? ['--model', model] : []),
     ...(files.mcpConfigFile ? [`--mcp-config=${files.mcpConfigFile}`] : []),
-    ...(files.briefFile ? [sentence(files.briefFile)] : []),
     ...resume,
     ...extra,
   ],

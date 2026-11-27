@@ -17,6 +17,8 @@ import { agentKinds, harnessFor, harnessNamed, requireHarness, type HarnessSessi
 import { routeLaunch } from './routes.ts';
 import { watchStartup, type StartupDialog, type StartupWatch } from './startup-dialogs.ts';
 import { sessionFrom } from './transcript.ts';
+import { deliverBrief } from './brief-delivery.ts';
+import { BRIEF_SESSION_WAIT_MS, type Inbox } from './send.ts';
 import type { ChildRecord, ParentRecord } from './types.ts';
 import { resolveInactiveMs } from './inactivity.ts';
 
@@ -85,6 +87,10 @@ export interface ResumeOptions {
   cleanupRemote?: (child: ChildRecord) => Promise<void>;
   /** Where this package's pi extension is. Tests point it at a missing file. */
   piExtension?: () => string;
+  /** The daemon's way into the child's session, which carries the brief. Without it, the brief is typed into the pane. */
+  inbox?: Inbox;
+  /** Who sends the brief, as the child reads it. */
+  from?: string;
 }
 
 export interface ResumeResult {
@@ -95,6 +101,8 @@ export interface ResumeResult {
   answered?: StartupDialog[];
   /** The brief the child started on, and the unread one it repeats, when there was one. */
   brief?: NextBrief;
+  /** Which path carried the brief, for the reply. */
+  briefNote?: string;
 }
 
 /** Find the child a resume names: by id, name or pane, then by the session it ran. */
@@ -187,6 +195,18 @@ export async function resumeChild(client: HerdrClient, parent: ParentRecord, tar
   child.statusChangedAt = now;
   child.lastBusyAt = now;
   child.resumedAt = now;
+  // The brief this start hands over carries an unread one. A session message
+  // that carried that one is not offered again when the session reconnects,
+  // so the child takes the task once.
+  if (next?.repeats) {
+    const carried = new Set([...(next.repeats.carries ?? []), next.repeats.n]);
+    for (const message of child.messages ?? []) {
+      if (message.brief === undefined || !carried.has(message.brief) || message.readAt || message.undelivered) continue;
+      message.undelivered = `brief ${next.brief.n} carries it into the resumed session`;
+      delete message.text;
+      delete message.from;
+    }
+  }
   upsertChild(parent.id, child);
 
   let registered = false;
@@ -285,6 +305,26 @@ export async function resumeChild(client: HerdrClient, parent: ParentRecord, tar
     startup.close();
   }
 
+  // 3c. Hand over the brief, as a spawn does: through the session once the
+  // harness runs, or typed when that path is not available. A harness that
+  // exits first fails the resume.
+  let briefNote: string | undefined;
+  if (next && !requireHarness(kind).brief.launch) {
+    const held = new Date(Date.now() + BRIEF_SESSION_WAIT_MS + 20_000).toISOString();
+    updateChild(parent.id, child.id, (entry) => {
+      entry.startingUntil = held;
+    });
+    try {
+      const handed = await deliverBrief({ herdr: client, parentId: parent.id, child, brief: next.brief, text: next.text, from: options.from ?? parent.id, inbox: options.inbox, fatal: requireHarness(kind).startupFatal, signal });
+      next.brief.delivery = handed.delivery;
+      briefNote = handed.note;
+    } catch (error) {
+      await undoChildTab(client, opened ?? { tabId: tabId ?? child.paneId });
+      restore();
+      throw error;
+    }
+  }
+
   // 4. Record the session herdr reports, the transcript on this machine, and
   // the live status, and lift the hold.
   let reported = undefined as ReturnType<typeof sessionFrom>;
@@ -317,5 +357,5 @@ export async function resumeChild(client: HerdrClient, parent: ParentRecord, tar
   });
 
   const saved = readParent(parent.id)?.children.find((entry) => entry.id === child.id) ?? child;
-  return { child: saved, session, link: herdrLink('pane', child.paneId), answered, ...(next ? { brief: next } : {}) };
+  return { child: saved, session, link: herdrLink('pane', child.paneId), answered, ...(next ? { brief: next } : {}), ...(briefNote ? { briefNote } : {}) };
 }

@@ -45,10 +45,10 @@ Bellwether reserves `via none` for a bare start, so no route can take that name.
 A child on a route runs the launcher, then the tier, then the harness name and the harness's own arguments, which the launcher hands on unchanged:
 
 ```text
-example-router --yes --model example-fast claude --mcp-config=… --dangerously-load-development-channels=server:bellwether @…/brief.md
+example-router --yes --model example-fast claude --mcp-config=… --dangerously-load-development-channels=server:bellwether
 ```
 
-On a route, `model` names a tier and goes to the launcher, so Bellwether passes no `--model` to the harness. A pi child starts the same way. The launcher and the tier come first, then `pi -e <extension>` and its brief. The route's tier picks the model, so a pi child doesn't inherit a provider and model pair from its parent, and the spawn refuses `provider` on a route.
+On a route, `model` names a tier and goes to the launcher, so Bellwether passes no `--model` to the harness. A pi child starts the same way. The launcher and the tier come first, then `pi -e <extension>`. The brief arrives as a message once the harness runs. The route's tier picks the model, so a pi child doesn't inherit a provider and model pair from its parent, and the spawn refuses `provider` on a route.
 
 Bellwether types the launch line at the shell prompt of the tab it has just created, then waits for herdr to detect the harness in that pane and gives the agent its name.
 
@@ -57,7 +57,7 @@ Bellwether types the launch line at the shell prompt of the tab it has just crea
 A bare child starts the same way, with no launcher. Its line puts the shell's `command` builtin in front of the harness:
 
 ```text
-command claude --mcp-config=… --dangerously-load-development-channels=server:bellwether @…/brief.md
+command claude --mcp-config=… --dangerously-load-development-channels=server:bellwether
 ```
 
 herdr's `agent.start` would type the bare name `claude`, and a shell function or alias of that name would run in its place. With `command`, the shell finds the harness on its `PATH` and skips both. The operator's startup files can't add channels or flags to a child.

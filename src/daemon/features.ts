@@ -164,6 +164,7 @@ export const BEHAVIORS: readonly Behavior[] = [
   { version: '0.1.8', prs: [158], summary: 'A suggestion that a harness draws faint in its input box no longer reads as typed text: `agent_read` and `idle` events leave it out and say whether the box holds a suggestion, a draft or nothing.' },
   { version: '0.1.8', prs: [161], summary: 'A dialog that dims the options it has not selected counts as a dialog again, so the parent hears `blocked` rather than `idle`, and the startup answerer can select a dimmed accepting option.' },
   { version: '0.1.8', prs: [163], summary: "The spawn reads a startup dialog's options from the block under the dialog's own line, so a shell prompt that starts with `❯` above it never passes for the selected option." },
+  { version: '0.1.8', prs: [170], summary: "A claude, pi or omp child takes its brief as a message in its session once its startup dialogs close, and the spawn waits for the adapter's acknowledgement. The pane shows the task rather than a path. A harness that exits first fails the spawn with its line, and the record says whether the session took the brief or herdr typed it, with the reason." },
 ];
 
 /**

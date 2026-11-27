@@ -86,6 +86,27 @@ export interface ChildBrief {
   paneId?: string;
   /** The earlier briefs this one repeats, because the record could not prove the child read them. */
   carries?: number[];
+  /** How the brief reached the harness, once the start handed it over. A start that failed leaves it out. */
+  delivery?: BriefDelivery;
+}
+
+/**
+ * How a brief reached its child (issue #162). `session` is a message the
+ * child's own Bellwether adapter acknowledged, the same path agent_send takes.
+ * `keystrokes` is the fallback, typed into the pane, with the reason the
+ * session path was not taken. `launch` is the first prompt on the launch line
+ * of a harness that takes no message in its session and whose own store
+ * confirmed that prompt.
+ */
+export interface BriefDelivery {
+  path: 'session' | 'keystrokes' | 'launch';
+  /** For the session path: the adapter that acknowledged it, `claude-channel` or `pi-message`. */
+  via?: string;
+  /** For keystrokes and launch: why the brief did not go into the session. */
+  reason?: string;
+  /** The message under `messages` that carried it, for the session path and keystrokes. */
+  message?: string;
+  at: string;
 }
 
 export interface ChildSession {
@@ -395,6 +416,8 @@ export interface ChildMessage {
   text?: string;
   /** Who sent it, as the child reads it, kept with the text. */
   from?: string;
+  /** The number of the brief this message carried, for a start's brief rather than a parent's message. */
+  brief?: number;
 }
 
 /** One raise of a child's ceiling, for the audit trail agent_list shows. */

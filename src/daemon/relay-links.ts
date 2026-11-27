@@ -22,6 +22,7 @@ import { farErrorLine, relayBridgeArgv, releaseAdvice } from '../core/ssh.ts';
 import type { ChildRecord } from '../core/types.ts';
 import { DAEMON_PROTOCOL, MAX_DAEMON_FRAME_BYTES, formatRequest, type DaemonReply, type DaemonRequest, type InboxMessage, type RelayMessageAnswer, type RelayAdoptAnswer, type RelayHostState, type RelayReport } from './protocol.ts';
 import { featureNamed } from './features.ts';
+import { BRIEF_SESSION_WAIT_MS } from '../core/send.ts';
 import type { PaneClaim } from '../core/pane-claims.ts';
 
 export interface RelayLinksOptions {
@@ -210,16 +211,17 @@ export class RelayLinks {
    * says whether that session took it. A daemon there that predates the
    * request is refused by name, and the caller types the message instead.
    */
-  async message(host: string, parentId: string, childId: string, message: InboxMessage): Promise<RelayMessageAnswer> {
+  async message(host: string, parentId: string, childId: string, message: InboxMessage, options: { awaitSession?: boolean } = {}): Promise<RelayMessageAnswer> {
     if (host === LOCAL_HOST) throw new Error('a message to a child on this machine goes to its session here');
-    const text = await this.ask(host, 'relay-message', (id) => ({ type: 'relay-message', id, parentId, childId, message }));
+    // A brief waits on that machine for the child's session to connect, so the answer may take that long too.
+    const text = await this.ask(host, 'relay-message', (id) => ({ type: 'relay-message', id, parentId, childId, message, ...(options.awaitSession ? { awaitSession: true } : {}) }), options.awaitSession ? this.readTimeoutMs + BRIEF_SESSION_WAIT_MS : undefined);
     const answer = JSON.parse(text) as Partial<{ delivered: boolean; via: string; reason: string }>;
     if (answer.delivered === true && typeof answer.via === 'string') return { delivered: true, via: answer.via };
     return { delivered: false, reason: typeof answer.reason === 'string' && answer.reason ? answer.reason : 'its session did not take the message' };
   }
 
   /** Send one request over a host's connection, opening it for the call when no child holds it open, and wait for its result. */
-  private async ask(host: string, type: PendingRead['type'], build: (id: string) => DaemonRequest): Promise<string> {
+  private async ask(host: string, type: PendingRead['type'], build: (id: string) => DaemonRequest, timeoutMs = this.readTimeoutMs): Promise<string> {
     const known = this.links.get(host);
     if (known && known.state.status === 'reconnecting') throw new Error(unreachable(known.state));
     this.pins.set(host, (this.pins.get(host) ?? 0) + 1);
@@ -231,8 +233,8 @@ export class RelayLinks {
       return await new Promise<string>((resolve, reject) => {
         const timer = setTimeout(() => {
           link.reads.delete(id);
-          reject(new Error(`machine ${host} did not answer ${type === 'relay-read' ? 'a read' : type === 'relay-adopt' ? 'an adoption' : 'a message'} within ${this.readTimeoutMs} ms`));
-        }, this.readTimeoutMs);
+          reject(new Error(`machine ${host} did not answer ${type === 'relay-read' ? 'a read' : type === 'relay-adopt' ? 'an adoption' : 'a message'} within ${timeoutMs} ms`));
+        }, timeoutMs);
         timer.unref?.();
         link.reads.set(id, { type, resolve, reject, timer });
         this.write(link, formatRequest(build(id)));

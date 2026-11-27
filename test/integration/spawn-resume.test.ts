@@ -117,7 +117,10 @@ test('a retired session comes back in a tab with --resume, the same child id, an
   const text = await runBellwetherTool(context(id, local), 'agent_spawn', { resume: 'worker', prompt });
   assert.match(text, /worker resumed session sess-1 in pane w1:p\d+, as the same child child-worker/);
   assert.equal(calls(local.fake, 'tab.create').length, 1, 'one tab');
-  assert.equal(calls(local.fake, 'agent.prompt').length, 0, 'no message to a pane that is gone');
+  const newPane = children(id)[0]?.paneId;
+  assert.notEqual(newPane, 'w1:p3');
+  // The brief is typed into the new pane once, and nothing goes to the pane that is gone.
+  assert.deepEqual(calls(local.fake, 'agent.prompt').map((request) => [request.params['target'], request.params['text']]), [[newPane, prompt]]);
 
   const args = harnessStarts(local.fake)[0]?.args as string[];
   assert.deepEqual(args.slice(args.indexOf('--resume'), args.indexOf('--resume') + 2), ['--resume', 'sess-1']);
@@ -127,7 +130,7 @@ test('a retired session comes back in a tab with --resume, the same child id, an
     'the prompt text never reaches the command line',
   );
   const file = promptPath('child-worker');
-  assert.ok(args.includes(`@${file}`), `no pointer to ${file} in ${JSON.stringify(args)}`);
+  assert.ok(!args.some((arg) => arg.includes(file)), `the launch line points at ${file}: ${JSON.stringify(args)}`);
   assert.equal(fs.readFileSync(file, 'utf8'), prompt);
   assert.equal(fs.statSync(file).mode & 0o777, 0o600);
 

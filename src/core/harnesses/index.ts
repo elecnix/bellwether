@@ -71,9 +71,12 @@ export function resolveTranscript(harness: string, sessionId: string | undefined
   return locateTranscript(harness, sessionId, cwd).path;
 }
 
-/** The one argument that hands a brief file to a harness. */
-export function briefArgument(kind: string, file: string): string {
-  return requireHarness(kind).brief.argument(file);
+/**
+ * The launch-line prompt that points a harness at its brief file, or
+ * undefined for a harness that gets its brief as a message after it starts.
+ */
+export function briefArgument(kind: string, file: string): string | undefined {
+  return requireHarness(kind).brief.launch?.(file);
 }
 
 /**

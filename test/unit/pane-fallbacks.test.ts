@@ -122,8 +122,14 @@ test('a parent message typed through agent.prompt needs a TODO(api) comment, bec
     ['unmarked'],
   );
   const send = scanAll().filter((call) => call.file === path.join('src', 'core', 'send.ts') && call.call === 'agentPrompt');
-  assert.equal(send.length, 1, 'src/core/send.ts types a message in one place, as the session path\'s fallback');
-  assert.equal(send[0]?.kind, 'fallback');
+  // A parent's message is typed as the session path's fallback. A start's
+  // brief is typed as a feature: the parent asked for it, and the person
+  // watching the pane reads the task (issue #162).
+  assert.deepEqual(
+    send.map((call) => call.kind),
+    ['feature', 'fallback'],
+    'src/core/send.ts types a start\'s brief in one place and a parent\'s message in another',
+  );
 });
 
 test('a comment above one statement does not cover the next one', () => {

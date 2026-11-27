@@ -8,6 +8,8 @@ import { LOCAL_HOST } from './machine.ts';
 import { newChildId } from './outbox.ts';
 import { PI_EXTENSION_ENV } from './pi-extension.ts';
 import { writeBrief, writeBriefIn } from './brief.ts';
+import { deliverBrief, deliveryNote } from './brief-delivery.ts';
+import { BRIEF_SESSION_WAIT_MS, type Inbox } from './send.ts';
 import { promptPath } from './paths.ts';
 import { DEFAULT_MAX_DEPTH, tooDeep } from './depth.ts';
 import { droppedNote, type DroppedVariable } from './relay-env.ts';
@@ -99,6 +101,8 @@ export interface SpawnResult {
   decisions?: DialogDecision[];
   /** Why the spawn could not confirm the child took its brief, for the spawn reply. */
   startNote?: string;
+  /** Which path carried the brief, for the spawn reply. */
+  briefNote?: string;
 }
 
 /** How long the watcher holds the events of a new child that shows startup dialogs. Longer than the dialog wait. */
@@ -109,12 +113,18 @@ export const STARTUP_TIMEOUT_MS = 30_000;
 
 /**
  * The arguments a child harness starts with, from its registry entry. The
- * brief is never one of them: the harness gets a one-line pointer to the
- * file that holds it.
+ * brief text is never one of them. A harness whose entry has a launch prompt
+ * gets one line that points at the brief file; any other gets no brief on its
+ * launch line, and the start sends the brief as a message once it runs.
  */
 export function childArgs(kind: string, options: Pick<SpawnOptions, 'model' | 'provider' | 'args'>, files: ChildFiles = {}, extra: { session?: ChildRecord['session']; resume?: string[] } = {}): string[] {
-  return requireHarness(kind).launchArgs({ model: options.model, provider: options.provider, extra: options.args, files, ...extra });
+  const entry = requireHarness(kind);
+  const { briefFile: _brief, ...withoutBrief } = files;
+  return entry.launchArgs({ model: options.model, provider: options.provider, extra: options.args, files: entry.brief.launch ? files : withoutBrief, ...extra });
 }
+
+/** How long the watcher holds a new child's events while its brief waits for the session, beyond the wait itself. */
+const BRIEF_HOLD_MS = BRIEF_SESSION_WAIT_MS + 20_000;
 
 /**
  * The provider and model a pi child starts with. A caller that names both
@@ -162,6 +172,10 @@ export interface SpawnHooks {
   localWorkspaces?: () => Promise<WorkspaceEntry[]>;
   /** How a harness with a store of its own is checked and found. Tests point it at a fixture store and a scripted version. */
   harness?: HarnessHooks;
+  /** The daemon's way into the child's session, which carries its brief. Without it, the brief is typed into the pane. */
+  inbox?: Inbox;
+  /** Who sends the brief, as the child reads it. */
+  from?: string;
 }
 
 /** The files a child starts with, wherever it runs. */
@@ -314,6 +328,7 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
   let keptBrief: string | undefined;
   let envNote: string | undefined;
   let started: StartOutcome = { confirmed: true };
+  let briefNote: string | undefined;
   try {
     const { registered: there, envDropped, ...files } = await childStartFiles(parent, child, options.prompt || undefined, hooks.registerRemote, hooks.piExtension, harnessOptions.model);
     const { briefFile } = files;
@@ -365,6 +380,13 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
       try {
         const found = await store.confirm({ store: child.store, ...(child.session ? { session: child.session.value } : {}), cwd: child.cwd, briefFile, since: child.startedAt }, harnessHooks);
         child.session = { kind: 'id', value: found };
+        // The store showing the prompt is the acknowledgement for a harness
+        // that takes no message in its session.
+        const first = child.briefs?.find((brief) => brief.n === 1);
+        if (first && entry.brief.launch) {
+          first.delivery = { path: 'launch', reason: `${entry.inbox.via === 'none' ? entry.inbox.reason : `${entry.label} takes its first prompt on its launch line`}, and its own store showed the session with that prompt`, at: new Date().toISOString() };
+          briefNote = deliveryNote(child, first, first.delivery);
+        }
         upsertChild(parent.id, child);
       } catch (error) {
         // herdr can read a pane as idle while the harness waits on a dialog
@@ -400,6 +422,27 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
       throw error;
     }
     startup.close();
+  }
+
+  // 4b. Hand over the brief, now that the harness runs and no startup dialog
+  // stands between it and a message: through the child's session, or typed
+  // into its pane when that path is not available. A harness that exits
+  // before it takes the brief fails the spawn. The watcher holds the child's
+  // events meanwhile, so a child idle at its prompt is not reported as done.
+  const first = child.briefs?.find((brief) => brief.n === 1);
+  if (options.prompt && first && !entry.brief.launch) {
+    child.startingUntil = new Date(Date.now() + BRIEF_HOLD_MS).toISOString();
+    updateChild(parent.id, child.id, (record) => {
+      record.startingUntil = child.startingUntil;
+    });
+    try {
+      const handed = await deliverBrief({ herdr: client, parentId: parent.id, child, brief: first, text: options.prompt, from: hooks.from ?? parent.id, inbox: hooks.inbox, fatal: entry.startupFatal, signal });
+      first.delivery = handed.delivery;
+      briefNote = handed.note;
+    } catch (error) {
+      await abandon(client, parent.id, child, opened, hooks, registered);
+      throw error;
+    }
   }
 
   // 5. Record the session and transcript, then hand back the child and its
@@ -455,7 +498,7 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
   const harnessNote = entry.spawnNote?.(child, options.args ?? []);
   const decisions = startup?.decisions.length ? startup.decisions : undefined;
   const startNote = started.confirmed ? undefined : unconfirmedNote(child, entry.label, started.waitedMs);
-  return { child, link: herdrLink('pane', child.paneId), answered, ...(decisions ? { decisions } : {}), ...(note ? { modelNote: note } : {}), ...(harnessNote ? { harnessNote } : {}), ...(envNote ? { envNote } : {}), ...(startNote ? { startNote } : {}) };
+  return { child, link: herdrLink('pane', child.paneId), answered, ...(decisions ? { decisions } : {}), ...(note ? { modelNote: note } : {}), ...(harnessNote ? { harnessNote } : {}), ...(envNote ? { envNote } : {}), ...(startNote ? { startNote } : {}), ...(briefNote ? { briefNote } : {}) };
 }
 
 /** What a spawn says of a child that was running but had not shown herdr a status when the wait ended. */

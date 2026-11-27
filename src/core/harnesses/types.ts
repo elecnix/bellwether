@@ -209,8 +209,16 @@ export interface HarnessEntry {
    * `prs` names the pull requests that brought it, as a feature's does.
    */
   since?: { protocol: number; version: string; prs?: readonly number[] };
-  /** The one argument that hands the brief to the harness, and where the brief file goes. */
-  brief: { where: 'prompts' | 'workdir'; argument(file: string): string };
+  /**
+   * Where the brief file goes, and how the harness gets it. With `launch`,
+   * the launch line carries a one-line first prompt that points at the file,
+   * which only a harness whose own store confirms that prompt may use. Without
+   * it, the launch line carries no brief: once herdr detects the harness and
+   * its startup dialogs are answered, the spawn sends the brief as a message
+   * through the child's session and waits for the adapter to acknowledge it,
+   * and types it into the pane when the session path is not available.
+   */
+  brief: { where: 'prompts' | 'workdir'; launch?(file: string): string };
   /** The arguments after the executable. */
   launchArgs(input: LaunchInput): string[];
   /**

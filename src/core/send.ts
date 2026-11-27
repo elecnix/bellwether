@@ -20,12 +20,31 @@ export type { InboxMessage } from '../daemon/protocol.ts';
 /** What the child's session said to a message: it holds it, or why it could not take it. */
 export type InboxAnswer = { delivered: true; via: string } | { delivered: false; reason: string };
 
+/** How a push into a child's session behaves. */
+export interface InboxOptions {
+  /**
+   * Wait for the child's session to connect before giving up on it, as a
+   * start's brief does: the harness has only just started, and its adapter
+   * connects to its daemon a moment later. Without it, a session that is not
+   * connected answers at once.
+   */
+  awaitSession?: boolean;
+}
+
 /**
  * The daemon's way into a child's own session, through the Bellwether adapter
  * connected for it: on this machine, or through the daemon on the child's
  * machine over the relay.
  */
-export type Inbox = (parentId: string, child: ChildRecord, message: InboxMessage) => Promise<InboxAnswer>;
+export type Inbox = (parentId: string, child: ChildRecord, message: InboxMessage, options?: InboxOptions) => Promise<InboxAnswer>;
+
+/**
+ * How long a daemon waits for a just-started child's session to connect
+ * before a brief is typed instead. Claude Code starts its channel server
+ * after its startup dialogs, and pi and omp load the extension before they
+ * draw, so either is connected within seconds of herdr detecting the harness.
+ */
+export const BRIEF_SESSION_WAIT_MS = 30_000;
 
 /** How many messages a child record keeps. */
 const KEPT = 20;
@@ -47,11 +66,29 @@ export interface MessageInput {
   text: string;
   /** The daemon's door into the child's session. Absent outside a daemon, which leaves typing. */
   inbox?: Inbox;
+  /** For a start's brief: wait for the just-started child's session to connect, and mark the message with the brief's number. */
+  brief?: { n: number };
+  /**
+   * Rejects when the child's harness exits while the message waits for its
+   * session. The message then leaves the record, so nothing on it says the
+   * text was delivered, and the rejection reaches the caller.
+   */
+  gone?: Promise<never>;
+  /** Runs before the fallback types, and throws to stop it, as a start does when the harness has exited. */
+  beforeTyping?: () => Promise<void>;
 }
 
 function preview(text: string): string {
   const line = text.replace(/\s+/g, ' ').trim();
   return line.length > PREVIEW ? `${line.slice(0, PREVIEW - 1)}…` : line;
+}
+
+function forget(parentId: string, childId: string, id: string): void {
+  updateChild(parentId, childId, (entry) => {
+    const kept = (entry.messages ?? []).filter((existing) => existing.id !== id);
+    if (kept.length) entry.messages = kept;
+    else delete entry.messages;
+  });
 }
 
 function remember(parentId: string, childId: string, message: ChildMessage): void {
@@ -89,13 +126,21 @@ export async function messageChild(input: MessageInput): Promise<MessageOutcome>
   const id = `m-${crypto.randomBytes(4).toString('hex')}`;
   const at = new Date().toISOString();
   const refusal = sessionPathRefusal(child, input.inbox);
+  const brief = input.brief ? { brief: input.brief.n } : {};
   let reason = refusal;
   if (!refusal && input.inbox) {
     // Recorded before the push, so a read that comes back at once finds it.
-    remember(parentId, child.id, { id, at, path: 'session', preview: preview(text), text, from: input.from });
-    const answer = await input.inbox(parentId, child, { id, from: input.from, text, at }).catch((error: unknown): InboxAnswer => ({ delivered: false, reason: (error as Error).message }));
+    remember(parentId, child.id, { id, at, path: 'session', preview: preview(text), text, from: input.from, ...brief });
+    const pushed = input.inbox(parentId, child, { id, from: input.from, text, at }, input.brief ? { awaitSession: true } : {}).catch((error: unknown): InboxAnswer => ({ delivered: false, reason: (error as Error).message }));
+    let answer: InboxAnswer;
+    try {
+      answer = await (input.gone ? Promise.race([pushed, input.gone]) : pushed);
+    } catch (error) {
+      forget(parentId, child.id, id);
+      throw error;
+    }
     if (answer.delivered) {
-      const message: ChildMessage = { id, at, path: 'session', via: answer.via, preview: preview(text), text, from: input.from };
+      const message: ChildMessage = { id, at, path: 'session', via: answer.via, preview: preview(text), text, from: input.from, ...brief };
       updateChild(parentId, child.id, (entry) => {
         const found = entry.messages?.find((existing) => existing.id === id);
         if (found) found.via = answer.via;
@@ -107,7 +152,10 @@ export async function messageChild(input: MessageInput): Promise<MessageOutcome>
       };
     }
     reason = answer.reason;
+    // The fallback records a message of its own under the same id.
+    forget(parentId, child.id, id);
   }
+  await input.beforeTyping?.();
   return typeInto(input, id, at, reason ?? 'the session path was not available');
 }
 
@@ -117,12 +165,20 @@ export async function messageChild(input: MessageInput): Promise<MessageOutcome>
  */
 async function typeInto(input: MessageInput, id: string, at: string, reason: string): Promise<MessageOutcome> {
   const { herdr, child, parentId, text } = input;
-  const message: ChildMessage = { id, at, path: 'keystrokes', reason, preview: preview(text) };
+  const message: ChildMessage = { id, at, path: 'keystrokes', reason, preview: preview(text), ...(input.brief ? { brief: input.brief.n } : {}) };
   try {
-    // TODO(api): a harness inbound path retires this for the harnesses that
-    // have none yet: a message request in Codex's and Cline's MCP clients, or
-    // OpenCode's and Kilo's session message API reached from the daemon.
-    await herdr.agentPrompt(child.paneId, text);
+    if (input.brief) {
+      // Pane feature: the parent that spawned this child asked for the brief
+      // to reach it, and the session path was not available, so herdr types
+      // the brief itself into the pane Bellwether just started. The person
+      // watching the pane reads the task rather than a path to a file.
+      await herdr.agentPrompt(child.paneId, text);
+    } else {
+      // TODO(api): a harness inbound path retires this for the harnesses that
+      // have none yet: a message request in Codex's and Cline's MCP clients, or
+      // OpenCode's and Kilo's session message API reached from the daemon.
+      await herdr.agentPrompt(child.paneId, text);
+    }
     remember(parentId, child.id, message);
     return { message, text: `Prompted ${child.name}: herdr typed message ${id} into its pane, because ${reason.replace(/\.$/, '')}.` };
   } catch (error) {

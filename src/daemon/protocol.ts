@@ -61,7 +61,11 @@ export const PROTOCOL_HISTORY: readonly { protocol: number; breaks: boolean; cha
   // parent_report from a pane a parent on another machine adopted is routed
   // to that parent's relay outbox, and a relay-adopt answer says whether the
   // adopted session can report. An older peer never asks for the first, and
-  // leaves out or ignores the others.
+  // leaves out or ignores the others. A relay-message may also carry
+  // `awaitSession`, which asks the daemon on the child's machine to wait for
+  // the child's session before it answers (issue #162). A far daemon that
+  // predates the field answers at once that no session is connected, and the
+  // parent types the brief into the far pane, as for any message it refuses.
 ];
 
 /**
@@ -249,6 +253,13 @@ export interface RelayMessageRequest {
   parentId: string;
   childId: string;
   message: InboxMessage;
+  /**
+   * Set for a start's brief (issue #162): the daemon on the child's machine
+   * waits for the child's session to connect before it pushes the message,
+   * because the harness has only just started. A daemon that predates the
+   * field answers at once that no session is connected, and the brief is typed.
+   */
+  awaitSession?: boolean;
 }
 
 /** The text of a relay-message result: the child's session took it, through which adapter, or why not. */
@@ -606,7 +617,7 @@ export function parseRequest(line: string): DaemonRequest {
       const messageId = text(message['id']);
       const body = typeof message['text'] === 'string' ? message['text'] : '';
       if (!messageId || !body.trim()) throw new ProtocolError('invalid_message', 'a relay message needs a message id and text');
-      return { type: 'relay-message', id, parentId, childId, message: { id: messageId, text: body, from: text(message['from']) || 'your parent', at: text(message['at']) || new Date().toISOString() } };
+      return { type: 'relay-message', id, parentId, childId, message: { id: messageId, text: body, from: text(message['from']) || 'your parent', at: text(message['at']) || new Date().toISOString() }, ...(value['awaitSession'] === true ? { awaitSession: true } : {}) };
     }
     case 'relay-status': {
       const id = text(value['id']);

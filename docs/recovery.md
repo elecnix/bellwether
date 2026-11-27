@@ -25,7 +25,7 @@ The spawn's brief is `~/.bellwether/prompts/<child id>.md`. Each resume that bri
 
 A child on another machine reads its own copy there, and this machine keeps the numbered files for the next resume.
 
-Before it writes, a resume checks the record. Proof that the child read the newest brief is either a report sent after Bellwether wrote that brief, or a finished turn in the pane that started on it. With either one, the child gets only the new prompt. A status or a run time doesn't count, because a harness can run without reading anything.
+Before it writes, a resume checks the record. Proof that the child read the newest brief is a report sent after Bellwether wrote that brief, a finished turn in the pane that started on it, or the read of the session message that carried it. With either one, the child gets only the new prompt. A status or a run time doesn't count, because a harness can run without reading anything.
 
 Without that proof, the new file places the unread brief first and the prompt after it. Resuming with no prompt hands the unread brief over again.
 

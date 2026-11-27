@@ -20,6 +20,8 @@ import { pickMachine, type MachineProfile } from '../../src/core/machine.ts';
 import { emptyParent, readParent, saveParent, upsertChild } from '../../src/core/registry.ts';
 import { RELAY_SCHEMA, readRelayRecord, saveRelayRecord } from '../../src/core/relay-records.ts';
 import { remoteOps } from '../../src/core/remote.ts';
+import { deliverBrief } from '../../src/core/brief-delivery.ts';
+import type { Inbox } from '../../src/core/send.ts';
 import { claudeProjectDir } from '../../src/core/transcript.ts';
 import type { ChildMessage, ChildRecord } from '../../src/core/types.ts';
 import { Watcher } from '../../src/core/watcher.ts';
@@ -73,11 +75,15 @@ interface Room {
   far: FakeHerdr;
   links: RelayLinks;
   parent: DaemonClient;
+  /** The parent daemon's way into a child's session, as a start uses it for a brief. */
+  inbox: () => Inbox | undefined;
+  farClient: HerdrClient;
 }
 
 /** A parent daemon in this process whose service runs the real tools, with the far machine reached through the relay links. */
-function serviceFactory(clientFor: (host: string) => Promise<HerdrClient>, near: HerdrClient, links: RelayLinks): ServiceFactory {
+function serviceFactory(clientFor: (host: string) => Promise<HerdrClient>, near: HerdrClient, links: RelayLinks, held: { inbox?: Inbox } = {}): ServiceFactory {
   return (_parent, id, deps): ParentService => {
+    if (deps.inbox) held.inbox = deps.inbox;
     const watcher = new Watcher({ client: near, clientFor, parentId: id, onEntries: () => {}, relayState: (host) => links.state(host) });
     watcher.start();
     const ctx: ToolContext = { client: near, clientFor, parentId: id, watcher, remote: remoteOps(resolve, {}, links), relayState: (host) => links.state(host), ...(deps.inbox ? { inbox: deps.inbox } : {}) };
@@ -128,7 +134,8 @@ async function room(t: test.TestContext, options: { farDaemon?: (socketPath: str
 
   const links = new RelayLinks({ resolve, initialDelayMs: 50, maxDelayMs: 200, readTimeoutMs: 10_000, heartbeatMs: 1_000 });
   const socketPath = path.join(parentHome, 'daemon.sock');
-  const daemon = await startDaemon({ socketPath, home: parentHome, links, factory: serviceFactory(clientFor, nearClient, links), pruneEveryMs: false });
+  const held: { inbox?: Inbox } = {};
+  const daemon = await startDaemon({ socketPath, home: parentHome, links, factory: serviceFactory(clientFor, nearClient, links, held), pruneEveryMs: false });
   const parent = await DaemonClient.connect({ harness: 'claude-code', session: 'the-parent', cwd: '/work', host: 'parent-box', paneId: 'w1:p1', depth: 0, herdrSocket: near.socketPath }, { socketPath, home: parentHome, spawn: false });
   t.after(async () => {
     await parent.close();
@@ -142,7 +149,7 @@ async function room(t: test.TestContext, options: { farDaemon?: (socketPath: str
     process.env['BELLWETHER_DAEMON_SOCKET'] = saved.socket;
     fs.rmSync(root, { recursive: true, force: true });
   });
-  return { root, parentHome, childHome, far, links, parent };
+  return { root, parentHome, childHome, far, links, parent, inbox: () => held.inbox, farClient };
 }
 
 async function until<T>(what: string, check: () => T | undefined | false | Promise<T | undefined | false>, timeoutMs = 20_000): Promise<T> {
@@ -231,6 +238,33 @@ test("a child on another machine gets the message through its channel, herdr the
   await until('the read on the parent record', () => messages().find((message) => message.id === id && message.readAt));
   await until('the far machine to drop the read text', () => !inHome(space.childHome, () => readRelayRecord(CHILD_ID))?.messages?.length);
   assert.match(await space.parent.tool('agent_list', {}), new RegExp(`first-mate: message ${id} at .*, into its session through Bellwether channel; read at `));
+});
+
+test("a start's brief waits on the child's machine for its session, enters it across the relay, and herdr there types nothing", async (t) => {
+  const space = await room(t);
+  await relayUp(space);
+  const inbox = space.inbox();
+  assert.ok(inbox, 'the parent daemon handed its service an inbox');
+  const brief = 'Port the parser.\nThen call parent_report.';
+  const file = path.join(space.parentHome, 'prompts', `${CHILD_ID}.md`);
+  const at = new Date().toISOString();
+  upsertChild(PARENT_ID, { ...readParent(PARENT_ID)!.children[0]!, briefs: [{ n: 1, file, at }] });
+  const child = readParent(PARENT_ID)!.children[0]!;
+  // The harness has just started there, and its channel server connects a moment after the brief leaves.
+  const handed = deliverBrief({ herdr: space.farClient, parentId: PARENT_ID, child, brief: { n: 1, file }, text: brief, from: 'your parent', inbox });
+  await delay(300);
+  const channel = await farChannel(t, space);
+  const outcome = await handed;
+  assert.equal(outcome.delivery.path, 'session', outcome.note);
+  assert.equal(outcome.delivery.via, 'claude-channel');
+  const note = await until('the far channel notification', () => channel.notifications.find((entry) => entry.method === 'notifications/claude/channel'));
+  assert.ok(note.params.content.endsWith(brief), note.params.content);
+  // The guard that fails if the brief falls back to typing on the far machine.
+  assert.deepEqual(typed(space.far), [], 'nothing typed into the far pane of a child whose channel took its brief');
+  assert.equal(channel.notifications.filter((entry) => entry.method === 'notifications/claude/channel').length, 1, 'the hello replay did not hand the session a second copy');
+  const saved = readParent(PARENT_ID)!.children[0]!;
+  assert.equal(saved.briefs?.[0]?.delivery?.path, 'session');
+  assert.equal(saved.messages?.find((message) => message.id === outcome.delivery.message)?.brief, 1);
 });
 
 test('a far session that is not connected gets the message typed into its pane on that machine, and the reason comes from that machine', async (t) => {

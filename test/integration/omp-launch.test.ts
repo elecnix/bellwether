@@ -115,11 +115,11 @@ async function until<T>(what: string, check: () => T | undefined, timeoutMs = 5_
   }
 }
 
-test('an omp spawn loads the pi extension with -e, points omp at the brief with @, and skips its setup wizard', async (t) => {
+test('an omp spawn loads the pi extension with -e, starts with no brief on its launch line, and skips its setup wizard', async (t) => {
   const space = await room(t);
   const { child } = await spawnChild(space.client, readParent(space.parentId)!, { kind: 'omp', name: 'omp-drill', prompt: 'report back', cwd: space.cwd, model: 'example-provider/example-model' });
   const extension = piExtensionEntry();
-  assert.deepEqual(startArgs(space.fake), ['--model', 'example-provider/example-model', '-e', extension, `@${promptPath(child.id)}`]);
+  assert.deepEqual(startArgs(space.fake), ['--model', 'example-provider/example-model', '-e', extension]);
   const start = harnessStarts(space.fake)[0];
   assert.equal(start?.kind, 'omp', 'herdr starts the kind its omp integration reports');
   assert.equal(fs.readFileSync(promptPath(child.id), 'utf8'), 'report back');

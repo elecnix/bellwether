@@ -59,9 +59,8 @@ test('a resume repeats an unread brief ahead of its prompt, and hands over only 
   fs.rmSync(root, { recursive: true, force: true });
 });
 
-test('Claude Code gets a quoted mention for a path with a space', () => {
-  assert.equal(briefArgument('claude', '/home/a b/brief.md'), '@"/home/a b/brief.md"');
-  assert.equal(briefArgument('claude', '/home/ab/brief.md'), '@/home/ab/brief.md');
-  assert.equal(briefArgument('pi', '/home/a b/brief.md'), '@/home/a b/brief.md');
+test('a harness that takes a message gets no brief on its launch line, and a store harness gets a pointer', () => {
+  // Claude Code, pi and omp take the brief as a message once they run (issue #162).
+  for (const kind of ['claude', 'pi', 'omp']) assert.equal(briefArgument(kind, '/home/a b/brief.md'), undefined, kind);
   assert.equal(briefArgument('opencode', '/x.md'), 'Your task is in /x.md. Read it, then do what it says.');
 });

@@ -91,7 +91,7 @@ export const parentTools: ToolDefinition[] = [
         },
         name: { type: 'string', description: 'A short handle for the child, unique in this session. Used as the herdr agent name and the tab label. Required without resume.' },
         cwd: { type: 'string', description: 'The directory to start the child in. Use an absolute path, ideally a git worktree of its own. Required for an opencode child, whose brief goes inside it.' },
-        prompt: { type: 'string', description: 'The first message the child receives, or with resume the message for the earlier child. The whole prompt, not a path. Line breaks and any length are fine: Bellwether hands a new or resumed child the prompt through a private file.' },
+        prompt: { type: 'string', description: 'The first message the child receives, or with resume the message for the earlier child. The whole prompt, not a path. Line breaks and any length are fine. Bellwether keeps it in a private file, and a claude, pi or omp child gets it as a message in its session once its harness runs, typed into its pane when that session does not take it; the reply says which path carried it, and a harness that exits before taking it fails the spawn.' },
         model: { type: 'string', description: 'The model to pass to the child harness, or with via a tier of that route. A pi child needs provider with it; with neither, a pi child runs on the provider and model of this session. A tier passed without via is refused, and the refusal names the route that has it. A bare opencode child takes provider/model, which goes in its configuration as the default model.' },
         via: { type: 'string', description: 'Start the child through a route: a launcher wrapper that this machine\'s routes file (~/.config/bellwether/routes.json, or BELLWETHER_ROUTES) defines, which runs the harness and routes it. model then names one of the route\'s tiers, and the route\'s default tier applies without one. Pass none for a bare start. With resume, a route moves the child onto it and none takes it off, on the same session; omit it to keep the route the child ran on.' },
         key_file: { type: 'string', description: 'A file that holds the key the route\'s launcher runs under, such as another tenant\'s. Needs via. The file must exist and not be empty. Its path goes on the child\'s record, and the pane\'s shell reads the file when the launch runs, so the key never appears on a command line.' },
@@ -459,6 +459,7 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
     lines.push(`${child.name} resumed session ${result.session.value}${where} in pane ${child.paneId}, as the same child ${child.id}, on route ${routeLabel(child.route)}.`, 'Bellwether watches it again, and its earlier events and receipts carry on.');
     const repeated = repeatedBriefNote(child, result.brief);
     if (repeated) lines.push(repeated);
+    if (result.briefNote) lines.push(result.briefNote);
     lines.push(`herdr link: ${result.link}`);
     return lines.join('\n');
   }
@@ -491,11 +492,13 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
     if (!options.name) throw new Error('agent_spawn needs a name for a new child, or resume to message an earlier one.');
     // Resolve the machine before anything is written, so a typo leaves no record.
     const client = await clientFor(ctx, options.host ?? LOCAL_HOST);
-    const { child, link, modelNote, harnessNote, envNote, startNote, decisions } = await spawnChild(client, record, options, undefined, {
+    const { child, link, modelNote, harnessNote, envNote, startNote, briefNote, decisions } = await spawnChild(client, record, options, undefined, {
       forget: (childId) => ctx.watcher.forget(childId),
       registerRemote: registrar(ctx, record),
       cleanupRemote: remoteCleanup(ctx),
       localWorkspaces: async () => parseWorkspaces(await ctx.client.workspaceList()),
+      inbox: ctx.inbox,
+      from: senderName(record),
     });
     // The depth-0 session's max_depth is the tree's ceiling, raised only by its own spawns.
     const tree = raiseTree(record, asked);
@@ -505,6 +508,7 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
     const where = child.host === LOCAL_HOST ? '' : ` on machine ${child.host}`;
     const room = child.ownsWorkspace ? `, in workspace ${workspaceName(child)}, which Bellwether created for it` : options.workspace && child.workspaceId ? `, in workspace ${workspaceName(child)}` : '';
     const lines = [`${child.name} started as a ${child.kind} agent${where} in pane ${child.paneId}, tab ${child.tabId ?? child.paneId}${room}${child.route ? `, on route ${routeLabel(child.route)}` : ''}.`, `Bellwether watches it, and your next turn starts when it changes state.`, `herdr link: ${link}`];
+    if (briefNote) lines.push(briefNote);
     if (depth.note) lines.push(depth.note);
     if (modelNote) lines.push(modelNote);
     if (harnessNote) lines.push(harnessNote);

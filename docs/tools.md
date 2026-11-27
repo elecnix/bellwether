@@ -92,6 +92,18 @@ A child session that reconnects takes its unread message again, after a daemon h
 
 If a child exits before it reads a message, Bellwether raises an exit event identifying the message, and the record marks the message undelivered.
 
+### The brief
+
+A `claude`, `pi` or `omp` child starts without a brief on its launch line. After the harness starts, Bellwether waits for herdr to detect it. Startup questions come first: a session that waits on one can't read a message, so the spawn answers them before anything else. Bellwether then sends the brief through the child's own Bellwether server or extension, the same path `agent_send` takes. It waits up to 30 seconds for that session to connect, then up to 5 seconds for it to take the brief. That answer shows the child is running and has its task. Its pane shows the task itself, not a path to a file.
+
+Bellwether types the brief into the pane instead when the session path isn't available. The fallback covers a harness with no way in, a session that never connects or doesn't take the brief in time, and a far machine whose Bellwether predates the wait. A harness that exits before it takes the brief fails the spawn, and the error quotes the line it printed. A failed spawn doesn't keep a record, so nothing claims that the brief arrived. Bellwether never types a brief at the shell a harness left behind.
+
+`codex`, `cline`, `kilo` and `opencode` keep a one-line pointer to the brief file as the first prompt on their launch line. Those harnesses don't take a message in their sessions. Each one's store shows the session with that prompt, which proves the brief arrived.
+
+On the child record, each entry under `briefs` records how the brief arrived as `delivery`: `session` with the adapter that took it, `keystrokes` with the reason, or `launch` with the reason. A brief sent as a message also appears under `messages`, marked with its number, so `agent_list` shows when the model read it. The spawn's reply says which path carried the brief. The brief file stays on disk, so a parent can read it again.
+
+A resume that brings a brief delivers it the same way, once. When the new brief includes an earlier one the child never read, the session isn't offered that earlier message again. A restart doesn't send a brief. That session already has the one it took, and a session that reconnects before its model reads the brief receives it once more, like any unread message.
+
 ## Workspaces
 
 A child opens in your own herdr workspace unless the spawn sets `workspace` to another one. The value `"new"` asks herdr for a workspace of the child's own, labelled with the child's name, or with `workspace_label` when you pass one. The child runs in that workspace's first tab, so no empty shell sits beside it.

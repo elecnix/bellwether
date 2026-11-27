@@ -660,7 +660,7 @@ function startArgs(herdr: Awaited<ReturnType<typeof startFakeHerdr>>): string[] 
   return (harnessStarts(herdr)[0]?.args as string[]) ?? [];
 }
 
-test('a spawn on another machine copies the brief there over ssh, and points the child at that copy', async (t) => {
+test('a spawn on another machine copies the brief there over ssh, and starts the child with no brief on its launch line', async (t) => {
   const w = world(t);
   const parent = saveParent(emptyParent('claude-code', 'brief-sender', '/work', { workspaceId: 'w1' }));
   const herdr = await idleHerdr(t);
@@ -675,8 +675,8 @@ test('a spawn on another machine copies the brief there over ssh, and points the
   const kept = path.join(w.parentHome, 'prompts', `${child.id}.md`);
   assert.equal(fs.readFileSync(kept, 'utf8'), brief, 'the parent\'s machine keeps the brief it sent');
   assert.equal(fs.statSync(kept).mode & 0o777, 0o600);
-  assert.ok(!startArgs(herdr).includes(`@${kept}`), 'the child is never pointed at the parent\'s copy');
-  assert.ok(startArgs(herdr).includes(`@${remoteBrief}`), `the child is pointed at the copy that exists where it runs: ${startArgs(herdr).join(' ')}`);
+  // The brief reaches the child as a message once it runs (issue #162), so the launch line points at neither copy.
+  assert.ok(!startArgs(herdr).some((arg) => arg.includes(kept) || arg.includes(remoteBrief)), `the launch line points at a brief file: ${startArgs(herdr).join(' ')}`);
   // The brief never rode on a command line, on either machine.
   for (const argv of w.ssh.calls()) assert.ok(!argv.join(' ').includes('Line one of the task'));
   for (const call of w.ssh.remoteCalls()) assert.ok(!call.argv.join(' ').includes('Line one of the task'));
@@ -741,7 +741,7 @@ test("a spawn on another machine writes the brief inside the child's working dir
   const file = path.join(cwd, '.bellwether', `brief-${child.id}.md`);
   assert.equal(fs.readFileSync(file, 'utf8'), brief, "the brief is inside the directory the child starts in");
   assert.equal(fs.statSync(file).mode & 0o777, 0o600);
-  assert.ok(startArgs(herdr).includes(`@${file}`), `the child is pointed at the copy in its working directory: ${startArgs(herdr).join(' ')}`);
+  assert.ok(!startArgs(herdr).some((arg) => arg.includes(file)), `the launch line points at the brief file: ${startArgs(herdr).join(' ')}`);
   assert.ok(!fs.existsSync(path.join(w.childHome, 'prompts', `${child.id}.md`)), 'none went to a home-level directory, outside the child\'s working directory');
   assert.equal(fs.readFileSync(path.join(w.parentHome, 'prompts', `${child.id}.md`), 'utf8'), brief, "the parent's machine keeps the brief it sent, for a resume (issue #132)");
   assert.equal(execFileSync('git', ['-C', cwd, 'status', '--porcelain', '--untracked-files=all'], { encoding: 'utf8' }), '', 'the worktree stays clean');

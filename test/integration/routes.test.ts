@@ -130,9 +130,9 @@ test('via a route starts the launcher in front of claude, on the default tier, a
   assert.deepEqual(started.assignments, []);
   assert.deepEqual(started.launcher, ['example-router', '--yes', '--model', 'example-deep']);
   assert.equal(started.agent, 'claude');
-  const brief = path.join(bellwetherHome(), 'prompts', `${record.id}.md`);
   const mcp = path.join(bellwetherHome(), 'mcp', `${record.id}.json`);
-  assert.deepEqual(started.args, [`--mcp-config=${mcp}`, `--settings=${claudeSettingsPath(record.id)}`, '--dangerously-load-development-channels=server:bellwether', `@${brief}`]);
+  // The brief arrives after the start, as a message (issue #162).
+  assert.deepEqual(started.args, [`--mcp-config=${mcp}`, `--settings=${claudeSettingsPath(record.id)}`, '--dangerously-load-development-channels=server:bellwether']);
   assert.equal(harnessStarts(r.fake).length, 0, 'herdr never started a bare claude');
   assert.deepEqual(calls(r.fake, 'agent.rename').map((request) => request.params), [{ target: record.paneId, name: 'routed' }]);
   // The startup dialog was answered, as for a bare claude child.
@@ -169,9 +169,8 @@ test('a bare child starts behind `command`, so a shell function named after its 
   const record = child(r, 'plain');
   const started = pane(r, record.paneId);
   assert.match(started.typed ?? '', /^command claude /, 'the launch line names claude behind `command`');
-  const brief = path.join(bellwetherHome(), 'prompts', `${record.id}.md`);
   const mcp = path.join(bellwetherHome(), 'mcp', `${record.id}.json`);
-  assert.deepEqual(started.args, [`--mcp-config=${mcp}`, `--settings=${claudeSettingsPath(record.id)}`, '--dangerously-load-development-channels=server:bellwether', `@${brief}`], 'the child got exactly the arguments Bellwether chose');
+  assert.deepEqual(started.args, [`--mcp-config=${mcp}`, `--settings=${claudeSettingsPath(record.id)}`, '--dangerously-load-development-channels=server:bellwether'], 'the child got exactly the arguments Bellwether chose');
   assert.equal(started.agent_status, 'idle', 'the channel question was answered');
   assert.equal(started.name, 'plain', 'the agent is named after its detection');
 

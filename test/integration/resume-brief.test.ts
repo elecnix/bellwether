@@ -14,7 +14,7 @@ import { spawnChild } from '../../src/core/spawn.ts';
 import type { ChildRecord } from '../../src/core/types.ts';
 import { Watcher } from '../../src/core/watcher.ts';
 import { runBellwetherTool, type ToolContext } from '../../src/integrations/tools.ts';
-import { harnessStarts, startFakeHerdr, type FakeHerdr } from '../fixtures/fake-herdr.ts';
+import { harnessStarts, prompted, startFakeHerdr, type FakeHerdr } from '../fixtures/fake-herdr.ts';
 import { fakeWorld, type FakeWorld } from '../fixtures/fake-world.ts';
 import { isolate } from '../fixtures/isolated.ts';
 
@@ -76,19 +76,28 @@ async function exitPane(space: Room, paneId: string, childId: string): Promise<C
   });
 }
 
-/** The file the last start pointed pi at, from its `@file` argument. */
-function lastBriefArgument(space: Room): string {
+/**
+ * The file of the brief the last start handed over. The launch line carries
+ * no brief (issue #162): the start types it, since no daemon carries these
+ * calls, so the last text herdr typed is that file's text, and the record's
+ * newest brief names the file.
+ */
+function lastBriefArgument(space: Room, childId: string): string {
   const args = harnessStarts(space.fake).at(-1)?.args ?? [];
-  const pointer = args.find((arg) => arg.startsWith('@'));
-  assert.ok(pointer, `no @file argument in ${JSON.stringify(args)}`);
-  return pointer.slice(1);
+  assert.ok(!args.some((arg) => arg.startsWith('@')), `the launch line points at a brief: ${JSON.stringify(args)}`);
+  const newest = record(space, childId)?.briefs?.at(-1);
+  assert.ok(newest, 'the record names no brief');
+  const typed = prompted(space.fake, record(space, childId)?.paneId ?? '').at(-1);
+  assert.equal(typed, fs.readFileSync(newest.file, 'utf8'), 'the start typed the text of its newest brief');
+  assert.equal(newest.delivery?.path, 'keystrokes');
+  return newest.file;
 }
 
 test('a child that exits before it reads its brief keeps the task through a resume with a short prompt', async (t) => {
   const space = await room(t);
   const { child } = await spawnChild(space.client, readParent(space.parentId)!, { kind: 'pi', name: 'keyless', prompt: TASK, cwd: space.cwd });
   const first = promptPath(child.id);
-  assert.equal(lastBriefArgument(space), first);
+  assert.equal(lastBriefArgument(space, child.id), first);
 
   // The harness exits at once, as pi does with a provider that has no key.
   const exited = await exitPane(space, child.paneId, child.id);
@@ -100,7 +109,7 @@ test('a child that exits before it reads its brief keeps the task through a resu
   assert.ok(reply.includes(first), `the reply names the file that holds the first brief: ${reply}`);
 
   // The child reads the task first, then the resume's prompt.
-  const delivered = lastBriefArgument(space);
+  const delivered = lastBriefArgument(space, child.id);
   assert.notEqual(delivered, first, 'the resume writes a file of its own');
   const text = fs.readFileSync(delivered, 'utf8');
   const task = text.indexOf(TASK);
@@ -137,7 +146,7 @@ test('a child that read its brief and reported gets only the new prompt on a res
   const reply = await runBellwetherTool(context(space), 'agent_spawn', { resume: 'reader', prompt: 'Now tag the release.' });
   assert.match(reply, /reader resumed session/);
   assert.doesNotMatch(reply, /had not read/);
-  const delivered = lastBriefArgument(space);
+  const delivered = lastBriefArgument(space, child.id);
   assert.equal(fs.readFileSync(delivered, 'utf8'), 'Now tag the release.');
   assert.equal(delivered, path.join(promptsDir(), `${child.id}-2.md`));
 });

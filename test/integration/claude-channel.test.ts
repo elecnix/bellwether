@@ -11,6 +11,7 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { daemonsUnder, stopDaemonsUnder } from '../fixtures/daemons.ts';
 import { claudeProjectDir } from '../../src/core/transcript.ts';
 import { parentId, slug } from '../../src/core/registry.ts';
 import type { OutboxEntry } from '../../src/core/types.ts';
@@ -29,8 +30,12 @@ interface Lab {
   parents: string;
 }
 
+/** Every lab this file opened, so the last case can prove none left a daemon. */
+const roots: string[] = [];
+
 function lab(): Lab {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bellwether-channel-'));
+  roots.push(root);
   const home = path.join(root, 'home');
   const cwd = path.join(root, 'worktree');
   const config = path.join(root, 'claude');
@@ -47,6 +52,16 @@ function lab(): Lab {
     HERDR_SOCKET_PATH: path.join(root, 'no-such-herdr.sock'),
   };
   return { root, home, cwd, env, transcript, outbox: path.join(home, 'outbox', `${slug(parentId('claude-code', session))}.json`), parents: path.join(home, 'parents') };
+}
+
+/**
+ * Stop the daemon the channel started in this lab, then remove the lab. The
+ * daemon runs detached, so without this it keeps running after the test, and
+ * it writes into the home while the directory is being removed.
+ */
+async function closeLab(room: Lab): Promise<void> {
+  await stopDaemonsUnder(room.root, room.home);
+  fs.rmSync(room.root, { recursive: true, force: true });
 }
 
 function entry(receipt: string): OutboxEntry {
@@ -111,7 +126,7 @@ test('the channel declares claude/channel and registers the Bellwether tools', a
     assert.match(JSON.stringify(list.content), /No children yet/);
   } finally {
     await client.close();
-    fs.rmSync(room.root, { recursive: true, force: true });
+    await closeLab(room);
   }
 });
 
@@ -131,7 +146,7 @@ test('a child event arrives as a channel notification with its receipt', async (
     assert.ok(params.content.includes('bw-abcdef123456'));
   } finally {
     await client.close();
-    fs.rmSync(room.root, { recursive: true, force: true });
+    await closeLab(room);
   }
 });
 
@@ -150,7 +165,7 @@ test('a receipt in the transcript marks the event read', async () => {
     await until('the entry to be marked read', () => (outboxOf(room)[0]?.read ? true : undefined));
   } finally {
     await client.close();
-    fs.rmSync(room.root, { recursive: true, force: true });
+    await closeLab(room);
   }
 });
 
@@ -165,7 +180,7 @@ test('a receipt already in the transcript is not pushed a second time', async ()
     assert.deepEqual(notifications, []);
   } finally {
     await client.close();
-    fs.rmSync(room.root, { recursive: true, force: true });
+    await closeLab(room);
   }
 });
 
@@ -177,7 +192,7 @@ test('a child session also gets parent_report', async () => {
     assert.ok(listed.tools.some((tool) => tool.name === 'parent_report'));
   } finally {
     await client.close();
-    fs.rmSync(room.root, { recursive: true, force: true });
+    await closeLab(room);
   }
 });
 
@@ -191,6 +206,14 @@ test('the server exits when stdin closes', async () => {
     assert.equal(await exited, 0);
   } finally {
     child.kill('SIGKILL');
-    fs.rmSync(room.root, { recursive: true, force: true });
+    await closeLab(room);
   }
+});
+
+// Runs last: node:test runs the cases of one file in order.
+test('no daemon outlives the channel cases', async () => {
+  const left = roots.flatMap((root) => daemonsUnder(root));
+  // Stop them anyway, so a failure here leaves no process behind.
+  for (const root of roots) await stopDaemonsUnder(root, path.join(root, 'home'));
+  assert.deepEqual(left, [], `daemons outlived their test: ${left.map((daemon) => `${daemon.pid} on ${daemon.socket}`).join(', ')}`);
 });

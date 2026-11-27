@@ -9,8 +9,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { after, before, test } from 'node:test';
-import { setTimeout as delay } from 'node:timers/promises';
-import { isAlive } from '../../src/daemon/lock.ts';
+import { daemonsUnder, stopDaemonsUnder } from '../fixtures/daemons.ts';
 
 const root = path.resolve(import.meta.dirname, '../..');
 let scratch = '';
@@ -56,16 +55,8 @@ before(() => {
 after(async () => {
   // The MCP server starts a daemon in the scratch home. Stop it and wait for it
   // to exit, or it is still writing there while the directory is removed.
-  const lock = path.join(scratch, 'home', 'daemon.lock');
-  if (fs.existsSync(lock)) {
-    const { pid } = JSON.parse(fs.readFileSync(lock, 'utf8')) as { pid?: number };
-    if (pid && isAlive(pid)) {
-      process.kill(pid);
-      const deadline = Date.now() + 10_000;
-      while (isAlive(pid) && Date.now() < deadline) await delay(50);
-      assert.ok(!isAlive(pid), `the daemon ${pid} did not exit`);
-    }
-  }
+  await stopDaemonsUnder(scratch, path.join(scratch, 'home'));
+  assert.deepEqual(daemonsUnder(scratch), [], 'a daemon outlived the installed-package cases');
   fs.rmSync(scratch, { recursive: true, force: true });
 });
 

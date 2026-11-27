@@ -6,10 +6,10 @@ import { HerdrClient } from '../core/herdr-client.ts';
 import { machineClients } from '../core/machine.ts';
 import { remoteOps } from '../core/remote.ts';
 import { armPendingRestarts, type RestartHooks } from '../core/restart.ts';
-import { emptyParent, parentId, readParent, saveParent } from '../core/registry.ts';
+import { emptyParent, mutateParent, parentId, readParent, saveParent } from '../core/registry.ts';
 import { Watcher } from '../core/watcher.ts';
 import { runBellwetherTool, type ToolContext } from '../integrations/tools.ts';
-import { rosterOf, type RosterChild } from '../core/roster.ts';
+import { rosterDue, rosterOf, type RosterChild } from '../core/roster.ts';
 import type { CallerIdentity, OutboxEntry } from '../core/types.ts';
 import type { ParentHello } from './protocol.ts';
 import type { RelayLinks } from './relay-links.ts';
@@ -25,8 +25,13 @@ export interface ParentService {
   onEvents(handler: (entries: OutboxEntry[]) => void): void;
   /** Unread entries, ready to send again after a reconnect. */
   pending(): OutboxEntry[];
-  /** The parent's live children and their newest states, for the roster line an alert carries. */
-  roster?(): RosterChild[];
+  /**
+   * The parent's live children for the roster line of an alert about to go
+   * out, which names the children in `named`. Undefined when no line is due:
+   * nothing to say, the same line as the last one, or too soon after it.
+   * A roster this returns counts as sent.
+   */
+  roster?(named: string[]): RosterChild[] | undefined;
   /** Report one pane's status changes, and stop when the returned function runs. */
   watchPane(paneId: string, handler: (status: string) => void): () => void;
   stop(): void;
@@ -91,7 +96,17 @@ export function createHerdrService(parent: ParentHello, id: string, deps: Servic
     },
     pending: () => watcher.pendingEntries().map((entry) => ({ ...entry, deliveredAt: undefined })),
     // The registry file is the record of each child's newest state; the daemon is its only writer.
-    roster: () => rosterOf(readParent(record.id)?.children ?? []),
+    roster: (named) => {
+      let due: RosterChild[] | undefined;
+      mutateParent(record.id, (current) => {
+        const roster = rosterOf(current.children);
+        const sent = rosterDue(roster, named, current.rosterSent, Date.now());
+        if (!sent) return;
+        current.rosterSent = sent;
+        due = roster;
+      });
+      return due;
+    },
     watchPane: (paneId, handler) => {
       const controller = new AbortController();
       const watch = { close: () => controller.abort() };

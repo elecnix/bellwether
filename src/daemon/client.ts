@@ -216,11 +216,14 @@ export class DaemonClient {
   }
 
   /**
-   * The parent's live children as of the daemon's newest push, for the roster
-   * line. A daemon from before issue #146 sends none, and the adapter adds no line.
+   * The roster the daemon sent with its newest alert, once: the daemon sends
+   * one only when a line is due, so a message composed later never repeats it.
+   * A daemon from before issue #146 sends none, and the adapter adds no line.
    */
-  roster(): RosterChild[] | undefined {
-    return this.lastRoster?.map((child) => ({ ...child }));
+  takeRoster(): RosterChild[] | undefined {
+    const roster = this.lastRoster;
+    this.lastRoster = undefined;
+    return roster;
   }
 
   /** Unread entries this client has seen, newest state per child. */
@@ -612,7 +615,7 @@ export class DaemonClient {
         this.warnOnce('events-shape', 'the daemon sent events without a list of entries; they were ignored');
         return;
       }
-      // The roster comes before the handlers run, so the message they compose carries it.
+      // The roster comes before the handlers run, so the message they compose carries it. A push without one leaves a roster not yet taken.
       if (reply.roster !== undefined) this.lastRoster = rosterFrom(reply.roster);
       // An entry that arrives read was settled in the daemon, by a newer state
       // or a newer event for the same child. Drop it, so no resend repeats it.

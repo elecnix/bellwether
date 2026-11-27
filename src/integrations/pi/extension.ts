@@ -155,8 +155,8 @@ export default function bellwether(pi: PiApi): void {
     if (!pending.size) return;
     const batch = [...pending.values()];
     pending.clear();
-    // The roster line leaves out every child this burst names, and is absent when no other child is live.
-    const text = composeBurst(batch, Date.now(), daemon?.roster());
+    // The roster line leaves out every child this burst names. It is absent when no other child is live, or when the daemon sent none.
+    const text = composeBurst(batch, Date.now(), daemon?.takeRoster());
     if (!text) return;
     for (const entry of batch) sent.add(entry.receipt);
     // An idle session starts a turn now. A busy one takes the message after

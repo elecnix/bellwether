@@ -7,7 +7,15 @@ A session that starts after the upgrade runs the new code, while a session that 
 ## What you run on each machine
 
 1. `brew upgrade bellwether` where the machine uses the tap. Without Homebrew, run `npm install -g @elecnix/bellwether`. On a machine you reach by SSH, `command -v brew` tells you which one applies.
-2. `pi install npm:@elecnix/bellwether` for the Pi extension. Homebrew doesn't touch it. The command also points Pi back at the npm package when `pi list` shows a local checkout.
+2. `pi install npm:@elecnix/bellwether` for the Pi extension, which Homebrew doesn't touch. When `pi list` also shows Bellwether at a checkout or another directory, the install adds the npm package beside that entry and leaves it there. Remove the old entry first, then install:
+
+   ```sh
+   cd ~/.pi/agent
+   pi remove ../../path/to/bellwether
+   pi install npm:@elecnix/bellwether
+   ```
+
+   Give `pi remove` the source exactly as `pi list` prints it, and run it from `~/.pi/agent`. pi's settings hold a relative source relative to that directory, but `pi remove` resolves it against the working directory, so from anywhere else it answers `No matching package found`. Order matters because a session started by hand loads every copy its settings list, and pi exits at startup when two extensions register the same tool. With the old entry removed first, a session that starts before the install ends runs without Bellwether tools, where the other order leaves a moment in which a new session doesn't start at all.
 3. `claude plugin marketplace update elecnix-plugins`, then `claude plugin update bellwether@elecnix-plugins`. The marketplace installs the plugin from this repository's default branch, not from npm.
 4. Start your next session as you would any other.
 

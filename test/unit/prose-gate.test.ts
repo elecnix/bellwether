@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { COVERAGE_RULE, coverage, coverageConfig, PROSE_PATHS, trackedPages } from '../../scripts/prose.ts';
+import { COVERAGE_RULE, coverage, coverageConfig, lint, PROSE_PATHS, RELEASE_BODIES, releaseBodyAlerts, trackedPages } from '../../scripts/prose.ts';
 
 const root = path.resolve(import.meta.dirname, '../..');
 
@@ -68,5 +68,25 @@ test('the coverage guard names a docs page that the Vale configuration leaves ou
     assert.deepEqual(all.checked, ['AGENTS.md', 'README.md', 'docs/a.md', 'docs/sub/b.md']);
   } finally {
     fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+// The 0.1.5 release pull request failed the pr-body check on the description
+// the release script wrote: too many of its sentences opened with "The". Each
+// release would have needed a hand edit, so the template is held to the rules.
+test('every form of the release description passes the rules the pr-body check applies', { skip: hasVale ? false : 'vale is not on PATH' }, () => {
+  assert.match(RELEASE_BODIES['release-body-protocol-moves.md']!, /moves from 3 to 4/);
+  assert.match(RELEASE_BODIES['release-body-protocol-stays.md']!, /stays the same/);
+  assert.doesNotMatch(RELEASE_BODIES['release-body-first-release.md']!, / since /);
+  assert.deepEqual(releaseBodyAlerts(root), []);
+});
+
+test('the prose lint reports an alert in a release description', { skip: hasVale ? false : 'vale is not on PATH' }, () => {
+  const original = RELEASE_BODIES['release-body-protocol-stays.md'];
+  RELEASE_BODIES['release-body-protocol-stays.md'] = 'The rule. The check. The text. The body. The line. The word.\n';
+  try {
+    assert.ok(lint(root).some((alert) => alert.includes('scripts/release.ts prBody: release-body-protocol-stays.md') && alert.includes('SentenceStartRepetition')));
+  } finally {
+    RELEASE_BODIES['release-body-protocol-stays.md'] = original!;
   }
 });

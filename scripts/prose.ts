@@ -10,10 +10,16 @@
 // fires once in every file Vale lints, and fails when a tracked page under
 // docs/ is not among them. A page that a narrower path list, a glob or a
 // section of .vale.ini leaves out shows up here by name (issue #94).
+//
+// `lint` also renders each form of the release pull request's description
+// that `npm run release` writes, and holds it to the same rules. The pr-body
+// check reads that description, so a template that fails it would stop every
+// release at its own pull request.
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { prBody } from './release.ts';
 
 /** What the lint passes to Vale. A directory covers every page under it. */
 export const PROSE_PATHS = ['README.md', 'AGENTS.md', 'docs'] as const;
@@ -61,9 +67,37 @@ function vale(root: string, args: string[]): { status: number | null; stdout: st
   return { status: result.status, stdout: result.stdout, stderr: result.stderr };
 }
 
-/** Every alert at warning level or above, one per line. */
+/** Every alert at warning level or above, one per line, in the pages and in each release description. */
 export function lint(root: string): string[] {
-  return vale(root, ['--output=line', '--minAlertLevel=warning', ...PROSE_PATHS]).stdout.split('\n').filter(Boolean);
+  const pages = vale(root, ['--output=line', '--minAlertLevel=warning', ...PROSE_PATHS]).stdout.split('\n').filter(Boolean);
+  return [...pages, ...releaseBodyAlerts(root)];
+}
+
+/** Each form the release pull request's description takes, by the file name its alerts carry. */
+export const RELEASE_BODIES: Record<string, string> = {
+  'release-body-protocol-moves.md': prBody('0.1.5', '0.1.4', { from: 3, to: 4 }),
+  'release-body-protocol-stays.md': prBody('0.1.5', '0.1.4', undefined),
+  'release-body-first-release.md': prBody('0.1.0', undefined, undefined),
+};
+
+/**
+ * The alerts at warning level or above in each release description, checked
+ * as the pr-body check checks one: a copy named *.md, with the repository's
+ * .vale.ini and no global configuration.
+ */
+export function releaseBodyAlerts(root: string): string[] {
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'bellwether-release-body-'));
+  try {
+    const files = Object.entries(RELEASE_BODIES).map(([name, body]) => {
+      const file = path.join(scratch, name);
+      fs.writeFileSync(file, body);
+      return file;
+    });
+    const { stdout } = vale(root, ['--no-global', `--config=${path.join(root, '.vale.ini')}`, '--output=line', '--minAlertLevel=warning', ...files]);
+    return stdout.split('\n').filter(Boolean).map((line) => line.split(scratch + path.sep).join('scripts/release.ts prBody: '));
+  } finally {
+    fs.rmSync(scratch, { recursive: true, force: true });
+  }
 }
 
 /** The pages Vale read with the repository's configuration, and the tracked pages it did not read. */
@@ -98,10 +132,10 @@ function main(mode: string | undefined): number {
     const alerts = lint(root);
     for (const alert of alerts) console.log(alert);
     if (alerts.length > 0) {
-      console.error(`vale: ${alerts.length} alerts at warning level or above in ${PROSE_PATHS.join(', ')}. Fix the prose; the level stays at warning.`);
+      console.error(`vale: ${alerts.length} alerts at warning level or above in ${PROSE_PATHS.join(', ')} and the release descriptions. Fix the prose; the level stays at warning.`);
       return 1;
     }
-    console.log(`vale: no alerts in ${PROSE_PATHS.join(', ')}.`);
+    console.log(`vale: no alerts in ${PROSE_PATHS.join(', ')} or in the ${Object.keys(RELEASE_BODIES).length} release descriptions.`);
     return 0;
   }
   if (mode === 'coverage') {

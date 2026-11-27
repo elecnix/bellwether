@@ -12,7 +12,7 @@ npx -y @elecnix/bellwether doctor
 
 ## Pi
 
-`pi install npm:@elecnix/bellwether` adds the extension, and Pi loads it at the next session start. When `pi list` shows Bellwether at a local checkout instead of the npm package, Pi keeps loading that checkout until you run the install command again.
+`pi install npm:@elecnix/bellwether` adds the extension, and Pi loads it at the next session start. The command adds an entry to pi's settings and never replaces one. When `pi list` also shows Bellwether at a local checkout, remove that entry as [step 2 of the upgrade](upgrading.md#what-you-run-on-each-machine) shows, or pi loads both copies and exits.
 
 This install is for a parent session. A pi child needs nothing in the host's pi settings. `agent_spawn` starts the child with `-e` pointing at the extension inside the installed package, so the child gets its tools on any machine with Bellwether installed. If the host's pi settings also list Bellwether, that copy registers nothing in the child, so each tool appears once.
 

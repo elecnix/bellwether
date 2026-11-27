@@ -103,6 +103,14 @@ export interface ChildRecord {
   inactiveMs?: number;
   /** The quiet period whose inactive event already went out, as an ISO time. Survives a restart. */
   inactiveNotifiedFor?: string;
+  /**
+   * Set when the child asked to be restarted, and cleared once the daemon has
+   * restarted it. The deferral is on the record, not in a timer, so a daemon
+   * that stops mid-wait finishes it on its next start.
+   */
+  restartRequestedAt?: string;
+  /** When the daemon last restarted the child in a new tab, on the same session. */
+  restartedAt?: string;
   /** Set once the child is gone, so its events stop. */
   exitedAt?: string;
   exitCode?: number;
@@ -156,6 +164,10 @@ export interface ParentRecord {
   children: ChildRecord[];
   /** How far into the child spool this parent has read, so a restart resumes. */
   spoolOffset?: number;
+  /** Set when the session asked to be restarted, and cleared once it was. */
+  restartRequestedAt?: string;
+  /** When the daemon last started a new pane for this session. */
+  restartedAt?: string;
   updatedAt: string;
 }
 

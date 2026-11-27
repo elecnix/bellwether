@@ -128,7 +128,8 @@ test('the default launch starts the child in a sandbox of its own, off the hub a
   assert.match(reply, /worker started as a cline agent/);
   assert.match(reply, /Cline's sandbox mode/);
   assert.ok(reply.includes(dataDir), `the reply does not name ${dataDir}`);
-  assert.doesNotMatch(reply, /benchmark|-y/);
+  // -y as a flag, never as part of the random directory name the reply quotes, as in bellwether-cline-y3NnQZ.
+  assert.doesNotMatch(reply, /benchmark|(?:^|\s)-y\b/);
 });
 
 test('two default children run in two sandboxes, and each report lands under its own child id', async (t) => {

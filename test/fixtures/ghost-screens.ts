@@ -97,3 +97,37 @@ export function paneReadAnswer(params: Record<string, unknown>, screen: string, 
   const format = params['format'] === 'ansi' ? 'ansi' : 'text';
   return { type: 'pane_read', read: { pane_id: paneId, source: String(params['source']), format, text: format === 'ansi' ? screen : stripAnsi(screen) } };
 }
+
+/**
+ * A permission dialog that dims the options it has not selected, under a
+ * solid selection marker. It asks a question, so it is a dialog and no input
+ * box: the `❯` line is the selected option, not a draft and not a suggestion.
+ */
+export const PERMISSION_DIMMED = [
+  `${RULE}`,
+  ' Bash command',
+  '',
+  '   rm -rf example-build',
+  '',
+  ' Do you want to proceed?',
+  ' ❯ 1. Yes',
+  `${FAINT}   2. Yes, and don't ask again for this command${RESET}`,
+  `${FAINT}   3. No, and tell Claude what to do differently${RESET}`,
+  '',
+  ' Esc to cancel',
+].join('\r\n');
+
+/** The folder-trust question with its unselected accepting option dimmed, which the spawn walks to. */
+export const TRUST_DIMMED_ACCEPT = [
+  `${RULE}`,
+  ' Accessing workspace:',
+  '',
+  ' /var/tmp/example',
+  '',
+  ' Quick safety check: Is this a project you created or one you trust?',
+  '',
+  ' ❯ No, exit',
+  `${FAINT}   Yes, I trust this folder${RESET}`,
+  '',
+  ' Enter to confirm · Esc to cancel',
+].join('\r\n');

@@ -184,7 +184,7 @@ export function parentFacts(record: ParentRecord, connected: ReadonlySet<string>
 const CHILD_FILES = [
   { kind: 'brief', dir: promptsDir, extension: '.md' },
   { kind: 'mcp', dir: mcpDir, extension: '.json' },
-  // A Claude Code child's settings file goes with its MCP configuration: the spawn writes both, and both name the child.
+  // A Claude Code child's settings, with its Notification hook, go with its MCP configuration.
   { kind: 'mcp', dir: claudeSettingsDir, extension: '.json' },
 ] as const;
 

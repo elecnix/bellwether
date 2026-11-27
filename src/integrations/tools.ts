@@ -348,8 +348,9 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
   }
 
   if (name === PROMPT_NOTICE) {
-    // Sent by a pi child's extension, never offered to a model.
-    return notePromptForCaller(caller, { open: args['open'] === true, title: optionalString(args['title']), kind: optionalString(args['kind']) });
+    // Sent by a pi child's extension or a Claude Code child's hook, never offered to a model.
+    const source = args['source'] === 'claude-code' ? 'claude-code' : 'pi';
+    return notePromptForCaller(caller, { open: args['open'] === true, title: optionalString(args['title']), kind: optionalString(args['kind']), source });
   }
 
   if (name === REQUEST_DEPTH_TOOL) {

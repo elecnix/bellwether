@@ -104,7 +104,7 @@ export interface ChildLaunch {
   briefFile?: string;
   /** A Claude Code child's own Bellwether server. */
   mcpConfigFile?: string;
-  /** A Claude Code child's own settings, which turn off a Bellwether plugin that would duplicate its server. */
+  /** A Claude Code child's own settings: the hook that reports its dialogs, and a Bellwether plugin turned off so it has one set of tools. */
   claudeSettingsFile?: string;
   /** The Bellwether extension a pi child loads, on the machine it runs on. */
   piExtension?: string;
@@ -124,8 +124,9 @@ export function childArgs(kind: string, options: SpawnOptions, launch: ChildLaun
   if (kind === 'pi' && piExtension) args.push('-e', piExtension);
   // --mcp-config is a list flag too, so it takes the equals form for the same reason.
   if (kind === 'claude' && mcpConfigFile) args.push(`--mcp-config=${mcpConfigFile}`);
-  // Claude Code merges these settings over every other source, so the child
-  // keeps the operator's settings and loses only a duplicate Bellwether plugin.
+  // Claude Code merges these settings with every other source, so the child
+  // gains its Notification hook, loses a duplicate Bellwether plugin, and
+  // keeps the rest of the operator's own settings.
   if (kind === 'claude' && claudeSettingsFile) args.push(`--settings=${claudeSettingsFile}`);
   // Claude Code reads this flag as a list and keeps taking values until the
   // next flag, so the two-argument form swallowed the prompt that follows it.
@@ -215,7 +216,7 @@ export interface ChildStartFiles {
   briefFile?: string;
   /** The MCP config's path on the child's own machine. */
   mcpConfigFile?: string;
-  /** The Claude Code settings' path on the child's own machine, when the child needs any. */
+  /** The Claude Code settings' path on the child's own machine, when the child needs any: the dialog hook, and a duplicate plugin turned off. */
   claudeSettingsFile?: string;
   /** Which server gives a Claude Code child its Bellwether tools, for its record. */
   toolSource?: ToolSource;
@@ -457,15 +458,18 @@ async function abandon(client: HerdrClient, parentId: string, child: ChildRecord
 }
 
 /**
- * Write a Claude Code child's tool files on this machine: its MCP
- * configuration, and the settings that keep any other Bellwether server in
- * its environment from adding a second set of tools. A server talks to the
- * daemon on its own machine, so a child on another machine gets the files its
- * own machine writes when the spawn registers it there.
+ * Write a Claude Code child's start files on this machine: its MCP
+ * configuration, and its settings, with the Notification hook that reports
+ * its dialogs and whatever keeps another Bellwether server in its environment
+ * from adding a second set of tools. A server and the hook talk to the daemon
+ * on their own machine, so a child on another machine gets the files its own
+ * machine writes when the spawn registers it there, without the hook: only a
+ * local child's record lives in this daemon, and a remote child's dialogs are
+ * read off the screen.
  */
 export function childToolFiles(child: Pick<ChildRecord, 'id' | 'kind' | 'host' | 'cwd'>): ChildToolFiles | undefined {
   if (child.kind !== 'claude' || (child.host ?? LOCAL_HOST) !== LOCAL_HOST) return undefined;
-  return writeChildToolFiles(child.id, child.cwd);
+  return writeChildToolFiles(child.id, child.cwd, { hook: true });
 }
 
 /** The launch fields for a child's tool files. */

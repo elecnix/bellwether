@@ -5,6 +5,7 @@
 // Every case also checks that nothing typed into the child's pane: Bellwether
 // reports a dialog, and approving it is the operator's decision.
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -266,4 +267,167 @@ test('a pi child\'s extension tells the daemon when pi opens and closes a dialog
   await fire('ui_prompt_end', { type: 'ui_prompt_end', reason: 'ui_prompt', kind: 'confirm' });
   await until('the prompt to clear', () => prompt() === undefined);
   assert.ok(calls.every((name) => name === PROMPT_NOTICE));
+});
+
+// Claude Code's Notification hook (issue #69). A Claude Code child's own
+// settings run `bellwether claude-hook` on a permission or MCP dialog, and the
+// daemon records the dialog as it does pi's ui_prompt_start. These cases run
+// the real hook command, with the input Claude Code 2.1.332 sends, against a
+// daemon on the rig's home.
+
+/** The input Claude Code's Notification hook gets for a permission dialog, by its 2.1.332 schema. */
+function hookInput(type: string, message: string): string {
+  return JSON.stringify({ session_id: 'example-child-session', transcript_path: '/var/tmp/example/transcript.jsonl', cwd: '/var/tmp/example', hook_event_name: 'Notification', message, notification_type: type });
+}
+
+const PERMISSION_LINE = 'Claude needs your permission to use Bash';
+
+/** A daemon on the rig's home that runs the notices a child sends, as the real daemon does. */
+async function hookDaemon(t: { after: (fn: () => unknown) => void }): Promise<string> {
+  const home = process.env['BELLWETHER_HOME'] as string;
+  const socketPath = path.join(home, 'daemon.sock');
+  const factory: ServiceFactory = () => ({
+    pending: () => [],
+    markRead: () => {},
+    onEvents: () => {},
+    tool: (name, args, caller) => runBellwetherTool({} as ToolContext, name, args, caller),
+    watchPane: () => () => {},
+    stop: () => {},
+  });
+  const daemon = await startDaemon({ socketPath, home, factory });
+  t.after(() => daemon.close());
+  return socketPath;
+}
+
+/** Run the hook command as Claude Code would: the input on stdin, in the child's pane. */
+async function runHook(socketPath: string, childId: string, input: string, paneId = PANE): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  const cli = path.resolve(import.meta.dirname, '../../src/cli.ts');
+  const env = { ...process.env, BELLWETHER_DAEMON_SOCKET: socketPath, HERDR_PANE_ID: paneId, HERDR_SOCKET_PATH: path.join(path.dirname(socketPath), 'herdr.sock') };
+  const child = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', cli, 'claude-hook', '--child', childId], { env, stdio: ['pipe', 'pipe', 'pipe'] });
+  let stdout = '';
+  let stderr = '';
+  child.stdout.on('data', (chunk: Buffer) => (stdout += chunk.toString()));
+  child.stderr.on('data', (chunk: Buffer) => (stderr += chunk.toString()));
+  child.stdin.end(input);
+  const code = await new Promise<number | null>((resolve) => child.on('close', resolve));
+  return { code, stdout, stderr };
+}
+
+test('a Claude Code permission dialog named by its Notification hook reads blocked once, with the hook\'s line and no screen read', async (t) => {
+  const r = await rig(new Pane('working', CLAUDE_PROMPT), { kind: 'claude', harness: 'claude-code', lastStatus: 'working' });
+  t.after(() => r.stop());
+  await sleep(50);
+  const socketPath = await hookDaemon(t);
+  const hook = await runHook(socketPath, r.child.id, hookInput('permission_prompt', PERMISSION_LINE));
+  // Nothing on stdout: a decision hook reads its answer there, and Bellwether gives none.
+  assert.deepEqual({ code: hook.code, stdout: hook.stdout }, { code: 0, stdout: '' }, hook.stderr);
+  assert.deepEqual({ ...r.record()?.prompt, since: undefined }, { line: PERMISSION_LINE, source: 'claude-code', kind: 'permission_prompt', since: undefined });
+
+  // herdr calls the child idle, as it does for a dialog it does not detect.
+  r.pane.set('idle', PERMISSION_QUESTION);
+  await until('the blocked event', () => r.published.length > 0);
+  await sleep(200);
+  assert.deepEqual(r.published.map((entry) => entry.event), ['blocked']);
+  assert.match(r.published[0]?.text ?? '', new RegExp(`blocked on a dialog after \\d+s: ${PERMISSION_LINE}\\n`));
+  // The hook named the dialog, so the screen was never read for it.
+  assert.deepEqual(r.fake.requests.filter((request) => request.method === 'pane.read'), []);
+
+  // The operator answers. herdr sees the child work, which ends the wait, and the turn ends once.
+  r.pane.set('working', CLAUDE_PROMPT);
+  await until('the hook prompt to clear', () => r.record()?.prompt === undefined);
+  r.pane.set('idle');
+  await until('the idle event', () => r.published.length > 1);
+  await sleep(200);
+  assert.deepEqual(r.published.map((entry) => entry.event), ['blocked', 'idle']);
+  assertNoInput(r);
+});
+
+test('the hook ignores a notification that is not a dialog, and a refusal still exits 0 with nothing on stdout', async (t) => {
+  const r = await rig(new Pane('idle', CLAUDE_PROMPT), { kind: 'claude', harness: 'claude-code', lastStatus: 'idle' });
+  t.after(() => r.stop());
+  const socketPath = await hookDaemon(t);
+  // idle_prompt is a finished turn waiting for input, not a dialog.
+  const idle = await runHook(socketPath, r.child.id, hookInput('idle_prompt', 'Claude is waiting for your input'));
+  assert.deepEqual({ code: idle.code, stdout: idle.stdout }, { code: 0, stdout: '' });
+  assert.equal(r.record()?.prompt, undefined);
+  // A child id no record holds: the daemon refuses, and Claude Code is not disturbed.
+  const stranger = await runHook(socketPath, 'example-unknown-child', hookInput('permission_prompt', PERMISSION_LINE), 'w9:p9');
+  assert.deepEqual({ code: stranger.code, stdout: stranger.stdout }, { code: 0, stdout: '' });
+  assert.match(stranger.stderr, /claude-hook: .*no Bellwether child/);
+  assert.equal(r.record()?.prompt, undefined);
+  assertNoInput(r);
+});
+
+test('limit 2, a dialog that appears after idle was sent: the screen check never sees it, and the hook reports it', async (t) => {
+  const r = await rig(new Pane('working', CLAUDE_PROMPT), { kind: 'claude', harness: 'claude-code', lastStatus: 'working' });
+  t.after(() => r.stop());
+  await sleep(50);
+  r.pane.set('idle');
+  await until('the idle event', () => r.published.length > 0);
+  // A dialog opens with no status change from herdr. The screen is read once,
+  // before idle, so without a hook nothing more reaches the parent.
+  r.pane.screen = PERMISSION_QUESTION;
+  await sleep(300);
+  assert.deepEqual(r.published.map((entry) => entry.event), ['idle']);
+
+  const socketPath = await hookDaemon(t);
+  await runHook(socketPath, r.child.id, hookInput('permission_prompt', PERMISSION_LINE));
+  await until('the blocked event', () => r.published.length > 1);
+  assert.deepEqual(r.published.map((entry) => entry.event), ['idle', 'blocked']);
+  assert.match(r.published[1]?.text ?? '', new RegExp(PERMISSION_LINE));
+  assertNoInput(r);
+});
+
+test('limit 1, a dialog the screen check does not recognise: a free-text box with no selection marker reads idle', async () => {
+  // A question with a typed answer and no option list, which detectModal cannot tell from a prompt.
+  const freeText = ' Name the release branch\n\n   What should the branch be called?\n   release/\n\n Enter to submit · Esc to cancel\n';
+  const r = await rig(new Pane('working', CLAUDE_PROMPT), { kind: 'claude', harness: 'claude-code', lastStatus: 'working' });
+  try {
+    await sleep(50);
+    r.pane.set('idle', freeText);
+    await until('the idle event', () => r.published.length > 0);
+    await sleep(200);
+    assert.deepEqual(r.published.map((entry) => entry.event), ['idle']);
+    assert.equal(r.record()?.prompt, undefined);
+    assertNoInput(r);
+  } finally {
+    await r.stop();
+  }
+});
+
+test('limit 3, a dialog found on the screen and answered while herdr keeps the same status stays blocked until herdr\'s next status', async () => {
+  const r = await rig(new Pane('working', CLAUDE_PROMPT), { kind: 'claude', harness: 'claude-code', lastStatus: 'working' });
+  try {
+    await sleep(50);
+    r.pane.set('idle', PERMISSION_QUESTION);
+    await until('the blocked event', () => r.published.length > 0);
+    // The operator answers and the dialog closes, but herdr reports nothing new.
+    r.pane.screen = CLAUDE_PROMPT;
+    await sleep(300);
+    assert.equal(r.record()?.prompt?.source, 'screen', 'the screen prompt held without a herdr status');
+    assert.deepEqual(r.published.map((entry) => entry.event), ['blocked']);
+    // herdr's next status ends it.
+    r.pane.set('working');
+    await until('the screen prompt to clear', () => r.record()?.prompt === undefined);
+    assertNoInput(r);
+  } finally {
+    await r.stop();
+  }
+});
+
+test('limit 4, a finished answer whose last lines look like a dialog\'s options reads blocked', async () => {
+  // The model ended its turn with a question in the y/n form a shell dialog uses.
+  const answer = `${CLAUDE_PROMPT.split('───')[0]}⏺ The build passes. Want me to push the branch now? (y/n)\n`;
+  const r = await rig(new Pane('working', CLAUDE_PROMPT), { kind: 'claude', harness: 'claude-code', lastStatus: 'working' });
+  try {
+    await sleep(50);
+    r.pane.set('idle', answer);
+    await until('the event', () => r.published.length > 0);
+    await sleep(200);
+    assert.deepEqual(r.published.map((entry) => entry.event), ['blocked']);
+    assert.match(r.published[0]?.text ?? '', /Want me to push the branch now\? \(y\/n\)/);
+    assertNoInput(r);
+  } finally {
+    await r.stop();
+  }
 });

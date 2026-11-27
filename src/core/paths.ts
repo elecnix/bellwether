@@ -36,7 +36,7 @@ export function mcpConfigPath(childId: string): string {
   return path.join(mcpDir(), `${slug(childId)}.json`);
 }
 
-/** Each Claude Code child's own settings, passed with --settings. */
+/** Each Claude Code child's own settings, passed with --settings: its Notification hook, and a duplicate Bellwether plugin turned off. */
 export function claudeSettingsDir(): string {
   return path.join(bellwetherHome(), 'claude-settings');
 }

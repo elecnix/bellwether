@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { removeBrief } from './brief.ts';
-import { removeClaudeSettings, writeClaudeSettings } from './claude-settings.ts';
+import { removeClaudeSettings, writeClaudeSettings } from './claude-hooks.ts';
 import { mcpConfigPath, mcpDir } from './paths.ts';
 import { CHILD_SERVER_NAME, findAmbientServers, planToolSource, type ToolSource } from './tool-source.ts';
 
@@ -64,21 +64,21 @@ export function removeMcpConfig(childId: string): void {
 /** The files that give a Claude Code child its Bellwether tools, and which server that is. */
 export interface ChildToolFiles {
   mcpConfig: string;
-  /** The settings that turn a Bellwether plugin off for the child, when one is enabled. */
+  /** The child's settings file, when it needs one: the dialog hook, and a Bellwether plugin turned off. */
   claudeSettings?: string;
   toolSource: ToolSource;
 }
 
 /**
- * Write a Claude Code child's tool files on this machine: its own server, and
- * whatever keeps each other Bellwether server in its environment from adding
- * a second set of tools. `cwd` is where the child runs, whose project settings
- * Claude Code also reads.
+ * Write a Claude Code child's start files on this machine: its own server,
+ * and the settings file, which holds the dialog hook for a local child and
+ * turns off a Bellwether plugin that would add a second set of tools. `cwd`
+ * is where the child runs, whose project settings Claude Code also reads.
  */
-export function writeChildToolFiles(childId: string, cwd: string | undefined): ChildToolFiles {
+export function writeChildToolFiles(childId: string, cwd: string | undefined, options: { hook: boolean }): ChildToolFiles {
   const plan = planToolSource(findAmbientServers(cwd));
   const mcp = writeMcpConfig(childId, plan.standDown);
-  const settings = writeClaudeSettings(childId, { disablePlugins: plan.disablePlugins });
+  const settings = writeClaudeSettings(childId, { hook: options.hook, disablePlugins: plan.disablePlugins });
   return { mcpConfig: mcp, ...(settings ? { claudeSettings: settings } : {}), toolSource: plan.source };
 }
 

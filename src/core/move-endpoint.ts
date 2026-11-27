@@ -17,11 +17,11 @@ export interface MoveEndpoint {
   commit(request: SettleRequest): Promise<void>;
 }
 
-/** This machine, served in the daemon's process. */
-export function localEndpoint(): MoveEndpoint {
+/** This machine, served in the daemon's process. An aborted signal stops the commands a probe runs. */
+export function localEndpoint(signal?: AbortSignal): MoveEndpoint {
   return {
     host: LOCAL_HOST,
-    probe: (request) => probeMachine(request),
+    probe: (request) => probeMachine(request, signal),
     exportSession: async (request) => exportSession(request),
     importSession: async (request) => importSession(request),
     discard: async (request) => {
@@ -53,6 +53,16 @@ export async function serveMoveVerb(verb: MoveVerb, request: unknown): Promise<u
       return commitImport(body as SettleRequest);
   }
 }
+
+/**
+ * How long `bellwether doctor` waits for its move check, from listing the
+ * machines to the last probe. A machine whose SSH does not connect would
+ * otherwise hold doctor for ssh's own ten-second connect timeout, and
+ * pi --list-models takes about two seconds on a busy machine. At the bound,
+ * doctor stops every command the check started and names each machine that
+ * did not answer.
+ */
+export const MOVE_CHECK_BUDGET_MS = 4_000;
 
 /** Session bundles carry whole transcripts, so a reply may be far larger than a report. */
 const MOVE_MAX_BUFFER = 512 * 1024 * 1024;
@@ -106,5 +116,5 @@ export function remoteEndpoint(host: string, resolve: MachineResolver = resolveM
 export type EndpointFor = (host: string) => MoveEndpoint;
 
 export function moveEndpoints(resolve: MachineResolver = resolveMachine, options: SshOptions = {}): EndpointFor {
-  return (host) => (host === LOCAL_HOST ? localEndpoint() : remoteEndpoint(host, resolve, options));
+  return (host) => (host === LOCAL_HOST ? localEndpoint(options.signal) : remoteEndpoint(host, resolve, options));
 }

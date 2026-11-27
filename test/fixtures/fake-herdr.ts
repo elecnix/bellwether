@@ -24,6 +24,8 @@ export interface FakeHerdrOptions {
    * code. Return undefined to fall through to the default answer.
    */
   respond?: (request: RecordedRequest) => { result: unknown } | { error: { code: string; message: string } } | undefined;
+  /** Wait this long before each answer, as a busy herdr would. */
+  delayMs?: number;
 }
 
 export interface FakeHerdr {
@@ -121,7 +123,9 @@ export async function startFakeHerdr(options: FakeHerdrOptions = {}): Promise<Fa
           continue;
         }
         const answer = options.respond?.(request) ?? refuseUnsafeArguments(request) ?? { result: defaultResult(request) };
-        socket.write(`${JSON.stringify({ id: request.id, ...answer })}\n`);
+        const reply = `${JSON.stringify({ id: request.id, ...answer })}\n`;
+        if (options.delayMs) setTimeout(() => !socket.destroyed && socket.write(reply), options.delayMs);
+        else socket.write(reply);
       }
     });
   });

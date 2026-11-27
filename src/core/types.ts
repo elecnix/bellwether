@@ -2,11 +2,21 @@ import type { ToolSource } from './tool-source.ts';
 /** The lifecycle states herdr reports for an agent in a pane. */
 export type AgentStatus = 'idle' | 'working' | 'blocked' | 'done' | 'unknown';
 
+/**
+ * Where Bellwether learned of a dialog: a pi child's extension, a Claude Code
+ * child's Notification hook, or the screen check before an idle event.
+ */
+export type PromptSource = 'pi' | 'claude-code' | 'screen';
+
 /** A dialog a child waits on, named in one line, and where Bellwether learned of it. */
 export interface ChildPrompt {
   line: string;
-  source: 'pi' | 'screen';
-  /** pi's prompt kind: select, confirm, input, editor or custom. */
+  source: PromptSource;
+  /**
+   * pi's prompt kind: select, confirm, input, editor or custom. For Claude
+   * Code, the hook's notification type: permission_prompt,
+   * elicitation_dialog or elicitation_url_dialog.
+   */
   kind?: string;
   since: string;
 }
@@ -137,18 +147,31 @@ export interface ChildRecord {
   /** The last report the child sent, and when. */
   lastReport?: { status: ReportStatus; text: string; at: string; seq: number };
   /**
-   * Set when a report arrives and cleared when the turn it covered ends, so a
-   * child that reported does not also produce an idle event for the same turn.
+   * Set when a final report arrives while its turn still runs, and cleared
+   * when that turn ends, so a child that reported does not also produce an
+   * idle event for the same turn.
    */
   reportPending?: boolean;
+  /**
+   * The newest turn the parent heard about, by a report or an idle event, and
+   * the pane that ran it. The watcher compares each finished turn against it
+   * rather than against herdr's current answer, so a status herdr repeats, a
+   * snapshot that reads the same turn again, or a watcher that starts again
+   * raises no second event. `seq` is herdr's completion_seq, or the watcher's
+   * own count of turns ends for a pane herdr does not number.
+   */
+  turnNotified?: { paneId: string; seq: number };
   /** The last time the child's transcript or screen moved. */
   lastBusyAt: string;
   /**
    * The dialog the child waits on while one is open, which herdr can report
    * as idle. `pi` comes from the child's own pi extension, on pi's
-   * ui_prompt_start and ui_prompt_end events, and `screen` from the check the
-   * watcher makes before an idle event. A screen prompt clears on herdr's next
-   * status, and a pi prompt clears when pi says it closed.
+   * ui_prompt_start and ui_prompt_end events, `claude-code` from the
+   * Notification hook in a Claude Code child's own settings, and `screen` from
+   * the check the watcher makes before an idle event. A screen prompt clears on
+   * herdr's next status, and a pi prompt clears when pi says it closed. Claude
+   * Code sends no notice when a dialog closes, so a hook prompt clears when
+   * herdr reports the child working, or leaving blocked.
    */
   prompt?: ChildPrompt;
   /** This child's own stuck threshold, when its spawn set one. */

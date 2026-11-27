@@ -29,29 +29,39 @@ A machine can run sessions from two installs at once, such as a checkout and a p
 
 On a machine you reach by SSH, the upgrade works the same way. When a parent's daemon connects, `bellwether relay-bridge` runs from that machine's install and hands over that machine's daemon if it is older.
 
+## Tool lists across versions
+
+A session's tool list comes from the daemon. The hello lists the tools, built from its feature table, and the session's adapter offers that list to the model. A session connected to an older adapter still gets each tool a newer daemon serves, such as `agent_move` and `agent_restart`, once that daemon answers.
+
+Claude Code asks for the list again when the server says it changed. The pi extension takes each new tool into the running session. Neither needs a restart. A daemon from before the list leaves the choice to the adapter, which offers its own tools less each one that daemon does not serve.
+
 ## How to read doctor's upgrade status
 
 `bellwether doctor` reports, for the machine it runs on:
 
-- the installed version and build, with the protocol and the client protocols a daemon from it serves. `npm run build` records its commit and its time in `dist/build.json`, and the sources of a git checkout show their commit with `run from a checkout`.
-- the running daemon's pid, version, build and protocol, and whether it is older than the install. A daemon with the same version as the install but another build gets its own line, because it doesn't hand over on its own: `bellwether drain` replaces it.
+- one `versions:` line. It gives this install's version, build and protocol, and the client protocols a daemon from it serves. It gives the running daemon's pid, version, protocol, build and entry point. It says whether the two are the same build, and what a session started from this install would do: keep the daemon, or hand it over. Doctor takes that clause from `decideHandOver`, which every client follows, so it never promises a hand-over that won't happen. A daemon with the same version as the install but another build keeps running until `bellwether drain` replaces it. `npm run build` records its commit and its time in `dist/build.json`, and the sources of a git checkout show their commit with `run from a checkout`.
 - each socket under the Bellwether home, and whether something answers on it
 - anything a crashed process left behind:
   - a lock whose pid no longer runs
   - a stale `daemon.starting` marker
   - a socket file that nothing answers on
-- each connected session, with the version and protocol of its adapter. For a session on older code, doctor lists the live children that would lose their parent if the session ended, and the unread events that wait for it.
+- each connected session once, with the version, build and protocol of its adapter. Doctor tells sessions apart by their harness session id. A connection without one counts by its parent id. A Claude Code session whose plugin and per-child server both connect shows once, with the number of connections. For a session on code other than the daemon's, doctor lists the live children that would lose their parent if the session ended, and the unread events that wait for it.
 - how this install and the running daemon pair up. Doctor gives the protocol each one speaks and the protocol they share. It lists each tool and request the daemon lacks, with the protocol and release that brought it. It also lists each tool the daemon serves that this install doesn't offer. Each list says which side gains by updating.
 - for each remote machine the relay connects to: its daemon's release, and the tools that machine gains by updating
+- one `tools` line for each harness. The line shows the server or extension that gives a session started by hand its Bellwether tools, and what a spawned child gets instead. For Claude Code, it lists each plugin or server the spawn keeps out of a child, and how. A session started by hand with two Bellwether servers gets a warning, because Bellwether can't remove one for you. For pi, a copy in pi's settings without the stand-down guard fails the line.
+- what `agent_move` would find on each machine. This check stops after 4 seconds, so a machine whose SSH doesn't connect shows as not answering instead of holding doctor for SSH's own timeout.
 
-Its last daemon line says one of four things:
+Its last daemon line says one of five things:
 
-- `upgrade: finished` when the daemon and every connected session run this install
-- `upgrade: in progress` with the reason, such as a session on an older adapter. You don't need to restart anything. The upgrade finishes as those sessions end.
+- `upgrade: finished` when every session's adapter runs the daemon's build, or an older release that the daemon still serves. The daemon must also be running and accepting calls, with its hand-over done and every crash leftover gone. The line gives the daemon's build. `describeUpgrade` in `src/daemon/upgrade-status.ts` holds this definition.
+- `upgrade: in progress` with the reason, such as an older daemon or a session on the daemon's version but another commit. You don't need to restart anything. The upgrade finishes as those sessions end.
+- `upgrade: not known to be finished` when doctor can't compare builds: the daemon didn't list its sessions, or the daemon or a session doesn't report its commit.
 - `upgrade: this install ... is older than the daemon` when another install on the machine started a newer daemon. This install's sessions keep working on the daemon's code, without the tools named on the pairing line. Update this install when convenient.
 - `upgrade: nothing to finish` when no daemon runs
 
 A daemon from before 0.1.5 can't list its sessions. Until the first hand-over, doctor shows only its version and protocol, read from the lock.
+
+`bellwether --version` prints the version and the commit of the install it runs from. It answers from the install alone, so a daemon of any protocol can't make it fail.
 
 ## Daemon protocol changes
 

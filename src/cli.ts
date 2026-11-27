@@ -12,7 +12,9 @@ import path from 'node:path';
 import { HerdrClient, resolveSocketPath } from './core/herdr-client.ts';
 import { bellwetherHome } from './core/paths.ts';
 import { emptyParent, listParents, readParent, saveParent } from './core/registry.ts';
-import { isReportStatus } from './core/report.ts';
+import { PROMPT_NOTICE, isReportStatus } from './core/report.ts';
+import { HOOK_COMMAND, dialogFromHook } from './core/claude-hooks.ts';
+import { hostName } from './core/spawn.ts';
 import { RELAY_SCHEMA, listForwards, readRelayRecord, removeRelayRecord, saveRelayRecord, updateRelayRecord } from './core/relay-records.ts';
 import { relayChildPath, relayOutboxDir } from './core/paths.ts';
 import { removeBriefAt, writeBrief, writeBriefIn } from './core/brief.ts';
@@ -25,13 +27,12 @@ import { readMemory, runsOn } from './daemon/relay-links.ts';
 import type { RelayHostState } from './daemon/protocol.ts';
 import { describePiTools, guardlessPiCopies, resolvePiExtension } from './core/pi-extension.ts';
 import { describeClaudeTools, describeToolSource, findAmbientServers } from './core/tool-source.ts';
-import { describeDaemonEntry, readLock } from './daemon/lock.ts';
-import { DAEMON_PROTOCOL } from './daemon/protocol.ts';
+import { readLock } from './daemon/lock.ts';
 import { BELLWETHER_BUILD, BELLWETHER_BUILD_ID, BELLWETHER_VERSION, describeBuild } from './core/version.ts';
 import { daemonIsLive, startDaemon } from './daemon/server.ts';
 import type { ChildRecord, OutboxEntry } from './core/types.ts';
 import { LOCAL_HOST, hostOf, knownHosts } from './core/machine.ts';
-import { MOVE_VERBS, moveEndpoints, serveMoveVerb, type MoveVerb } from './core/move-endpoint.ts';
+import { MOVE_CHECK_BUDGET_MS, MOVE_VERBS, moveEndpoints, serveMoveVerb, type MoveVerb } from './core/move-endpoint.ts';
 import { moveRefusals, pairLabel, type MovableHarness, type ModelPair } from './core/move-plan.ts';
 import type { ProbeResult } from './core/session-state.ts';
 
@@ -195,14 +196,13 @@ function checkPackaging(): number {
 
 async function doctor(): Promise<number> {
   let failures = 0;
-  console.log(`bellwether ${describeBuild(BELLWETHER_VERSION, BELLWETHER_BUILD)}, daemon protocol ${DAEMON_PROTOCOL}`);
+  // The versions line in the upgrade report names this install's build, so the header does not repeat it.
   console.log(`bellwether home  ${bellwetherHome()}`);
   const daemonSocket = path.join(bellwetherHome(), 'daemon.sock');
   const daemonLive = daemonIsLive(bellwetherHome());
   // The upgrade report: which code the daemon and each session run, and whether a hand-over has finished.
   const upgrade = await gatherUpgrade(bellwetherHome(), daemonSocket);
   for (const line of describeUpgrade(upgrade).lines) console.log(`  ${line}`);
-  if (daemonLive) console.log(`  ${describeDaemonEntry(readLock(bellwetherHome()), path.join(import.meta.dirname, 'daemon', `main${path.extname(import.meta.url)}`))}`);
   failures += checkPackaging();
   failures += checkToolSources();
   failures += await checkRelay(daemonLive, daemonSocket);
@@ -261,28 +261,43 @@ function harnessLine(probe: ProbeResult, harness: MovableHarness): string {
   return found.version ? `${name} ${found.version}` : `${name} at ${found.path}, version unreadable${found.error ? ` (${found.error})` : ''}`;
 }
 
+/** Settle with `work`, or reject once `signal` aborts, with a message that names the bound. */
+function within<T>(work: Promise<T>, signal: AbortSignal, budgetMs: number): Promise<T> {
+  return Promise.race([
+    work,
+    new Promise<never>((_resolve, reject) => {
+      const fail = (): void => reject(new Error(`no answer within ${budgetMs / 1000} s, the bound doctor sets on the move check`));
+      if (signal.aborted) fail();
+      else signal.addEventListener('abort', fail, { once: true });
+    }),
+  ]);
+}
+
 /**
  * What agent_move would need on each known machine: the harness, its version,
  * and pi's models, then for each live claude or pi child, whether each other
  * machine could take it. These are information, not failures: a machine that
- * cannot take a child only refuses a move to it.
+ * cannot take a child only refuses a move to it. The whole check runs within
+ * MOVE_CHECK_BUDGET_MS.
  */
 async function checkMoves(): Promise<void> {
+  const budgetMs = MOVE_CHECK_BUDGET_MS;
+  const signal = AbortSignal.timeout(budgetMs);
   let hosts: string[];
   try {
-    hosts = await knownHosts();
+    hosts = await within(knownHosts(), signal, budgetMs);
   } catch (error) {
     console.log(`  info  move: the saved herdr machines could not be listed (${(error as Error).message}), so only this machine is checked`);
     hosts = [LOCAL_HOST];
   }
   const children = listParents().flatMap((parent) => parent.children).filter((child): child is ChildRecord & { harness: MovableHarness } => !child.exitedAt && (child.harness === 'pi' || child.harness === 'claude-code'));
-  const endpointFor = moveEndpoints(undefined, { timeoutMs: 30_000 });
+  const endpointFor = moveEndpoints(undefined, { timeoutMs: budgetMs, signal });
   const probes = new Map<string, ProbeResult | string>();
   await Promise.all(
     hosts.map(async (host) => {
       const piSessions = children.filter((child) => hostOf(child) === host && child.harness === 'pi' && child.session?.value).map((child) => child.session?.value as string);
       try {
-        probes.set(host, await endpointFor(host).probe({ piModels: true, piSessions }));
+        probes.set(host, await within(endpointFor(host).probe({ piModels: true, piSessions }), signal, budgetMs));
       } catch (error) {
         probes.set(host, (error as Error).message);
       }
@@ -335,8 +350,9 @@ async function main(argv: string[]): Promise<number> {
   const [command = 'help', ...rest] = argv;
   const { positional, flags } = parseArgs(rest);
 
+  // From the build alone: no daemon, herdr or home is read, so a daemon of any protocol cannot make it fail.
   if (command === 'version' || command === '--version') {
-    console.log(BELLWETHER_VERSION);
+    console.log(describeBuild(BELLWETHER_VERSION, BELLWETHER_BUILD));
     return 0;
   }
 
@@ -345,7 +361,7 @@ async function main(argv: string[]): Promise<number> {
     console.log('  --debug                                  print the stack trace of a failure, as BELLWETHER_DEBUG=1 does');
     console.log('  daemon [--socket PATH]                   run the local daemon in the foreground');
     console.log('  drain  [--socket PATH]                   stop the running daemon once its calls finish, so the next session starts the installed one');
-    console.log('  version                                  print the installed version (also --version); doctor names the commit it was built from');
+    console.log('  version                                  print the installed version and the commit it was built from (also --version), without asking the daemon');
     console.log('  spawn  --kind KIND --name NAME [--cwd DIR] [--prompt TEXT] [--model M] [--provider P] [--machine M] [--stuck-minutes N] [--inactive-minutes N] [--max-depth N] [--workspace new|ID|LABEL [--workspace-label L]] [--parent ID] [--focus]');
     console.log('         --workspace new                   start the child in a workspace of its own, on its machine, where its own children open too; Bellwether closes it once it is empty');
     console.log('  watch  [--parent ID] [--tick-ms N]      one line per child event, then keeps reading');
@@ -355,6 +371,7 @@ async function main(argv: string[]): Promise<number> {
     console.log('  stop   CHILD [--force]');
     console.log('  move   CHILD [--machine M] [--cwd DIR] [--reason TEXT]  move a live claude or pi child to another machine, keeping its id and conversation');
     console.log('  report --child ID --status done|needs-input|progress --text TEXT [--parent ID] [--receipt ID]');
+    console.log('  claude-hook --child ID                   a Claude Code child\'s Notification hook: the hook input on stdin, the dialog to the daemon, nothing on stdout');
     console.log('  relay-register --child ID --name NAME --kind KIND --parent ID [--cwd DIR] [--brief-stdin yes]');
     console.log('  relay-cleanup --child ID                 remove the brief and MCP config relay-register wrote');
     console.log('  relay-bridge [--heartbeat-ms N]          join stdin and stdout to this machine\'s daemon; a parent\'s daemon runs it over SSH');
@@ -392,6 +409,7 @@ async function main(argv: string[]): Promise<number> {
   }
 
   if (command === 'report') return report(rest);
+  if (command === HOOK_COMMAND) return claudeHook(rest);
   if (command === 'relay-register') return farEnd(command, () => relayRegister(rest));
   if (command === 'relay-cleanup') return farEnd(command, () => relayCleanup(rest));
   if (command === 'relay-bridge') return relayBridge(rest);
@@ -505,6 +523,65 @@ async function report(argv: string[]): Promise<number> {
 }
 
 /**
+ * A Claude Code child's Notification hook, which its spawn wrote into the
+ * child's own settings. It reads the hook input on standard input and, for a
+ * notification that means a dialog waits on the person, tells this machine's
+ * daemon, which records the dialog on the child's record as it does for a pi
+ * child's ui_prompt_start. Claude Code ignores a Notification hook's exit
+ * code, and a failure must never get in the child's way, so this always exits
+ * 0 and says why on standard error.
+ *
+ * It writes nothing to standard output, ever. A decision hook reads its
+ * decision from standard output, and approving a permission question is the
+ * operator's decision, not Bellwether's: do not print one here.
+ */
+async function claudeHook(argv: string[]): Promise<number> {
+  const quiet = (message: string): number => {
+    console.error(`bellwether ${HOOK_COMMAND}: ${message}`);
+    return 0;
+  };
+  let childId: string | undefined;
+  try {
+    childId = exactFlags(argv, ['child'])['child'] ?? process.env['BELLWETHER_CHILD'];
+  } catch (error) {
+    return quiet((error as Error).message);
+  }
+  if (!childId) return quiet('needs --child, or a BELLWETHER_CHILD in the environment');
+  let input = '';
+  try {
+    input = fs.readFileSync(0, 'utf8');
+  } catch (error) {
+    return quiet(`could not read the hook input: ${(error as Error).message}`);
+  }
+  const dialog = dialogFromHook(input);
+  if (!dialog) return 0;
+  const payload = JSON.parse(input) as { session_id?: unknown; cwd?: unknown };
+  let daemon: DaemonClient | undefined;
+  try {
+    // spawn: false, because a dialog is no reason to start a daemon: the
+    // child's own MCP server already connected to the one it reports to.
+    daemon = await DaemonClient.connect({
+      harness: 'claude-code',
+      session: typeof payload.session_id === 'string' ? payload.session_id : (process.env['CLAUDE_CODE_SESSION_ID'] ?? `pid-${process.ppid}`),
+      cwd: typeof payload.cwd === 'string' ? payload.cwd : process.cwd(),
+      host: hostName(),
+      paneId: process.env['HERDR_PANE_ID'],
+      workspaceId: process.env['HERDR_WORKSPACE_ID'],
+      depth: Number.parseInt(process.env['BELLWETHER_DEPTH'] ?? '0', 10) || 0,
+      herdrSocket: resolveSocketPath(),
+      childId,
+    }, { spawn: false, timeoutMs: 5_000, ...(process.env['BELLWETHER_DAEMON_SOCKET'] ? { socketPath: process.env['BELLWETHER_DAEMON_SOCKET'] } : {}), log: (message) => console.error('[bellwether]', message) });
+    await daemon.tool(PROMPT_NOTICE, { ...dialog, source: 'claude-code' });
+    return 0;
+  } catch (error) {
+    // An older daemon refuses the source argument; the screen check stands in.
+    return quiet((error as Error).message);
+  } finally {
+    await daemon?.close().catch(() => {});
+  }
+}
+
+/**
  * Run a command a parent's daemon runs here over SSH. Its error goes to
  * standard error as one line, which the parent quotes, rather than as a stack
  * whose last lines say nothing about what went wrong.
@@ -547,7 +624,7 @@ function relayRegister(argv: string[]): number {
   }
   saveRelayRecord({ schema: RELAY_SCHEMA, childId, name: values['name'] ?? childId, kind: values['kind'] ?? 'other', parentId, ...(cwd ? { cwd } : {}), ...(brief ? { brief } : {}), registeredAt: new Date().toISOString() });
   // A Claude Code child's own server, and whatever keeps this machine's other Bellwether servers from adding a second set of tools.
-  const tools = values['kind'] === 'claude' ? writeChildToolFiles(childId, cwd) : undefined;
+  const tools = values['kind'] === 'claude' ? writeChildToolFiles(childId, cwd, { hook: false }) : undefined;
   console.log(JSON.stringify({ record: relayChildPath(childId), version: BELLWETHER_VERSION, build: BELLWETHER_BUILD_ID, ...(brief ? { brief } : {}), ...(tools ? { mcpConfig: tools.mcpConfig, ...(tools.claudeSettings ? { claudeSettings: tools.claudeSettings } : {}), toolSource: tools.toolSource } : {}), ...(piExtension ? { piExtension } : {}) }));
   return 0;
 }

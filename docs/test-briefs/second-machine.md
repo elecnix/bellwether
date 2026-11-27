@@ -72,7 +72,7 @@ A green harness doesn't prove either. Only the global path proves them, so run i
 
 4. Drain both machines with `bellwether drain`, so that each starts its next daemon from the install under test. A parent session may run its own copy, such as a Claude Code plugin. Whichever session reconnects first starts the daemon.
 
-   On PARENT, run `bellwether drain` and start `bellwether daemon` detached in the same command. Then check that each machine's `daemon.lock` names a daemon of the build under test. The lock's `entry` must lie under the tarball's install. A daemon that `bellwether daemon` started writes a lock without an `entry`, and doctor says a person started it by hand, and gives its socket. For that daemon, check instead that a pid's command line runs that install.
+   On PARENT, run `bellwether drain` and start `bellwether daemon` detached in the same command. Then check that each machine's `daemon.lock` names a daemon of the build under test. The lock's `entry` must lie under the tarball's install. A daemon that `bellwether daemon` started writes `foreground: true` and the daemon entry point of its install in `entry`, and doctor says a person started it by hand on its socket, from that install. A lock from a build before 0.1.5 has no `entry` for such a daemon. For that daemon, check instead that a pid's command line runs that install.
 
 5. From a parent session on PARENT, call `agent_spawn` with `kind: "pi"`, `name: "relay-check"` and `machine: "CHILD"`.
 

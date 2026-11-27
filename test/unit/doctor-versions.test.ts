@@ -65,6 +65,25 @@ test('a daemon whose lock names no entry point is described once, without a hand
   assert.match(text, /upgrade: not known to be finished, because the daemon did not list its sessions/);
 });
 
+test('a lock from an older build with no entry point still says started by hand, even when the daemon does not answer', () => {
+  const input = threeInstalls({ error: 'connect ECONNREFUSED' }, { entry: undefined, origin: undefined });
+  delete input.sessions;
+  const text = describeUpgrade(input).lines.join('\n');
+  assert.match(text, /the running daemon, pid 4242, is 0\.1\.5 on protocol 4, with a build it cannot report, started by hand with bellwether daemon on \/h\/daemon\.sock, so its lock names no entry point/);
+  assert.doesNotMatch(text, /predates/);
+});
+
+test('a hand-started daemon whose lock names its entry point and build: doctor names the install, from the lock alone', () => {
+  const input = threeInstalls({ error: 'connect ECONNREFUSED' }, { foreground: true, build: COMMIT_B });
+  delete input.sessions;
+  const text = describeUpgrade(input).lines.join('\n');
+  assert.match(text, new RegExp(`is 0\\.1\\.5 on protocol 4, build ${COMMIT_B}, started by hand with bellwether daemon on /h/daemon\\.sock, from ${PLUGIN} \\(an installed package\\)`));
+  assert.doesNotMatch(text, /names no entry point|predates/);
+  // The same daemon started from this install's own entry point says so.
+  const own = describeUpgrade(threeInstalls({ error: 'connect ECONNREFUSED' }, { foreground: true, build: COMMIT_A, entry: CHECKOUT, origin: 'checkout' })).lines.join('\n');
+  assert.match(own, new RegExp(`started by hand with bellwether daemon on /h/daemon\\.sock, from this install's entry point, ${CHECKOUT}`));
+});
+
 test('a session that connects twice is listed once, counted by its harness session id', () => {
   const doubled = session(0, { harness: 'claude-code', session: '0b6c9f1e-1111-4222-8333-944455556666', parentId: 'claude-code-0b6c9f1e', build: COMMIT_B });
   const sessions = [doubled, { ...doubled, connectedAt: '2026-11-27T00:00:05.000Z' }, session(1, { build: COMMIT_B })];

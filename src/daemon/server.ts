@@ -49,8 +49,10 @@ export interface DaemonOptions {
   relayOutbox?: RelayOutbox;
   /** The connections this daemon holds to the machines its parents' children run on. Tests pass one with a fake ssh. */
   links?: RelayLinks;
-  /** The entry point this daemon process runs, which the lock records. The process entry passes its own file. */
+  /** The entry point this daemon process runs, which the lock records. The process entry passes its own file, and `bellwether daemon` its install's. */
   entry?: string;
+  /** Whether `bellwether daemon` runs this daemon in the foreground, which the lock records. */
+  foreground?: boolean;
   /** How long a drain waits for calls in flight before it closes anyway. Default 60 s. */
   drainGraceMs?: number;
   /** How often the idle tick prunes the state no live session needs, after the first prune. Default an hour; false never prunes. */
@@ -109,7 +111,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
   const links = options.links ?? new RelayLinks({ log });
 
   if (await canConnect(options.socketPath)) throw new Error(`a daemon already listens on ${options.socketPath}`);
-  const lock = acquire(home, options.socketPath, pid, undefined, options.entry);
+  const lock = acquire(home, options.socketPath, pid, undefined, { ...(options.entry ? { entry: options.entry } : {}), ...(options.foreground ? { foreground: true } : {}) });
   if (lock.kind === 'held' && lock.record.pid !== pid) throw new Error(`a daemon with pid ${lock.record.pid} holds this home`);
 
   fs.mkdirSync(path.dirname(options.socketPath), { recursive: true });

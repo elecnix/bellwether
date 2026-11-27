@@ -35,7 +35,7 @@ Routes live in `~/.config/bellwether/routes.json`, or in the file that `BELLWETH
 | `defaultTier` | The tier for a child whose spawn names none. |
 | `key` | How the launcher receives a key file. `{ "env": "NAME" }` has the pane's shell read the file into that variable, and `{ "flag": "--some-flag" }` passes the file's path with that flag. A route without `key` refuses `key_file`. |
 | `harnesses` | The harness kinds the launcher runs. Defaults to claude, pi and codex. |
-| `harnessArgs` | Arguments a harness needs on this route, by kind, placed right after the harness name. A shell function that adds flags to a bare `claude` does not run behind a launcher, so the route lists those flags itself. |
+| `harnessArgs` | Arguments a harness needs on this route, by kind, placed right after the harness name. Bellwether starts every child past the shell's functions and aliases, so a flag that a `claude` function adds reaches no child, and the route lists such flags itself. |
 | `description` | One line on what a child on this route sees that a bare one does not. `bellwether doctor` prints it. |
 
 Bellwether reserves `via none` for a bare start, so no route can take that name.
@@ -50,7 +50,19 @@ example-router --yes --model example-fast claude --mcp-config=… --dangerously-
 
 On a route, `model` names a tier and goes to the launcher, so Bellwether passes no `--model` to the harness. A pi child starts the same way. The launcher and the tier come first, then `pi -e <extension>` and its brief. The route's tier picks the model, so a pi child doesn't inherit a provider and model pair from its parent, and the spawn refuses `provider` on a route.
 
-herdr's `agent.start` runs only a harness's own executable, so Bellwether types the launch line at the shell prompt of the tab it has just created. It then waits for herdr to detect the harness in that pane, and gives the agent its name. A bare child still starts through `agent.start`.
+Bellwether types the launch line at the shell prompt of the tab it has just created, then waits for herdr to detect the harness in that pane and gives the agent its name.
+
+## Launching a bare child
+
+A bare child starts the same way, with no launcher. Its line puts the shell's `command` builtin in front of the harness:
+
+```text
+command claude --mcp-config=… --dangerously-load-development-channels=server:bellwether @…/brief.md
+```
+
+herdr's `agent.start` would type the bare name `claude`, and a shell function or alias of that name would run in its place. With `command`, the shell finds the harness on its `PATH` and skips both. The operator's startup files can't add channels or flags to a child.
+
+Restarting a parent session is different. That session belongs to the operator and still starts through `agent.start`. A shell function of the harness's name applies to it, just as when the operator starts it by hand.
 
 ## Key files
 

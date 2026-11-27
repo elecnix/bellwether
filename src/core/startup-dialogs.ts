@@ -9,9 +9,13 @@
 // The answer is driven by the child's status events. The watch opens before
 // the harness starts, so the first blocked event cannot slip past it. The
 // screen is read when a status arrives, and again after each key, until no
-// dialog is left. A key goes out only toward the accepting option, and Enter
-// only once the screen shows that option selected, so a dialog whose shape
-// changed fails the spawn instead of taking a stray Enter.
+// dialog is left. An accepting option that the screen numbers is answered with
+// its digit, which selects and confirms it wherever the cursor is, so a longer
+// list or a cursor that starts lower cannot turn the answer into another
+// option (issue #133). An option without a number is walked to with the
+// arrows, and Enter goes out only once the screen shows that option selected,
+// so a dialog whose shape changed fails the spawn instead of taking a stray
+// Enter.
 import type { HerdrClient, Subscription } from './herdr-client.ts';
 import type { DialogDecision } from './types.ts';
 
@@ -67,6 +71,10 @@ const SELECTED = /^\s*[❯›>]\s/u;
  * a dangerous rm, and Bellwether never approves a command for the operator, so
  * it declines that one too. The child hears No, as if a person had chosen it,
  * and the parent hears what was declined in its next event about the child.
+ * A numbered option takes its digit. The trust question shows no numbers and
+ * ignores a digit (Claude Code 2.1.318), so it is walked with the arrows,
+ * which is safe there because Enter waits for the screen to show "Yes, I
+ * trust this folder" selected.
  */
 export const CLAUDE_STARTUP: StartupDialogSet = {
   harness: 'Claude Code',
@@ -175,8 +183,29 @@ export class StartupDialogRefused extends Error {
 }
 
 /**
- * The key that moves a selection list toward `wanted`, or confirms it once it
- * is selected. Undefined when the screen shows neither the option nor a
+ * The key that answers a selection list with `wanted`. When the screen numbers
+ * the option, as in `1. I am using this for local development`, it is that
+ * digit, which Claude Code takes as select and confirm in one key wherever
+ * the cursor is. Otherwise it is the arrow that moves the selection toward
+ * the option, or Enter once it is selected. Undefined when the screen shows
+ * neither the option nor a selection, which happens while a dialog is still
+ * drawing.
+ */
+export function answerKey(screen: string, wanted: string): string | undefined {
+  const lines = screen.split('\n');
+  const at = optionLine(lines, wanted);
+  const digit = at >= 0 ? /^(?:[❯›>]\s*)?(\d)\.\s/u.exec(unframed(lines[at] ?? ''))?.[1] : undefined;
+  return digit ?? keyToward(screen, wanted);
+}
+
+/** Whether a key from answerKey confirms the option, rather than moving toward it. */
+export function confirms(key: string): boolean {
+  return key === 'Enter' || /^\d$/.test(key);
+}
+
+/**
+ * The arrow that moves a selection list toward `wanted`, or Enter once it is
+ * selected. Undefined when the screen shows neither the option nor a
  * selection, which happens while a dialog is still drawing.
  */
 export function keyToward(screen: string, wanted: string): 'Enter' | 'Up' | 'Down' | undefined {
@@ -302,7 +331,7 @@ export async function watchStartup(client: HerdrClient, paneId: string, signal?:
           unknown = undefined;
           const known = set.dialogs.find((entry) => entry.id === dialog);
           const wanted = known ? chosenLabel(screen, known.accept) : '';
-          const key = keyToward(screen, wanted);
+          const key = answerKey(screen, wanted);
           if (key) {
             // TODO(api): keys typed into the pane answer a question no API reaches. A
             // documented way to pre-answer Claude Code's development-channel and
@@ -318,7 +347,7 @@ export async function watchStartup(client: HerdrClient, paneId: string, signal?:
               pending ??= { dialog: known.id, name: known.name, question: dialogQuestion(screen) ?? known.name, answer: wanted, decided: known.decides, keys: [], at: '', by };
               pending.keys.push(key);
             }
-            if (key === 'Enter') {
+            if (confirms(key)) {
               if (!answered.includes(dialog)) answered.push(dialog);
               // The answer is complete. The same question asked again is a decision of its own.
               if (pending) {

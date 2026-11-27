@@ -18,7 +18,7 @@ import { recordDecisions, removeChild, updateChild, upsertChild } from './regist
 import { detectRefused, StartupDialogRefused, watchStartup, type StartupDialog, type StartupWatch } from './startup-dialogs.ts';
 import { agentNameOf, sessionFrom } from './transcript.ts';
 import type { RemoteRegistration } from './remote.ts';
-import { BARE, RoutesFileError, launchLine, readRoutes, resolveRoute, routeConfig, routeLaunch, type RouteConfig, type RouteLaunch, type RoutesFile } from './routes.ts';
+import { BARE, RoutesFileError, bareLaunch, launchLine, readRoutes, resolveRoute, routeConfig, routeLaunch, type RouteConfig, type RouteLaunch, type RoutesFile } from './routes.ts';
 import { openChildTab, parseWorkspaces, placeChild, undoChildTab, type ChildTab, type WorkspaceEntry } from './workspace.ts';
 import type { ChildRecord, ChildRoute, DialogDecision, ModelPair, ParentRecord } from './types.ts';
 
@@ -559,7 +559,7 @@ export function nextLaunch(child: Pick<ChildRecord, 'name' | 'kind' | 'host' | '
   return model && provider ? { harnessModel: model, provider } : {};
 }
 
-/** How long a routed start waits for herdr to detect the harness behind the launcher. */
+/** How long a start waits for herdr to detect the harness it typed. */
 export const ROUTED_START_MS = 30_000;
 
 export interface HarnessStart {
@@ -568,22 +568,21 @@ export interface HarnessStart {
   paneId: string;
   /** The harness's own arguments. */
   args: string[];
-  /** The route's launch, when the child starts through one. Without it, herdr starts the harness bare. */
+  /** The route's launch, when the child starts through one. Without it, the harness starts bare. */
   launch?: RouteLaunch;
-  /** How long a routed start waits for the harness. Tests shorten it. */
+  /** How long a start waits for herdr to detect the harness. Tests shorten it. */
   timeoutMs?: number;
 }
 
 /**
- * Start a child's harness in a pane that sits at its shell prompt: bare with
- * herdr's agent.start, or through a route's launcher.
+ * Start a child's harness in a pane that sits at its shell prompt, by typing
+ * its launch line there: the route's launcher, or for a bare child the
+ * harness's executable behind `command`. Either way the line, and not the
+ * shell's startup files, decides the arguments the harness gets.
  */
 export async function startHarness(client: HerdrClient, params: HarnessStart, signal?: AbortSignal): Promise<void> {
-  if (!params.launch) {
-    await startWithRetry(client, { name: params.name, kind: params.kind, paneId: params.paneId, args: params.args }, signal);
-    return;
-  }
-  const launch = params.launch;
+  const launch = params.launch ?? bareLaunch(params.kind, params.args);
+  const through = params.launch ? `through ${launch.argv[0]}` : `as \`command ${params.kind}\``;
   const timeoutMs = params.timeoutMs ?? ROUTED_START_MS;
   const controller = new AbortController();
   signal?.addEventListener('abort', () => controller.abort(), { once: true });
@@ -603,15 +602,18 @@ export async function startHarness(client: HerdrClient, params: HarnessStart, si
   );
   let timer: NodeJS.Timeout | undefined;
   try {
-    // TODO(api): herdr's agent.start runs only a kind's own executable, so a
-    // launcher in front of the harness has to be typed at the shell prompt of
-    // the pane this spawn just created. An agent.start that took a launcher
-    // argv prefix and environment read from files would retire this input.
+    // TODO(api): herdr's agent.start types the kind's bare name at the shell
+    // prompt, where a shell function or alias of that name runs in its place
+    // (issue #133), and it takes no launcher. So the launch line is typed here,
+    // at the prompt of the pane this spawn just created. An agent.start that
+    // executed the harness itself, with a launcher argv prefix and environment
+    // read from files, would retire this input.
     await client.sendInput(params.paneId, launchLine(launch), ['Enter'], signal);
     await Promise.race([
       seen,
       new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error(`herdr detected no ${params.kind} in pane ${params.paneId} within ${Math.round(timeoutMs / 1000)} s of starting it through ${launch.argv[0]}. Check that the launcher runs ${params.kind} on this machine.`)), timeoutMs);
+        const check = params.launch ? `Check that the launcher runs ${params.kind} on this machine.` : `Check that ${params.kind} is on the PATH of this machine's login shell.`;
+        timer = setTimeout(() => reject(new Error(`herdr detected no ${params.kind} in pane ${params.paneId} within ${Math.round(timeoutMs / 1000)} s of starting it ${through}. ${check}`)), timeoutMs);
       }),
     ]);
   } finally {
@@ -619,13 +621,30 @@ export async function startHarness(client: HerdrClient, params: HarnessStart, si
     subscription.close();
     controller.abort();
   }
-  // agent.start names the agent; a typed start has to name it after herdr finds it.
-  await client.agentRename(params.paneId, params.name, signal).catch(() => {});
+  // herdr gives an agent it detected no name, so a typed start names it. A
+  // harness that already named itself, as a pi naming extension does, keeps
+  // its own name, and the record keeps both.
+  const named = await client.request('agent.get', { target: params.paneId }, { signal }).then(
+    (result) => {
+      const agent = typeof result === 'object' && result !== null ? (result as Record<string, unknown>)['agent'] : undefined;
+      const name = typeof agent === 'object' && agent !== null ? (agent as Record<string, unknown>)['name'] : undefined;
+      return typeof name === 'string' && name !== '';
+    },
+    () => false,
+  );
+  if (!named) await client.agentRename(params.paneId, params.name, signal).catch(() => {});
 }
 
 /** herdr refuses a start until the new tab's shell reaches its prompt. */
 const PANE_NOT_READY = new Set(['agent_pane_busy', 'agent_pane_not_ready', 'pane_busy']);
 
+/**
+ * Start a harness with herdr's agent.start, which types its bare name at the
+ * shell prompt. Only a parent session's restart uses it: that session is the
+ * operator's own, so their shell function for the harness, and the flags it
+ * adds, apply to it as they do when they start it by hand. A child starts
+ * with startHarness.
+ */
 export async function startWithRetry(
   client: HerdrClient,
   params: { name: string; kind: string; paneId: string; args: string[]; timeoutMs?: number },

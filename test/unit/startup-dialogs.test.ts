@@ -3,8 +3,8 @@
 // cases read screens copied from a real Claude Code 2.1.332 pane.
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { detectDialog, dialogQuestion, keyToward } from '../../src/core/startup-dialogs.ts';
-import { CHANNEL_ACCEPT_SELECTED, CHANNEL_EXIT_SELECTED, CLAUDE_PROMPT, DANGEROUS_RM_QUESTION, OUTSIDE_READ_QUESTION, PERMISSION_QUESTION, TRUST_NO_SELECTED, TRUST_YES_SELECTED, UNKNOWN_STARTUP_QUESTION } from '../fixtures/claude-screens.ts';
+import { answerKey, confirms, detectDialog, dialogQuestion, keyToward } from '../../src/core/startup-dialogs.ts';
+import { CHANNEL_ACCEPT_SELECTED, CHANNEL_EXIT_SELECTED, CHANNEL_FIVE_EXIT_SELECTED, CLAUDE_PROMPT, DANGEROUS_RM_QUESTION, OUTSIDE_READ_QUESTION, PERMISSION_QUESTION, TRUST_NO_SELECTED, TRUST_YES_SELECTED, UNKNOWN_STARTUP_QUESTION } from '../fixtures/claude-screens.ts';
 
 const TRUST_ACCEPT = 'Yes, I trust this folder';
 const CHANNEL_ACCEPT = 'I am using this for local development';
@@ -49,7 +49,10 @@ test('the prompt and a permission question are not startup dialogs', () => {
 test('the read and dangerous-rm questions are known, and each is answered No', () => {
   assert.equal(detectDialog(OUTSIDE_READ_QUESTION), 'outside-read');
   assert.equal(detectDialog(DANGEROUS_RM_QUESTION), 'dangerous-rm');
-  // The selection starts on Yes; the keys go down to the No that saves nothing, and Enter waits for it.
+  // Each No is numbered, so its digit answers it wherever the selection starts.
+  assert.equal(answerKey(OUTSIDE_READ_QUESTION, 'No, and ask again next time'), '3');
+  assert.equal(answerKey(DANGEROUS_RM_QUESTION, 'No, and tell Claude what to do differently'), '2');
+  // Walked with the arrows, the selection goes down to the No that saves nothing, and Enter waits for it.
   assert.equal(keyToward(OUTSIDE_READ_QUESTION, 'No, and ask again next time'), 'Down');
   const onNo = OUTSIDE_READ_QUESTION.replace(' ❯ 1. Yes, and keep', '   1. Yes, and keep').replace('   3. No, and ask again', ' ❯ 3. No, and ask again');
   assert.equal(keyToward(onNo, 'No, and ask again next time'), 'Enter');
@@ -62,6 +65,7 @@ test('the read and dangerous-rm questions are known, and each is answered No', (
 test('an option label matches an option line, not the dialog text that mentions it', () => {
   const screen = ' No changes are made until you choose.\n Proceed?\n ❯ 1. Yes\n   2. No';
   assert.equal(keyToward(screen, 'No'), 'Down');
+  assert.equal(answerKey(screen, 'No'), '2');
 });
 
 test('the question a dialog asks is the line above its options that ends with a question mark', () => {
@@ -72,4 +76,19 @@ test('the question a dialog asks is the line above its options that ends with a 
   // A prompt, and a screen with no numbered option, ask nothing.
   assert.equal(dialogQuestion(CLAUDE_PROMPT), undefined);
   assert.equal(dialogQuestion('Is it done?\nworking…'), undefined);
+});
+
+test('a numbered option is answered with its digit, wherever the cursor is (issue #133)', () => {
+  assert.equal(answerKey(CHANNEL_ACCEPT_SELECTED, CHANNEL_ACCEPT), '1');
+  assert.equal(answerKey(CHANNEL_EXIT_SELECTED, CHANNEL_ACCEPT), '1');
+  assert.equal(answerKey(CHANNEL_FIVE_EXIT_SELECTED, CHANNEL_ACCEPT), '1');
+  assert.equal(confirms('1'), true);
+});
+
+test('an option without a number is walked to with the arrows, and Enter waits for it to be selected', () => {
+  assert.equal(answerKey(TRUST_NO_SELECTED, TRUST_ACCEPT), 'Down');
+  assert.equal(answerKey(TRUST_YES_SELECTED, TRUST_ACCEPT), 'Enter');
+  assert.equal(confirms('Down'), false);
+  // A screen still drawing gets no key at all.
+  assert.equal(answerKey('drawing…', TRUST_ACCEPT), undefined);
 });

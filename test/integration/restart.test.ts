@@ -21,7 +21,7 @@ import type { RestartHooks } from '../../src/core/restart.ts';
 import { DaemonClient } from '../../src/daemon/client.ts';
 import { startDaemon, type Daemon } from '../../src/daemon/server.ts';
 import { runBellwetherTool, type ToolContext } from '../../src/integrations/tools.ts';
-import { startFakeHerdr, type FakeHerdr, type RecordedRequest } from '../fixtures/fake-herdr.ts';
+import { startFakeHerdr, type FakeHerdr, type RecordedRequest, harnessStarts, type HarnessStartRequest } from '../fixtures/fake-herdr.ts';
 import { fakeWorld, type FakeWorld } from '../fixtures/fake-world.ts';
 import { isolate } from '../fixtures/isolated.ts';
 
@@ -130,8 +130,8 @@ function calls(fake: FakeHerdr, method: string): RecordedRequest[] {
   return fake.requests.filter((request) => request.method === method);
 }
 
-function lastStart(fake: FakeHerdr): RecordedRequest {
-  return calls(fake, 'agent.start').at(-1) as RecordedRequest;
+function lastStart(fake: FakeHerdr): HarnessStartRequest {
+  return harnessStarts(fake).at(-1) as HarnessStartRequest;
 }
 
 function children(id: string): ChildRecord[] {
@@ -183,7 +183,7 @@ test('a child restart closes its tab and starts it on the same session under the
   const env = created?.['env'] as Record<string, string>;
   assert.equal(env['BELLWETHER_CHILD'], 'child-worker', 'same child id');
   assert.equal(env['BELLWETHER_PARENT'], id, 'same parent');
-  const args = lastStart(rig.fake).params['args'] as string[];
+  const args = lastStart(rig.fake).args;
   assert.deepEqual(args.slice(args.indexOf('--resume'), args.indexOf('--resume') + 2), ['--resume', 'sess-1']);
   assert.equal(rig.world.panes.get(child.paneId)?.agent_session?.value, 'sess-1');
   assert.equal(rig.world.panes.has('w1:p3'), false, 'the old pane is gone');
@@ -214,7 +214,7 @@ test('a mid-turn child is waited on, and the reply reports the wait', async (t) 
   assert.match(text, /Restarted worker/);
   assert.match(text, /waited \d+ ms for the turn to end/);
   assert.equal(calls(rig.fake, 'tab.close').length, 1);
-  assert.equal(calls(rig.fake, 'agent.start').length, 1);
+  assert.equal(harnessStarts(rig.fake).length, 1);
 });
 
 test('a child still working when the wait runs out is refused and left alone', async (t) => {
@@ -226,7 +226,7 @@ test('a child still working when the wait runs out is refused and left alone', a
 
   await assert.rejects(context(id, rig).tool('agent_restart', { target: 'worker' }), /worker is still working after the 0\.3 s wait; agent_restart never restarts a pane mid-turn/);
   assert.equal(calls(rig.fake, 'tab.close').length, 0, 'nothing was closed');
-  assert.equal(calls(rig.fake, 'agent.start').length, 0);
+  assert.equal(harnessStarts(rig.fake).length, 0);
   assert.equal(children(id)[0]?.paneId, 'w1:p3', 'the record still points at the live pane');
   assert.equal(restartLog().length, 0);
 });
@@ -260,7 +260,7 @@ test('a child restarting itself defers to the end of its turn and then restarts 
 
   assert.deepEqual(calls(rig.fake, 'tab.close').map((request) => request.params['tab_id']), ['w1:t3']);
   assert.equal(service.signal.aborted, true, 'the caller\'s service stopped when its tab closed');
-  const args = lastStart(rig.fake).params['args'] as string[];
+  const args = lastStart(rig.fake).args;
   assert.deepEqual(args.slice(args.indexOf('--resume'), args.indexOf('--resume') + 2), ['--resume', 'sess-1']);
   const child = children(id)[0];
   assert.equal(child?.paneId, newPane);
@@ -303,8 +303,8 @@ test('a session restarting itself closes its own pane after its turn and reopens
   assert.equal(rig.world.panes.size, 1, 'only the new pane is left');
 
   const started = lastStart(rig.fake);
-  assert.equal(started.params['pane_id'], newPane);
-  const args = started.params['args'] as string[];
+  assert.equal(started.paneId, newPane);
+  const args = started.args;
   assert.deepEqual(args.slice(args.indexOf('--resume'), args.indexOf('--resume') + 2), ['--resume', 'parent-session'], 'the harness command carries the same session');
   assert.ok(args.includes('--dangerously-load-development-channels=plugin:bellwether@elecnix-plugins'), `the restarted session loads the Bellwether channel: ${JSON.stringify(args)}`);
   assert.equal(rig.world.panes.get(newPane)?.screen?.includes('Loading development channels'), false, 'the daemon answered the channel question');
@@ -362,7 +362,7 @@ test('a pi child restarts with the extension and the provider and model it was s
   const text = await context(id, rig).tool('agent_restart', { target: 'worker' });
   assert.match(text, /Restarted worker \(child child-worker\): closed pane w1:p3, started pi/);
   const extension = piExtensionEntry();
-  const args = lastStart(rig.fake).params['args'] as string[];
+  const args = lastStart(rig.fake).args;
   assert.deepEqual(args, ['--provider', 'openrouter', '--model', 'example-cheap', '-e', extension, '--session', session], 'the same launch a spawn gives a pi child, on its own session');
   const env = calls(rig.fake, 'tab.create')[0]?.params['env'] as Record<string, string>;
   assert.equal(env[PI_EXTENSION_ENV], extension);
@@ -378,7 +378,7 @@ test('a target with no recorded session is refused, naming the record', async (t
 
   await assert.rejects(context(id, rig).tool('agent_restart', { target: 'child-worker' }), /worker \(child child-worker, pane w1:p3\) has no recorded session, so agent_restart cannot reopen it/);
   assert.equal(calls(rig.fake, 'tab.close').length, 0);
-  assert.equal(calls(rig.fake, 'agent.start').length, 0);
+  assert.equal(harnessStarts(rig.fake).length, 0);
 });
 
 test('a second restart during one is refused by the lock', async (t) => {
@@ -395,7 +395,7 @@ test('a second restart during one is refused by the lock', async (t) => {
   setStatus(rig, 'w1:p3', 'idle');
   const text = await first;
   assert.match(text, /Restarted worker/);
-  assert.equal(calls(rig.fake, 'agent.start').length, 1, 'one restart happened between the two calls');
+  assert.equal(harnessStarts(rig.fake).length, 1, 'one restart happened between the two calls');
   assert.equal(calls(rig.fake, 'tab.close').length, 1);
 });
 
@@ -444,9 +444,9 @@ test('a parent session named by its session id restarts in a new pane whose comm
   assert.deepEqual(calls(rig.fake, 'pane.close').map((request) => request.params['pane_id']), ['w1:p7'], 'the old pane is closed');
   assert.equal(rig.world.panes.has('w1:p7'), false);
   const started = lastStart(rig.fake);
-  const args = started.params['args'] as string[];
+  const args = started.args;
   assert.deepEqual(args.slice(args.indexOf('--resume'), args.indexOf('--resume') + 2), ['--resume', 'ops-session']);
-  const newPane = String(started.params['pane_id']);
+  const newPane = String(started.paneId);
   assert.equal(rig.world.panes.get(newPane)?.agent_session?.value, 'ops-session');
   assert.equal(readParent(registryId('claude-code', 'ops-session'))?.paneId, newPane, 'the parent record points at the new pane');
   assert.equal(calls(rig.fake, 'tab.create')[0]?.params['cwd'], '/work/ops', 'same working directory');
@@ -465,7 +465,7 @@ test('a pi session restarts with its session file passed to --session', async (t
 
   const text = await context(callerId, rig).tool('agent_restart', { target: 'pi-sess' });
   assert.match(text, /Restarted scribe: closed pane w1:p8/);
-  const args = lastStart(rig.fake).params['args'] as string[];
+  const args = lastStart(rig.fake).args;
   assert.deepEqual(args.slice(args.indexOf('--session'), args.indexOf('--session') + 2), ['--session', file]);
   assert.equal(args.some((arg) => arg.includes('development-channels')), false, 'pi loads its extension without a flag');
   assert.equal(rig.world.panes.has('w1:p8'), false, 'the old pane is closed');

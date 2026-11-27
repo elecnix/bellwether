@@ -15,6 +15,10 @@
 // that `npm run release` writes, and holds it to the same rules. The pr-body
 // check reads that description, so a template that fails it would stop every
 // release at its own pull request.
+//
+// `lint` last checks the signature exception in .vale.ini against
+// SIGNATURE_CASES: each signature form agents write must pass, and each em
+// dash in prose must still fail, even on a line that holds a signature link.
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -58,20 +62,83 @@ export function coverageConfig(ini: string, stylesPath: string): string {
     .join('\n');
 }
 
+/**
+ * The error for a Vale run that could not lint. A checkout that never ran
+ * `vale sync` has no style packs, and Vale reports that as E100 from
+ * loadStyles; the gate names the command and the directory instead (issue
+ * #134). Any other failure keeps Vale's own text.
+ */
+export function valeFailure(root: string, status: number | null, output: string): string {
+  const missing = [...output.matchAll(/style '([^']+)' does not exist on StylesPath/g)].map((match) => match[1]);
+  if (missing.length > 0) {
+    return `The Vale style packs are not synced in ${root}, so the prose gate cannot run (missing: ${[...new Set(missing)].join(', ')}). Run \`cd ${root} && vale sync\`, then run the check again.`;
+  }
+  return `vale exited ${status}: ${output.trim()}`;
+}
+
 function vale(root: string, args: string[]): { status: number | null; stdout: string; stderr: string } {
   const result = spawnSync('vale', args, { cwd: root, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
-  if (result.error) throw new Error(`vale did not run (${result.error.message}). Install Vale 3.20.0, the version CI pins.`);
+  if (result.error) throw new Error(`vale did not run (${result.error.message}). Install Vale 3.20.0, the version CI pins, then run \`cd ${root} && vale sync\` to fetch the style packs.`);
   // Vale exits 1 when it reports an error-level alert, and 2 when it cannot run.
-  if (result.status !== 0 && result.status !== 1) {
-    throw new Error(`vale exited ${result.status}: ${result.stderr.trim() || result.stdout.trim()}\nRun \`vale sync\` once to fetch the rule packages.`);
-  }
+  if (result.status !== 0 && result.status !== 1) throw new Error(valeFailure(root, result.status, result.stderr.trim() || result.stdout));
   return { status: result.status, stdout: result.stdout, stderr: result.stderr };
 }
 
 /** Every alert at warning level or above, one per line, in the pages and in each release description. */
 export function lint(root: string): string[] {
   const pages = vale(root, ['--output=line', '--minAlertLevel=warning', ...PROSE_PATHS]).stdout.split('\n').filter(Boolean);
-  return [...pages, ...releaseBodyAlerts(root)];
+  return [...pages, ...releaseBodyAlerts(root), ...signatureFindings(root)];
+}
+
+const BODY = 'One change, and the test that covers it.\n\n';
+const AVATAR = 'https://app.avatar-maker.workers.dev/avatar/cc-iron-ibis-35.jpg';
+
+/**
+ * Pull request descriptions that hold the em dash, by file name, and whether
+ * the pr-body check must accept each one. An agent signs with an em dash
+ * before its linked name, so .vale.ini ignores that line and no other.
+ */
+export const SIGNATURE_CASES: Record<string, { body: string; passes: boolean }> = {
+  'signature-avatar.md': { body: `${BODY}— [cc-iron-ibis-35](<${AVATAR}>)\n`, passes: true },
+  'signature-avatar-bare-link.md': { body: `${BODY}— [cc-iron-ibis-35](${AVATAR})\n`, passes: true },
+  'signature-pi-identity.md': { body: `${BODY}— [ancient-crane-29](https://github.com/elecnix/pi-agent-identity) 🤖\n`, passes: true },
+  'signature-pi-name.md': { body: `${BODY}— [rusty-buffalo-56](https://github.com/elecnix/pi-agent-name) 🤖\n`, passes: true },
+  'signature-with-trailer.md': { body: `${BODY}— [cc-iron-ibis-35](<${AVATAR}>)\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n`, passes: true },
+  // GitHub's web form saves a description with CRLF line endings.
+  'signature-crlf.md': { body: `${BODY}— [cc-iron-ibis-35](<${AVATAR}>)\n`.replaceAll('\n', '\r\n'), passes: true },
+  'dash-in-prose.md': { body: `${BODY}The fix is small — one line.\n`, passes: false },
+  'dash-in-prose-before-avatar.md': { body: `${BODY}The fix is small — see [cc-iron-ibis-35](<${AVATAR}>) for why.\n`, passes: false },
+  'dash-after-prose-on-signature-line.md': { body: `${BODY}Done. — [cc-iron-ibis-35](<${AVATAR}>)\n`, passes: false },
+  'dash-before-unlinked-name.md': { body: `${BODY}— cc-iron-ibis-35\n`, passes: false },
+  'dash-before-prose.md': { body: `${BODY}— channel-delivery, a Claude Code child agent\n`, passes: false },
+  'dash-before-other-link.md': { body: `${BODY}— [the design](https://example.com/design)\n`, passes: false },
+};
+
+/**
+ * Each signature case the configuration at `config` judges wrongly: a
+ * signature it rejects, or a line of prose whose em dash it lets through.
+ */
+export function signatureFindings(root: string, config = path.join(root, '.vale.ini')): string[] {
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'bellwether-signature-'));
+  try {
+    const files = Object.entries(SIGNATURE_CASES).map(([name, { body }]) => {
+      const file = path.join(scratch, name);
+      fs.writeFileSync(file, body);
+      return file;
+    });
+    const { stdout } = vale(root, ['--no-global', `--config=${config}`, '--output=JSON', '--minAlertLevel=warning', ...files]);
+    const alerts = JSON.parse(stdout || '{}') as Record<string, Array<{ Check: string; Line: number }>>;
+    const flagged = new Map(Object.entries(alerts).map(([file, list]) => [path.basename(file), list]));
+    const findings: string[] = [];
+    for (const [name, { passes }] of Object.entries(SIGNATURE_CASES)) {
+      const list = flagged.get(name) ?? [];
+      if (passes && list.length > 0) findings.push(`scripts/prose.ts SIGNATURE_CASES: ${name}: the pr-body check rejects a signature (${list.map((alert) => `${alert.Check} on line ${alert.Line}`).join(', ')}).`);
+      if (!passes && !list.some((alert) => alert.Check === 'ai-tells.EmDashUsage')) findings.push(`scripts/prose.ts SIGNATURE_CASES: ${name}: the pr-body check lets an em dash in prose through. Narrow TokenIgnores in .vale.ini.`);
+    }
+    return findings;
+  } finally {
+    fs.rmSync(scratch, { recursive: true, force: true });
+  }
 }
 
 /** Each form the release pull request's description takes, by the file name its alerts carry. */
@@ -138,7 +205,7 @@ function main(mode: string | undefined): number {
       console.error(`vale: ${alerts.length} alerts at warning level or above in ${PROSE_PATHS.join(', ')} and the release descriptions. Fix the prose; the level stays at warning.`);
       return 1;
     }
-    console.log(`vale: no alerts in ${PROSE_PATHS.join(', ')} or in the ${Object.keys(RELEASE_BODIES).length} release descriptions.`);
+    console.log(`vale: no alerts in ${PROSE_PATHS.join(', ')} or in the ${Object.keys(RELEASE_BODIES).length} release descriptions, and the ${Object.keys(SIGNATURE_CASES).length} signature cases hold.`);
     return 0;
   }
   if (mode === 'coverage') {
@@ -155,4 +222,12 @@ function main(mode: string | undefined): number {
   return 2;
 }
 
-if (process.argv[1] !== undefined && path.resolve(process.argv[1]) === import.meta.filename) process.exitCode = main(process.argv[2]);
+if (process.argv[1] !== undefined && path.resolve(process.argv[1]) === import.meta.filename) {
+  try {
+    process.exitCode = main(process.argv[2]);
+  } catch (error) {
+    // The message names the remedy; a stack trace would bury it.
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 2;
+  }
+}

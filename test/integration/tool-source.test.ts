@@ -22,7 +22,7 @@ import { servedTools, toolNames } from '../../src/integrations/tools.ts';
 import { FEATURES } from '../../src/daemon/features.ts';
 import type { ParentHello, ServedTool } from '../../src/daemon/protocol.ts';
 import { stopDaemonsUnder } from '../fixtures/daemons.ts';
-import { startFakeHerdr } from '../fixtures/fake-herdr.ts';
+import { startFakeHerdr, harnessStarts, harnessStart } from '../fixtures/fake-herdr.ts';
 import { isolate } from '../fixtures/isolated.ts';
 
 type Server = { command?: string; args?: string[] };
@@ -32,7 +32,7 @@ async function idleHerdr(t: test.TestContext): Promise<Awaited<ReturnType<typeof
   let herdr: Awaited<ReturnType<typeof startFakeHerdr>> | undefined;
   herdr = await startFakeHerdr({
     respond: (request) => {
-      if (request.method === 'agent.start') setTimeout(() => herdr?.send({ event: 'pane_agent_status_changed', data: { pane_id: 'w1:p1', agent_status: 'idle' } }), 20);
+      if (harnessStart(request) !== undefined) setTimeout(() => herdr?.send({ event: 'pane_agent_status_changed', data: { pane_id: 'w1:p1', agent_status: 'idle' } }), 20);
       return undefined;
     },
   });
@@ -41,7 +41,7 @@ async function idleHerdr(t: test.TestContext): Promise<Awaited<ReturnType<typeof
 }
 
 function startArgs(herdr: Awaited<ReturnType<typeof startFakeHerdr>>): string[] {
-  return (herdr.requests.find((request) => request.method === 'agent.start')?.params['args'] as string[]) ?? [];
+  return (harnessStarts(herdr)[0]?.args as string[]) ?? [];
 }
 
 function flag(args: string[], name: string): string | undefined {

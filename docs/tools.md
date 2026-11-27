@@ -47,7 +47,7 @@ A child record keeps the session file that herdr reports for a pi child, includi
 
 Even a `claude`, `pi` or `omp` child can receive a message in its pane. That happens in four cases:
 
-- The child runs on another machine. This daemon reaches that machine only to collect reports.
+- The child runs on another machine whose Bellwether predates `relay-message`, or the connection to it is down. [remote-machines.md](remote-machines.md#messages-to-a-child-there) gives the path a message takes there.
 - The child is `blocked`. herdr refuses the prompt and shows the dialog, as before.
 - No Bellwether session of the child holds a connection to this daemon.
 - The session doesn't take the message within 5 seconds.
@@ -141,7 +141,7 @@ While the child works, Claude Code can still ask either of these, and Bellwether
 | `Allow this read outside the working directories?` | `No, and ask again next time` | The read is beyond what the launch gave the child. The other No would save a block into the operator's settings, and both Yes answers grant the read. |
 | A shell command under `Dangerous rm operation not ruled out` | `No, and tell Claude what to do differently` | Claude Code's parser could not rule out a dangerous rm. Only a person approves such a command, never Bellwether. |
 
-The answer goes on the child's record under `decisions`. Each entry keeps the question as the screen asked it and the option chosen. It also keeps the keys sent, in order, with the time and the part of Bellwether that answered. No `blocked` event goes out. The parent's next event about the child names the answer under its first line, as in `Bellwether answered the dangerous-rm question for builder (w1:p3), "Do you want to proceed?", with "No, and tell Claude what to do differently" (keys Down, Enter): it declined the shell command, which Claude Code could not prove safe and asks a person to approve.` A spawn's reply lists any answer it gave during the start. Claude Code tells the child that the answer was No, and the parent can suggest another way with `agent_send`.
+The answer goes on the child's record under `decisions`. Each entry keeps the question as the screen asked it and the option chosen. It also keeps the keys sent, in order, with the time and the part of Bellwether that answered. No `blocked` event goes out. The parent's next event about the child names the answer under its first line, as in `Bellwether answered the dangerous-rm question for builder (w1:p3), "Do you want to proceed?", with "No, and tell Claude what to do differently" (keys 2): it declined the shell command, which Claude Code could not prove safe and asks a person to approve.` A spawn's reply lists any answer it gave during the start. Claude Code tells the child that the answer was No, and the parent can suggest another way with `agent_send`.
 
 A startup question that Bellwether doesn't know fails the spawn within a second. The error quotes the question, and Bellwether closes the tab and removes the record, as for any failed spawn. When a question that matches no entry comes while the child works, the parent gets a `blocked` event, as before.
 

@@ -14,7 +14,7 @@ import { mcpConfigPath, promptPath } from '../../src/core/paths.ts';
 import { emptyParent, readParent, saveParent } from '../../src/core/registry.ts';
 import { spawnChild } from '../../src/core/spawn.ts';
 import type { ParentRecord } from '../../src/core/types.ts';
-import { startFakeHerdr, type FakeHerdr, type FakeHerdrOptions } from '../fixtures/fake-herdr.ts';
+import { startFakeHerdr, type FakeHerdr, type FakeHerdrOptions, harnessStarts, harnessStart } from '../fixtures/fake-herdr.ts';
 import { FAKE_KIND } from '../fixtures/fake-harness.ts';
 
 const brief = 'Publish the package.\n\nRun the gates first, then tag the release.\nTell the parent when it is done.';
@@ -48,9 +48,9 @@ async function room(options: FakeHerdrOptions = {}): Promise<Room> {
 }
 
 function startArgs(herdr: FakeHerdr): string[] {
-  const start = herdr.requests.find((request) => request.method === 'agent.start');
+  const start = harnessStarts(herdr)[0];
   assert.ok(start, 'herdr was never asked to start the agent');
-  return start.params['args'] as string[];
+  return start.args as string[];
 }
 
 test('a multi-line prompt reaches Claude Code as an @ mention of a private file', async () => {
@@ -59,7 +59,7 @@ test('a multi-line prompt reaches Claude Code as an @ mention of a private file'
   let herdr: FakeHerdr | undefined;
   const space = await room({
     respond: (request) => {
-      if (request.method === 'agent.start') setTimeout(() => herdr?.send({ event: 'pane_agent_status_changed', data: { pane_id: 'w1:p1', agent_status: 'idle' } }), 20);
+      if (harnessStart(request) !== undefined) setTimeout(() => herdr?.send({ event: 'pane_agent_status_changed', data: { pane_id: 'w1:p1', agent_status: 'idle' } }), 20);
       return undefined;
     },
   });
@@ -93,7 +93,7 @@ test('Pi gets the same @ mention, and a harness that attaches no file a one-line
 
 test('a spawn herdr refuses leaves no record, no tab and no brief behind', async () => {
   const space = await room({
-    respond: (request) => (request.method === 'agent.start' ? { error: { code: 'agent_start_failed', message: 'no such agent kind' } } : undefined),
+    respond: (request) => (harnessStart(request) !== undefined ? { error: { code: 'agent_start_failed', message: 'no such agent kind' } } : undefined),
   });
   try {
     await assert.rejects(spawnChild(space.client, space.parent, { kind: 'claude', name: 'ghost', prompt: brief }), /no such agent kind/);
@@ -123,7 +123,7 @@ function idleOnStart(): { options: FakeHerdrOptions; bind: (herdr: FakeHerdr) =>
   return {
     options: {
       respond: (request) => {
-        if (request.method === 'agent.start') setTimeout(() => herdr?.send({ event: 'pane_agent_status_changed', data: { pane_id: 'w1:p1', agent_status: 'idle' } }), 20);
+        if (harnessStart(request) !== undefined) setTimeout(() => herdr?.send({ event: 'pane_agent_status_changed', data: { pane_id: 'w1:p1', agent_status: 'idle' } }), 20);
         return undefined;
       },
     },
@@ -212,7 +212,7 @@ test('a Pi spawn gets no MCP config, because its extension is its adapter', asyn
 
 test('a failed Claude Code spawn removes its MCP config with its brief', async () => {
   const space = await room({
-    respond: (request) => (request.method === 'agent.start' ? { error: { code: 'agent_start_failed', message: 'no such agent kind' } } : undefined),
+    respond: (request) => (harnessStart(request) !== undefined ? { error: { code: 'agent_start_failed', message: 'no such agent kind' } } : undefined),
   });
   try {
     await assert.rejects(spawnChild(space.client, space.parent, { kind: 'claude', name: 'ghost', prompt: brief }), /no such agent kind/);

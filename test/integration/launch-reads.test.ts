@@ -19,7 +19,7 @@ import { emptyParent, readParent, saveParent, updateChild } from '../../src/core
 import { spawnChild } from '../../src/core/spawn.ts';
 import { Watcher } from '../../src/core/watcher.ts';
 import type { OutboxEntry, ParentRecord } from '../../src/core/types.ts';
-import { startFakeHerdr, type FakeHerdr, type RecordedRequest } from '../fixtures/fake-herdr.ts';
+import { harnessStart, startFakeHerdr, type FakeHerdr, type RecordedRequest } from '../fixtures/fake-herdr.ts';
 import { CHANNEL_ACCEPT_SELECTED, CLAUDE_PROMPT, DANGEROUS_RM_QUESTION, OUTSIDE_READ_QUESTION, TRUST_NO_SELECTED, TRUST_YES_SELECTED, UNKNOWN_STARTUP_QUESTION } from '../fixtures/claude-screens.ts';
 
 const PANE = 'w1:p1';
@@ -117,8 +117,9 @@ class ClaudePane {
     if (request.method === 'agent.get') return { result: { type: 'agent_info', agent: this.agentInfo() } };
     if (request.method === 'session.snapshot') return { result: { type: 'session_snapshot', snapshot: { panes: [], agents: [this.agentInfo()] } } };
     if (request.method === 'pane.list') return { result: { type: 'pane_list', panes: [{ pane_id: PANE }] } };
-    if (request.method === 'agent.start') {
-      this.launchArgs = request.params['args'] as string[];
+    const start = harnessStart(request);
+    if (start) {
+      this.launchArgs = start.args;
       setTimeout(() => this.setStatus(this.screen === 'prompt' ? 'idle' : 'blocked'), 5);
       return undefined;
     }
@@ -138,7 +139,7 @@ class ClaudePane {
     this.keys.push({ key, on: this.screen === 'choice' ? (this.choice?.id ?? '') : this.screen });
     if (this.screen === 'trust-no' && key === 'Down') this.screen = 'trust-yes';
     else if (this.screen === 'trust-yes' && key === 'Enter') this.screen = 'channel';
-    else if (this.screen === 'channel' && key === 'Enter') {
+    else if (this.screen === 'channel' && (key === 'Enter' || key === '1')) {
       // Claude Code attaches the brief the launch mentions, and reads it now.
       const brief = this.launchArgs.find((arg) => arg.startsWith('@'))?.slice(1);
       if (brief && this.asksToRead(brief)) this.ask('outside-read');
@@ -148,7 +149,9 @@ class ClaudePane {
       const count = options(this.choice).length;
       if (key === 'Down') this.choice.selected = Math.min(count - 1, this.choice.selected + 1);
       else if (key === 'Up') this.choice.selected = Math.max(0, this.choice.selected - 1);
-      else if (key === 'Enter') {
+      else if (key === 'Enter' || /^\d$/.test(key)) {
+        // A digit selects its option and confirms it, as Enter confirms the selected one.
+        if (key !== 'Enter') this.choice.selected = Number(key) - 1;
         this.chosen.push({ id: this.choice.id, label: options(this.choice)[this.choice.selected] ?? '' });
         this.choice = undefined;
         this.screen = 'prompt';
@@ -246,7 +249,7 @@ test('a child whose brief lives outside its working directory never sees the rea
     // The child went from the channel question straight to its prompt.
     assert.equal(pane.screen, 'prompt');
     assert.ok(!pane.seen.has('outside-read'), 'the read question never came');
-    assert.deepEqual(pane.keys.map(({ key }) => key), ['Down', 'Enter', 'Enter']);
+    assert.deepEqual(pane.keys.map(({ key }) => key), ['Down', 'Enter', '1']);
     // Without that entry, the same launch would have asked.
     pane.launchArgs = pane.launchArgs.filter((arg) => !arg.startsWith('--settings='));
     assert.equal(pane.asksToRead(brief), true);
@@ -297,8 +300,8 @@ test('a read question Bellwether knows is answered No, recorded on the child, an
     pane.setStatus('blocked');
     await until(() => r.published.some((entry) => entry.event === 'idle'));
 
-    // Down twice to "No, and ask again next time", the answer that saves nothing, then Enter.
-    assert.deepEqual(pane.keys.map(({ key }) => key), ['Down', 'Down', 'Enter']);
+    // The digit of "No, and ask again next time", the answer that saves nothing.
+    assert.deepEqual(pane.keys.map(({ key }) => key), ['3']);
     assert.deepEqual(pane.chosen, [{ id: 'outside-read', label: 'No, and ask again next time' }]);
     const record = readParent(r.parent.id)?.children.find((entry) => entry.id === child.id);
     assert.equal(record?.decisions?.length, 1);
@@ -306,14 +309,14 @@ test('a read question Bellwether knows is answered No, recorded on the child, an
     assert.equal(decision?.dialog, 'outside-read');
     assert.equal(decision?.question, 'Allow this read outside the working directories?');
     assert.equal(decision?.answer, 'No, and ask again next time');
-    assert.deepEqual(decision?.keys, ['Down', 'Down', 'Enter']);
+    assert.deepEqual(decision?.keys, ['3']);
     assert.equal(decision?.by, 'watcher');
     assert.match(decision?.decided ?? '', /declined the read/);
 
     // No blocked event: the parent hears what was decided, with the idle that followed.
     assert.deepEqual(r.published.filter((entry) => entry.event === 'blocked'), []);
     const idle = r.published.find((entry) => entry.event === 'idle');
-    assert.match(idle?.text ?? '', /Bellwether answered the question about a read outside the working directories for kid \(w1:p1\), "Allow this read outside the working directories\?", with "No, and ask again next time" \(keys Down, Down, Enter\)/);
+    assert.match(idle?.text ?? '', /Bellwether answered the question about a read outside the working directories for kid \(w1:p1\), "Allow this read outside the working directories\?", with "No, and ask again next time" \(keys 3\)/);
     assert.equal(readParent(r.parent.id)?.children.find((entry) => entry.id === child.id)?.decisions?.[0]?.told, true);
   } finally {
     await r.stop();

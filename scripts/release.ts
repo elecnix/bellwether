@@ -409,6 +409,19 @@ class Release {
     return tree;
   }
 
+  /**
+   * Fetch the Vale style packs that .vale.ini pins into a fresh worktree, as
+   * `npm ci` fetches its packages. The prose gate in the test tier needs them,
+   * and a worktree that never ran `vale sync` has none (issue #134).
+   */
+  private async syncStyles(tree: string): Promise<void> {
+    const result = await this.deps.run('vale', ['sync'], { cwd: tree });
+    if (result.code === 0) return;
+    if (result.code === 127) throw new ReleaseError(`vale did not run in ${tree} (${(result.stderr || result.stdout).trim()}). Install Vale 3.20.0, the version CI pins, then run the release again.`);
+    const detail = (result.stderr || result.stdout).trim();
+    throw new ReleaseError(`\`vale sync\` failed in ${tree}, exit ${result.code}${detail ? `:\n${detail}` : ''}\nThe prose gate needs the style packs it fetches. Run \`cd ${tree} && vale sync\` until it passes, then run the release again.`);
+  }
+
   private async refuseDirty(dir: string): Promise<void> {
     const status = await this.must('git', ['status', '--porcelain', '--untracked-files=no'], { cwd: dir });
     if (status.trim()) throw new ReleaseError(`${dir} has uncommitted changes:\n${status.trimEnd()}\nCommit or discard them, then run again.`);
@@ -433,7 +446,9 @@ class Release {
     await this.refuseDirty(this.deps.cwd);
     await this.refuseRedMain(top);
     const tree = await this.worktree(top);
-    for (const args of [['ci'], ['run', 'typecheck'], ['test'], ['run', 'doctor']]) {
+    await this.must('npm', ['ci'], { cwd: tree, inherit: true });
+    await this.syncStyles(tree);
+    for (const args of [['run', 'typecheck'], ['test'], ['run', 'doctor']]) {
       await this.must('npm', args, { cwd: tree, inherit: true });
     }
     const manifest = JSON.parse(await readFile(path.join(tree, 'package.json'), 'utf8')) as { version?: string };

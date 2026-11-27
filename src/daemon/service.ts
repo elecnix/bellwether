@@ -3,6 +3,7 @@
 // adapters used to run in-process; the daemon now runs it once for every
 // client of the session, and tests pass a fake in its place.
 import { HerdrClient } from '../core/herdr-client.ts';
+import { machineClients } from '../core/machine.ts';
 import { emptyParent, parentId, readParent, saveParent } from '../core/registry.ts';
 import { Watcher } from '../core/watcher.ts';
 import { runBellwetherTool, type ToolContext } from '../integrations/tools.ts';
@@ -32,8 +33,11 @@ export function createHerdrService(parent: ParentHello, id: string): ParentServi
   if (!existing) saveParent(record);
   const client = new HerdrClient({ socketPath: parent.herdrSocket });
   let handler: ((entries: OutboxEntry[]) => void) | undefined;
-  const watcher = new Watcher({ client, parentId: record.id, onEntries: (entries) => handler?.(entries) });
-  const context: ToolContext = { client, parentId: record.id, watcher };
+  // One client per herdr host, shared by the tools and the watcher, so a
+  // machine's bridge is dialled per request and its profile looked up once.
+  const clientFor = machineClients(client);
+  const watcher = new Watcher({ client, clientFor, parentId: record.id, onEntries: (entries) => handler?.(entries) });
+  const context: ToolContext = { client, clientFor, parentId: record.id, watcher };
   const paneWatches = new Set<{ close: () => void }>();
   watcher.start();
   return {

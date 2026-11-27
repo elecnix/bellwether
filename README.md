@@ -35,14 +35,20 @@ The registry keeps each child's harness session, `session.kind` and `session.val
 
 | Tool | Who gets it | What it does |
 | -- | -- | -- |
-| `agent_spawn` | any session | starts a child in a new tab |
+| `agent_spawn` | any session | starts a child in a new tab, on this machine or on a saved herdr machine named by `machine` |
+| `agent_resume` | any session | reopens an exited child's harness session in a new tab on the machine it ran on, under the same child id, and refuses a session that still runs |
+| `agent_adopt` | any session | makes a running agent this session did not start into its child, such as one `herdr-spawn.sh` started, and refuses a pane another session watches |
 | `agent_list` | any session | lists this session's children with status, age and unread events |
 | `agent_read` | any session | returns a child's last assistant message, or its screen when you pass `lines` |
 | `agent_send` | any session | prompts a child, or sends keys when herdr refuses a blocked one |
 | `agent_stop` | any session | closes a child's tab, refusing a working child unless you pass `force` |
 | `parent_report` | a child whose environment carries `BELLWETHER_PARENT` | sends `done`, `needs-input` or `progress` to the parent |
 
-Bellwether sends input only to panes it started for this parent.
+Bellwether sends input only to panes that belong to this parent: the ones it started, resumed or adopted.
+
+A child on another machine runs on that machine's herdr. Bellwether reaches it the way `herdr --machine` does, through `herdr remote-api-bridge` over SSH to the saved profile's target, so the profile must exist in `herdr machine list` and SSH must log in without a prompt. That child's `parent_report` writes to its own machine's disk, which the parent never reads, so Bellwether follows it through herdr status alone.
+
+Each child record keeps its `host` after the child exits, so a resume goes back to the same machine. A registry file written before version 2 gains `host: local` for each child the next time Bellwether writes it.
 
 ## Install
 

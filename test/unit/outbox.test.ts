@@ -112,7 +112,7 @@ test('dropping a child removes its entries and keeps the others', () => {
 
 function child(overrides: Partial<ChildRecord> = {}): ChildRecord {
   const at = new Date(0).toISOString();
-  return { id: 'c1', name: 'c1', kind: 'claude', harness: 'claude-code', paneId: 'w1:p1', startedAt: at, lastStatus: 'blocked', statusChangedAt: at, lastBusyAt: at, depth: 1, ...overrides };
+  return { id: 'c1', name: 'c1', kind: 'claude', harness: 'claude-code', paneId: 'w1:p1', host: 'local', startedAt: at, lastStatus: 'blocked', statusChangedAt: at, lastBusyAt: at, depth: 1, ...overrides };
 }
 
 function queuedBlocked(stateChangeSeq?: number): Omit<OutboxEntry, 'receipt' | 'read'> {

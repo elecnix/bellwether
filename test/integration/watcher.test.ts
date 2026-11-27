@@ -25,7 +25,7 @@ async function until<T>(what: string, check: () => T | undefined, timeoutMs = 5_
 
 function child(id: string, name: string, paneId: string): ChildRecord {
   const long = new Date(Date.now() - 60_000).toISOString();
-  return { id, name, kind: 'claude', harness: 'claude-code', paneId, startedAt: long, lastStatus: 'working', statusChangedAt: long, lastBusyAt: long, depth: 1 };
+  return { id, name, kind: 'claude', harness: 'claude-code', paneId, host: 'local', startedAt: long, lastStatus: 'working', statusChangedAt: long, lastBusyAt: long, depth: 1 };
 }
 
 test('an exit names the child by its pane, and removes its brief', async () => {

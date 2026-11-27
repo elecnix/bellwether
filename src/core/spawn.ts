@@ -3,6 +3,7 @@
 // to start the harness in the tab's root pane, then watch the new pane.
 import os from 'node:os';
 import { HerdrApiError, type HerdrClient } from './herdr-client.ts';
+import { LOCAL_HOST } from './machine.ts';
 import { newChildId } from './outbox.ts';
 import { briefArgument, removeBrief, writeBrief } from './brief.ts';
 import { removeChild, updateChild, upsertChild } from './registry.ts';
@@ -40,6 +41,11 @@ export interface SpawnOptions {
   startupTimeoutMs?: number;
   /** How long a screen takes to redraw after a key. Tests shorten it. */
   redrawMs?: number;
+  /**
+   * The herdr host to start the child on: `local`, or a saved herdr machine.
+   * The caller passes the client for that host.
+   */
+  host?: string;
 }
 
 export interface SpawnResult {
@@ -50,7 +56,7 @@ export interface SpawnResult {
 }
 
 /** How long the watcher holds a new Claude Code child's events. Longer than the dialog wait. */
-const STARTUP_HOLD_MS = 45_000;
+export const STARTUP_HOLD_MS = 45_000;
 
 /** How long the spawn waits for a Claude Code child to get past its dialogs. */
 export const STARTUP_TIMEOUT_MS = 30_000;
@@ -89,6 +95,8 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
     kind: options.kind,
     harness: harnessOf(options.kind),
     paneId: '',
+    host: options.host ?? LOCAL_HOST,
+    origin: 'spawn',
     cwd: options.cwd,
     startedAt: now,
     lastStatus: 'unknown',
@@ -106,20 +114,16 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
     const briefFile = options.prompt ? writeBrief(child.id, options.prompt) : undefined;
 
     // 2. The tab carries the environment the child needs to find its parent.
-    const env: Record<string, string> = {
-      BELLWETHER_PARENT: parent.id,
-      BELLWETHER_CHILD: child.id,
-      BELLWETHER_CHILD_NAME: child.name,
-      BELLWETHER_DEPTH: String(depth),
-      BELLWETHER_HARNESS: child.harness,
-    };
-    const tab = await client.tabCreate({ workspaceId: options.workspaceId ?? parent.workspaceId, cwd: options.cwd, label: child.name, env, focus: options.focus ?? false }, signal);
+    const env = childEnv(parent, child);
+    // The parent's workspace id means nothing to another machine's herdr.
+    const workspaceId = options.workspaceId ?? (child.host === LOCAL_HOST ? parent.workspaceId : undefined);
+    const tab = await client.tabCreate({ workspaceId, cwd: options.cwd, label: child.name, env, focus: options.focus ?? false }, signal);
     tabId = tab.tabId ?? tab.paneId;
     if (!tab.paneId) throw new Error('herdr created no pane for the child tab');
 
     child.tabId = tab.tabId;
     child.paneId = tab.paneId;
-    child.workspaceId = options.workspaceId ?? parent.workspaceId;
+    child.workspaceId = workspaceId;
     // Claude Code opens on dialogs the spawn answers, so the watcher holds the
     // child's events until then, and the status watch opens before the start.
     if (options.kind === 'claude') {
@@ -166,7 +170,8 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
     const session = sessionFrom(pane['agent_session']);
     if (session) {
       child.session = session;
-      child.transcript = resolveTranscript(child.harness, session.value, child.cwd);
+      // A remote child's transcript sits on its own machine's disk.
+      if (child.host === LOCAL_HOST) child.transcript = resolveTranscript(child.harness, session.value, child.cwd);
     }
     const status = pane['agent_status'];
     if (typeof status === 'string' && status) child.lastStatus = status as ChildRecord['lastStatus'];
@@ -196,6 +201,17 @@ async function abandon(client: HerdrClient, parentId: string, childId: string, t
   hooks.forget?.(childId);
   removeBrief(childId);
   if (tabId) await client.tabClose(tabId).catch(() => {});
+}
+
+/** The environment a child's tab carries, so the child can find its parent. */
+export function childEnv(parent: ParentRecord, child: ChildRecord): Record<string, string> {
+  return {
+    BELLWETHER_PARENT: parent.id,
+    BELLWETHER_CHILD: child.id,
+    BELLWETHER_CHILD_NAME: child.name,
+    BELLWETHER_DEPTH: String(child.depth),
+    BELLWETHER_HARNESS: child.harness,
+  };
 }
 
 /** herdr refuses a start until the new tab's shell reaches its prompt. */

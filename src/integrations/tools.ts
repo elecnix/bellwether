@@ -1,4 +1,4 @@
-// The six Bellwether tools, in one list, so the Pi extension and the Claude
+// The Bellwether tools, in one list, so the Pi extension and the Claude
 // MCP channel server register exactly the same names and schemas.
 import os from 'node:os';
 import fs from 'node:fs';
@@ -8,14 +8,27 @@ import { AGENT_KINDS, DEFAULT_MAX_DEPTH, spawnChild, type SpawnOptions } from '.
 import { removeBrief } from '../core/brief.ts';
 import { reportToParent } from '../core/report.ts';
 import { childById, readParent, updateChild } from '../core/registry.ts';
+import { adoptPane } from '../core/adopt.ts';
+import { LOCAL_HOST, hostOf, type ClientFor } from '../core/machine.ts';
+import { findResumable, resumeChild } from '../core/resume.ts';
 import type { Watcher } from '../core/watcher.ts';
 import type { ChildRecord, ReportStatus } from '../core/types.ts';
 
 export interface ToolContext {
+  /** The parent's own herdr. */
   client: HerdrClient;
+  /** The herdr for a host: `local`, or a saved herdr machine. */
+  clientFor?: ClientFor;
   parentId: string;
   watcher: Watcher;
 }
+
+function clientFor(ctx: ToolContext, host: string): Promise<HerdrClient> {
+  if (ctx.clientFor) return ctx.clientFor(host);
+  return host === LOCAL_HOST ? Promise.resolve(ctx.client) : Promise.reject(new Error(`This session cannot reach herdr machine ${host}.`));
+}
+
+const MACHINE_DESCRIPTION = 'A saved herdr machine, by label or id as `herdr machine list` shows it. Omit it for this machine. A child on another machine cannot call parent_report, because its report lands on that machine\'s disk, so Bellwether follows it through herdr status alone.';
 
 export interface ToolDefinition {
   name: string;
@@ -25,7 +38,7 @@ export interface ToolDefinition {
 
 const optionalString = (value: unknown): string | undefined => (typeof value === 'string' && value.trim() ? value.trim() : undefined);
 
-/** The five tools any session gets. */
+/** The tools any session gets. */
 export const parentTools: ToolDefinition[] = [
   {
     name: 'agent_spawn',
@@ -42,8 +55,40 @@ export const parentTools: ToolDefinition[] = [
         focus: { type: 'boolean', description: 'Move your view to the new tab. Defaults to false, so the child does not steal focus.' },
         stuck_minutes: { type: 'number', description: 'How long the child may be quiet before it counts as stuck. Defaults to 10.' },
         max_depth: { type: 'number', description: 'How deep children may spawn children. Defaults to 2.' },
+        machine: { type: 'string', description: MACHINE_DESCRIPTION },
       },
       required: ['kind', 'name'],
+    },
+  },
+  {
+    name: 'agent_resume',
+    description: 'Bring back a child that exited, in a new tab on the machine it ran on, with its harness reopening the same session. The child keeps its id, so its history and unread events continue. Refuses a session that is still alive. Works for claude and pi children.',
+    schema: {
+      type: 'object',
+      properties: {
+        child: { type: 'string', description: 'The child\'s name, its id, its last pane id, or its session id.' },
+        session: { type: 'string', description: 'A session id or transcript path no child of this session ran, to resume it as a new child. Needs kind, and takes name, cwd and machine.' },
+        kind: { type: 'string', enum: ['claude', 'pi'], description: 'The harness of a session given with session.' },
+        name: { type: 'string', description: 'The handle for a session given with session.' },
+        cwd: { type: 'string', description: 'The directory to resume a session given with session in. Claude Code finds a session by its directory.' },
+        machine: { type: 'string', description: 'The herdr machine for a session given with session. A known child always goes back to its own machine.' },
+        prompt: { type: 'string', description: 'A message for the resumed child.' },
+        focus: { type: 'boolean', description: 'Move your view to the new tab. Defaults to false.' },
+      },
+    },
+  },
+  {
+    name: 'agent_adopt',
+    description: 'Make a running agent that this session did not start into its child, such as one herdr-spawn.sh or a person started. Bellwether then watches it like a spawned child. Refuses a pane another session already watches, and a pane with no agent herdr recognizes. An adopted child has no BELLWETHER_PARENT, so it cannot call parent_report.',
+    schema: {
+      type: 'object',
+      properties: {
+        target: { type: 'string', description: 'The pane id, or the herdr name of the live agent.' },
+        name: { type: 'string', description: 'The handle to use for the child. Defaults to its herdr name.' },
+        machine: { type: 'string', description: MACHINE_DESCRIPTION },
+        stuck_minutes: { type: 'number', description: 'How long the child may be quiet before it counts as stuck. Defaults to 10.' },
+      },
+      required: ['target'],
     },
   },
   {
@@ -118,7 +163,7 @@ function describeChild(child: ChildRecord, watcher: Watcher): string {
   const unread = watcher.outboxEntries().filter((entry) => !entry.read && entry.childId === child.id).length;
   const age = Math.max(0, Math.round((Date.now() - Date.parse(child.startedAt)) / 1000));
   const state = child.exitedAt ? `exited${child.exitCode === undefined ? '' : ` (${child.exitCode})`}` : child.lastStatus;
-  return `${child.name}\t${child.kind}\t${state}\t${age}s\t${child.paneId}\tunread ${unread}\t${child.cwd ?? ''}`;
+  return `${child.name}\t${child.kind}\t${state}\t${age}s\t${hostOf(child)}\t${child.paneId}\tunread ${unread}\t${child.cwd ?? ''}`;
 }
 
 export async function runBellwetherTool(ctx: ToolContext, name: string, args: Record<string, unknown>): Promise<string> {
@@ -145,16 +190,58 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
       focus: args['focus'] === true,
       stuckMinutes: typeof args['stuck_minutes'] === 'number' ? (args['stuck_minutes'] as number) : undefined,
       maxDepth: typeof args['max_depth'] === 'number' ? (args['max_depth'] as number) : DEFAULT_MAX_DEPTH,
+      host: optionalString(args['machine']) ?? LOCAL_HOST,
     };
     if (!options.name) throw new Error('agent_spawn needs a name');
-    const { child, link } = await spawnChild(ctx.client, record, options, undefined, { forget: (childId) => ctx.watcher.forget(childId) });
-    const lines = [`${child.name} started as a ${child.kind} agent in pane ${child.paneId}, tab ${child.tabId ?? child.paneId}.`, `Bellwether watches it, and your next turn starts when it changes state.`, `herdr link: ${link}`];
+    // Resolve the machine before anything is written, so a typo leaves no record.
+    const client = await clientFor(ctx, options.host ?? LOCAL_HOST);
+    const { child, link } = await spawnChild(client, record, options, undefined, { forget: (childId) => ctx.watcher.forget(childId) });
+    const where = child.host === LOCAL_HOST ? '' : ` on machine ${child.host}`;
+    const lines = [`${child.name} started as a ${child.kind} agent${where} in pane ${child.paneId}, tab ${child.tabId ?? child.paneId}.`, `Bellwether watches it, and your next turn starts when it changes state.`, `herdr link: ${link}`];
     return lines.join('\n');
+  }
+
+  if (name === 'agent_resume') {
+    const target = optionalString(args['child']);
+    const session = optionalString(args['session']);
+    if (!target && !session) throw new Error('agent_resume needs a child or a session');
+    const known = target ? findResumable(record, target) : session ? findResumable(record, session) : undefined;
+    if (target && !known) throw new Error(`No child of this session matches "${target}". Call agent_list to see them, or pass session with kind to resume a session it never ran.`);
+    const host = known ? hostOf(known) : optionalString(args['machine']) ?? LOCAL_HOST;
+    const client = await clientFor(ctx, host);
+    const { child, session: resumed, link } = await resumeChild(
+      client,
+      record,
+      {
+        child: known,
+        session: session ? { value: session, kind: session.includes('/') ? 'path' : 'id' } : undefined,
+        kind: optionalString(args['kind']),
+        name: optionalString(args['name']),
+        cwd: optionalString(args['cwd']),
+        host,
+      },
+      { prompt: optionalString(args['prompt']), focus: args['focus'] === true },
+    );
+    ctx.watcher.reset(child.id);
+    const where = host === LOCAL_HOST ? '' : ` on machine ${host}`;
+    const lines = [`${child.name} resumed session ${resumed.value}${where} in pane ${child.paneId}, as the same child ${child.id}.`, 'Bellwether watches it again, and its earlier events and receipts carry on.', `herdr link: ${link}`];
+    return lines.join('\n');
+  }
+
+  if (name === 'agent_adopt') {
+    const target = optionalString(args['target']);
+    if (!target) throw new Error('agent_adopt needs a target: a pane id or a live agent name');
+    const host = optionalString(args['machine']) ?? LOCAL_HOST;
+    const client = await clientFor(ctx, host);
+    const { child, link, already } = await adoptPane(client, record, { target, host, name: optionalString(args['name']), stuckMinutes: typeof args['stuck_minutes'] === 'number' ? (args['stuck_minutes'] as number) : undefined });
+    if (already) return `${child.name} in pane ${child.paneId} is already a child of this session.`;
+    const where = host === LOCAL_HOST ? '' : ` on machine ${host}`;
+    return [`Adopted ${child.name}, a ${child.kind} agent${where} in pane ${child.paneId}. Bellwether watches it from now on.`, 'It was not started by Bellwether, so it cannot call parent_report; its status changes still start your turns.', `herdr link: ${link}`].join('\n');
   }
 
   if (name === 'agent_list') {
     if (!record.children.length) return 'No children yet. Start one with agent_spawn.';
-    const header = 'name\tkind\tstate\tage\tpane\tunread\tcwd';
+    const header = 'name\tkind\tstate\tage\thost\tpane\tunread\tcwd';
     return [header, ...record.children.map((child) => describeChild(child, ctx.watcher))].join('\n');
   }
 
@@ -162,10 +249,12 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
   if (!target) throw new Error(`${name} needs a child`);
   const child = resolve(record, target);
   if (!child) throw new Error(`No child of this session matches "${target}". Call agent_list to see them.`);
+  // Pane ids are scoped to one herdr server, so every call goes to the child's host.
+  const herdr = await clientFor(ctx, hostOf(child));
 
   if (name === 'agent_read') {
     const lines = typeof args['lines'] === 'number' ? (args['lines'] as number) : undefined;
-    if (lines) return (await ctx.client.paneRead({ paneId: child.paneId, source: 'recent_unwrapped', lines })).trim();
+    if (lines) return (await herdr.paneRead({ paneId: child.paneId, source: 'recent_unwrapped', lines })).trim();
     if (child.transcript) {
       try {
         const content = fs.readFileSync(child.transcript, 'utf8');
@@ -193,23 +282,23 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
         // Fall through to the screen.
       }
     }
-    return (await ctx.client.paneRead({ paneId: child.paneId, source: 'recent_unwrapped', lines: 40 })).trim();
+    return (await herdr.paneRead({ paneId: child.paneId, source: 'recent_unwrapped', lines: 40 })).trim();
   }
 
   if (name === 'agent_send') {
     const text = optionalString(args['text']);
     const keys = Array.isArray(args['keys']) ? (args['keys'] as string[]) : undefined;
     if (keys?.length) {
-      await ctx.client.sendKeys(child.paneId, keys);
+      await herdr.sendKeys(child.paneId, keys);
       return `Sent ${keys.join(' ')} to ${child.name}.`;
     }
     if (!text) throw new Error('agent_send needs text or keys');
     try {
-      await ctx.client.agentPrompt(child.paneId, text);
+      await herdr.agentPrompt(child.paneId, text);
       return `Prompted ${child.name}.`;
     } catch (error) {
       if (error instanceof HerdrApiError && child.lastStatus === 'blocked') {
-        const dialog = await ctx.client.paneRead({ paneId: child.paneId, source: 'detection', lines: 30 }).catch(() => '');
+        const dialog = await herdr.paneRead({ paneId: child.paneId, source: 'detection', lines: 30 }).catch(() => '');
         return `herdr refused the prompt because ${child.name} is blocked. The dialog:\n${dialog.trim()}\n\nReply with agent_send keys, for example ["enter"] or ["down","enter"].`;
       }
       throw error;
@@ -218,11 +307,11 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
 
   if (name === 'agent_stop') {
     if (!args['force'] && (child.lastStatus === 'working' || child.lastStatus === 'blocked')) {
-      const tail = await ctx.client.paneRead({ paneId: child.paneId, source: 'recent_unwrapped', lines: 20 }).catch(() => '');
+      const tail = await herdr.paneRead({ paneId: child.paneId, source: 'recent_unwrapped', lines: 20 }).catch(() => '');
       return `${child.name} is ${child.lastStatus}, so agent_stop refused to close it. Pass force to close it anyway.\n${tail.trim()}`;
     }
-    if (child.tabId) await ctx.client.tabClose(child.tabId);
-    else await ctx.client.paneClose(child.paneId);
+    if (child.tabId) await herdr.tabClose(child.tabId);
+    else await herdr.paneClose(child.paneId);
     updateChild(ctx.parentId, child.id, (entry) => {
       entry.exitedAt = new Date().toISOString();
     });

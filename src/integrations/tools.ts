@@ -415,8 +415,15 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
       entry.exitedAt = new Date().toISOString();
     });
     removeChildFiles(child.id);
-    // A child on another machine has its brief and config there.
-    if (hostOf(child) !== LOCAL_HOST) await ctx.remote?.cleanup(child).catch(() => {});
+    // A child on another machine has its brief, config and relay record there.
+    if (hostOf(child) !== LOCAL_HOST && ctx.remote) {
+      try {
+        await ctx.remote.cleanup(child);
+      } catch (error) {
+        ctx.log?.(`agent_stop: could not remove ${child.name}'s files on machine ${hostOf(child)}: ${(error as Error).message}`);
+        return `Closed ${child.name}. Its brief, MCP config and relay record on machine ${hostOf(child)} could not be removed, and stay there until \`bellwether relay-cleanup --child ${child.id}\` runs on that machine: ${(error as Error).message}`;
+      }
+    }
     return `Closed ${child.name}.`;
   }
 

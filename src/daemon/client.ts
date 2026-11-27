@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { BELLWETHER_VERSION } from '../core/version.ts';
+import { BELLWETHER_BUILD_ID, BELLWETHER_VERSION } from '../core/version.ts';
 import { DAEMON_PROTOCOL, MAX_DAEMON_FRAME_BYTES, formatRequest, type DaemonReply, type ParentHello, type RelayHostState, type ReportRequest, type SessionsReply } from './protocol.ts';
 import { isAlive, readLock } from './lock.ts';
 import { HANDOVER_TIMEOUT_MS, decideHandOver, type DaemonIdentity } from './handover.ts';
@@ -111,9 +111,14 @@ export class DaemonClient {
     this.spawnAllowed = options.spawn !== false;
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.identity = options.identity ?? { version: BELLWETHER_VERSION, protocol: DAEMON_PROTOCOL };
+    // A test that presents another release's identity presents no build.
+    this.build = options.identity ? undefined : BELLWETHER_BUILD_ID;
   }
 
   private readonly identity: DaemonIdentity;
+  private readonly build: string | undefined;
+  /** The build of the daemon this client spoke to last, when its hello named one. */
+  daemonBuild: string | undefined;
   /** The daemon this client spoke to last, as its hello described it. */
   daemon: DaemonIdentity | undefined;
 
@@ -325,7 +330,7 @@ export class DaemonClient {
 
   private async handshake(): Promise<Hello> {
     const connection = await this.open();
-    const hello = { type: 'hello', protocol: this.identity.protocol, client: this.identity.version ?? 'unknown', parent: this.parent } as const;
+    const hello = { type: 'hello', protocol: this.identity.protocol, client: this.identity.version ?? 'unknown', ...(this.build ? { build: this.build } : {}), parent: this.parent } as const;
     const reply = await this.ask(connection, formatRequest(hello));
     if (reply.type === 'error') {
       connection.socket.destroy();
@@ -342,6 +347,7 @@ export class DaemonClient {
     if (reply.pending.length) for (const handler of this.handlers) handler(reply.pending);
     // A daemon before 0.1.5 sends no version in its hello, and its lock is the only record of it.
     const daemon: DaemonIdentity = { protocol: reply.protocol, ...(reply.version ? { version: reply.version } : versionOf(readLock(this.home))) };
+    this.daemonBuild = reply.build;
     return { parentId: reply.parentId, pid: reply.pid, daemon };
   }
 

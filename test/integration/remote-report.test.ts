@@ -18,6 +18,8 @@ import { relayChildPath, relayOutboxDir, spoolPath } from '../../src/core/paths.
 import { PI_EXTENSION_ENV, piExtensionEntry } from '../../src/core/pi-extension.ts';
 import { emptyParent, readParent, saveParent, upsertChild } from '../../src/core/registry.ts';
 import { RELAY_SCHEMA, listForwards, readRelayRecord, saveForward, saveRelayRecord, type RelayRecord } from '../../src/core/relay-records.ts';
+import { mcpConfigPath } from '../../src/core/paths.ts';
+import { BELLWETHER_BUILD_ID, BELLWETHER_VERSION } from '../../src/core/version.ts';
 import { remoteOps } from '../../src/core/remote.ts';
 import { spawnChild } from '../../src/core/spawn.ts';
 import { claudeProjectDir } from '../../src/core/transcript.ts';
@@ -227,7 +229,11 @@ test('a report written while the connection is down is delivered once on reconne
   childHolds(w, 'c-down');
   const { links: relayLinks } = await parentDaemon(w);
   await until(() => connected(relayLinks), 'the first connection');
-  assert.match(await doctor(w), /ok\s+relay child-box: connected/);
+  const first = await doctor(w);
+  assert.match(first, /ok\s+relay child-box: connected/);
+  // The child's machine names its build in the relay hello, and doctor prints it, not only the version number.
+  assert.equal(relayLinks.state('child-box')?.farBuild, BELLWETHER_BUILD_ID);
+  assert.ok(first.includes(`running ${BELLWETHER_VERSION} build ${BELLWETHER_BUILD_ID}`), first);
 
   w.ssh.plan(Array.from({ length: 10_000 }, () => 'refuse' as const));
   assert.equal(await w.ssh.drop(), 1, 'the one open connection was cut');
@@ -646,7 +652,7 @@ test('a spawn on another machine copies the brief there over ssh, and points the
   await ops.cleanup(child);
   assert.ok(!fs.existsSync(remoteBrief));
   assert.ok(!fs.existsSync(path.join(w.childHome, 'mcp', `${child.id}.json`)));
-  assert.ok(inHome(w.childHome, () => readRelayRecord(child.id)), 'the relay record stays for a report still in flight');
+  assert.equal(inHome(w.childHome, () => readRelayRecord(child.id)), undefined, 'no report waited, so the relay record went too');
 });
 
 test('a spawn on another machine whose brief cannot be copied fails, with no tab and no record', async (t) => {
@@ -679,4 +685,97 @@ test('a spawn that fails after its brief was copied removes the copy on the chil
   assert.ok(childId);
   assert.ok(w.ssh.remoteCalls().some((call) => call.argv[0] === 'relay-cleanup' && call.argv.includes(childId)));
   assert.ok(!fs.existsSync(path.join(w.childHome, 'prompts', `${childId}.md`)), 'the copied brief is gone');
+});
+
+/** A git repository on the child's machine, where a child would start. */
+function childWorktree(w: World): string {
+  const cwd = path.join(w.root, 'child', 'work');
+  fs.mkdirSync(cwd, { recursive: true });
+  execFileSync('git', ['init', '--quiet', cwd]);
+  return cwd;
+}
+
+test("a spawn on another machine writes the brief inside the child's working directory there, where git ignores it", async (t) => {
+  const w = world(t);
+  const cwd = childWorktree(w);
+  const parent = saveParent(emptyParent('claude-code', 'brief-in-cwd', '/work', { workspaceId: 'w1' }));
+  const herdr = await idleHerdr(t);
+  const ops = remoteOps(machines);
+  const brief = 'Do the task.\nThen call parent_report.\n';
+  const { child } = await spawnChild(new HerdrClient({ socketPath: herdr.socketPath }), parent, { kind: 'claude', name: 'in-cwd', host: 'child-box', cwd, prompt: brief, startupTimeoutMs: 2_000, redrawMs: 10 }, undefined, { registerRemote: (entry, text) => ops.register(parent, entry, text) });
+
+  const file = path.join(cwd, '.bellwether', `brief-${child.id}.md`);
+  assert.equal(fs.readFileSync(file, 'utf8'), brief, "the brief is inside the directory the child starts in");
+  assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+  assert.ok(startArgs(herdr).includes(`@${file}`), `the child is pointed at the copy in its working directory: ${startArgs(herdr).join(' ')}`);
+  assert.ok(!fs.existsSync(path.join(w.childHome, 'prompts', `${child.id}.md`)), 'none went to a home-level directory, outside the child\'s working directory');
+  assert.ok(!fs.existsSync(path.join(w.parentHome, 'prompts', `${child.id}.md`)), "none was left on the parent's machine");
+  assert.equal(execFileSync('git', ['-C', cwd, 'status', '--porcelain', '--untracked-files=all'], { encoding: 'utf8' }), '', 'the worktree stays clean');
+  assert.equal(inHome(w.childHome, () => readRelayRecord(child.id))?.brief, file);
+
+  // The child's exit takes the brief and its directory with it.
+  await ops.cleanup(child);
+  assert.ok(!fs.existsSync(path.join(cwd, '.bellwether')));
+});
+
+test("a spawn on another machine whose working directory is missing there fails before a tab opens, and says why", async (t) => {
+  const w = world(t);
+  const parent = saveParent(emptyParent('claude-code', 'brief-no-cwd', '/work', { workspaceId: 'w1' }));
+  const herdr = await idleHerdr(t);
+  const ops = remoteOps(machines);
+  const missing = path.join(w.root, 'child', 'not-there');
+  await assert.rejects(
+    spawnChild(new HerdrClient({ socketPath: herdr.socketPath }), parent, { kind: 'claude', name: 'lost', host: 'child-box', cwd: missing, prompt: 'a task', startupTimeoutMs: 2_000, redrawMs: 10 }, undefined, { registerRemote: (entry, text) => ops.register(parent, entry, text) }),
+    /its brief could not be copied there: .*the working directory .*not-there does not exist on this machine/s,
+  );
+  assert.equal(herdr.requests.filter((request) => request.method === 'tab.create').length, 0);
+  assert.ok(!fs.existsSync(missing), 'the registration did not create the directory');
+});
+
+test("agent_stop of a child on another machine removes its brief, MCP config and relay record there", async (t) => {
+  const w = world(t);
+  const cwd = childWorktree(w);
+  const parent = saveParent(emptyParent('claude-code', 'stopper', '/work', { workspaceId: 'w1' }));
+  const herdr = await idleHerdr(t);
+  const client = new HerdrClient({ socketPath: herdr.socketPath });
+  const ops = remoteOps(machines);
+  const { child } = await spawnChild(client, parent, { kind: 'claude', name: 'to-stop', host: 'child-box', cwd, prompt: 'a task', startupTimeoutMs: 2_000, redrawMs: 10 }, undefined, { registerRemote: (entry, text) => ops.register(parent, entry, text) });
+  const there = {
+    brief: path.join(cwd, '.bellwether', `brief-${child.id}.md`),
+    mcp: inHome(w.childHome, () => mcpConfigPath(child.id)),
+    relay: inHome(w.childHome, () => relayChildPath(child.id)),
+  };
+  for (const file of Object.values(there)) assert.ok(fs.existsSync(file), `the spawn wrote ${file}`);
+
+  const watcher = new Watcher({ client, parentId: parent.id, onEntries: () => {} });
+  const reply = await runBellwetherTool({ client, clientFor: async () => client, parentId: parent.id, watcher, remote: ops }, 'agent_stop', { child: 'to-stop', force: true });
+  assert.equal(reply, 'Closed to-stop.');
+  for (const [what, file] of Object.entries(there)) assert.ok(!fs.existsSync(file), `the stop removed the ${what} file ${file}`);
+});
+
+test('agent_stop says so when it cannot remove the files on the child\'s machine', async (t) => {
+  const w = world(t);
+  const parent = saveParent(emptyParent('claude-code', 'stopper-cut', '/work', { workspaceId: 'w1' }));
+  const herdr = await idleHerdr(t);
+  const client = new HerdrClient({ socketPath: herdr.socketPath });
+  const ops = remoteOps(machines);
+  const { child } = await spawnChild(client, parent, { kind: 'claude', name: 'cut-off', host: 'child-box', startupTimeoutMs: 2_000, redrawMs: 10 }, undefined, { registerRemote: (entry) => ops.register(parent, entry) });
+  w.ssh.plan(['refuse']);
+  const watcher = new Watcher({ client, parentId: parent.id, onEntries: () => {} });
+  const reply = await runBellwetherTool({ client, clientFor: async () => client, parentId: parent.id, watcher, remote: ops }, 'agent_stop', { child: 'cut-off', force: true });
+  assert.match(reply, /^Closed cut-off\. Its brief, MCP config and relay record on machine child-box could not be removed, .*relay-cleanup --child [^ ]+ .*255/s);
+  assert.ok(reply.includes(child.id));
+});
+
+test('a relay record whose reports still wait outlives relay-cleanup, and goes with the last of them', (t) => {
+  const w = world(t, 'child');
+  childHolds(w, 'c-gone');
+  inHome(w.childHome, () => saveForward({ receipt: 'rp-last', childId: 'c-gone', parentId: PARENT_ID, status: 'done', text: 'finished', at: new Date().toISOString() }));
+  const env = { ...process.env, BELLWETHER_HOME: w.childHome, BELLWETHER_DAEMON_SOCKET: path.join(w.childHome, 'daemon.sock') };
+  const cleanup = spawnSync(process.execPath, ['--disable-warning=ExperimentalWarning', CLI, 'relay-cleanup', '--child', 'c-gone'], { env, encoding: 'utf8' });
+  assert.equal(cleanup.status, 0, cleanup.stderr);
+  assert.match(cleanup.stdout, /recordKept/);
+  assert.ok(inHome(w.childHome, () => readRelayRecord('c-gone'))?.retiredAt, 'kept, and marked retired, while its report waits');
+  inHome(w.childHome, () => new RelayOutbox().ack('rp-last'));
+  assert.equal(inHome(w.childHome, () => readRelayRecord('c-gone')), undefined, 'gone with its last report');
 });

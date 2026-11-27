@@ -33,8 +33,8 @@ On a machine you reach by SSH, the upgrade works the same way. When a parent's d
 
 `bellwether doctor` reports, for the machine it runs on:
 
-- the installed version and protocol, and the client protocols a daemon from it serves
-- the running daemon's pid, version and protocol, and whether it is older than the install
+- the installed version and build, with the protocol and the client protocols a daemon from it serves. `npm run build` records its commit and its time in `dist/build.json`, and the sources of a git checkout show their commit with `run from a checkout`.
+- the running daemon's pid, version, build and protocol, and whether it is older than the install. A daemon with the same version as the install but another build gets its own line, because it doesn't hand over on its own: `bellwether drain` replaces it.
 - each socket under the Bellwether home, and whether something answers on it
 - anything a crashed process left behind:
   - a lock whose pid no longer runs

@@ -119,3 +119,92 @@ test('a child whose spawn is answering its dialogs produces no blocked event unt
     fs.rmSync(home, { recursive: true, force: true });
   }
 });
+
+/** A scratch home with a parent that holds one pi child, started a minute ago, that herdr has never seen run. */
+function freshChild(session: string, paneId: string): { home: string; parentId: string; restore: () => void } {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'bellwether-watcher-'));
+  const previous = process.env['BELLWETHER_HOME'];
+  process.env['BELLWETHER_HOME'] = home;
+  const parent = emptyParent('pi', session, home);
+  const long = new Date(Date.now() - 60_000).toISOString();
+  parent.children.push({ id: 'dddd4444', name: 'briefless', kind: 'pi', harness: 'pi', paneId, tabId: 'w1:t4', host: 'local', origin: 'spawn', startedAt: long, lastStatus: 'unknown', statusChangedAt: long, lastBusyAt: long, depth: 1 });
+  saveParent(parent);
+  return {
+    home,
+    parentId: parent.id,
+    restore: () => {
+      if (previous === undefined) delete process.env['BELLWETHER_HOME'];
+      else process.env['BELLWETHER_HOME'] = previous;
+      fs.rmSync(home, { recursive: true, force: true });
+    },
+  };
+}
+
+test('a child whose harness herdr releases before it reported anything is reported once, as never started', async () => {
+  const space = freshChild('watcher-released', 'w1:p4');
+  // The pane outlives the harness: herdr lists it, with its shell.
+  const herdr = await startFakeHerdr({
+    respond: (request) => (request.method === 'pane.list' ? { result: { type: 'pane_list', panes: [{ pane_id: 'w1:p4', tab_id: 'w1:t4', agent_status: 'unknown' }] } } : undefined),
+  });
+  let entries: OutboxEntry[] = [];
+  const watcher = new Watcher({ client: new HerdrClient({ socketPath: herdr.socketPath }), parentId: space.parentId, onEntries: (next) => (entries = next), tickMs: 60_000, screenPollMs: 0, startConfirmMs: 3_600_000 });
+  try {
+    watcher.start();
+    await herdr.waitFor('events.subscribe');
+    // What herdr 0.9.5 sends when `pi @<missing file>` exits after its detection.
+    herdr.send({ event: 'pane_agent_detected', data: { agent: 'pi', final_status: 'idle', pane_id: 'w1:p4', released: true, type: 'pane_agent_detected', workspace_id: 'w1' } });
+    herdr.send({ event: 'pane.agent_status_changed', data: { agent: 'pi', agent_status: 'idle', pane_id: 'w1:p4', workspace_id: 'w1' } });
+    const exited = await until('the exit event', () => entries.find((entry) => entry.event === 'exited'));
+    assert.match(exited.text, /^briefless \(w1:p4\) never started: its pi process ended before it reported anything, so it did not run its task\./);
+    assert.match(exited.text, /Its tab stays open/);
+    // The idle status that follows the release, and the tab closing later, add nothing.
+    herdr.send({ event: 'tab_closed', data: { tab_id: 'w1:t4' } });
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    assert.deepEqual(entries.map((entry) => entry.event), ['exited']);
+  } finally {
+    watcher.stop();
+    await herdr.stop();
+    space.restore();
+  }
+});
+
+test('a child whose harness ended before herdr detected it is reported as never started, and a live one is not', async () => {
+  const space = freshChild('watcher-undetected', 'w1:p4');
+  // herdr keeps the launched agent pending with no harness detected, and the
+  // pane's foreground process group is its shell's, as `pane.process_info` says.
+  let foreground = 7001;
+  const herdr = await startFakeHerdr({
+    respond: (request) => {
+      if (request.method === 'pane.list') return { result: { type: 'pane_list', panes: [{ pane_id: 'w1:p4', tab_id: 'w1:t4', agent_status: 'unknown' }] } };
+      if (request.method === 'agent.get') return { result: { type: 'agent_info', agent: { pane_id: 'w1:p4', name: 'briefless', agent_status: 'unknown', launch_pending: true } } };
+      if (request.method === 'pane.process_info') return { result: { type: 'pane_process_info', process_info: { pane_id: 'w1:p4', shell_pid: 7000, foreground_process_group_id: foreground, foreground_processes: [] } } };
+      return undefined;
+    },
+  });
+  let entries: OutboxEntry[] = [];
+  const watcher = new Watcher({ client: new HerdrClient({ socketPath: herdr.socketPath }), parentId: space.parentId, onEntries: (next) => (entries = next), tickMs: 20, screenPollMs: 0, startConfirmMs: 1_000 });
+  try {
+    // First, a harness still in the foreground: checked once, and left alone.
+    watcher.start();
+    await herdr.waitFor('pane.process_info');
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    assert.deepEqual(entries, []);
+    assert.equal(herdr.requests.filter((request) => request.method === 'pane.process_info').length, 1, 'the check runs once, not on every tick');
+    watcher.stop();
+
+    // Then a new watcher, as after a daemon restart, on a pane whose shell is back in the foreground.
+    foreground = 7000;
+    const again = new Watcher({ client: new HerdrClient({ socketPath: herdr.socketPath }), parentId: space.parentId, onEntries: (next) => (entries = next), tickMs: 20, screenPollMs: 0, startConfirmMs: 1_000 });
+    again.start();
+    try {
+      const exited = await until('the exit event', () => entries.find((entry) => entry.event === 'exited'));
+      assert.match(exited.text, /^briefless \(w1:p4\) never started: its pi process ended before it reported anything/);
+    } finally {
+      again.stop();
+    }
+  } finally {
+    watcher.stop();
+    await herdr.stop();
+    space.restore();
+  }
+});

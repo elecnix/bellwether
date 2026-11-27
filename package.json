@@ -30,7 +30,7 @@
     ]
   },
   "scripts": {
-    "build": "rm -rf dist && tsgo -p tsconfig.build.json && chmod +x dist/cli.js dist/integrations/claude/channel.js",
+    "build": "rm -rf dist && tsgo -p tsconfig.build.json && node --disable-warning=ExperimentalWarning scripts/write-build.ts && chmod +x dist/cli.js dist/integrations/claude/channel.js",
     "prepare": "npm run build",
     "typecheck": "tsgo --noEmit -p .",
     "test": "npm run test:unit && npm run test:integration && npm run test:lab",

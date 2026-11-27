@@ -5,7 +5,7 @@
 // function of what `gatherUpgrade` read, so a test can hand it any machine.
 import fs from 'node:fs';
 import path from 'node:path';
-import { BELLWETHER_VERSION } from '../core/version.ts';
+import { BELLWETHER_BUILD, BELLWETHER_BUILD_ID, BELLWETHER_VERSION, describeBuild } from '../core/version.ts';
 import { daemonSessions, startingMarker } from './client.ts';
 import { compareVersions } from './handover.ts';
 import { isAlive, readLock, type LockRecord } from './lock.ts';
@@ -13,7 +13,7 @@ import { DAEMON_PROTOCOL, MIN_CLIENT_PROTOCOL, type SessionsReply } from './prot
 import { canConnect } from './server.ts';
 
 export interface UpgradeInput {
-  installed: { version: string; protocol: number; minClientProtocol: number };
+  installed: { version: string; protocol: number; minClientProtocol: number; build?: string; buildLine?: string };
   lock?: LockRecord;
   lockAlive: boolean;
   /** Every `*.sock` under the home, and whether something answers on it. */
@@ -56,7 +56,7 @@ export async function gatherUpgrade(home: string, socketPath = path.join(home, '
   }
   for (const name of names) sockets.push({ name, answers: await canConnect(path.join(home, name)) });
   const input: UpgradeInput = {
-    installed: { version: BELLWETHER_VERSION, protocol: DAEMON_PROTOCOL, minClientProtocol: MIN_CLIENT_PROTOCOL },
+    installed: { version: BELLWETHER_VERSION, protocol: DAEMON_PROTOCOL, minClientProtocol: MIN_CLIENT_PROTOCOL, build: BELLWETHER_BUILD_ID, buildLine: describeBuild(BELLWETHER_VERSION, BELLWETHER_BUILD) },
     lockAlive: Boolean(lock && isAlive(lock.pid)),
     sockets,
     daemonSocket: path.relative(home, socketPath),
@@ -85,7 +85,7 @@ export function describeUpgrade(input: UpgradeInput): UpgradeReport {
   const leftovers: string[] = [];
   const olderSessions: string[] = [];
   const pending: string[] = [];
-  lines.push(info(`installed: ${installed.version}, protocol ${installed.protocol}; a daemon from it serves sessions on protocols ${installed.minClientProtocol} to ${installed.protocol}`));
+  lines.push(info(`installed: ${installed.buildLine ?? installed.version}, protocol ${installed.protocol}; a daemon from it serves sessions on protocols ${installed.minClientProtocol} to ${installed.protocol}`));
 
   const sessions = input.sessions && 'sessions' in input.sessions ? input.sessions : undefined;
   const daemonVersion = sessions?.daemon.version ?? input.lock?.version;
@@ -96,9 +96,15 @@ export function describeUpgrade(input: UpgradeInput): UpgradeReport {
   if (!running) {
     lines.push(info('daemon: not running; the next session starts it from that session\'s install'));
   } else {
-    const described = `pid ${input.lock?.pid}, ${daemonVersion ?? 'a release older than 0.1.5'} on protocol ${daemonProtocol ?? 'unknown'}`;
+    const daemonBuild = sessions?.daemon.build;
+    const built = daemonBuild ? ` build ${daemonBuild}` : '';
+    const described = `pid ${input.lock?.pid}, ${daemonVersion ?? 'a release older than 0.1.5'}${built} on protocol ${daemonProtocol ?? 'unknown'}`;
     const order = daemonVersion ? compareVersions(daemonVersion, installed.version) : -1;
-    if (order === 0 && daemonProtocol === installed.protocol) {
+    // One version number covers every build made from it, so the same number can hide different code.
+    const otherBuild = installed.build !== undefined && installed.build !== 'unknown' && daemonBuild !== installed.build;
+    if (order === 0 && daemonProtocol === installed.protocol && otherBuild) {
+      lines.push(info(`daemon: ${described}, the same version as this install but ${daemonBuild ? 'another build' : 'a build that names no commit'}, where this install is build ${installed.build}. A newer version hands over on its own, and the same version does not: run bellwether drain to let the next session start this install's daemon.`));
+    } else if (order === 0 && daemonProtocol === installed.protocol) {
       lines.push(ok(`daemon: ${described}, this install's`));
     } else if (order === undefined || order < 0 || (order === 0 && (daemonProtocol ?? 0) < installed.protocol)) {
       lines.push(info(`daemon: ${described}, older than this install. The next session started from this install hands it over; the sessions on it reconnect and keep working, and none needs a restart.`));
@@ -151,7 +157,7 @@ export function describeUpgrade(input: UpgradeInput): UpgradeReport {
         lines.push(info(`${who}: adapter ${session.client} on protocol ${session.protocol}, older than this install. Its tools run in the daemon's code; only its adapter stays on ${session.client} until the session ends on its own. ${children}${unread}.${oldest}`));
         olderSessions.push(session.parentId);
       } else {
-        lines.push(ok(`${who}: adapter ${session.client} on protocol ${session.protocol}`));
+        lines.push(ok(`${who}: adapter ${session.client}${session.build ? ` build ${session.build}` : ''} on protocol ${session.protocol}`));
       }
     }
     if (olderSessions.length) pending.push(`${plural(olderSessions.length, 'session')} still on an older adapter`);

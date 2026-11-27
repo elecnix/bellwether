@@ -387,10 +387,15 @@ export class RelayLinks {
       link.state.attempts = 0;
       link.state.lastConnectedAt = this.iso();
       delete link.state.nextAttemptAt;
+      // An older daemon there names neither, and then neither is kept from an earlier connection.
+      if (reply.version) link.state.farVersion = reply.version;
+      else delete link.state.farVersion;
+      if (reply.build) link.state.farBuild = reply.build;
+      else delete link.state.farBuild;
       if (was !== 'connected') {
         link.state.status = 'connected';
         link.state.since = this.iso();
-        this.log(`relay: connected to machine ${link.host} as ${link.state.target}, where ${reply.waiting} report(s) wait`);
+        this.log(`relay: connected to machine ${link.host} as ${link.state.target}, which runs ${runsOn(reply)}, where ${reply.waiting} report(s) wait`);
       }
       this.remember(link);
       for (const waiter of [...link.waiters]) waiter();
@@ -510,4 +515,10 @@ function writeMemory(memory: Record<string, unknown>): void {
   } catch {
     // The state in memory still holds; a restart only forgets the last drain.
   }
+}
+
+/** Which Bellwether a child machine's daemon runs, as its relay hello said, in a few words. */
+export function runsOn(hello: { version?: string; build?: string }): string {
+  if (!hello.version) return 'a Bellwether that predates naming its version and build';
+  return `bellwether ${hello.version}${hello.build ? ` build ${hello.build}` : ', a build that names no commit'}`;
 }

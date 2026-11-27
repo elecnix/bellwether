@@ -103,8 +103,10 @@ test('the packed tarball carries the compiled entry points and no TypeScript', (
     assert.ok(packed.has(entry), `the tarball is missing ${entry}, so the package cannot start`);
   }
 
+  // The build file names the commit the package was built from, so two builds of one version differ.
+  assert.ok(packed.has('dist/build.json'), 'the tarball is missing dist/build.json, so the install cannot name its build');
   // Node will not strip types under node_modules, so a .ts file in the tarball cannot run.
-  const allowed = /^(package\.json|README\.md|LICENSE|dist\/.+\.js)$/;
+  const allowed = /^(package\.json|README\.md|LICENSE|dist\/.+\.js|dist\/build\.json)$/;
   const stray = [...packed].filter((file) => !allowed.test(file));
-  assert.deepEqual(stray, [], 'the tarball carries files outside dist/ and the three top-level files');
+  assert.deepEqual(stray, [], 'the tarball carries files other than the compiled code and build file in dist/, and the three top-level files');
 });

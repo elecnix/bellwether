@@ -69,6 +69,8 @@ export interface HelloRequest {
   type: 'hello';
   protocol: number;
   client: string;
+  /** The client's build, its commit, because one version number covers many builds. Added without a protocol bump. */
+  build?: string;
   parent: ParentHello;
 }
 
@@ -168,6 +170,8 @@ export interface HelloReply {
   pending: OutboxEntry[];
   /** The daemon's package version. A daemon before 0.1.5 leaves it out, and the client reads the lock instead. */
   version?: string;
+  /** The daemon's build, its commit. A daemon from before builds were named leaves it out. */
+  build?: string;
 }
 
 export interface ResultReply {
@@ -214,6 +218,10 @@ export interface RelayHelloReply {
   pid: number;
   /** How many reports wait for the subscribed parents. */
   waiting: number;
+  /** The package version of the child machine's daemon. An older one leaves it out. */
+  version?: string;
+  /** The build of the child machine's daemon, its commit. An older one leaves it out. */
+  build?: string;
 }
 
 /** One report for a subscribed parent. */
@@ -242,6 +250,8 @@ export interface SessionInfo {
   session: string;
   /** The package version the session's adapter runs, as its hello said. */
   client: string;
+  /** The build the session's adapter runs, as its hello said, when it said. */
+  build?: string;
   protocol: number;
   connectedAt: string;
   childId?: string;
@@ -259,6 +269,8 @@ export interface SessionsReply {
   daemon: {
     pid: number;
     version: string;
+    /** The daemon's build, its commit. A daemon from before builds were named leaves it out. */
+    build?: string;
     protocol: number;
     minClientProtocol: number;
     startedAt: string;
@@ -408,6 +420,7 @@ function parseHello(value: Record<string, unknown>): HelloRequest {
     type: 'hello',
     protocol,
     client: text(value['client']) || 'unknown',
+    ...(text(value['build']) ? { build: text(value['build']) } : {}),
     parent: { harness, session, cwd, host, depth, herdrSocket, paneId: optional('paneId'), workspaceId: optional('workspaceId'), childId: optional('childId') },
   };
 }

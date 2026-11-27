@@ -18,9 +18,10 @@ Each report moves through the following steps. Step one runs over SSH from the p
 
 1. Before the child's tab opens, the parent's daemon runs `bellwether relay-register` on the child's machine. On that machine, the command writes a relay record that lists the child and the parent id, plus the MCP config for a Claude Code child. That record leaves out any address for the parent's machine.
 
-   - From standard input, the command reads the child's brief, so the brief never appears on a command line. It writes the brief to that machine's `~/.bellwether/prompts/<child id>.md` with mode 0600, and the harness gets an `@` reference to that copy.
+   - From standard input, the command reads the child's brief, so the brief never appears on a command line. It writes the brief inside the child's working directory on that machine, as `.bellwether/brief-<child id>.md` with mode 0600, and the harness gets an `@` reference to that copy. A harness reads a file there without asking to leave its working directory. That `.bellwether` directory holds a `.gitignore` of `*`, so git ignores it and `git status` doesn't list it. A spawn with no `cwd` puts the brief in that machine's `~/.bellwether/prompts/<child id>.md`. A `cwd` that doesn't exist on that machine fails the spawn.
    - For a pi child, the command prints the path of that machine's pi extension, which the child loads with `-e`.
-   - If the copy fails, the spawn fails before any tab opens, so no child starts without its task. When the child exits, when `agent_stop` closes it, or when its spawn fails, `bellwether relay-cleanup` removes the brief and the MCP config on that machine.
+   - The command also prints the version and build of that machine's Bellwether, and a refusal from an older install quotes them.
+   - If the copy fails, the spawn fails before any tab opens, so no child starts without its task. When the child exits, when `agent_stop` closes it, or when its spawn fails, `bellwether relay-cleanup` removes the brief, the MCP config and the relay record on that machine. A relay record whose reports still wait for the parent's daemon stays until that daemon collects the last of them. When `agent_stop` can't reach the machine, its reply says which files stay there and the command that removes them.
 
 2. For each machine that runs one of its children, the parent's daemon keeps one SSH connection open. At the far end, `bellwether relay-bridge` joins the connection to the machine's daemon socket and starts that daemon if none runs. Over the connection, the parent's daemon subscribes to the reports that wait there for its parents.
 
@@ -36,7 +37,7 @@ A resume goes back to the machine where the child last ran. To change that machi
 
 ## Connection state
 
-Backoff runs from 1 second to 5 minutes when the parent's daemon retries a connection that fails or drops.
+Backoff runs from 1 second to 5 minutes when the parent's daemon retries a connection that fails or drops. The first reply on each connection gives the version and build of the child's machine, and `bellwether doctor` prints both on the `relay` line for that machine. Machines on one version number but different builds then show different lines.
 
 The parent's daemon also sends a heartbeat line every 15 seconds, and `bellwether relay-bridge` exits after three intervals of silence, so a dead network link ends on the child's machine too.
 

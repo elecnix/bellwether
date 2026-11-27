@@ -185,19 +185,25 @@ The inactivity threshold defaults to 5 minutes. Pass `inactive_minutes` to `agen
 
 ### The other children
 
-An event mentions only the children that changed, so a reader sees the rest only in the trailing line. If the parent has other children still running, the message ends with one line about them, placed before the closing line:
+Events mention only the children that changed. For a parent with other children still running, one more line about them can precede the closing line:
 
 ```
-children 5: 2 working, fix-ci idle 12m, docs blocked 3m
+children 5: 2 working, 1 idle 12m, 1 blocked
 ```
 
-Each child that has not exited enters the count, among them those the message names. Next, the line counts the children at work together. Other children get their name, their state and how long they have been in that state, listed longest first. The line names at most four of them and counts the rest, as in `and 3 more`. It never repeats a child the message already names, and it never lists a child that exited.
+The first number counts each child that has not exited, including those the message names. Everything else counts the other children by state: working, idle, blocked, unknown. One age appears, on the state of the child that has waited longest, because that number tells a parent whether a call is worth making. The states leave out each child the message names, and the line leaves out each child that exited.
 
-Each child's state comes from its record at the moment of the push, so the latest state replaces any older event. A child with a dialog open reads `blocked`, and a child whose turn ended reads `idle`.
+Each child's state comes from its record, read when the alert goes out. A child with a dialog open reads `blocked`, and a child whose turn ended reads `idle`.
 
-When no other child is running, the line is absent and the message reads as it did before. A parent with one child never sees the line. The Claude Code channel sends one notification per event, so only the last notification of a burst includes the line.
+Both harnesses share one rule for when an alert gets the line, and the daemon enforces it:
 
-The line hints that a call to `agent_list` or `agent_read` may be worth making. It never arrives on its own. A quiet child is the job of the inactivity notice, which names that child once per quiet period.
+- With no other child running, the message reads as before. A parent with one child never sees the line.
+- A line that matches the last one the parent received, ignoring the age, stays out.
+- After a line goes out, the next one waits at least 10 minutes, so a burst of alerts gets one line.
+
+A restarted daemon follows the same rule because the parent record keeps the last line and its time as `rosterSent`. Claude Code's channel sends one notification per event, and the line goes on the last notification of a flush.
+
+The inactivity notice handles a quiet child, naming it once per quiet period. The line never arrives alone. It only hints that a call to `agent_list` or `agent_read` may be worth making.
 
 ## A child's environment
 

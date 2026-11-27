@@ -31,9 +31,15 @@ import { updateChild } from '../core/registry.ts';
 import { UnknownTool, servedTools, type ToolScope } from '../integrations/tools.ts';
 import { FEATURES } from './features.ts';
 
-/** The roster a hello carries, from a service that keeps one. A test's fake service may not. */
-function rosterOf(service: ParentService): { roster?: RosterChild[] } {
-  const roster = service.roster?.();
+/**
+ * The roster for entries about to reach a parent, when one is due. Only an
+ * unread entry is an alert, so a push that only settles entries asks for none
+ * and spends nothing. A test's fake service may keep no roster.
+ */
+function rosterFor(service: ParentService, entries: OutboxEntry[]): { roster?: RosterChild[] } {
+  const alerts = entries.filter((entry) => !entry.read);
+  if (!alerts.length) return {};
+  const roster = service.roster?.(alerts.map((entry) => entry.childId));
   return roster ? { roster } : {};
 }
 
@@ -308,10 +314,11 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
     }
   };
 
-  const push = (parentId: string, entries: OutboxEntry[], roster: RosterChild[] | undefined): void => {
+  const push = (parentId: string, entries: OutboxEntry[], service: ParentService): void => {
     const set = subscribers.get(parentId);
     if (!set || entries.length === 0) return;
-    const line = formatReply(roster ? { type: 'events', entries, roster } : { type: 'events', entries });
+    // Asked only once a session listens, so a roster nobody reads does not count as sent.
+    const line = formatReply({ type: 'events', entries, ...rosterFor(service, entries) });
     for (const socket of set) if (socket.writable) socket.write(line);
   };
 
@@ -322,7 +329,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
     const service = factory(parent, id, { links, log, inbox, sessionReach });
     services.set(id, service);
     service.onEvents((entries) => {
-      push(id, entries, service.roster?.());
+      push(id, entries, service);
       // A child that started or exited changes which hosts need a connection.
       links.sync();
     });
@@ -625,7 +632,8 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
         subscribers.set(session.parentId, set);
         const tools = sessionTools(request.parent);
         attached.set(socket, { parentId: session.parentId, parent: request.parent, client: request.client, ...(request.build ? { build: request.build } : {}), protocol: request.protocol, connectedAt: new Date(now()).toISOString(), tools: JSON.stringify(tools) });
-        reply({ type: 'hello', protocol: DAEMON_PROTOCOL, parentId: session.parentId, pid, pending: session.service.pending(), ...rosterOf(session.service), version: BELLWETHER_VERSION, build: BELLWETHER_BUILD_ID, minProtocol: MIN_CLIENT_PROTOCOL, features: SERVED, tools });
+        const pending = session.service.pending();
+        reply({ type: 'hello', protocol: DAEMON_PROTOCOL, parentId: session.parentId, pid, pending, ...rosterFor(session.service, pending), version: BELLWETHER_VERSION, build: BELLWETHER_BUILD_ID, minProtocol: MIN_CLIENT_PROTOCOL, features: SERVED, tools });
         // A child's session that reconnects, after a hand-over or a restart of its server, takes again what it has not read.
         if (request.parent.childId && request.parent.accepts?.includes('message')) replayMessages(socket, request.parent.childId);
         return;

@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { bumpFormula, compareVersions, prBody, protocolOf, release, ReleaseError, type ReleaseDeps, type RunOptions, type RunResult } from '../../scripts/release.ts';
+import { approvalNotice, bumpFormula, compareVersions, installNotice, prBody, protocolOf, release, ReleaseError, type ReleaseDeps, type RunOptions, type RunResult } from '../../scripts/release.ts';
 
 const TARBALL = 'https://registry.npmjs.org/@elecnix/bellwether/-/bellwether-0.1.4.tgz';
 const FORMULA = [
@@ -257,4 +257,26 @@ test('versions compare by number, and the protocol is read from either source fo
 test('the pull request body says whether the protocol moves', () => {
   assert.match(prBody('0.1.4', '0.1.3', { from: 2, to: 3 }), /moves from 2 to 3/);
   assert.match(prBody('0.1.4', '0.1.3', undefined), /stays the same/);
+});
+
+test('each release message points at a docs file that exists, never at the README', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const messages = [
+    prBody('0.1.4', '0.1.3', { from: 2, to: 3 }),
+    approvalNotice({ from: 2, to: 3 }),
+    installNotice('0.1.4', 'the tap formula already points at 0.1.4'),
+  ];
+  for (const message of messages) {
+    assert.doesNotMatch(message, /README/);
+    const docs = [...message.matchAll(/docs\/[a-z-]+\.md(?:#([a-z0-9-]+))?/g)];
+    assert.ok(docs.length > 0, `no docs pointer in: ${message}`);
+    for (const match of docs) {
+      const [pathPart, anchor] = match[0].split('#');
+      const text = await readFile(path.join(import.meta.dirname, '../..', pathPart!), 'utf8');
+      if (anchor) {
+        const slugs = [...text.matchAll(/^#+ (.+)$/gm)].map((h) => h[1]!.toLowerCase().replace(/[^a-z0-9 -]/g, '').replace(/ /g, '-'));
+        assert.ok(slugs.includes(anchor), `${pathPart} has no heading for #${anchor}`);
+      }
+    }
+  }
 });

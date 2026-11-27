@@ -49,6 +49,7 @@ test('three installs, one daemon and two sessions on other commits: one versions
   const upgrade = report.lines.find((entry) => entry.includes('upgrade:')) ?? '';
   assert.doesNotMatch(upgrade, /finished/);
   assert.match(upgrade, /upgrade: in progress, because 2 sessions run another build than the daemon's \(pi-0, pi-1\)/);
+  assert.match(upgrade, /a session a daemon started ends only when its parent stops or restarts it\. When the daemon is the build to replace, run bellwether drain\./);
   assert.match(report.lines.join('\n'), /ok {4}session pi-2: adapter 0\.1\.5 build bbbbbbbbbbbb on protocol 4, the daemon's build/);
 });
 

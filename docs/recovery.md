@@ -23,6 +23,8 @@ If its provider has no key, a harness can exit before it reads its brief. The se
 
 The spawn's brief is `~/.bellwether/prompts/<child id>.md`. Each resume that brings a prompt writes the next number: `<child id>-2.md`, `<child id>-3.md`, and so on. Resumes never overwrite an earlier brief.
 
+A child on another machine reads its own copy there, and this machine keeps the numbered files for the next resume.
+
 Before it writes, a resume checks the record. Proof that the child read the newest brief is either a report sent after Bellwether wrote that brief, or a finished turn in the pane that started on it. With either one, the child gets only the new prompt. A status or a run time doesn't count, because a harness can run without reading anything.
 
 Without that proof, the new file places the unread brief first and the prompt after it. Resuming with no prompt hands the unread brief over again.

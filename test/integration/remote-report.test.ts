@@ -8,7 +8,7 @@
 // in use. The child's machine never runs ssh, which the fake ssh proves by
 // recording every target it was asked for.
 import assert from 'node:assert/strict';
-import { execFile, spawnSync } from 'node:child_process';
+import { execFile, execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
@@ -394,6 +394,68 @@ test('a far end that answers with something other than the relay protocol says w
   const { links: relayLinks } = await parentDaemon(w, links(w, { ssh: stale }));
   await until(() => relayLinks.state('child-box')?.status === 'reconnecting', 'the link to fail');
   assert.match(relayLinks.state('child-box')?.lastError ?? '', /does not speak the relay protocol.*Update @elecnix\/bellwether on machine child-box/);
+});
+
+/**
+ * Whether a process group still has a process that runs. A zombie does not
+ * count: the frozen fake ssh cannot reap the shell it started, as sshd would.
+ */
+function groupAlive(group: number): boolean {
+  const listing = execFileSync('ps', ['-eo', 'pgid=,stat='], { encoding: 'utf8' });
+  return listing.split('\n').some((line) => {
+    const [pgid, stat] = line.trim().split(/\s+/);
+    return Number(pgid) === group && !stat?.startsWith('Z');
+  });
+}
+
+test('a bridge whose parent goes silent without closing the connection exits within three heartbeats, and an idle healthy one stays', async (t) => {
+  const w = world(t);
+  parentHolds(w, 'c-beat');
+  childHolds(w, 'c-beat');
+  const heartbeatMs = 200;
+  const { links: relayLinks } = await parentDaemon(w, links(w, { heartbeatMs }));
+  await until(() => connected(relayLinks), 'the connection');
+
+  // Idle but healthy: no report, no read, only the heartbeat, for well past the silence limit.
+  await delay(heartbeatMs * 8);
+  assert.ok(connected(relayLinks), 'the idle connection is still up');
+  assert.equal(dials(w), 1, 'the heartbeat kept the idle bridge alive, so the parent never had to redial');
+
+  // Now the link dies the way a network does: nothing more arrives, and nothing closes.
+  const [group, ...others] = await w.ssh.freeze();
+  assert.equal(others.length, 0, 'one connection was open');
+  assert.ok(group && groupAlive(group), 'the bridge was running when the link froze');
+  const frozeAt = Date.now();
+  const bound = heartbeatMs * 3 + 2_000;
+  await until(() => !groupAlive(group as number), `the bridge to exit within ${bound} ms of the parent going silent`, bound);
+  const took = Date.now() - frozeAt;
+  assert.ok(took >= heartbeatMs * 2, `the bridge waited out the silence (${took} ms) rather than exiting at once`);
+});
+
+test('a far end that fails before it answers the relay names its error line and the machine to update', async (t) => {
+  const w = world(t);
+  parentHolds(w, 'c-crash');
+  // What 0.1.4 prints for relay-bridge: a Node stack trace on stderr, with the error well above its last lines.
+  const crashing = path.join(w.root, 'crashing-ssh');
+  fs.writeFileSync(crashing, [
+    '#!/bin/sh',
+    "echo 'file:///x/dist/daemon/client.js:225' >&2",
+    "echo '            throw new Error(`${reply.code}: ${reply.message}`);' >&2",
+    "echo 'Error: invalid_hello: the parent needs a session, cwd, host and herdr socket' >&2",
+    "echo '    at DaemonClient.handshake (file:///x/dist/daemon/client.js:225:19)' >&2",
+    "echo '    at async main (file:///x/dist/cli.js:235:20)' >&2",
+    "echo '    at async file:///x/dist/cli.js:381:20' >&2",
+    "echo '' >&2",
+    "echo 'Node.js v22.22.1' >&2",
+    'exit 1',
+    '',
+  ].join('\n'), { mode: 0o755 });
+  const { links: relayLinks } = await parentDaemon(w, links(w, { ssh: crashing }));
+  await until(() => relayLinks.state('child-box')?.status === 'reconnecting', 'the link to fail');
+  const error = relayLinks.state('child-box')?.lastError ?? '';
+  assert.match(error, /Error: invalid_hello: the parent needs a session, cwd, host and herdr socket/);
+  assert.match(error, /Update @elecnix\/bellwether on machine child-box/);
+  assert.doesNotMatch(error, /at async/, 'stack frames are not the message');
 });
 
 test('a report for a child this machine holds is served here and never spooled for a remote parent', async (t) => {

@@ -38,6 +38,13 @@ export interface FakeSsh {
   drop(): Promise<number>;
   /** How many ssh processes are still running. */
   open(): number;
+  /**
+   * Freeze the near end of every open connection without closing it, as a dead
+   * network link would: ssh stops forwarding in either direction, and the
+   * remote command keeps running with its standard input still open. Resolves
+   * with the process group of each remote command, so a test can watch it.
+   */
+  freeze(): Promise<number[]>;
 }
 
 const CLI = path.resolve(import.meta.dirname, '../../src/cli.ts');
@@ -68,9 +75,9 @@ const env = { ...process.env, HOME: machine.userHome, BELLWETHER_HOME: machine.h
 const liveDir = path.join(dir, 'live');
 fs.mkdirSync(liveDir, { recursive: true });
 const liveFile = path.join(liveDir, String(process.pid));
-fs.writeFileSync(liveFile, target);
 // Its own process group, so a dropped link takes the whole remote command down with it.
 const remote = spawn('sh', ['-c', command], { env, stdio: ['pipe', 'pipe', 'pipe'], detached: true });
+fs.writeFileSync(liveFile, target + ' ' + remote.pid);
 process.stdin.pipe(remote.stdin);
 remote.stdin.on('error', () => {});
 remote.stdout.pipe(process.stdout);
@@ -117,6 +124,16 @@ function livePids(dir: string): number[] {
   }
 }
 
+/** The remote process group a live ssh recorded, once it has started its command. */
+function remoteGroup(dir: string, pid: number): number | undefined {
+  try {
+    const group = Number(fs.readFileSync(path.join(dir, 'live', String(pid)), 'utf8').trim().split(' ')[1]);
+    return Number.isInteger(group) && group > 0 ? group : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function alive(pid: number): boolean {
   try {
     process.kill(pid, 0);
@@ -144,6 +161,8 @@ export function installFakeSsh(t: { after: (fn: () => void | Promise<void>) => v
     const pids = livePids(dir).filter(alive);
     for (const pid of pids) {
       try {
+        // A frozen ssh must run again to act on the signal.
+        process.kill(pid, 'SIGCONT');
         process.kill(pid, 'SIGTERM');
       } catch {
         // It exited on its own between the listing and the signal.
@@ -165,5 +184,14 @@ export function installFakeSsh(t: { after: (fn: () => void | Promise<void>) => v
     plan: (steps) => fs.writeFileSync(path.join(dir, 'plan.json'), JSON.stringify(steps)),
     drop,
     open: () => livePids(dir).filter(alive).length,
+    freeze: async () => {
+      const groups: number[] = [];
+      for (const pid of livePids(dir).filter(alive)) {
+        const group = remoteGroup(dir, pid);
+        process.kill(pid, 'SIGSTOP');
+        if (group) groups.push(group);
+      }
+      return groups;
+    },
   };
 }

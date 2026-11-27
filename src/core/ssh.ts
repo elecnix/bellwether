@@ -39,12 +39,18 @@ export function sshArgv(target: string, args: string[]): string[] {
 
 /**
  * The ssh argv for the relay connection a parent's daemon holds open to a
- * child's machine. Keepalives make a dead link fail within a minute, rather
- * than when the kernel gives up on it.
+ * child's machine. Keepalives make a dead link fail on the parent's side
+ * within a minute, rather than when the kernel gives up on it. The heartbeat
+ * does the same on the child's side: the parent writes a line at that
+ * interval, and the bridge exits after three intervals without one. A bridge
+ * from before the heartbeat ignores the flag.
  */
-export function relayBridgeArgv(target: string): string[] {
-  return ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', '-o', 'ServerAliveInterval=15', '-o', 'ServerAliveCountMax=3', '-T', target, remoteBellwetherCommand(['relay-bridge'])];
+export function relayBridgeArgv(target: string, heartbeatMs: number): string[] {
+  return ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', '-o', 'ServerAliveInterval=15', '-o', 'ServerAliveCountMax=3', '-T', target, remoteBellwetherCommand(['relay-bridge', '--heartbeat-ms', String(heartbeatMs)])];
 }
+
+/** How many heartbeat intervals a bridge waits without a line from the parent before it exits. */
+export const HEARTBEAT_MISSES = 3;
 
 export interface SshResult {
   code: number;

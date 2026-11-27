@@ -34,6 +34,12 @@ export interface RelayLinksOptions {
   maxDelayMs?: number;
   /** How long a read waits for a connection and its answer. */
   readTimeoutMs?: number;
+  /**
+   * How often the parent writes a heartbeat line on each connection. The
+   * bridge on the child's machine exits after three intervals without a
+   * line, so a connection that died without closing ends there too.
+   */
+  heartbeatMs?: number;
 }
 
 /** What the daemon does with a report that arrived: take it, or refuse it for good. */
@@ -54,6 +60,10 @@ interface Link {
   /** The protocol error the far end sent, which explains the close that follows. */
   farError?: string;
   timer?: NodeJS.Timeout;
+  /** Writes the heartbeat while the connection is up. */
+  heartbeat?: NodeJS.Timeout;
+  /** Whether the far end answered the relay on this attempt, so a failure before it can say what to update. */
+  answered: boolean;
   /** The parents the last subscribe named. */
   parentIds: string[];
   subscribed: boolean;
@@ -80,6 +90,7 @@ export class RelayLinks {
   private readonly initialDelayMs: number;
   private readonly maxDelayMs: number;
   private readonly readTimeoutMs: number;
+  private readonly heartbeatMs: number;
   private readonly links = new Map<string, Link>();
   /** Hosts a read holds open, though no child there needs a connection. */
   private readonly pins = new Map<string, number>();
@@ -97,6 +108,7 @@ export class RelayLinks {
     this.initialDelayMs = options.initialDelayMs ?? 1_000;
     this.maxDelayMs = options.maxDelayMs ?? 5 * 60_000;
     this.readTimeoutMs = options.readTimeoutMs ?? 15_000;
+    this.heartbeatMs = options.heartbeatMs ?? 15_000;
   }
 
   /** Start connecting to every host a child of this machine's parents runs on. */
@@ -249,6 +261,7 @@ export class RelayLinks {
       stderr: '',
       parentIds,
       subscribed: false,
+      answered: false,
       drainAskedAt: 0,
       closing: false,
       reads: new Map(),
@@ -265,13 +278,14 @@ export class RelayLinks {
     link.stderr = '';
     link.farError = undefined;
     link.subscribed = false;
+    link.answered = false;
     delete link.state.nextAttemptAt;
     this.resolve(link.host)
       .then((profile) => {
         if (this.stopped || link.closing) return;
         link.state.target = profile.target;
         this.log(`relay: connecting to machine ${link.host} as ${profile.target}${link.state.attempts ? `, attempt ${link.state.attempts + 1}` : ''}`);
-        const child = spawn(this.ssh, relayBridgeArgv(profile.target), { stdio: ['pipe', 'pipe', 'pipe'] });
+        const child = spawn(this.ssh, relayBridgeArgv(profile.target, this.heartbeatMs), { stdio: ['pipe', 'pipe', 'pipe'] });
         link.process = child;
         child.stdin.on('error', () => {});
         child.stdout.setEncoding('utf8');
@@ -287,8 +301,16 @@ export class RelayLinks {
   }
 
   private why(link: Link, target: string, code: number | null, signal: NodeJS.Signals | null): string {
-    const detail = link.farError ?? link.stderr.trim().split('\n').filter(Boolean).slice(-3).join(' / ');
-    const hint = code === NO_BELLWETHER_EXIT ? ' Install @elecnix/bellwether on that machine.' : '';
+    const lines = link.stderr.trim().split('\n').map((line) => line.trim()).filter(Boolean);
+    // A Node program that throws prints its stack after the error line, so the last lines are frames, not the reason.
+    const thrown = lines.find((line) => /^[A-Za-z]*Error\b.*:/.test(line));
+    const detail = link.farError ?? thrown ?? lines.slice(-3).join(' / ');
+    let hint = '';
+    if (code === NO_BELLWETHER_EXIT) hint = ' Install @elecnix/bellwether on that machine.';
+    else if (!link.farError && thrown && !link.answered && code !== 255) {
+      // The bellwether there ran and failed before it spoke the relay: most likely a version from before relay-bridge.
+      hint = ` The bellwether command on machine ${link.host} failed before it answered the relay; if it predates relay-bridge, Update @elecnix/bellwether on machine ${link.host}.`;
+    }
     return `ssh ${target} ${code === null ? `ended on ${signal ?? 'a signal'}` : `exited with ${code}`}${detail ? `: ${detail}` : ''}${hint}`;
   }
 
@@ -297,6 +319,7 @@ export class RelayLinks {
     if (child && link.process !== child) return;
     link.process = undefined;
     link.subscribed = false;
+    this.stopHeartbeat(link);
     for (const read of link.reads.values()) {
       clearTimeout(read.timer);
       read.reject(new Error(`the connection to machine ${link.host} ended: ${reason}`));
@@ -355,6 +378,8 @@ export class RelayLinks {
     if (reply.type === 'relay-hello') {
       const was = link.state.status;
       link.subscribed = true;
+      link.answered = true;
+      this.startHeartbeat(link);
       link.state.attempts = 0;
       link.state.lastConnectedAt = this.iso();
       delete link.state.nextAttemptAt;
@@ -410,8 +435,25 @@ export class RelayLinks {
     if (stdin?.writable) stdin.write(line);
   }
 
+  /**
+   * Write a blank line at the heartbeat interval. Every daemon on protocol 4
+   * skips a blank line, so the heartbeat needs no protocol change, and the
+   * bridge counts it as a sign the parent is still there.
+   */
+  private startHeartbeat(link: Link): void {
+    this.stopHeartbeat(link);
+    link.heartbeat = setInterval(() => this.write(link, '\n'), this.heartbeatMs);
+    link.heartbeat.unref?.();
+  }
+
+  private stopHeartbeat(link: Link): void {
+    if (link.heartbeat) clearInterval(link.heartbeat);
+    link.heartbeat = undefined;
+  }
+
   private close(link: Link, reason: string): void {
     link.closing = true;
+    this.stopHeartbeat(link);
     if (link.timer) clearTimeout(link.timer);
     link.timer = undefined;
     for (const read of link.reads.values()) {

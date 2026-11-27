@@ -2,9 +2,16 @@
 // herdr-spawn.sh, never passed through agent_spawn, so no parent watches it.
 // agent_adopt registers it as a child of this parent, and the watcher picks it
 // up on its next pass like any spawned child.
+//
+// The pane can sit on another machine. The parent reads it from that
+// machine's herdr, as it reads a remote child it spawned, and asks that
+// machine's daemon to record the adoption over the relay connection it holds.
+// That daemon knows both its own parents and the claims of parents on other
+// machines, so it decides whether someone already watches the pane.
 import type { HerdrClient } from './herdr-client.ts';
 import { LOCAL_HOST } from './machine.ts';
 import { newChildId } from './outbox.ts';
+import { claimantOf, decideClaim, type PaneClaim } from './pane-claims.ts';
 import { upsertChild, watcherOfPane } from './registry.ts';
 import { herdrLink } from './spawn.ts';
 import { harnessFor } from './harnesses/index.ts';
@@ -18,6 +25,11 @@ export interface AdoptOptions {
   /** The handle to use for the child. Defaults to the agent's herdr name. */
   name?: string;
   stuckMinutes?: number;
+  /**
+   * For a pane on another machine: ask that machine's daemon to record the
+   * adoption, which refuses a pane someone there already watches.
+   */
+  claim?: (host: string, claim: PaneClaim) => Promise<{ childId: string; held: boolean }>;
 }
 
 export interface AdoptResult {
@@ -27,26 +39,49 @@ export interface AdoptResult {
   already: boolean;
 }
 
+/** Where a pane sits, in the words an error uses. */
+function place(host: string): string {
+  return host === LOCAL_HOST ? 'local' : `machine ${host}`;
+}
+
 export async function adoptPane(client: HerdrClient, parent: ParentRecord, options: AdoptOptions, signal?: AbortSignal): Promise<AdoptResult> {
   const host = options.host ?? LOCAL_HOST;
   const agents = await client.agentList(signal);
   const byPane = agents.find((pane) => pane.paneId === options.target);
   const byName = agents.filter((pane) => pane.name === options.target);
-  if (!byPane && byName.length > 1) throw new Error(`More than one live agent on ${host} is named ${options.target}. Adopt it by pane id: ${byName.map((pane) => pane.paneId).join(', ')}.`);
+  if (!byPane && byName.length > 1) throw new Error(`More than one live agent on ${place(host)} is named ${options.target}. Adopt it by pane id: ${byName.map((pane) => pane.paneId).join(', ')}.`);
   const pane = byPane ?? byName[0];
   if (!pane || !pane.agent) {
     const panes = await client.paneList(signal).catch(() => []);
     const bare = panes.find((entry) => entry.paneId === options.target);
-    if (bare) throw new Error(`Pane ${options.target} on ${host} holds no agent herdr recognizes, so there is nothing to adopt.`);
-    throw new Error(`No pane or live agent on ${host} matches ${options.target}.`);
+    if (bare) throw new Error(`Pane ${options.target} on ${place(host)} holds no agent herdr recognizes, so there is nothing to adopt.`);
+    throw new Error(`No pane or live agent on ${place(host)} matches ${options.target}.`);
   }
   const entry = harnessFor(pane.agent);
-  if (!entry) throw new Error(`Pane ${pane.paneId} on ${host} runs ${pane.agent}, which is not an agent kind Bellwether supervises.`);
+  if (!entry) throw new Error(`Pane ${pane.paneId} on ${place(host)} runs ${pane.agent}, which is not an agent kind Bellwether supervises.`);
   if (host === LOCAL_HOST && pane.paneId === parent.paneId) throw new Error('A session cannot adopt its own pane.');
 
   const owner = watcherOfPane(host, pane.paneId);
   if (owner && owner.parent.id === parent.id) return { child: owner.child, link: herdrLink('pane', pane.paneId), already: true };
-  if (owner) throw new Error(`Pane ${pane.paneId} on ${host} is already a child of ${owner.parent.id} as ${owner.child.name}, so this session cannot adopt it.`);
+  if (owner) throw new Error(`Pane ${pane.paneId} on ${place(host)} is already a child of ${owner.parent.id} as ${owner.child.name}, so this session cannot adopt it.`);
+
+  const name = options.name ?? pane.name ?? pane.label ?? pane.paneId;
+  let id = newChildId();
+  if (host === LOCAL_HOST) {
+    // A parent on another machine may have adopted this pane: its claim sits in this machine's relay records.
+    const decision = decideClaim({ parentId: parent.id, paneId: pane.paneId, session: pane.agentSessionId }, claimantOf(pane.paneId));
+    if (decision.kind === 'refuse') throw new Error(`Pane ${pane.paneId} on local cannot be adopted: ${decision.reason}.`);
+  } else {
+    if (!options.claim) throw new Error(`This session holds no relay connection to machine ${host}, so it cannot ask that machine who watches pane ${pane.paneId}.`);
+    let answer: { childId: string; held: boolean };
+    try {
+      answer = await options.claim(host, { parentId: parent.id, childId: id, name, kind: pane.agent, paneId: pane.paneId, ...(pane.agentSessionId ? { session: pane.agentSessionId } : {}) });
+    } catch (error) {
+      throw new Error(`Pane ${pane.paneId} on machine ${host} cannot be adopted: ${(error as Error).message}.`.replace(/\.\.$/, '.'));
+    }
+    // The far daemon already held this pane for this parent, from an adoption whose record this machine lost: keep its child id.
+    id = answer.childId;
+  }
 
   const now = new Date().toISOString();
   const kind = pane.agent;
@@ -54,8 +89,8 @@ export async function adoptPane(client: HerdrClient, parent: ParentRecord, optio
   // A remote child's transcript sits on its own machine's disk.
   const found = host === LOCAL_HOST ? entry.conversation.locate(pane.agentSessionId, pane.cwd) : undefined;
   const child: ChildRecord = {
-    id: newChildId(),
-    name: options.name ?? pane.name ?? pane.label ?? pane.paneId,
+    id,
+    name,
     kind,
     harness,
     paneId: pane.paneId,

@@ -20,7 +20,9 @@ import { relayHostsPath } from '../core/paths.ts';
 import { listParents } from '../core/registry.ts';
 import { farErrorLine, relayBridgeArgv, releaseAdvice } from '../core/ssh.ts';
 import type { ChildRecord } from '../core/types.ts';
-import { DAEMON_PROTOCOL, MAX_DAEMON_FRAME_BYTES, formatRequest, type DaemonReply, type RelayHostState, type RelayReport } from './protocol.ts';
+import { DAEMON_PROTOCOL, MAX_DAEMON_FRAME_BYTES, formatRequest, type DaemonReply, type DaemonRequest, type RelayAdoptAnswer, type RelayHostState, type RelayReport } from './protocol.ts';
+import { featureNamed } from './features.ts';
+import type { PaneClaim } from '../core/pane-claims.ts';
 
 export interface RelayLinksOptions {
   /** Turns a child's herdr machine into its SSH target. Defaults to herdr's saved machines. */
@@ -46,6 +48,8 @@ export interface RelayLinksOptions {
 export type AcceptRelayed = (host: string, report: RelayReport) => { refused?: string };
 
 interface PendingRead {
+  /** The request type, so a far daemon that does not know it can be answered for the requests it refused. */
+  type: 'relay-read' | 'relay-adopt';
   resolve: (text: string) => void;
   reject: (error: Error) => void;
   timer: NodeJS.Timeout;
@@ -180,6 +184,28 @@ export class RelayLinks {
     if (!child.session?.value) return undefined;
     const host = hostOf(child);
     if (host === LOCAL_HOST) throw new Error('a local child is read on this machine');
+    const session = child.session.value;
+    const text = await this.ask(host, 'relay-read', (id) => ({ type: 'relay-read', id, harness: child.harness, session, ...(child.cwd ? { cwd: child.cwd } : {}) }));
+    return text.trim() ? text : undefined;
+  }
+
+  /**
+   * Ask the daemon on the pane's machine to record this parent's adoption of
+   * the pane, over the open connection. That daemon answers who watches the
+   * pane there, for its own parents and for parents on other machines, so the
+   * refusal comes from the one place that knows. A daemon there that predates
+   * the request is refused by name, with the release that brings it.
+   */
+  async adopt(host: string, claim: PaneClaim): Promise<RelayAdoptAnswer> {
+    if (host === LOCAL_HOST) throw new Error('a pane on this machine is adopted here');
+    const text = await this.ask(host, 'relay-adopt', (id) => ({ type: 'relay-adopt', id, ...claim }));
+    const answer = JSON.parse(text) as Partial<RelayAdoptAnswer>;
+    if (typeof answer.childId !== 'string' || !answer.childId) throw new Error(`machine ${host} answered the adoption without a child id`);
+    return { childId: answer.childId, held: answer.held === true };
+  }
+
+  /** Send one request over a host's connection, opening it for the call when no child holds it open, and wait for its result. */
+  private async ask(host: string, type: PendingRead['type'], build: (id: string) => DaemonRequest): Promise<string> {
     const known = this.links.get(host);
     if (known && known.state.status === 'reconnecting') throw new Error(unreachable(known.state));
     this.pins.set(host, (this.pins.get(host) ?? 0) + 1);
@@ -188,16 +214,15 @@ export class RelayLinks {
       const link = this.links.get(host) ?? this.ensure(host);
       await this.connected(link);
       const id = `r${++this.sequence}`;
-      const text = await new Promise<string>((resolve, reject) => {
+      return await new Promise<string>((resolve, reject) => {
         const timer = setTimeout(() => {
           link.reads.delete(id);
-          reject(new Error(`machine ${host} did not answer a read within ${this.readTimeoutMs} ms`));
+          reject(new Error(`machine ${host} did not answer ${type === 'relay-read' ? 'a read' : 'an adoption'} within ${this.readTimeoutMs} ms`));
         }, this.readTimeoutMs);
         timer.unref?.();
-        link.reads.set(id, { resolve, reject, timer });
-        this.write(link, formatRequest({ type: 'relay-read', id, harness: child.harness, session: child.session!.value, ...(child.cwd ? { cwd: child.cwd } : {}) }));
+        link.reads.set(id, { type, resolve, reject, timer });
+        this.write(link, formatRequest(build(id)));
       });
-      return text.trim() ? text : undefined;
     } finally {
       const left = (this.pins.get(host) ?? 1) - 1;
       if (left > 0) this.pins.set(host, left);
@@ -419,6 +444,21 @@ export class RelayLinks {
       else read.resolve(reply.text ?? '');
       return;
     }
+    if (reply.type === 'error' && reply.code === 'unknown_type') {
+      // A daemon there that predates a request this one sends answers
+      // unknown_type, without the request's id, and keeps the connection. Each
+      // request of that type waiting here gets a refusal that names the
+      // release, and the relay itself carries on.
+      const refused = [...link.reads].filter(([, read]) => reply.message.includes(JSON.stringify(read.type)));
+      if (refused.length) {
+        for (const [id, read] of refused) {
+          link.reads.delete(id);
+          clearTimeout(read.timer);
+          read.reject(new Error(predates(link.state, read.type)));
+        }
+        return;
+      }
+    }
     if (reply.type === 'error') {
       // The far end refused the subscribe: a daemon from before the relay, most likely. End the connection with its reason.
       // The relay stays strict: it began at protocol 4, which is this daemon's own, so no older far daemon has one to speak down to.
@@ -489,6 +529,14 @@ export class RelayLinks {
   private iso(): string {
     return new Date(this.now()).toISOString();
   }
+}
+
+/** One sentence that says a far daemon is too old for a request, and which release brings it. */
+export function predates(state: Pick<RelayHostState, 'host' | 'farVersion' | 'farBuild'>, request: string): string {
+  const since = featureNamed(request)?.version;
+  const runs = runsOn({ ...(state.farVersion ? { version: state.farVersion } : {}), ...(state.farBuild ? { build: state.farBuild } : {}) });
+  const what = request === 'relay-adopt' ? 'cannot adopt a pane for a parent on another machine' : `does not serve ${request}`;
+  return `machine ${state.host} runs ${runs}, which ${what}: that takes the ${request} request${since ? `, which came with bellwether ${since}` : ''}. Update @elecnix/bellwether on machine ${state.host}.`;
 }
 
 /** One sentence that says a host cannot be reached, and what is known about why. */

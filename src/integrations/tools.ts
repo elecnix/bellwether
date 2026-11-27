@@ -101,13 +101,13 @@ export const parentTools: ToolDefinition[] = [
   },
   {
     name: 'agent_adopt',
-    description: 'Make a running agent that this session did not start into its child, such as one herdr-spawn.sh or a person started. Bellwether then watches it like a spawned child. Refuses a pane another session already watches, and a pane with no agent herdr recognizes. An adopted child has no BELLWETHER_PARENT, so it cannot call parent_report.',
+    description: "Make a running agent that this session did not start into its child, such as one herdr-spawn.sh or a person started, on this machine or on a saved herdr machine. Bellwether then watches it like a spawned child, and its status changes start your turns. Refuses an unknown machine, a pane with no agent herdr recognizes, a pane another session already watches (on another machine, that machine's daemon answers who), and a machine whose Bellwether predates remote adoption. While the connection to that machine is down, agent_list shows the child unreachable, not exited, and it comes back when the connection does, with no second adoption. An adopted child cannot call parent_report, on this machine or another: adoption gives its session no child id, because Claude Code and pi load the Bellwether server or extension that carries one only when they start, so no daemon can tell which parent a report from it is for. A session Bellwether starts or restarts gets one; an adopted one would need its harness to take a new MCP server or extension while it runs.",
     schema: {
       type: 'object',
       properties: {
-        target: { type: 'string', description: 'The pane id, or the herdr name of the live agent.' },
+        target: { type: 'string', description: 'The pane id, or the herdr name of the live agent. Write machine:pane, as child-box:w1:p5, for a pane on a saved herdr machine.' },
         name: { type: 'string', description: 'The handle to use for the child. Defaults to its herdr name.' },
-        machine: { type: 'string', description: MACHINE_DESCRIPTION },
+        machine: { type: 'string', description: 'A saved herdr machine, by label or id as `herdr machine list` shows it. Omit it for this machine. Bellwether reads the pane from that machine\'s herdr, and asks the Bellwether daemon there, over the SSH connection this machine\'s daemon holds, to record the adoption, so that machine needs Bellwether 0.1.6 or later. That machine never connects back.' },
         stuck_minutes: { type: 'number', description: 'How long the child may be quiet before it counts as stuck. Defaults to 10.' },
       },
       required: ['target'],
@@ -320,6 +320,21 @@ function resolve(record: ReturnType<typeof readParent>, child: string): ChildRec
   return named[0];
 }
 
+/**
+ * The machine and pane an adoption names. A pane id has one colon, as w1:p5,
+ * so a target with two names its machine first, and so does one whose first
+ * part is not a workspace id, as child-box:first-mate.
+ */
+export function adoptTarget(target: string, machine?: string): { host: string; target: string } {
+  const colon = target.indexOf(':');
+  const prefix = colon > 0 ? target.slice(0, colon) : '';
+  const rest = colon > 0 ? target.slice(colon + 1) : '';
+  const prefixed = Boolean(prefix && rest) && (rest.includes(':') || !/^w\d+$/.test(prefix));
+  if (!prefixed) return { host: machine ?? LOCAL_HOST, target };
+  if (machine && machine !== prefix) throw new Error(`agent_adopt names machine ${machine}, but its target ${target} names machine ${prefix}. Name one.`);
+  return { host: prefix, target: rest };
+}
+
 /** A child's host, with a warning when the daemon is not hearing from that machine. */
 function hostColumn(child: ChildRecord, relayState: ToolContext['relayState']): string {
   const host = hostOf(child);
@@ -335,7 +350,9 @@ function describeChild(child: ChildRecord, watcher: Watcher, relayState?: ToolCo
   const age = Math.max(0, Math.round((Date.now() - Date.parse(child.startedAt)) / 1000));
   const restart = child.restartRequestedAt ? ', restart pending' : '';
   const retire = child.retireOutcome === 'removed' ? ', retired' : child.retireOutcome === 'refused' ? ', retirement refused' : child.retireRequestedAt ? ', retirement requested' : '';
-  const state = `${child.exitedAt ? `exited${child.exitCode === undefined ? '' : ` (${child.exitCode})`}` : child.lastStatus}${restart}${retire}`;
+  const away = child.exitedAt ? undefined : watcher.unreachable(hostOf(child));
+  const live = away ? `unreachable since ${away.since} (last seen ${child.lastStatus})` : child.lastStatus;
+  const state = `${child.exitedAt ? `exited${child.exitCode === undefined ? '' : ` (${child.exitCode})`}` : live}${restart}${retire}`;
   const name = child.agentName ? `${child.name} (${child.agentName})` : child.name;
   const kind = child.model ? `${child.kind} (${child.model.provider}/${child.model.id})` : child.kind;
   return `${name}\t${kind}\t${routeLabel(child.route)}\t${state}\t${age}s\t${hostColumn(child, relayState)}\t${workspaceColumn(child)}\t${child.paneId}\t${child.depth}/${ceilingOf(child)}\tunread ${unread}\t${child.cwd ?? ''}`;
@@ -463,14 +480,22 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
   }
 
   if (name === 'agent_adopt') {
-    const target = optionalString(args['target']);
-    if (!target) throw new Error('agent_adopt needs a target: a pane id or a live agent name');
-    const host = optionalString(args['machine']) ?? LOCAL_HOST;
-    const client = await clientFor(ctx, host);
-    const { child, link, already } = await adoptPane(client, record, { target, host, name: optionalString(args['name']), stuckMinutes: typeof args['stuck_minutes'] === 'number' ? (args['stuck_minutes'] as number) : undefined });
+    const given = optionalString(args['target']);
+    if (!given) throw new Error('agent_adopt needs a target: a pane id or a live agent name');
+    const { host, target } = adoptTarget(given, optionalString(args['machine']));
+    let client: HerdrClient;
+    try {
+      client = await clientFor(ctx, host);
+    } catch (error) {
+      throw new Error(`Cannot adopt ${target} on machine ${host}: ${(error as Error).message}`);
+    }
+    const claim = ctx.remote?.claim?.bind(ctx.remote);
+    const { child, link, already } = await adoptPane(client, record, { target, host, name: optionalString(args['name']), stuckMinutes: typeof args['stuck_minutes'] === 'number' ? (args['stuck_minutes'] as number) : undefined, ...(claim ? { claim } : {}) });
     if (already) return `${child.name} in pane ${child.paneId} is already a child of this session.`;
     const where = host === LOCAL_HOST ? '' : ` on machine ${host}`;
-    return [`Adopted ${child.name}, a ${child.kind} agent${where} in pane ${child.paneId}. Bellwether watches it from now on.`, 'It was not started by Bellwether, so it cannot call parent_report; its status changes still start your turns.', `herdr link: ${link}`].join('\n');
+    const session = child.session ? ` Its harness session is ${child.session.value}.` : '';
+    const outage = host === LOCAL_HOST ? '' : ` While the connection to machine ${host} is down, agent_list shows it unreachable, not exited.`;
+    return [`Adopted ${child.name}, a ${child.kind} agent${where} in pane ${child.paneId}, as child ${child.id}. Bellwether watches it from now on.${session}${outage}`, 'It was not started by Bellwether, so it cannot call parent_report; its status changes still start your turns.', `herdr link: ${link}`].join('\n');
   }
 
   if (name === 'agent_list') {

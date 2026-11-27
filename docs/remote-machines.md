@@ -4,9 +4,18 @@
 
 ## Requirements
 
-- Bellwether installed on both machines, at the same protocol. The far end of each connection runs the `bellwether` command.
+- Bellwether installed on both machines, at the same protocol. The far end of each connection runs the `bellwether` command. SSH's non-interactive shell often has a shorter PATH than a login shell, so when that PATH has no `bellwether`, the far end tries `~/.local/bin`, `~/.npm-global/bin`, `/home/linuxbrew/.linuxbrew/bin`, `/opt/homebrew/bin`, `/usr/local/bin` and the `bin` directory of each nvm Node, newest first, and runs the first `bellwether` it finds. A global npm install under `~/.local` works on a machine whose non-interactive PATH leaves out `~/.local/bin`.
 - A saved herdr profile for the other machine on the parent's machine, so that `herdr machine list` shows it.
 - SSH from the parent's machine to the child's machine, with a key and no prompt. The target in the saved herdr profile has to resolve on the parent's machine, which is the only direction Bellwether connects in. Bellwether reaches the child's herdr through `herdr remote-api-bridge` on that connection, the same way `herdr --machine` does.
+
+A pi child on the other machine also needs that machine's pi to load a Bellwether extension with the guard from [#50](https://github.com/elecnix/bellwether/pull/50), or the spawn refuses. The 0.1.4 on npm lacks it. Until npm publishes a release that includes the guard, install the build under test there from a packed tarball, as [Upgrading](upgrading.md) describes, and point pi at the installed package directory:
+
+```sh
+pi remove npm:@elecnix/bellwether
+pi install "$(npm root -g)/@elecnix/bellwether"
+```
+
+That setting is temporary. Once npm has the release, `pi remove` the directory and run `pi install npm:@elecnix/bellwether` again.
 
 The child's machine never reaches the parent's machine, so it doesn't store a key, a route or a name for it. Bellwether uses your SSH configuration as it stands, with `BatchMode=yes` and keepalives. It doesn't add a key or write anything under `~/.ssh`.
 
@@ -60,6 +69,8 @@ The parent's daemon runs `bellwether relay-register`, `relay-cleanup`, `relay-br
 1. the line a `bellwether` command prints for its own failure, `bellwether <command>: …`;
 2. the line Node prints for the thrown error, such as `Error: …` or `TypeError: …`;
 3. the first line that is not a stack frame, a `Node.js v…` banner or a source excerpt.
+
+A Node warning on the far machine's standard error counts as a match. So when the far machine's Node prints `ExperimentalWarning`, a lost connection quotes that warning rather than ssh's reason, until a release fixes [#109](https://github.com/elecnix/bellwether/issues/109).
 
 Each failure's full output goes to `~/.bellwether/logs/ssh/`, and the daemon keeps the newest 20 files. When the error left lines out, it gives that file's path.
 

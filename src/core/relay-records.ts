@@ -8,7 +8,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { relayChildPath, relayOutboxDir, relayOutboxPath } from './paths.ts';
+import { relayChildPath, relayChildrenDir, relayOutboxDir, relayOutboxPath } from './paths.ts';
 import type { ReportStatus } from './types.ts';
 
 export const RELAY_SCHEMA = 1;
@@ -34,6 +34,12 @@ export interface RelayRecord {
   unforwarded?: number;
   /** When the parent's daemon last acknowledged one of its reports. */
   lastForwardedAt?: string;
+  /** The pane the child runs in here, for a child a parent on another machine adopted, so this machine can say who watches it. */
+  paneId?: string;
+  /** Set for a child a parent on another machine adopted rather than spawned: it has no brief, MCP config or child id of its own here. */
+  adopted?: boolean;
+  /** The harness session herdr reported in the pane at the adoption, so a claim on a pane that now runs another session counts as stale. */
+  session?: string;
 }
 
 /** One report waiting for the parent's daemon to collect it. */
@@ -70,6 +76,20 @@ function readJson<T>(file: string): T | undefined {
 
 export function readRelayRecord(childId: string): RelayRecord | undefined {
   return readJson<RelayRecord>(relayChildPath(childId));
+}
+
+/** Every relay record on this machine, retired ones included. */
+export function listRelayRecords(): RelayRecord[] {
+  let files: string[];
+  try {
+    files = fs.readdirSync(relayChildrenDir());
+  } catch {
+    return [];
+  }
+  return files
+    .filter((file) => file.endsWith('.json'))
+    .map((file) => readJson<RelayRecord>(path.join(relayChildrenDir(), file)))
+    .filter((record): record is RelayRecord => record !== undefined && typeof record.childId === 'string');
 }
 
 export function saveRelayRecord(record: RelayRecord): RelayRecord {

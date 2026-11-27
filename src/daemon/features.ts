@@ -44,6 +44,8 @@ const BASE: readonly Feature[] = [
   // A Claude Code child's Notification hook names its source. An older daemon
   // would record the dialog as pi's, which only pi's own closing notice clears.
   { name: 'child_prompt.source', kind: 'argument', protocol: 4, version: '0.1.5' },
+  // After 0.1.5: a parent's daemon adopts a pane on another machine and asks that machine who watches it.
+  { name: 'relay-adopt', kind: 'request', protocol: 4, version: '0.1.6' },
   // An older daemon would start the child in the parent's workspace and say nothing.
   ...['agent_spawn.workspace', 'agent_spawn.workspace_label'].map((name) => ({ name, kind: 'argument' as const, protocol: 4, version: '0.1.5' })),
   // An older daemon would start the child bare, off the route it was asked for, and say nothing.

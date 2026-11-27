@@ -43,6 +43,8 @@ interface World {
   /** Take the pane out of herdr and send pane_exited, as herdr does when the child quits. */
   exit(): void;
   log(): Record<string, unknown>[];
+  /** Run once, right after herdr answers the next pane.list, so a test can change herdr while an answer is in flight. */
+  afterList: (() => void) | undefined;
 }
 
 async function world(t: test.TestContext, overrides: Partial<ChildRecord> = {}): Promise<World> {
@@ -53,7 +55,13 @@ async function world(t: test.TestContext, overrides: Partial<ChildRecord> = {}):
   const list = (): Record<string, unknown>[] => [...panes].map(([pane_id, tab_id]) => ({ pane_id, tab_id, workspace_id: 'w1', agent: 'claude', agent_status: 'idle' }));
   const herdr = await startFakeHerdr({
     respond: (request) => {
-      if (request.method === 'pane.list') return { result: { type: 'pane_list', panes: list() } };
+      if (request.method === 'pane.list') {
+        const answer = { result: { type: 'pane_list', panes: list() } };
+        const after = result.afterList;
+        result.afterList = undefined;
+        after?.();
+        return answer;
+      }
       if (request.method === 'session.snapshot') return { result: { type: 'session_snapshot', snapshot: { panes: list(), agents: list() } } };
       return undefined;
     },
@@ -74,7 +82,8 @@ async function world(t: test.TestContext, overrides: Partial<ChildRecord> = {}):
     else process.env['BELLWETHER_HOME'] = previous;
     fs.rmSync(home, { recursive: true, force: true });
   });
-  return {
+  const result: World = {
+    afterList: undefined,
     herdr,
     git,
     parentId: parent.id,
@@ -92,6 +101,7 @@ async function world(t: test.TestContext, overrides: Partial<ChildRecord> = {}):
     },
     log: () => (fs.existsSync(retireLogPath()) ? fs.readFileSync(retireLogPath(), 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line) as Record<string, unknown>) : []),
   };
+  return result;
 }
 
 const caller = { childId: 'c-retire', paneId: PANE };
@@ -321,4 +331,115 @@ test('a child on another host cannot ask', async (t) => {
   const remote = await world(t, { host: 'hawthorne' });
   await assert.rejects(runBellwetherTool(remote.ctx(remote.watcher()), RETIRE_TOOL, {}, { childId: 'c-retire' }), /runs on machine hawthorne, and this daemon only cleans up after children on its own machine/);
   assert.equal(remote.child().retireRequestedAt, undefined);
+});
+
+// agent_stop and herdr's pane_closed are two notices of one fact: the parent
+// closed the child's tab. Whichever lands first, the cleanup runs once, with
+// no daemon restart. Issue #120.
+
+/** Run agent_stop through a herdr client whose tab.close runs `after` once herdr answers. */
+async function stop(w: World, watcher: Watcher, after: () => Promise<void> | void = () => {}): Promise<string> {
+  const closing = new HerdrClient({ socketPath: w.herdr.socketPath });
+  const close = closing.tabClose.bind(closing);
+  closing.tabClose = async (tabId) => {
+    await close(tabId);
+    await after();
+  };
+  return runBellwetherTool({ ...w.ctx(watcher), client: closing, clientFor: async () => closing }, 'agent_stop', { child: 'feat-x' });
+}
+
+test('agent_stop first, pane_closed second: a child that asked to be retired is retired without a daemon restart', async (t) => {
+  const w = await world(t);
+  w.git.merged.add(`${REPO}:feat/x`);
+  const { watcher } = await requested(w);
+  // herdr answers tab.close before it drops the pane from its list, so the stop's own attempt waits.
+  const text = await stop(w, watcher);
+  assert.match(text, /^Closed feat-x\. It asked to be retired/);
+  await watcher.retirements();
+  assert.ok(w.child().exitedAt, 'the stop marks the child exited');
+  assert.equal(w.child().retireOutcome, undefined, 'the pane is still listed, so nothing is removed yet');
+  assert.deepEqual(w.git.calls, []);
+
+  w.panes.delete(PANE);
+  w.herdr.send({ event: 'pane_closed', data: { pane_id: PANE, tab_id: TAB } });
+  await until('the outcome', () => w.child().retireOutcome);
+  await watcher.retirements();
+  assert.equal(w.child().retireOutcome, 'removed');
+  assert.deepEqual(w.git.calls, [`worktree remove ${WORKTREE}`, 'branch -D feat/x']);
+  assert.deepEqual(w.log().map((line) => line['outcome']), ['removed'], 'retire.log gets one line');
+});
+
+test('agent_stop alone retires the child when herdr drops the pane at once and no pane_closed reaches the watcher', async (t) => {
+  const w = await world(t);
+  w.git.merged.add(`${REPO}:feat/x`);
+  const { watcher } = await requested(w);
+  await stop(w, watcher, () => {
+    w.panes.delete(PANE);
+  });
+  await until('the outcome', () => w.child().retireOutcome);
+  await watcher.retirements();
+  assert.equal(w.child().retireOutcome, 'removed');
+  assert.deepEqual(w.log().map((line) => line['outcome']), ['removed']);
+
+  // A late pane_closed finds the work done: no second removal, no second line.
+  w.herdr.send({ event: 'pane_closed', data: { pane_id: PANE, tab_id: TAB } });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  await watcher.retirements();
+  assert.deepEqual(w.git.calls, [`worktree remove ${WORKTREE}`, 'branch -D feat/x']);
+  assert.equal(w.log().length, 1);
+});
+
+test('pane_closed first, agent_stop second: the child is retired once, and the stop does not wait for anything', async (t) => {
+  const w = await world(t);
+  w.git.merged.add(`${REPO}:feat/x`);
+  const { watcher } = await requested(w);
+  // herdr's event for the close reaches the watcher before tab.close answers the stop.
+  await stop(w, watcher, async () => {
+    w.panes.delete(PANE);
+    w.herdr.send({ event: 'pane_closed', data: { pane_id: PANE, tab_id: TAB } });
+    await until('the watcher to see the close', () => w.child().exitedAt);
+  });
+  await until('the outcome', () => w.child().retireOutcome);
+  await watcher.retirements();
+  assert.equal(w.child().retireOutcome, 'removed');
+  assert.deepEqual(w.git.calls, [`worktree remove ${WORKTREE}`, 'branch -D feat/x']);
+  assert.deepEqual(w.log().map((line) => line['outcome']), ['removed'], 'retire.log gets one line');
+});
+
+test('a stopped child that never asked to be retired is exited, not retired, and its worktree stays', async (t) => {
+  const w = await world(t);
+  w.git.merged.add(`${REPO}:feat/x`);
+  const watcher = w.watcher();
+  watcher.start();
+  await w.herdr.waitFor('events.subscribe');
+  assert.equal(await stop(w, watcher), 'Closed feat-x.');
+  w.panes.delete(PANE);
+  w.herdr.send({ event: 'pane_closed', data: { pane_id: PANE, tab_id: TAB } });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  await watcher.retirements();
+  const child = w.child();
+  assert.ok(child.exitedAt);
+  assert.equal(child.retireRequestedAt, undefined);
+  assert.equal(child.retireOutcome, undefined);
+  assert.equal(child.retiredAt, undefined);
+  assert.deepEqual(w.git.calls, []);
+  assert.deepEqual(w.log(), [], 'retire.log is for retirements, and nobody asked for one');
+  const listed = await runBellwetherTool(w.ctx(watcher), 'agent_list', {});
+  assert.equal(listed.split('\n')[1]?.split('\t')[3], 'exited');
+});
+
+test('a pane_closed that lands while the stop is still checking the pane gets the cleanup a second look', async (t) => {
+  const w = await world(t);
+  w.git.merged.add(`${REPO}:feat/x`);
+  const { watcher } = await requested(w);
+  // The stop's pass reads the pane as listed; herdr drops it and sends the event before that pass ends.
+  w.afterList = () => {
+    w.panes.delete(PANE);
+    w.herdr.send({ event: 'pane_closed', data: { pane_id: PANE, tab_id: TAB } });
+  };
+  await stop(w, watcher);
+  await until('the outcome', () => w.child().retireOutcome);
+  await watcher.retirements();
+  assert.equal(w.child().retireOutcome, 'removed');
+  assert.deepEqual(w.log().map((line) => line['outcome']), ['removed']);
 });

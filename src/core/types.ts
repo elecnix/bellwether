@@ -1,6 +1,15 @@
 /** The lifecycle states herdr reports for an agent in a pane. */
 export type AgentStatus = 'idle' | 'working' | 'blocked' | 'done' | 'unknown';
 
+/** A dialog a child waits on, named in one line, and where Bellwether learned of it. */
+export interface ChildPrompt {
+  line: string;
+  source: 'pi' | 'screen';
+  /** pi's prompt kind: select, confirm, input, editor or custom. */
+  kind?: string;
+  since: string;
+}
+
 /** What the parent is told about a child. */
 export type ChildEventKind = 'report' | 'idle' | 'blocked' | 'stuck' | 'inactive' | 'exited';
 
@@ -90,6 +99,14 @@ export interface ChildRecord {
   reportPending?: boolean;
   /** The last time the child's transcript or screen moved. */
   lastBusyAt: string;
+  /**
+   * The dialog the child waits on while one is open, which herdr can report
+   * as idle. `pi` comes from the child's own pi extension, on pi's
+   * ui_prompt_start and ui_prompt_end events, and `screen` from the check the
+   * watcher makes before an idle event. A screen prompt clears on herdr's next
+   * status, and a pi prompt clears when pi says it closed.
+   */
+  prompt?: ChildPrompt;
   /** This child's own stuck threshold, when its spawn set one. */
   stuckMs?: number;
   /**

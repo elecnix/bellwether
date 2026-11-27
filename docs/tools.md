@@ -32,13 +32,24 @@ Each event below starts a new turn for the parent. herdr reports the state, and 
 | Event | Signal | Settle |
 | -- | -- | -- |
 | report | The child calls `parent_report`. | none |
-| idle | herdr reports `idle` or `done` for a new turn, and no report covered that turn. | 5 s |
-| blocked | herdr reports `blocked`, on a question other than Claude Code's startup questions. | 3 s |
+| idle | herdr reports `idle` or `done` for a new turn, no report covered that turn, and no dialog is open. | 5 s |
+| blocked | The child waits on a dialog. herdr reports `blocked`, or a pi child says a dialog is open. When herdr reports `idle`, the screen can also show one. Claude Code's startup questions don't count, because Bellwether answers them. | 3 s |
 | stuck | herdr reports `working` or `unknown`, and the child has been quiet past the threshold. | 10 min |
 | inactive | No status change, output, new turn or report for the child's inactivity threshold. | none |
 | exited | The pane exits or closes, or herdr stops detecting the agent. | none |
 
 An unread `blocked` or `stuck` event drops out once the child moves on, so a dialog someone already answered never reaches the parent's next turn.
+
+### A child waiting on a dialog
+
+A `blocked` event names the dialog in one line of at most 100 characters, such as `Bash command: Do you want to proceed?`, so a parent can tell a trust question from a permission question. `agent_read` shows the whole screen. Bellwether never answers the dialog: approving a permission question is the operator's decision. To answer it, the parent sends keys with `agent_send`, or a person types in the pane.
+
+herdr reports `idle` for a harness that waits on a dialog it never reported, so Bellwether checks two sources before it sends `idle`:
+
+- A pi child's own Bellwether extension tells the daemon when pi opens and closes a dialog, from pi's `ui_prompt_start` and `ui_prompt_end` events, which pi 0.84.4 added. That covers any dialog an extension raises through `ctx.ui`.
+- For any other harness, the watcher reads the screen once before it sends `idle`. It recognizes a selection list with a marked option, or a y/n question, near the bottom of the screen.
+
+A child that answers its dialog and works on stays in the same turn. Closing the dialog doesn't send an event, and the parent gets one `idle` event when the turn ends.
 
 ### Delivery to the parent
 

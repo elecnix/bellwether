@@ -13,6 +13,7 @@ import { standDown } from '../../core/pi-extension.ts';
 import { hostName } from '../../core/spawn.ts';
 import { childLabel } from '../../core/label.ts';
 import { byEventTime, lateNote } from '../../core/notice.ts';
+import { PROMPT_NOTICE } from '../../core/report.ts';
 import type { OutboxEntry } from '../../core/types.ts';
 import { toolsFor } from '../tools.ts';
 
@@ -29,6 +30,11 @@ interface PiMessage {
   customType?: string;
   details?: unknown;
 }
+/** pi's ui_prompt_start and ui_prompt_end payload. */
+interface PiPromptEvent {
+  kind?: string;
+  title?: string;
+}
 interface ToolResult {
   content: { type: 'text'; text: string }[];
   details: unknown;
@@ -36,6 +42,8 @@ interface ToolResult {
 interface PiApi {
   on(event: 'session_start' | 'session_shutdown', handler: (event: unknown, ctx: PiContext) => void | Promise<void>): void;
   on(event: 'message_end', handler: (event: { message: PiMessage }, ctx: PiContext) => void | Promise<void>): void;
+  /** pi 0.84.4 and later: a blocking ctx.ui dialog opened or closed. Older pi never fires them. */
+  on(event: 'ui_prompt_start' | 'ui_prompt_end', handler: (event: PiPromptEvent) => void | Promise<void>): void;
   registerTool(tool: {
     name: string;
     label: string;
@@ -124,6 +132,26 @@ export default function bellwether(pi: PiApi): void {
     burst.unref?.();
   };
 
+  // A child tells the daemon when pi waits on a dialog, because herdr reports
+  // a pi session on an extension's dialog as idle, and its parent would read a
+  // finished turn. pi coalesces nested dialogs into one span, so the state is
+  // one open prompt or none. A notice from before the daemon connected goes
+  // out once it does, which clears whatever an earlier process left open.
+  let prompt: { open: boolean; title?: string; kind?: string } = { open: false };
+  const sendPrompt = (): void => {
+    if (!daemon || !process.env['BELLWETHER_CHILD']) return;
+    // An older daemon does not know the notice, and the screen check stands in.
+    void daemon.tool(PROMPT_NOTICE, { ...prompt }).catch(() => {});
+  };
+  pi.on('ui_prompt_start', (event) => {
+    prompt = { open: true, title: event?.title, kind: event?.kind };
+    sendPrompt();
+  });
+  pi.on('ui_prompt_end', () => {
+    prompt = { open: false };
+    sendPrompt();
+  });
+
   pi.on('session_start', async (_event, ctx) => {
     try {
       daemon = await DaemonClient.connect({
@@ -143,6 +171,7 @@ export default function bellwether(pi: PiApi): void {
       for (const receipt of delivered) sent.add(receipt);
       daemon.receipts(delivered.filter((receipt) => daemon?.unread().some((entry) => entry.receipt === receipt)));
       daemon.onEvents(onEntries);
+      sendPrompt();
       const missed = await daemon.pending();
       if (missed.length) onEntries(missed);
     } catch (error) {

@@ -192,7 +192,7 @@ test('a target that is neither a child nor a live session asks for kind', async 
   isolate(t, 'bellwether-resume-');
   const local = await herdr(t);
   const id = parent('unknown');
-  await assert.rejects(runBellwetherTool(context(id, local), 'agent_spawn', { resume: 'sess-404', prompt }), /"sess-404" is neither a child of this session nor a live session on local\. Call agent_list .* or pass kind \(pi, claude or omp\) with resume/);
+  await assert.rejects(runBellwetherTool(context(id, local), 'agent_spawn', { resume: 'sess-404', prompt }), /"sess-404" is neither a child of this session nor a live session on local\. Call agent_list .* or pass kind \(pi or claude or omp\) with resume/);
   assert.equal(children(id).length, 0);
   assert.equal(calls(local.fake, 'tab.create').length, 0);
 });

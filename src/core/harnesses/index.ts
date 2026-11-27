@@ -18,12 +18,6 @@ export type { HarnessEntry, HarnessHooks, HerdrRequester, HarnessSession, ChildF
 /** The entries, in the order agent_spawn lists its kinds. */
 const HARNESSES: HarnessEntry[] = [pi, claude, codex, opencode, cline, omp];
 
-/** The kinds as a person reads a list of them: `pi`, `pi or claude`, `pi, claude or omp`. */
-export function kindList(kinds: readonly string[], conjunction: 'and' | 'or'): string {
-  if (kinds.length < 2) return kinds.join('');
-  return `${kinds.slice(0, -1).join(', ')} ${conjunction} ${kinds.at(-1)}`;
-}
-
 /** Every harness Bellwether knows, by its herdr kind. */
 export function harnesses(): readonly HarnessEntry[] {
   return HARNESSES;

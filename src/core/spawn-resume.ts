@@ -12,7 +12,7 @@ import { LOCAL_HOST, hostOf } from './machine.ts';
 import { readParent, updateChild } from './registry.ts';
 import { findResumable, holdsSession, resumeArgs, resumeChild, sessionOf, type HarnessSession, type ResumeOptions } from './resume.ts';
 import { herdrLink, nextLaunch } from './spawn.ts';
-import { agentKinds, harnessFor, kindList } from './harnesses/index.ts';
+import { agentKinds, harnessFor } from './harnesses/index.ts';
 import { routeLabel } from './routes.ts';
 import { isMoving } from './move-plan.ts';
 import { promptChild } from './send.ts';
@@ -89,7 +89,7 @@ export async function spawnResume(clientFor: (host: string) => Promise<HerdrClie
         throw new Error(`"${request.target}" is alive in ${paneLabel(live)} on ${host}, but it is not a child of this session, and Bellwether sends input only to panes this session started. Adopt it with agent_adopt, then call agent_spawn with resume again to message it.`);
       }
       if (!request.kind) {
-        throw new Error(`"${request.target}" is neither a child of this session nor a live session on ${host}. Call agent_list to see this session's children, or pass kind (${kindList(agentKinds().filter((name) => harnessFor(name)?.resume), 'or')}) with resume to reopen a session id no child ran.`);
+        throw new Error(`"${request.target}" is neither a child of this session nor a live session on ${host}. Call agent_list to see this session's children, or pass kind (${agentKinds().filter((name) => harnessFor(name)?.resume).join(' or ')}) with resume to reopen a session id no child ran.`);
       }
       resumeArgs(request.kind, wanted);
       const resumed = await resumeChild(client, record, { session: wanted, kind: request.kind, name: request.name, cwd: request.cwd, host }, options, signal);

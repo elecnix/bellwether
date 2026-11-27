@@ -11,7 +11,7 @@ import { readParent, removeChild, updateChild, upsertChild } from './registry.ts
 import { clearRetirement } from './retire.ts';
 import { openChildTab, returnPlacement, undoChildTab, type ChildTab } from './workspace.ts';
 import { STARTUP_HOLD_MS, STARTUP_TIMEOUT_MS, childArgs, childEnv, childStartFiles, herdrLink, nextLaunch, startHarness, type RegisterRemote } from './spawn.ts';
-import { agentKinds, harnessFor, harnessNamed, kindList, requireHarness, type HarnessSession } from './harnesses/index.ts';
+import { agentKinds, harnessFor, harnessNamed, requireHarness, type HarnessSession } from './harnesses/index.ts';
 import { routeLaunch } from './routes.ts';
 import { watchStartup, type StartupDialog, type StartupWatch } from './startup-dialogs.ts';
 import { sessionFrom } from './transcript.ts';
@@ -37,7 +37,7 @@ export function resumeArgs(kind: string, session: HarnessSession): string[] {
   const resume = harnessFor(kind)?.resume;
   if (resume) return resume.args(session);
   const known = agentKinds().filter((name) => harnessFor(name)?.resume);
-  throw new Error(`Bellwether cannot resume a ${kind} agent: only ${kindList(known, 'and')} have a resume flag it knows. Call agent_spawn without resume to start a fresh ${kind} child.`);
+  throw new Error(`Bellwether cannot resume a ${kind} agent: only ${known.join(' and ')} have a resume flag it knows. Call agent_spawn without resume to start a fresh ${kind} child.`);
 }
 
 /** Whether a live pane holds this session. Pi may report the path where a caller gave the id. */

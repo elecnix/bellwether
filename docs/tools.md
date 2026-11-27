@@ -67,7 +67,7 @@ Each event below starts a new turn for the parent. herdr reports the state, and 
 | Event | Signal | Settle |
 | -- | -- | -- |
 | report | The child calls `parent_report`. | none |
-| idle | herdr reports `idle` or `done` for a new turn, no report covered that turn, and no dialog is open. | 5 s |
+| idle | herdr reports `idle` or `done` for a new turn, no `done` or `needs-input` report covered that turn, and no dialog is open. The text is the turn's last message. | 5 s |
 | blocked | The child waits on a dialog. herdr reports `blocked`, or a pi child says a dialog is open. When herdr reports `idle`, the screen can also show one. Claude Code's startup questions don't count, because Bellwether answers them. | 3 s |
 | stuck | herdr reports `working` or `unknown`, and the child has been quiet past the threshold. | 10 min |
 | inactive | No status change, output, new turn or report for the child's inactivity threshold. | none |
@@ -76,6 +76,14 @@ Each event below starts a new turn for the parent. herdr reports the state, and 
 A harness can end and leave its pane open on the shell that ran it, as pi does when it can't read its brief. herdr then releases the agent, and the parent gets `exited` at once. When the harness ends before herdr ever detects it, herdr keeps it as pending. Twenty seconds after the start, Bellwether checks such a child once. If the shell is the pane's foreground process again, the parent gets `exited`. A child that ended before it reported anything gets an `exited` event that says it never started, so a dead child and a child still thinking don't look the same. Bellwether leaves its tab open on what the harness printed: `agent_read` shows that screen, and `agent_stop` closes the tab.
 
 An unread `blocked` or `stuck` event drops out once the child moves on, so a dialog someone already answered never reaches the parent's next turn.
+
+### One event per turn
+
+The parent hears about each turn once. When a child ends its turn with a `done` or `needs-input` report, the parent gets only the `report` event. A `progress` report leaves the turn open. One `idle` event still follows when that turn ends, and it quotes the turn's own last message, from the transcript or the screen, never a report.
+
+Bellwether compares each finished turn with the last turn it told the parent about, not with herdr's current status. The child record keeps that turn as `turnNotified`, with the pane that ran it, so herdr repeating a status doesn't resend the turn. Nor does a later snapshot of the same turn, or a daemon that takes over. An adopted child starts from the turns its pane had already finished, and its first event is the end of its next turn.
+
+For the same child, a newer event replaces an older unread one, except for a report, which stays until the parent reads it.
 
 ### A child waiting on a dialog
 

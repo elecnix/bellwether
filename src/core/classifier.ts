@@ -34,8 +34,19 @@ export interface ClassifierState {
   statusSince: number;
   /** herdr's completion_seq for the newest finished turn. */
   completionSeq?: number;
-  /** The newest turn a report has already covered. */
+  /**
+   * The newest turn the parent has already heard about, by a report or an
+   * idle event. It is the last emitted state the idle event compares against,
+   * so a status herdr repeats, or a snapshot that reads the same turn again,
+   * raises nothing. The watcher keeps it on the child record as turnNotified.
+   */
   reportedFor?: number;
+  /**
+   * Set when a final report arrives while the turn that made it still runs.
+   * The report covers that turn, so when it ends it moves reportedFor to the
+   * turn's number instead of raising an idle event.
+   */
+  reportPending?: boolean;
   /** The last time the child moved: output, transcript growth, or a report. */
   lastBusyAt: number;
   /** Set once an event fired for the current quiet period, so it fires once. */
@@ -73,11 +84,26 @@ export interface InitialSeed {
   activityAt?: number;
   /** The quiet period whose inactive event already went out, from the registry. */
   firedInactiveFor?: number;
+  /** The turn the classifier last saw end, from the registry. */
+  completionSeq?: number;
+  /** The newest turn the parent heard about, from the registry. */
+  reportedFor?: number;
+  /** A final report that waits for its turn to end, from the registry. */
+  reportPending?: boolean;
 }
 
 export function initialState(status: AgentStatus, now: number, seed: InitialSeed = {}): ClassifierState {
   const activityAt = seed.activityAt ?? now;
-  return { status, statusSince: now, lastBusyAt: now, lastActivityAt: activityAt, firedInactiveFor: seed.firedInactiveFor };
+  return {
+    status,
+    statusSince: now,
+    lastBusyAt: now,
+    lastActivityAt: activityAt,
+    firedInactiveFor: seed.firedInactiveFor,
+    ...(seed.completionSeq === undefined ? {} : { completionSeq: seed.completionSeq }),
+    ...(seed.reportedFor === undefined ? {} : { reportedFor: seed.reportedFor }),
+    ...(seed.reportPending ? { reportPending: true } : {}),
+  };
 }
 
 /** The limits one child is judged by: the base, with the child's own thresholds. */
@@ -89,14 +115,21 @@ export function limitsFor(child: ChildRecord, base: SettleLimits): SettleLimits 
 /**
  * The state a child starts from, recovered from its registry record. A parent
  * that restarts resumes the same quiet period instead of a fresh one, and does
- * not send the inactive event again for a period it already reported.
+ * not send the inactive event again for a period it already reported. It also
+ * starts from the turn the parent last heard about, so a new service, a daemon
+ * that took over, or an adopted pane does not announce a turn twice. That turn
+ * belongs to the pane that ran it: a child in a new pane starts its count anew.
  */
 export function seedFor(child: ChildRecord, now: number): ClassifierState {
   const activityAt = Math.max(Date.parse(child.lastBusyAt), Date.parse(child.statusChangedAt));
   const fired = child.inactiveNotifiedFor === undefined ? NaN : Date.parse(child.inactiveNotifiedFor);
+  const notified = child.turnNotified && child.turnNotified.paneId === child.paneId ? child.turnNotified.seq : undefined;
   return initialState(child.lastStatus, now, {
     activityAt: Number.isFinite(activityAt) ? activityAt : now,
     firedInactiveFor: Number.isFinite(fired) ? fired : undefined,
+    completionSeq: child.completionSeq ?? notified,
+    reportedFor: notified,
+    reportPending: child.reportPending,
   });
 }
 
@@ -121,10 +154,11 @@ export function advance(state: ClassifierState, observation: Observation, now: n
     next.firedBlocked = undefined;
   }
   const becameReady = isReady(observation.status) && !isReady(state.status);
+  const counted = !seqMoved && observation.completionSeq === undefined && becameReady;
   if (seqMoved) {
     next.completionSeq = observation.completionSeq;
     next.statusSince = now;
-  } else if (observation.completionSeq === undefined && becameReady) {
+  } else if (counted) {
     // herdr reports completion_seq on AgentInfo, and the watcher reads that
     // projection, so a reconciled child normally carries one. The field is
     // still absent before the first reconcile finishes, and on a pane herdr
@@ -133,6 +167,11 @@ export function advance(state: ClassifierState, observation: Observation, now: n
     // also visible as a status change into idle or done, so count those.
     next.completionSeq = (state.completionSeq ?? 0) + 1;
     next.statusSince = now;
+  }
+  // The turn a final report covered has ended, so the report was its event.
+  if ((seqMoved || counted) && next.reportPending) {
+    next.reportedFor = next.completionSeq;
+    next.reportPending = undefined;
   }
   if (observation.prompt !== state.prompt) {
     next.lastActivityAt = now;
@@ -189,7 +228,21 @@ export function advance(state: ClassifierState, observation: Observation, now: n
   return { state: next };
 }
 
-/** Mark the newest turn as covered by a report, so no idle event follows it. */
-export function markReported(state: ClassifierState, now: number): ClassifierState {
-  return { ...state, reportedFor: state.completionSeq, lastBusyAt: now, lastActivityAt: now, statusSince: now };
+/**
+ * Fold a report into the state. A report is activity. A final report, `done`
+ * or `needs-input`, also covers a turn, so no idle event follows it: the turn
+ * that already ended when the child is settled, or else the turn in progress,
+ * once it ends. A `progress` report covers nothing, because the turn goes on,
+ * and the parent still hears once when it ends.
+ */
+export function markReported(state: ClassifierState, now: number, final = true): ClassifierState {
+  const next: ClassifierState = { ...state, lastBusyAt: now, lastActivityAt: now };
+  if (!final) return next;
+  if (isReady(state.status) && state.prompt === undefined) {
+    // Count from 0 when no turn was numbered yet, so the first-seen rule in
+    // advance does not announce the turn this report covered.
+    const seq = state.completionSeq ?? 0;
+    return { ...next, completionSeq: seq, reportedFor: seq, reportPending: undefined };
+  }
+  return { ...next, reportPending: true };
 }

@@ -9,7 +9,8 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { DaemonClient, drainDaemon, startDaemonProcess } from '../../src/daemon/client.ts';
-import { describeDaemonEntry, readLock } from '../../src/daemon/lock.ts';
+import { readLock } from '../../src/daemon/lock.ts';
+import { describeVersions } from '../../src/daemon/upgrade-status.ts';
 import { stopDaemonsUnder } from '../fixtures/daemons.ts';
 import { BELLWETHER_VERSION } from '../../src/core/version.ts';
 import { DAEMON_PROTOCOL } from '../../src/daemon/protocol.ts';
@@ -392,7 +393,10 @@ test('a lock an older daemon wrote still reads, with no entry point', () => {
     fs.mkdirSync(space.home, { recursive: true });
     fs.writeFileSync(path.join(space.home, 'daemon.lock'), `${JSON.stringify({ pid: 4242, startedAt: 1, protocol: 3, socket: space.socket })}\n`);
     assert.deepEqual(readLock(space.home), { pid: 4242, startedAt: 1, protocol: 3, socket: space.socket });
-    assert.match(describeDaemonEntry(readLock(space.home), '/somewhere/dist/daemon/main.js'), /^info {2}daemon entry: not recorded/);
+    const line = describeVersions({ installed: { version: BELLWETHER_VERSION, protocol: DAEMON_PROTOCOL, minClientProtocol: 2 }, lock: readLock(space.home), lockAlive: true, sockets: [], daemonSocket: 'daemon.sock' }, true).line;
+    assert.match(line, /from an entry point its lock does not name, because the daemon that wrote it predates that field/);
+    // The same line says what a session would do about it, from the rule the client follows: this daemon is older, so it hands over.
+    assert.match(line, /A session started from this install hands it over/);
   } finally {
     space.cleanup();
   }
@@ -401,8 +405,11 @@ test('a lock an older daemon wrote still reads, with no entry point', () => {
 test('doctor says whether the running daemon is the copy this command runs', () => {
   const own = fs.realpathSync(new URL('../../src/daemon/main.ts', import.meta.url));
   const base = { pid: 1, startedAt: 1, protocol: DAEMON_PROTOCOL, socket: '/s' };
-  assert.match(describeDaemonEntry({ ...base, entry: own, origin: 'checkout' }, own), /^ok {4}daemon entry: .*main\.ts \(a git checkout\), the one this command runs$/);
+  const installed = { version: BELLWETHER_VERSION, protocol: DAEMON_PROTOCOL, minClientProtocol: 2, build: '111111111111', entry: own };
+  const daemon = { pid: 1, version: BELLWETHER_VERSION, build: '111111111111', protocol: DAEMON_PROTOCOL, minClientProtocol: 2, startedAt: '', draining: false };
+  const input = { installed, lockAlive: true, sockets: [], daemonSocket: 'daemon.sock' };
+  assert.match(describeVersions({ ...input, lock: { ...base, version: BELLWETHER_VERSION, entry: own, origin: 'checkout' } }, true, daemon).line, /^ok {4}versions: .*from this install's entry point, .*main\.ts\. They are the same build\. A session started from this install keeps it\.$/);
   const other = '/home/linuxbrew/.linuxbrew/lib/node_modules/@elecnix/bellwether/dist/daemon/main.js';
-  const line = describeDaemonEntry({ ...base, entry: other, origin: 'package' }, own);
-  assert.match(line, /^info {2}daemon entry: \/home\/linuxbrew\/.*main\.js \(an installed package\), not this command's .*main\.ts \(a git checkout\)/);
+  const line = describeVersions({ ...input, lock: { ...base, version: BELLWETHER_VERSION, entry: other, origin: 'package' } }, true, { ...daemon, build: '222222222222' }).line;
+  assert.match(line, /^info {2}versions: .*from \/home\/linuxbrew\/.*main\.js \(an installed package\)\. They are not the same build\. A session started from this install keeps it, because only a newer version or protocol hands over; run bellwether drain/);
 });

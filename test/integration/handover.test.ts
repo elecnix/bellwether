@@ -93,7 +93,7 @@ test('a newer install hands the daemon over while an older session stays connect
   // Doctor on the newer install sees an older daemon, and says the next session hands it over.
   const midway = describeUpgrade(await gatherUpgrade(machine.home, machine.socket));
   assert.equal(midway.state, 'in-progress');
-  assert.match(midway.lines.join('\n'), new RegExp(`${OLD_VERSION} on protocol ${DAEMON_PROTOCOL - 1}, older than this install`));
+  assert.match(midway.lines.join('\n'), new RegExp(`the running daemon, pid \\d+, is ${OLD_VERSION.replaceAll('.', '\\.')} on protocol ${DAEMON_PROTOCOL - 1}, .*A session started from this install hands it over`));
 
   // A session of this release starts: it hands the daemon over, with no restart of the older session.
   const newSession = machine.track(await DaemonClient.connect(parent('new-session', machine.herdr), { home: machine.home, socketPath: machine.socket }));
@@ -122,9 +122,9 @@ test('a newer install hands the daemon over while an older session stays connect
   assert.deepEqual([byClient['old-session']?.client, byClient['old-session']?.protocol, byClient['old-session']?.liveChildren], [OLD_VERSION, DAEMON_PROTOCOL - 1, 1]);
   assert.deepEqual([byClient['new-session']?.client, byClient['new-session']?.protocol], [BELLWETHER_VERSION, DAEMON_PROTOCOL]);
 
-  // Doctor: in progress while the older session runs, with what it would lose by ending.
+  // Doctor: the older session is served by the daemon, so the upgrade is finished, and the session is named with what it would lose by ending.
   const coexisting = describeUpgrade(await gatherUpgrade(machine.home, machine.socket));
-  assert.equal(coexisting.state, 'in-progress');
+  assert.equal(coexisting.state, 'finished', coexisting.lines.join('\n'));
   assert.deepEqual(coexisting.leftovers, []);
   assert.equal(coexisting.olderSessions.length, 1);
   assert.match(coexisting.lines.join('\n'), /Ending it leaves 1 live child without their parent until the session resumes/);

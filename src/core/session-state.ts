@@ -54,11 +54,12 @@ export function findBinaries(name: string): string[] {
   return found;
 }
 
-function run(file: string, args: string[], timeoutMs = 30_000): Promise<{ code: number; stdout: string; stderr: string }> {
+function run(file: string, args: string[], timeoutMs = 30_000, signal?: AbortSignal): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
-    execFile(file, args, { timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024, encoding: 'utf8' }, (error, stdout, stderr) => {
+    execFile(file, args, { timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024, encoding: 'utf8', ...(signal ? { signal } : {}) }, (error, stdout, stderr) => {
       if (!error) return resolve({ code: 0, stdout, stderr });
       const fault = error as NodeJS.ErrnoException & { code?: number | string; killed?: boolean };
+      if (fault.name === 'AbortError') return resolve({ code: 124, stdout, stderr: `stopped at the caller's deadline` });
       resolve({ code: typeof fault.code === 'number' ? fault.code : 1, stdout, stderr: fault.killed ? `timed out after ${timeoutMs} ms` : stderr || fault.message });
     });
   });
@@ -69,13 +70,13 @@ function run(file: string, args: string[], timeoutMs = 30_000): Promise<{ code: 
  * first candidate that reports a version wins, so a stale copy earlier on
  * PATH, such as one under a node_modules/.bin, does not hide a working one.
  */
-export async function probeHarness(harness: MovableHarness): Promise<HarnessProbe> {
+export async function probeHarness(harness: MovableHarness, signal?: AbortSignal): Promise<HarnessProbe> {
   const name = harness === 'pi' ? 'pi' : 'claude';
   const binaries = findBinaries(name);
   if (!binaries.length) return { error: `no ${name} on PATH or in the usual install directories` };
   let first: HarnessProbe | undefined;
   for (const binary of binaries) {
-    const result = await run(binary, ['--version']);
+    const result = await run(binary, ['--version'], undefined, signal);
     const version = /(\d+\.\d+\.\d+[^\s]*)/.exec(`${result.stdout}\n${result.stderr}`)?.[1];
     if (result.code === 0 && version) return { path: binary, version };
     const detail = result.stderr.trim() ? `: ${result.stderr.trim().split('\n').pop()}` : '';
@@ -86,8 +87,8 @@ export async function probeHarness(harness: MovableHarness): Promise<HarnessProb
 }
 
 /** The provider and model pairs pi on this machine offers, from `pi --list-models`. */
-export async function piModels(binary: string): Promise<{ models?: ModelPair[]; error?: string }> {
-  const result = await run(binary, ['--list-models'], 60_000);
+export async function piModels(binary: string, signal?: AbortSignal): Promise<{ models?: ModelPair[]; error?: string }> {
+  const result = await run(binary, ['--list-models'], 60_000, signal);
   if (result.code !== 0) return { error: `pi --list-models exited with ${result.code}${result.stderr.trim() ? `: ${result.stderr.trim().split('\n').pop()}` : ''}` };
   return { models: parsePiModelList(result.stdout) };
 }
@@ -117,19 +118,19 @@ export interface ProbeResult {
   piSessionModels?: Record<string, ModelPair | null>;
 }
 
-/** What this machine offers a move: its harnesses, their versions, a directory and pi's models. */
-export async function probeMachine(request: ProbeRequest = {}): Promise<ProbeResult> {
+/** What this machine offers a move: its harnesses, their versions, a directory and pi's models. An aborted signal stops the commands it runs. */
+export async function probeMachine(request: ProbeRequest = {}, signal?: AbortSignal): Promise<ProbeResult> {
   const dirs = harnessDirs();
   const wanted = request.harnesses ?? ['claude-code', 'pi'];
   const harnesses: ProbeResult['harnesses'] = {};
-  for (const harness of wanted) harnesses[harness] = await probeHarness(harness);
+  for (const harness of wanted) harnesses[harness] = await probeHarness(harness, signal);
   const result: ProbeResult = { hostname: os.hostname(), bellwether: BELLWETHER_VERSION, dirs, harnesses, piModelsFile: path.join(dirs.piAgentDir, 'models.json') };
   if (request.cwd) result.cwd = { path: request.cwd, exists: isDirectory(request.cwd) };
   if (request.piModels) {
-    const pi = harnesses.pi ?? (await probeHarness('pi'));
+    const pi = harnesses.pi ?? (await probeHarness('pi', signal));
     if (!pi.path) result.piModelsError = pi.error ?? 'pi is not installed';
     else {
-      const listed = await piModels(pi.path);
+      const listed = await piModels(pi.path, signal);
       if (listed.models) result.piModels = listed.models;
       else result.piModelsError = listed.error;
     }

@@ -70,12 +70,13 @@ test('the installed bellwether command prints its usage', () => {
   assert.match(run.stdout, /^Usage: bellwether /);
 });
 
-test('the installed bellwether command prints the version it was published as', () => {
+test('the installed bellwether command prints the version it was published as, and the commit it was built from', () => {
   const manifest = JSON.parse(fs.readFileSync(path.join(installed, 'package.json'), 'utf8')) as { version: string };
   for (const flag of ['--version', 'version']) {
     const run = spawnSync(bin('bellwether'), [flag], { env: isolatedEnv(), encoding: 'utf8' });
     assert.equal(run.status, 0, run.stderr);
-    assert.equal(run.stdout.trim(), manifest.version);
+    assert.equal(run.stdout.trim().split(/\s+/)[0], manifest.version);
+    assert.match(run.stdout, /\(commit [0-9a-f]{12}|\(build unknown/);
   }
 });
 

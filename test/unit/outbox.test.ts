@@ -37,6 +37,16 @@ test('a newer event replaces the older unread entry for the same child', () => {
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+test('an unread report stays when a later event for the same child arrives', () => {
+  const root = scratch();
+  const outbox = Outbox.load('parent-report-stays');
+  const report = outbox.offer(offer('c1', 'report', 'the report'));
+  const idle = outbox.offer(offer('c1', 'idle', 'the next turn'));
+  assert.deepEqual(outbox.pending().map((entry) => entry.receipt).sort(), [report.receipt, idle.receipt].sort());
+  assert.deepEqual(outbox.takeSettled(), []);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
 test('two children hold two separate entries', () => {
   const root = scratch();
   const outbox = Outbox.load('parent-two');

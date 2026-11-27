@@ -26,13 +26,12 @@ import { DaemonClient, REFUSED_EXIT, ReportRefused, drainDaemon, ensureDaemon, p
 import { readMemory, runsOn } from './daemon/relay-links.ts';
 import type { RelayHostState } from './daemon/protocol.ts';
 import { guardlessPiCopies, resolvePiExtension } from './core/pi-extension.ts';
-import { describeDaemonEntry, readLock } from './daemon/lock.ts';
-import { DAEMON_PROTOCOL } from './daemon/protocol.ts';
+import { readLock } from './daemon/lock.ts';
 import { BELLWETHER_BUILD, BELLWETHER_BUILD_ID, BELLWETHER_VERSION, describeBuild } from './core/version.ts';
 import { daemonIsLive, startDaemon } from './daemon/server.ts';
 import type { ChildRecord, OutboxEntry } from './core/types.ts';
 import { LOCAL_HOST, hostOf, knownHosts } from './core/machine.ts';
-import { MOVE_VERBS, moveEndpoints, serveMoveVerb, type MoveVerb } from './core/move-endpoint.ts';
+import { MOVE_CHECK_BUDGET_MS, MOVE_VERBS, moveEndpoints, serveMoveVerb, type MoveVerb } from './core/move-endpoint.ts';
 import { moveRefusals, pairLabel, type MovableHarness, type ModelPair } from './core/move-plan.ts';
 import type { ProbeResult } from './core/session-state.ts';
 
@@ -196,14 +195,13 @@ function checkPackaging(): number {
 
 async function doctor(): Promise<number> {
   let failures = 0;
-  console.log(`bellwether ${describeBuild(BELLWETHER_VERSION, BELLWETHER_BUILD)}, daemon protocol ${DAEMON_PROTOCOL}`);
+  // The versions line in the upgrade report names this install's build, so the header does not repeat it.
   console.log(`bellwether home  ${bellwetherHome()}`);
   const daemonSocket = path.join(bellwetherHome(), 'daemon.sock');
   const daemonLive = daemonIsLive(bellwetherHome());
   // The upgrade report: which code the daemon and each session run, and whether a hand-over has finished.
   const upgrade = await gatherUpgrade(bellwetherHome(), daemonSocket);
   for (const line of describeUpgrade(upgrade).lines) console.log(`  ${line}`);
-  if (daemonLive) console.log(`  ${describeDaemonEntry(readLock(bellwetherHome()), path.join(import.meta.dirname, 'daemon', `main${path.extname(import.meta.url)}`))}`);
   failures += checkPackaging();
   failures += await checkRelay(daemonLive, daemonSocket);
   // The size of the home, and what the next prune would remove, before it becomes a problem.
@@ -249,28 +247,43 @@ function harnessLine(probe: ProbeResult, harness: MovableHarness): string {
   return found.version ? `${name} ${found.version}` : `${name} at ${found.path}, version unreadable${found.error ? ` (${found.error})` : ''}`;
 }
 
+/** Settle with `work`, or reject once `signal` aborts, with a message that names the bound. */
+function within<T>(work: Promise<T>, signal: AbortSignal, budgetMs: number): Promise<T> {
+  return Promise.race([
+    work,
+    new Promise<never>((_resolve, reject) => {
+      const fail = (): void => reject(new Error(`no answer within ${budgetMs / 1000} s, the bound doctor sets on the move check`));
+      if (signal.aborted) fail();
+      else signal.addEventListener('abort', fail, { once: true });
+    }),
+  ]);
+}
+
 /**
  * What agent_move would need on each known machine: the harness, its version,
  * and pi's models, then for each live claude or pi child, whether each other
  * machine could take it. These are information, not failures: a machine that
- * cannot take a child only refuses a move to it.
+ * cannot take a child only refuses a move to it. The whole check runs within
+ * MOVE_CHECK_BUDGET_MS.
  */
 async function checkMoves(): Promise<void> {
+  const budgetMs = MOVE_CHECK_BUDGET_MS;
+  const signal = AbortSignal.timeout(budgetMs);
   let hosts: string[];
   try {
-    hosts = await knownHosts();
+    hosts = await within(knownHosts(), signal, budgetMs);
   } catch (error) {
     console.log(`  info  move: the saved herdr machines could not be listed (${(error as Error).message}), so only this machine is checked`);
     hosts = [LOCAL_HOST];
   }
   const children = listParents().flatMap((parent) => parent.children).filter((child): child is ChildRecord & { harness: MovableHarness } => !child.exitedAt && (child.harness === 'pi' || child.harness === 'claude-code'));
-  const endpointFor = moveEndpoints(undefined, { timeoutMs: 30_000 });
+  const endpointFor = moveEndpoints(undefined, { timeoutMs: budgetMs, signal });
   const probes = new Map<string, ProbeResult | string>();
   await Promise.all(
     hosts.map(async (host) => {
       const piSessions = children.filter((child) => hostOf(child) === host && child.harness === 'pi' && child.session?.value).map((child) => child.session?.value as string);
       try {
-        probes.set(host, await endpointFor(host).probe({ piModels: true, piSessions }));
+        probes.set(host, await within(endpointFor(host).probe({ piModels: true, piSessions }), signal, budgetMs));
       } catch (error) {
         probes.set(host, (error as Error).message);
       }
@@ -323,8 +336,9 @@ async function main(argv: string[]): Promise<number> {
   const [command = 'help', ...rest] = argv;
   const { positional, flags } = parseArgs(rest);
 
+  // From the build alone: no daemon, herdr or home is read, so a daemon of any protocol cannot make it fail.
   if (command === 'version' || command === '--version') {
-    console.log(BELLWETHER_VERSION);
+    console.log(describeBuild(BELLWETHER_VERSION, BELLWETHER_BUILD));
     return 0;
   }
 
@@ -333,7 +347,7 @@ async function main(argv: string[]): Promise<number> {
     console.log('  --debug                                  print the stack trace of a failure, as BELLWETHER_DEBUG=1 does');
     console.log('  daemon [--socket PATH]                   run the local daemon in the foreground');
     console.log('  drain  [--socket PATH]                   stop the running daemon once its calls finish, so the next session starts the installed one');
-    console.log('  version                                  print the installed version (also --version); doctor names the commit it was built from');
+    console.log('  version                                  print the installed version and the commit it was built from (also --version), without asking the daemon');
     console.log('  spawn  --kind KIND --name NAME [--cwd DIR] [--prompt TEXT] [--model M] [--provider P] [--machine M] [--stuck-minutes N] [--inactive-minutes N] [--max-depth N] [--workspace new|ID|LABEL [--workspace-label L]] [--parent ID] [--focus]');
     console.log('         --workspace new                   start the child in a workspace of its own, on its machine, where its own children open too; Bellwether closes it once it is empty');
     console.log('  watch  [--parent ID] [--tick-ms N]      one line per child event, then keeps reading');

@@ -99,24 +99,26 @@ function sessionsReply(sessions: Partial<SessionInfo>[], daemon: Partial<Session
   return {
     type: 'sessions',
     id: 's1',
-    daemon: { pid: 4242, version: '0.1.5', protocol: 4, minClientProtocol: 3, startedAt: '2026-11-27T00:00:00.000Z', draining: false, ...daemon },
-    sessions: sessions.map((session, index) => ({ parentId: `pi-${index}`, harness: 'pi', session: `s${index}`, client: '0.1.5', protocol: 4, connectedAt: '2026-11-27T00:00:00.000Z', liveChildren: 0, unread: 0, ...session })),
+    daemon: { pid: 4242, version: '0.1.5', build: 'aaaaaaaaaaaa', protocol: 4, minClientProtocol: 3, startedAt: '2026-11-27T00:00:00.000Z', draining: false, ...daemon },
+    sessions: sessions.map((session, index) => ({ parentId: `pi-${index}`, harness: 'pi', session: `s${index}`, client: '0.1.5', build: 'aaaaaaaaaaaa', protocol: 4, connectedAt: '2026-11-27T00:00:00.000Z', liveChildren: 0, unread: 0, ...session })),
     relaySubscribers: 0,
   };
 }
 
-test('doctor calls an upgrade finished once the daemon and every session run this install', () => {
+test('doctor calls an upgrade finished once every session runs the daemon build', () => {
   const report = describeUpgrade({ installed, lock: liveLock, lockAlive: true, sockets: [{ name: 'daemon.sock', answers: true }], daemonSocket: 'daemon.sock', sessions: sessionsReply([{}, {}]) });
   assert.equal(report.state, 'finished');
   assert.deepEqual(report.leftovers, []);
+  assert.match(report.lines.join('\n'), /upgrade: finished; every connected session runs the daemon's build, 0\.1\.5 build aaaaaaaaaaaa$/m);
 });
 
-test('doctor names a session on an older adapter and what it would lose by ending', () => {
-  const report = describeUpgrade({ installed, lock: liveLock, lockAlive: true, sockets: [{ name: 'daemon.sock', answers: true }], daemonSocket: 'daemon.sock', sessions: sessionsReply([{ client: '0.1.4', protocol: 3, liveChildren: 2, unread: 1 }]) });
-  assert.equal(report.state, 'in-progress');
+test('doctor names a session on an older adapter the daemon serves, and what it would lose by ending, and still calls the upgrade finished', () => {
+  const report = describeUpgrade({ installed, lock: liveLock, lockAlive: true, sockets: [{ name: 'daemon.sock', answers: true }], daemonSocket: 'daemon.sock', sessions: sessionsReply([{ client: '0.1.4', build: 'bbbbbbbbbbbb', protocol: 3, liveChildren: 2, unread: 1 }]) });
+  assert.equal(report.state, 'finished');
   assert.deepEqual(report.olderSessions, ['pi-0']);
   const text = report.lines.join('\n');
-  assert.match(text, /adapter 0\.1\.4 on protocol 3, older than this install/);
+  assert.match(text, /adapter 0\.1\.4 build bbbbbbbbbbbb on protocol 3, older than the daemon, which still serves it/);
+  assert.match(text, /upgrade: finished; every connected session runs the daemon's build, 0\.1\.5 build aaaaaaaaaaaa, or an older release it serves \(1\)/);
   assert.match(text, /Ending it leaves 2 live children without their parent until the session resumes, and 1 unread event waits for it/);
   assert.match(text, /oldest protocol the daemon serves/);
 });
@@ -125,7 +127,9 @@ test('doctor says an older daemon is handed over by the next session, with no re
   const report = describeUpgrade({ installed, lock: { pid: 4242, startedAt: 0, protocol: 3, socket: '/h/daemon.sock' }, lockAlive: true, sockets: [{ name: 'daemon.sock', answers: true }], daemonSocket: 'daemon.sock', sessions: { error: 'unknown_type: unknown request type "sessions"' } });
   assert.equal(report.state, 'in-progress');
   const text = report.lines.join('\n');
-  assert.match(text, /a release older than 0\.1\.5 on protocol 3, older than this install\. The next session started from this install hands it over/);
+  assert.match(text, /the running daemon, pid 4242, is a release older than 0\.1\.5 on protocol 3, with a build it cannot report/);
+  assert.match(text, /A session started from this install hands it over, because the running daemon is a release older than 0\.1\.5 on protocol 3/);
+  assert.match(text, /upgrade: in progress, because the daemon runs an older release/);
   assert.match(text, /a daemon older than 0\.1\.5 cannot/);
 });
 

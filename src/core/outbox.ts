@@ -78,12 +78,13 @@ export class Outbox {
    * Offer an event for a child. A newer event replaces an older unread one, so
    * a child that goes quiet then blocked produces one message, not two. The
    * older entry keeps its receipt and is settled as superseded, so a client
-   * that already holds it learns to drop it rather than send it again.
+   * that already holds it learns to drop it rather than send it again. An
+   * unread report stays: it carries text no later event repeats.
    */
   offer(entry: Omit<OutboxEntry, 'receipt' | 'read'>): OutboxEntry {
     const next: OutboxEntry = { ...entry, receipt: newReceipt(), read: false };
     for (const existing of this.entries) {
-      if (existing.childId !== entry.childId || existing.read) continue;
+      if (existing.childId !== entry.childId || existing.read || existing.event === 'report') continue;
       this.settle(existing, next.receipt);
     }
     this.entries.push(next);

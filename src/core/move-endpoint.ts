@@ -5,7 +5,7 @@
 // so a move from here to there and a move from there to here run one code path.
 import { LOCAL_HOST, resolveMachine, type MachineResolver } from './machine.ts';
 import { commitImport, discardImport, exportSession, importSession, probeMachine, type ExportRequest, type ImportRequest, type ImportResult, type ProbeRequest, type ProbeResult, type SessionBundle, type SettleRequest } from './session-state.ts';
-import { describeFailure, runRemoteBellwether, type SshOptions } from './ssh.ts';
+import { describeFailure, releaseAdvice, runRemoteBellwether, type SshOptions } from './ssh.ts';
 
 export interface MoveEndpoint {
   /** The host as child records name it: `local`, or a saved herdr machine. */
@@ -66,7 +66,7 @@ export function remoteEndpoint(host: string, resolve: MachineResolver = resolveM
   const ensureCapable = (target: string): Promise<void> => {
     capable ??= runRemoteBellwether(target, ['help'], options).then((result) => {
       if (result.code !== 0 && !result.stdout.includes('Usage: bellwether')) throw new Error(describeFailure(target, result));
-      if (!result.stdout.includes('move-probe')) throw new Error(`bellwether on machine ${host} predates agent_move. Upgrade @elecnix/bellwether on ${target}.`);
+      if (!result.stdout.includes('move-probe')) throw new Error(`bellwether on machine ${host} predates agent_move. ${releaseAdvice(target, { ...result, command: ['move-probe'] }) ?? ''}`.trimEnd());
     });
     capable.catch(() => {
       capable = undefined;

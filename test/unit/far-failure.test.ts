@@ -4,7 +4,7 @@
 // when the far end's failure shows a release difference.
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { describeFailure, farErrorLine } from '../../src/core/ssh.ts';
+import { describeFailure, farErrorLine, releaseAdvice } from '../../src/core/ssh.ts';
 import { tooDeep } from '../../src/core/depth.ts';
 import { emptyParent } from '../../src/core/registry.ts';
 import { toolSchema } from '../../src/integrations/tools.ts';
@@ -98,4 +98,9 @@ test('max_depth names both its jobs: the descendants\' depth, and the gate on th
   assert.match(description, /descendants may reach/);
   assert.match(description, /gates this call/);
   assert.match(description, /max_depth 0 refuses/);
+});
+
+test('a far bellwether whose help lists no move verbs is told the release that brought them', () => {
+  const advice = releaseAdvice('child-box', { code: 0, stdout: 'Usage: bellwether <daemon|spawn|watch|list>\n', stderr: '', command: ['move-probe'] });
+  assert.match(advice ?? '', /move-probe came with Bellwether 0\.1\.5/);
 });

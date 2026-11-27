@@ -8,8 +8,9 @@ import path from 'node:path';
 import { BELLWETHER_BUILD, BELLWETHER_BUILD_ID, BELLWETHER_VERSION, describeBuild } from '../core/version.ts';
 import { daemonSessions, startingMarker } from './client.ts';
 import { compareVersions } from './handover.ts';
+import { FEATURES, missingFrom, unknownTo, type DaemonOffer, type Feature } from './features.ts';
 import { isAlive, readLock, type LockRecord } from './lock.ts';
-import { DAEMON_PROTOCOL, MIN_CLIENT_PROTOCOL, type SessionsReply } from './protocol.ts';
+import { DAEMON_PROTOCOL, MIN_CLIENT_PROTOCOL, type RelayHostState, type SessionsReply } from './protocol.ts';
 import { canConnect } from './server.ts';
 
 export interface UpgradeInput {
@@ -26,7 +27,8 @@ export interface UpgradeInput {
   sessions?: SessionsReply | { error: string };
 }
 
-export type UpgradeState = 'finished' | 'in-progress' | 'idle';
+/** finished: one release everywhere; in-progress: a hand-over or older sessions remain; behind: this install is older than the daemon; idle: no daemon. */
+export type UpgradeState = 'finished' | 'in-progress' | 'behind' | 'idle';
 
 export interface UpgradeReport {
   lines: string[];
@@ -42,6 +44,37 @@ const info = (text: string): string => `info  ${text}`;
 
 function plural(count: number, one: string, many = `${one}s`): string {
   return `${count} ${count === 1 ? one : many}`;
+}
+
+/** Features grouped by the release that brought them: "agent_restart and agent_move (protocol 4, Bellwether 0.1.5)". */
+export function namedFeatures(features: readonly Feature[]): string {
+  const groups = new Map<string, string[]>();
+  for (const feature of features) {
+    const key = `protocol ${feature.protocol}, Bellwether ${feature.version}`;
+    groups.set(key, [...(groups.get(key) ?? []), feature.name]);
+  }
+  return [...groups].map(([since, names]) => `${names.join(', ')} (${since})`).join('; ');
+}
+
+/**
+ * How this install and a daemon pair up: the protocol they speak, what the
+ * pairing loses, and which side would gain by updating. A pure function, so
+ * doctor's line for this machine and for each relay machine read the same.
+ */
+export function describePairing(installed: { version: string; protocol: number; minClientProtocol: number }, daemon: DaemonOffer, where = 'this machine'): string[] {
+  const lines: string[] = [];
+  const spoken = Math.min(installed.protocol, daemon.protocol);
+  const served = spoken >= installed.minClientProtocol;
+  lines.push(info(`pairing on ${where}: this install speaks protocol ${installed.protocol}, the daemon ${daemon.protocol}${daemon.version ? ` (Bellwether ${daemon.version})` : ''}; they speak ${served ? `protocol ${spoken}` : 'no common protocol, so the daemon refuses this install'}`));
+  if (!served) return lines;
+  const tools = missingFrom(daemon, 'tool');
+  const requests = missingFrom(daemon, 'request');
+  if (tools.length) lines.push(info(`degraded on ${where}: the daemon refuses ${namedFeatures(tools)} by name; every other tool works. Upgrading the daemon there gains them, when convenient.`));
+  if (requests.length) lines.push(info(`degraded on ${where}: the daemon lacks the ${namedFeatures(requests)} request${requests.length === 1 ? '' : 's'}.`));
+  const extra = unknownTo(daemon);
+  if (extra.length) lines.push(info(`behind on ${where}: the daemon serves ${extra.join(', ')}, which this install does not offer. Updating this install gains ${extra.length === 1 ? 'it' : 'them'}, when convenient.`));
+  if (!tools.length && !requests.length && !extra.length) lines.push(ok(`pairing on ${where}: nothing is degraded, and neither side gains anything by updating`));
+  return lines;
 }
 
 /** Read what the report needs from a home and its daemon socket. */
@@ -112,6 +145,11 @@ export function describeUpgrade(input: UpgradeInput): UpgradeReport {
     } else {
       lines.push(info(`daemon: ${described}, newer than this install. Sessions from this install use it while it serves their protocol; update this install to match.`));
     }
+    if (daemonProtocol !== undefined) {
+      const features = sessions?.daemon.features;
+      lines.push(...describePairing(installed, { protocol: daemonProtocol, ...(daemonVersion ? { version: daemonVersion } : {}), ...(features ? { features } : {}) }));
+    }
+    if (order !== undefined && (order > 0 || (order === 0 && (daemonProtocol ?? 0) > installed.protocol))) pending.push('behind');
     if (sessions?.daemon.draining) {
       lines.push(info('daemon: handing over; it takes no new call and exits once its calls in flight answer'));
       pending.push('the daemon is draining');
@@ -153,8 +191,10 @@ export function describeUpgrade(input: UpgradeInput): UpgradeReport {
       const children = session.liveChildren ? `Ending it leaves ${plural(session.liveChildren, 'live child', 'live children')} without their parent until the session resumes` : 'Ending it leaves no live child behind';
       const unread = session.unread ? `, and ${plural(session.unread, 'unread event')} ${session.unread === 1 ? 'waits' : 'wait'} for it` : '';
       if (order === undefined || order < 0 || session.protocol < installed.protocol) {
-        const oldest = session.protocol <= sessions.daemon.minClientProtocol ? ' It speaks the oldest protocol the daemon serves, so the next protocol change would refuse it.' : '';
-        lines.push(info(`${who}: adapter ${session.client} on protocol ${session.protocol}, older than this install. Its tools run in the daemon's code; only its adapter stays on ${session.client} until the session ends on its own. ${children}${unread}.${oldest}`));
+        const oldest = session.protocol <= sessions.daemon.minClientProtocol ? ' It speaks the oldest protocol the daemon serves, so only a protocol change that breaks it would refuse it.' : '';
+        const lacking = FEATURES.filter((feature) => feature.kind === 'tool' && feature.protocol > session.protocol);
+        const gains = lacking.length ? ` Its adapter does not offer ${namedFeatures(lacking)}; the session gains ${lacking.length === 1 ? 'it' : 'them'} when it next starts from this install.` : '';
+        lines.push(info(`${who}: adapter ${session.client} on protocol ${session.protocol}, older than this install. Its tools run in the daemon's code; only its adapter stays on ${session.client} until the session ends on its own. ${children}${unread}.${oldest}${gains}`));
         olderSessions.push(session.parentId);
       } else {
         lines.push(ok(`${who}: adapter ${session.client}${session.build ? ` build ${session.build}` : ''} on protocol ${session.protocol}`));
@@ -164,9 +204,25 @@ export function describeUpgrade(input: UpgradeInput): UpgradeReport {
   }
 
   if (leftovers.length) pending.push(`${plural(leftovers.length, 'leftover')} from a stopped process`);
-  const state: UpgradeState = pending.length ? 'in-progress' : running ? 'finished' : 'idle';
+  const behind = pending.includes('behind');
+  const reasons = pending.filter((reason) => reason !== 'behind');
+  const state: UpgradeState = reasons.length ? 'in-progress' : behind ? 'behind' : running ? 'finished' : 'idle';
   if (state === 'finished') lines.push(ok(`upgrade: finished; the daemon and every connected session run ${installed.version}`));
+  else if (state === 'behind') lines.push(info(`upgrade: this install, ${installed.version}, is older than the daemon, ${daemonVersion ?? 'unknown'}. Its sessions keep working on the daemon's code, without what the pairing line names. Update this install when convenient.`));
   else if (state === 'idle') lines.push(ok(`upgrade: nothing to finish; no daemon runs, and the next session starts ${installed.version} or whichever install it runs`));
-  else lines.push(info(`upgrade: in progress, because ${pending.join('; ')}. Nothing needs a restart: it finishes as sessions end on their own.`));
+  else lines.push(info(`upgrade: in progress, because ${reasons.join('; ')}. Nothing needs a restart: it finishes as sessions end on their own.`));
   return { lines, state, leftovers, olderSessions };
+}
+
+/**
+ * The protocol the daemon on a relay machine speaks, and what that machine
+ * gains by updating: the tools its daemon would refuse to the sessions there.
+ * The line before it already names that daemon's version and build.
+ */
+export function farPairing(state: RelayHostState): string {
+  if (state.farProtocol === undefined) return '';
+  const far = { protocol: state.farProtocol, ...(state.farVersion ? { version: state.farVersion } : {}) };
+  const missing = missingFrom(far, 'tool');
+  const gains = missing.length ? `; updating that machine gains ${namedFeatures(missing)}, when convenient` : '; nothing to gain by updating it';
+  return `, on protocol ${state.farProtocol}${gains}`;
 }

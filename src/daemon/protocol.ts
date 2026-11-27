@@ -17,20 +17,49 @@ export type { RelayHostState, RelayLinkStatus } from '../core/types.ts';
 //
 // Change the wire additively: a new request type, or a new optional field,
 // needs no bump, because a daemon answers a request it does not know with
-// unknown_type and a client ignores a field it does not read. Bump only for a
-// change an older peer would misread. Each bump costs a hand-over on every
-// machine (docs/upgrading.md), and the daemon then still serves the previous
-// protocol, so the sessions already running keep working.
+// unknown_type and a client ignores a field it does not read. List a new
+// request or tool in src/daemon/features.ts with the release that brings it,
+// so a client can name it when an older daemon refuses it. Bump only for a
+// change an older peer would misread, and record in PROTOCOL_HISTORY whether
+// the bump breaks the protocol before it. Each bump costs a hand-over on every
+// machine (docs/upgrading.md), and the daemon still serves every protocol back
+// to the last breaking bump, so the sessions already running keep working.
 export const DAEMON_PROTOCOL = 4;
 
 /**
- * The oldest client protocol a daemon serves. It is always the protocol
- * before DAEMON_PROTOCOL, so the sessions that predate a hand-over keep
- * working until they end on their own. Raising DAEMON_PROTOCOL raises this
- * with it, which drops support for the protocol two back: a session that old
- * gets an error asking for its install to be updated.
+ * Each protocol bump, and whether it breaks a peer on the protocol before it.
+ * A bump breaks when it removes a request or changes what one means, so that
+ * a daemon could not serve a client that still sends it. A bump that only adds
+ * breaks nothing: an older client never sends what it does not know.
  */
-export const MIN_CLIENT_PROTOCOL = DAEMON_PROTOCOL - 1;
+export const PROTOCOL_HISTORY: readonly { protocol: number; breaks: boolean; change: string }[] = [
+  // A protocol 1 call carries no caller identity, and from 2 on the daemon
+  // routes parent_report by that identity alone, so a protocol 1 child's
+  // report would reach no parent.
+  { protocol: 2, breaks: true, change: 'a call carries the caller identity' },
+  { protocol: 3, breaks: false, change: 'the report request' },
+  // The relay requests between daemons are new; nothing a session sends changed.
+  { protocol: 4, breaks: false, change: 'the relay turns round' },
+];
+
+/**
+ * The oldest client protocol a daemon serves: the newest bump that breaks.
+ *
+ * The floor is not zero, because a bump that removes or redefines a request
+ * cannot be served to a client that still sends it. It is not simply the
+ * protocol before DAEMON_PROTOCOL either: a client that never calls anything a
+ * bump removed loses nothing by talking to a newer daemon. So a daemon serves
+ * every protocol back to the last breaking bump, and a bump marked
+ * `breaks: false` leaves the floor where it is.
+ */
+export const MIN_CLIENT_PROTOCOL = Math.max(1, ...PROTOCOL_HISTORY.filter((entry) => entry.breaks).map((entry) => entry.protocol));
+
+/**
+ * The oldest daemon protocol a client speaks down to, when it finds an older
+ * daemon it does not replace. The same rule binds both ends: below the last
+ * breaking bump, the two would read the same request differently.
+ */
+export const MIN_DAEMON_PROTOCOL = MIN_CLIENT_PROTOCOL;
 
 /** Whether this daemon serves a client that speaks `protocol`. */
 export function acceptsClientProtocol(protocol: unknown): protocol is number {
@@ -172,6 +201,10 @@ export interface HelloReply {
   version?: string;
   /** The daemon's build, its commit. A daemon from before builds were named leaves it out. */
   build?: string;
+  /** The oldest client protocol the daemon serves. A daemon before 0.1.5 leaves it out. */
+  minProtocol?: number;
+  /** The requests and tools the daemon serves, by name. A daemon before 0.1.5 leaves it out. */
+  features?: string[];
 }
 
 export interface ResultReply {
@@ -181,6 +214,8 @@ export interface ResultReply {
   error?: string;
   /** For a report request: whether the receipt had already been accepted. */
   duplicate?: boolean;
+  /** Why the call failed, when the daemon can name it: unknown_tool for a tool it does not serve. */
+  code?: string;
   /**
    * The call never ran, because the daemon is handing over to a newer one.
    * A client that reads this field sends the call again once it reconnects.
@@ -198,7 +233,12 @@ export interface ErrorReply {
   id?: string;
   code: string;
   message: string;
+  /** For protocol_mismatch: the newest protocol the daemon serves. */
   protocol?: number;
+  /** For protocol_mismatch: the oldest protocol the daemon serves, from 0.1.5 on. */
+  minProtocol?: number;
+  /** For protocol_mismatch: the daemon's package version, from 0.1.5 on. */
+  version?: string;
 }
 
 export interface ClosedReply {
@@ -275,6 +315,8 @@ export interface SessionsReply {
     minClientProtocol: number;
     startedAt: string;
     draining: boolean;
+    /** The requests and tools it serves, by name. */
+    features?: string[];
   };
   sessions: SessionInfo[];
   /** Connections from parents' daemons on other machines, through relay-bridge. */

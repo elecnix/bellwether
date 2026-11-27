@@ -7,8 +7,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { BELLWETHER_BUILD_ID, BELLWETHER_VERSION } from '../core/version.ts';
-import { DAEMON_PROTOCOL, MAX_DAEMON_FRAME_BYTES, formatRequest, type DaemonReply, type ParentHello, type RelayHostState, type ReportRequest, type SessionsReply } from './protocol.ts';
+import { BELLWETHER_BUILD_ID, BELLWETHER_PACKAGE_DIR, BELLWETHER_VERSION } from '../core/version.ts';
+import { missingFeatureMessage, featureNamed, serves, type DaemonOffer } from './features.ts';
+import { DAEMON_PROTOCOL, MAX_DAEMON_FRAME_BYTES, MIN_DAEMON_PROTOCOL, formatRequest, type DaemonReply, type ParentHello, type RelayHostState, type ReportRequest, type SessionsReply } from './protocol.ts';
 import { isAlive, readLock } from './lock.ts';
 import { HANDOVER_TIMEOUT_MS, decideHandOver, type DaemonIdentity } from './handover.ts';
 import { canConnect } from './server.ts';
@@ -41,11 +42,13 @@ interface Connection {
   abandoned?: boolean;
 }
 
-/** What a handshake learned: the session's parent id, and which daemon answered. */
+/** What a handshake learned: the session's parent id, which daemon answered, and the protocol the two speak. */
 interface Hello {
   parentId: string;
   pid: number;
   daemon: DaemonIdentity;
+  offer: DaemonOffer;
+  spoken: number;
 }
 
 /** How many times a client hands over or restarts before it gives up on one connect. */
@@ -64,15 +67,39 @@ export function daemonEnv(env: NodeJS.ProcessEnv, home: string): NodeJS.ProcessE
   return next;
 }
 
-/** A daemon that speaks another protocol, and the one it speaks. */
+/** A daemon that refused this client's hello, with the range it said it serves. */
 class ProtocolMismatch extends Error {
   readonly daemonProtocol: number | undefined;
+  readonly minProtocol: number | undefined;
+  readonly version: string | undefined;
+  readonly reason: string;
 
-  constructor(message: string, daemonProtocol: number | undefined) {
-    super(`protocol_mismatch: ${message}`);
-    this.daemonProtocol = daemonProtocol;
+  constructor(reply: { message: string; protocol?: number; minProtocol?: number; version?: string }) {
+    super(`protocol_mismatch: ${reply.message}`);
+    this.reason = reply.message;
+    this.daemonProtocol = typeof reply.protocol === 'number' ? reply.protocol : undefined;
+    this.minProtocol = typeof reply.minProtocol === 'number' ? reply.minProtocol : undefined;
+    this.version = typeof reply.version === 'string' ? reply.version : undefined;
     this.name = 'ProtocolMismatch';
   }
+}
+
+/**
+ * The error for a daemon that refused this session outright. It quotes the
+ * range the daemon serves, as the daemon gave it, and names the install that
+ * has to change. Which one depends on the direction: a session too old for the
+ * daemon updates its own install, and a daemon too old for the session is
+ * upgraded on its machine.
+ */
+export function refusalMessage(socketPath: string, mismatch: { daemonProtocol?: number; minProtocol?: number; version?: string; reason: string }, own: DaemonIdentity, installDir = BELLWETHER_PACKAGE_DIR): string {
+  const daemon = `the daemon on ${socketPath}${mismatch.version ? ` (Bellwether ${mismatch.version})` : ''}`;
+  const range = mismatch.daemonProtocol === undefined ? 'did not say which protocols it serves' : mismatch.minProtocol !== undefined && mismatch.minProtocol !== mismatch.daemonProtocol ? `serves protocols ${mismatch.minProtocol} to ${mismatch.daemonProtocol}` : `serves protocol ${mismatch.daemonProtocol}`;
+  const session = `this session speaks protocols ${MIN_DAEMON_PROTOCOL} to ${own.protocol} (Bellwether ${own.version ?? 'unknown'})`;
+  const tooOldDaemon = mismatch.daemonProtocol !== undefined && mismatch.daemonProtocol < MIN_DAEMON_PROTOCOL;
+  const fix = tooOldDaemon
+    ? 'Upgrade the Bellwether install that started that daemon, or run bellwether drain so the next session starts one from its own install.'
+    : `Update the Bellwether install at ${installDir}, then start this session again.`;
+  return `${daemon} ${range}, and ${session}. It answered: ${mismatch.reason}. ${fix}`;
 }
 
 /** The daemon socket a client uses when none is given: the one under its home. */
@@ -82,7 +109,7 @@ export function defaultDaemonSocket(home: string): string {
 
 export class DaemonClient {
   private connection: Connection | undefined;
-  private readonly waiting = new Map<string, { resolve: (text: string) => void; reject: (error: Error) => void; retry: () => void }>();
+  private readonly waiting = new Map<string, { tool: string; resolve: (text: string) => void; reject: (error: Error) => void; retry: () => void }>();
   /** Panes whose watch went out on the current connection, so a reconnect sends each again once. */
   private sentWatches = new Set<string>();
   private readonly handlers = new Set<(entries: OutboxEntry[]) => void>();
@@ -94,6 +121,8 @@ export class DaemonClient {
   private reconnecting = false;
   private lastEvents: OutboxEntry[] = [];
   private closedReply: (() => void) | undefined;
+  /** What was logged once already, so a daemon that repeats something this client does not know is not logged each time. */
+  private readonly warned = new Set<string>();
 
   parentId: string;
   pid: number;
@@ -121,6 +150,10 @@ export class DaemonClient {
   daemonBuild: string | undefined;
   /** The daemon this client spoke to last, as its hello described it. */
   daemon: DaemonIdentity | undefined;
+  /** What that daemon serves, for naming a missing feature. */
+  offer: DaemonOffer | undefined;
+  /** The protocol this session speaks with that daemon: its own, or the daemon's when the daemon is older. */
+  spoken: number | undefined;
 
   private readonly parent: ParentHello;
   private readonly log: (message: string) => void;
@@ -133,7 +166,7 @@ export class DaemonClient {
     const socketPath = options.socketPath ?? defaultDaemonSocket(home);
     const client = new DaemonClient(parent, home, socketPath, options);
     const hello = await client.establish();
-    return Object.assign(client, { parentId: hello.parentId, pid: hello.pid, daemon: hello.daemon });
+    return Object.assign(client, { parentId: hello.parentId, pid: hello.pid, daemon: hello.daemon, offer: hello.offer, spoken: hello.spoken });
   }
 
   /** Unread entries the daemon sent with the last hello. */
@@ -184,6 +217,7 @@ export class DaemonClient {
       timer.unref?.();
       let retried = false;
       this.waiting.set(id, {
+        tool: name,
         resolve: (text) => {
           clearTimeout(timer);
           resolve(text);
@@ -251,29 +285,41 @@ export class DaemonClient {
 
   /**
    * Connect, starting a daemon when nothing answers and spawning is allowed.
-   * A daemon from an older release is handed over: this client drains it and
-   * starts its own, and the sessions already connected reconnect to the new
-   * one. A newer daemon stays, and serves this client when it still speaks
-   * this client's protocol; when it does not, the error says to update.
+   * The client always says hello first and never refuses a daemon on its own:
+   * only the daemon's answer decides. A daemon from an older release is handed
+   * over: this client drains it and starts its own, and the sessions already
+   * connected reconnect to the new one. An older daemon this client does not
+   * replace, because it may not start daemons or cannot order the two
+   * releases, is spoken to on the daemon's protocol, and the operations it
+   * lacks are refused by name when called. A daemon that refuses the session
+   * outright gets an error that quotes the range it serves.
    */
   private async establish(): Promise<Hello> {
     let lastError: Error | undefined;
+    let offer = this.identity.protocol;
     for (let attempt = 0; attempt < ESTABLISH_ATTEMPTS; attempt += 1) {
       let hello: Hello;
       try {
-        hello = await this.handshake();
+        hello = await this.handshake(offer);
       } catch (error) {
         lastError = error as Error;
         if (error instanceof ProtocolMismatch) {
-          const daemon: DaemonIdentity = { protocol: error.daemonProtocol ?? 0, ...versionOf(readLock(this.home)) };
-          const decision = error.daemonProtocol === undefined ? { kind: 'keep' as const } : decideHandOver(daemon, this.identity);
-          if (decision.kind === 'keep' || !this.spawnAllowed) {
-            const newer = error.daemonProtocol === undefined || error.daemonProtocol > this.identity.protocol;
-            throw new Error(`the running daemon speaks protocol ${error.daemonProtocol ?? 'unknown'}${newer ? ', newer than this client' : ''}, and does not serve this client's ${this.identity.protocol}. Update this Bellwether install.`);
+          const theirs = error.daemonProtocol;
+          const daemon: DaemonIdentity = { protocol: theirs ?? 0, ...(error.version ? { version: error.version } : versionOf(readLock(this.home))) };
+          const older = theirs !== undefined && theirs < offer;
+          const decision = older ? decideHandOver(daemon, this.identity) : { kind: 'keep' as const };
+          if (decision.kind === 'replace' && this.spawnAllowed) {
+            this.log(`handing over: ${decision.reason}`);
+            await handOverDaemon(this.home, this.socketPath, { entry: this.entry, log: this.log });
+            offer = this.identity.protocol;
+            continue;
           }
-          this.log(`handing over: ${decision.reason}`);
-          await handOverDaemon(this.home, this.socketPath, { entry: this.entry, log: this.log });
-          continue;
+          if (older && theirs >= MIN_DAEMON_PROTOCOL) {
+            this.warnOnce(`speak-${theirs}`, `the daemon on ${this.socketPath} serves protocol ${theirs}${daemon.version ? ` (Bellwether ${daemon.version})` : ''}, older than this session's ${this.identity.protocol}; speaking ${theirs}, and naming any operation it lacks when it is called`);
+            offer = theirs;
+            continue;
+          }
+          throw new Error(refusalMessage(this.socketPath, error, this.identity));
         }
         if (!this.spawnAllowed) throw error;
         await this.startDaemon();
@@ -284,8 +330,32 @@ export class DaemonClient {
       this.log(`handing over: ${decision.reason}`);
       this.abandon();
       await handOverDaemon(this.home, this.socketPath, { entry: this.entry, log: this.log });
+      offer = this.identity.protocol;
     }
     throw lastError ?? new Error(`the daemon on ${this.socketPath} was replaced ${ESTABLISH_ATTEMPTS} times while this client connected; another install keeps starting an older daemon`);
+  }
+
+  /** Log a message the first time its key comes up on this client, and never again. */
+  private warnOnce(key: string, message: string): void {
+    if (this.warned.has(key)) return;
+    this.warned.add(key);
+    this.log(message);
+  }
+
+  /**
+   * The error for a call the daemon refused. A tool the daemon does not serve
+   * is named with the release that brought it. The daemon says so with
+   * unknown_tool from 0.1.5 on, and with a fixed text before. For a daemon
+   * whose protocol predates the tool, the feature table judges, but only
+   * after the daemon has refused the call.
+   */
+  private callError(tool: string, message: string, code?: string): Error {
+    const feature = featureNamed(tool);
+    const offer = this.offer ?? (this.daemon ? { ...this.daemon } : undefined);
+    // A daemon before 0.1.5 sends no code, only this fixed text, for a tool it does not have.
+    const unknown = code === 'unknown_tool' || code === 'unknown_type' || message === `Bellwether has no tool named ${tool}`;
+    if (offer && (unknown || (feature && !serves(offer, feature)))) return new Error(missingFeatureMessage(tool, offer));
+    return new Error(message);
   }
 
   /** Leave the current connection for a hand-over, without the reconnect a dropped connection starts. */
@@ -321,34 +391,39 @@ export class DaemonClient {
     this.reconnecting = true;
     try {
       const hello = await this.establish();
-      Object.assign(this, { parentId: hello.parentId, pid: hello.pid, daemon: hello.daemon });
+      Object.assign(this, { parentId: hello.parentId, pid: hello.pid, daemon: hello.daemon, offer: hello.offer, spoken: hello.spoken });
       if (this.unsentReceipts.length) this.write(formatRequest({ type: 'receipt', receipts: this.unsentReceipts.splice(0) }));
     } finally {
       this.reconnecting = false;
     }
   }
 
-  private async handshake(): Promise<Hello> {
+  private async handshake(offer: number): Promise<Hello> {
     const connection = await this.open();
-    const hello = { type: 'hello', protocol: this.identity.protocol, client: this.identity.version ?? 'unknown', ...(this.build ? { build: this.build } : {}), parent: this.parent } as const;
+    const hello = { type: 'hello', protocol: offer, client: this.identity.version ?? 'unknown', ...(this.build ? { build: this.build } : {}), parent: this.parent } as const;
     const reply = await this.ask(connection, formatRequest(hello));
     if (reply.type === 'error') {
       connection.socket.destroy();
-      if (reply.code === 'protocol_mismatch') throw new ProtocolMismatch(reply.message, reply.protocol);
+      if (reply.code === 'protocol_mismatch') throw new ProtocolMismatch(reply);
       throw new Error(`${reply.code}: ${reply.message}`);
     }
-    if (reply.type !== 'hello') {
+    // Strict: without a parent id the session has no outbox to read, so nothing else could work.
+    if (reply.type !== 'hello' || typeof reply.parentId !== 'string') {
       connection.socket.destroy();
       throw new Error(`the daemon answered ${reply.type} to a hello`);
     }
     this.attach(connection);
-    this.lastEvents = reply.pending;
-    for (const entry of reply.pending) this.received.set(entry.receipt, entry);
-    if (reply.pending.length) for (const handler of this.handlers) handler(reply.pending);
+    const pending = Array.isArray(reply.pending) ? reply.pending : [];
+    this.lastEvents = pending;
+    for (const entry of pending) this.received.set(entry.receipt, entry);
+    if (pending.length) for (const handler of this.handlers) handler(pending);
     // A daemon before 0.1.5 sends no version in its hello, and its lock is the only record of it.
     const daemon: DaemonIdentity = { protocol: reply.protocol, ...(reply.version ? { version: reply.version } : versionOf(readLock(this.home))) };
     this.daemonBuild = reply.build;
-    return { parentId: reply.parentId, pid: reply.pid, daemon };
+    const features = Array.isArray(reply.features) ? reply.features.filter((name): name is string => typeof name === 'string') : undefined;
+    // Lines that arrived with the hello's answer, after the pending entries it carried.
+    if (connection.buffer) this.read(connection, '');
+    return { parentId: reply.parentId, pid: reply.pid, daemon, offer: { ...daemon, ...(features ? { features } : {}) }, spoken: offer };
   }
 
   private open(): Promise<Connection> {
@@ -367,23 +442,39 @@ export class DaemonClient {
     });
   }
 
-  /** Send one line and wait for the first reply that is not a push. */
+  /**
+   * Send a hello and wait for its answer: the first hello or error line. A
+   * line of another type, which a newer daemon may send first, is logged once
+   * and skipped, and what follows the answer stays in the buffer for attach.
+   */
   private ask(connection: Connection, line: string): Promise<DaemonReply> {
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('the daemon did not answer in time')), START_TIMEOUT_MS);
+      const timer = setTimeout(() => {
+        connection.socket.off('data', onData);
+        reject(new Error('the daemon did not answer in time'));
+      }, START_TIMEOUT_MS);
       timer.unref?.();
       const onData = (chunk: string): void => {
         connection.buffer += chunk;
-        const index = connection.buffer.indexOf('\n');
-        if (index < 0) return;
-        const first = connection.buffer.slice(0, index);
-        connection.buffer = connection.buffer.slice(index + 1);
-        connection.socket.off('data', onData);
-        clearTimeout(timer);
-        try {
-          resolve(JSON.parse(first) as DaemonReply);
-        } catch (error) {
-          reject(error as Error);
+        for (let index = connection.buffer.indexOf('\n'); index >= 0; index = connection.buffer.indexOf('\n')) {
+          const first = connection.buffer.slice(0, index);
+          connection.buffer = connection.buffer.slice(index + 1);
+          if (!first.trim()) continue;
+          let reply: DaemonReply;
+          try {
+            reply = JSON.parse(first) as DaemonReply;
+          } catch {
+            this.warnOnce('unparsed', 'the daemon sent a line that is not JSON; it was ignored');
+            continue;
+          }
+          if (reply.type !== 'hello' && reply.type !== 'error') {
+            this.warnOnce(`type-${String(reply.type)}`, `the daemon sent ${JSON.stringify(reply.type)} before answering the hello; this client does not know it and ignored it`);
+            continue;
+          }
+          connection.socket.off('data', onData);
+          clearTimeout(timer);
+          resolve(reply);
+          return;
         }
       };
       connection.socket.on('data', onData);
@@ -425,18 +516,31 @@ export class DaemonClient {
       try {
         reply = JSON.parse(line) as DaemonReply;
       } catch {
+        this.warnOnce('unparsed', 'the daemon sent a line that is not JSON; it was ignored');
         continue;
       }
+      if (!reply || typeof reply !== 'object') continue;
       this.dispatch(reply);
     }
   }
 
+  /**
+   * Act on one line from the daemon. Each reply is read for the fields this
+   * client knows, and any other field is ignored. A reply type this client
+   * does not know is logged once and ignored, never fatal: a newer daemon may
+   * push things an older session has no use for.
+   */
   private dispatch(reply: DaemonReply): void {
     if (reply.type === 'events') {
+      if (!Array.isArray(reply.entries)) {
+        this.warnOnce('events-shape', 'the daemon sent events without a list of entries; they were ignored');
+        return;
+      }
       // An entry that arrives read was settled in the daemon, by a newer state
       // or a newer event for the same child. Drop it, so no resend repeats it.
       const unread: OutboxEntry[] = [];
       for (const entry of reply.entries) {
+        if (!entry || typeof entry.receipt !== 'string') continue;
         if (entry.read) this.received.delete(entry.receipt);
         else {
           this.received.set(entry.receipt, entry);
@@ -458,14 +562,27 @@ export class DaemonClient {
         return;
       }
       this.waiting.delete(reply.id);
-      if (reply.error !== undefined) waiting.reject(new Error(reply.error));
+      if (reply.error !== undefined) waiting.reject(this.callError(waiting.tool, reply.error, reply.code));
       else waiting.resolve(reply.text ?? '');
+      return;
+    }
+    if (reply.type === 'error') {
+      // An error that names a call answers it, so the call fails now rather than at its timeout.
+      const waiting = reply.id ? this.waiting.get(reply.id) : undefined;
+      if (waiting && reply.id) {
+        this.waiting.delete(reply.id);
+        waiting.reject(this.callError(waiting.tool, `${reply.code}: ${reply.message}`, reply.code));
+        return;
+      }
+      this.warnOnce(`error-${reply.code}`, `the daemon answered ${reply.code}: ${reply.message}`);
       return;
     }
     if (reply.type === 'closed') {
       this.closedReply?.();
       this.closedReply = undefined;
+      return;
     }
+    this.warnOnce(`type-${String((reply as { type?: unknown }).type)}`, `the daemon sent ${JSON.stringify((reply as { type?: unknown }).type)}, which this client does not know; it was ignored`);
   }
 
   private write(line: string): void {
@@ -676,9 +793,10 @@ export interface PostedReport {
 export async function postReport(report: ReportRequest['report'], options: ConnectOptions = {}): Promise<PostedReport> {
   const home = options.home ?? process.env['BELLWETHER_HOME'] ?? path.join(os.homedir(), '.bellwether');
   const socketPath = options.socketPath ?? process.env['BELLWETHER_DAEMON_SOCKET'] ?? defaultDaemonSocket(home);
-  const line = formatRequest({ type: 'report', id: 'r1', protocol: DAEMON_PROTOCOL, report });
+  let offer = DAEMON_PROTOCOL;
   if (options.spawn !== false) await ensureDaemon(home, socketPath, options.entry, options.log);
   for (let attempt = 0; attempt < 3; attempt += 1) {
+    const line = formatRequest({ type: 'report', id: 'r1', protocol: offer, report });
     if (!(await canConnect(socketPath))) {
       if (options.spawn === false) throw new Error(`no daemon answers on ${socketPath}`);
       await startDaemonProcess(home, socketPath, options.entry);
@@ -697,6 +815,17 @@ export async function postReport(report: ReportRequest['report'], options: Conne
       options.log?.(`handing over the daemon on ${socketPath}, which predates the report request`);
       await handOverDaemon(home, socketPath, { entry: options.entry, log: options.log });
       continue;
+    }
+    const reportFeature = featureNamed('report');
+    // An older daemon that has the report request but not this protocol: post on its protocol.
+    if (reply.type === 'error' && reply.code === 'protocol_mismatch' && typeof reply.protocol === 'number' && reply.protocol < offer && reportFeature && reply.protocol >= reportFeature.protocol) {
+      options.log?.(`the daemon on ${socketPath} serves protocol ${reply.protocol}; posting the report on it`);
+      offer = reply.protocol;
+      continue;
+    }
+    if (reply.type === 'error' && reply.code === 'unknown_type') {
+      const lock = readLock(home);
+      throw new Error(missingFeatureMessage('report', { protocol: lock?.protocol ?? 0, ...versionOf(lock) }));
     }
     if (reply.type === 'error') throw new Error(`${reply.code}: ${reply.message}`);
     throw new Error(`the daemon answered ${reply.type} to a report`);

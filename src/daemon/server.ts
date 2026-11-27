@@ -21,6 +21,14 @@ import { readRelayRecord } from '../core/relay-records.ts';
 import { lastAssistantMessage, resolveTranscript } from '../core/transcript.ts';
 import type { CallerIdentity, OutboxEntry } from '../core/types.ts';
 import type { RelayHostState, RelayReport } from './protocol.ts';
+import { UnknownTool } from '../integrations/tools.ts';
+import { FEATURES } from './features.ts';
+
+/** What this daemon serves, by name, sent in its hello so a client and doctor need not infer it. */
+const SERVED = FEATURES.map((feature) => feature.name);
+
+/** The protocols this daemon serves, sent with a protocol_mismatch so the client can quote them. */
+const servedRange = { protocol: DAEMON_PROTOCOL, minProtocol: MIN_CLIENT_PROTOCOL, version: BELLWETHER_VERSION };
 
 export type { ParentService, ServiceFactory } from './service.ts';
 
@@ -326,14 +334,14 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
         request = parseRequest(line);
       } catch (error) {
         const fault = error as ProtocolError;
-        reply({ type: 'error', code: fault.code, message: fault.message, ...(fault.code === 'protocol_mismatch' ? { protocol: DAEMON_PROTOCOL } : {}) });
+        reply({ type: 'error', code: fault.code, message: fault.message, ...(fault.code === 'protocol_mismatch' ? servedRange : {}) });
         return;
       }
       if (request.type === 'sessions') {
         reply({
           type: 'sessions',
           id: request.id,
-          daemon: { pid, version: BELLWETHER_VERSION, build: BELLWETHER_BUILD_ID, protocol: DAEMON_PROTOCOL, minClientProtocol: MIN_CLIENT_PROTOCOL, startedAt, draining: drainingSince !== undefined },
+          daemon: { pid, version: BELLWETHER_VERSION, build: BELLWETHER_BUILD_ID, protocol: DAEMON_PROTOCOL, minClientProtocol: MIN_CLIENT_PROTOCOL, startedAt, draining: drainingSince !== undefined, features: SERVED },
           sessions: [...attached.values()].map(sessionInfo),
           relaySubscribers: relaySockets.size,
         });
@@ -385,9 +393,9 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
         return;
       }
       if (request.type === 'hello') {
-        // The previous protocol is served too, so a session that predates a hand-over keeps working.
+        // Every protocol back to the last breaking bump is served, so a session that predates a hand-over keeps working.
         if (!acceptsClientProtocol(request.protocol)) {
-          reply({ type: 'error', code: 'protocol_mismatch', message: `the client spoke protocol ${request.protocol}, and this daemon serves ${MIN_CLIENT_PROTOCOL} to ${DAEMON_PROTOCOL}`, protocol: DAEMON_PROTOCOL });
+          reply({ type: 'error', code: 'protocol_mismatch', message: `the client spoke protocol ${request.protocol}, and this daemon serves ${MIN_CLIENT_PROTOCOL} to ${DAEMON_PROTOCOL}`, ...servedRange });
           socket.end();
           return;
         }
@@ -396,7 +404,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
         set.add(socket);
         subscribers.set(session.parentId, set);
         attached.set(socket, { parentId: session.parentId, parent: request.parent, client: request.client, ...(request.build ? { build: request.build } : {}), protocol: request.protocol, connectedAt: new Date(now()).toISOString() });
-        reply({ type: 'hello', protocol: DAEMON_PROTOCOL, parentId: session.parentId, pid, pending: session.service.pending(), version: BELLWETHER_VERSION, build: BELLWETHER_BUILD_ID });
+        reply({ type: 'hello', protocol: DAEMON_PROTOCOL, parentId: session.parentId, pid, pending: session.service.pending(), version: BELLWETHER_VERSION, build: BELLWETHER_BUILD_ID, minProtocol: MIN_CLIENT_PROTOCOL, features: SERVED });
         return;
       }
       if (request.type === 'bye') {
@@ -446,7 +454,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
           // A spawn or a stop may have added or removed the last child on a host.
           links.sync();
         } catch (error) {
-          reply({ type: 'result', id: request.id, error: (error as Error).message });
+          reply({ type: 'result', id: request.id, error: (error as Error).message, ...(error instanceof UnknownTool ? { code: 'unknown_tool' } : {}) });
         } finally {
           inFlight -= 1;
         }

@@ -81,3 +81,8 @@ export function relayOutboxPath(receipt: string): string {
 export function relayHostsPath(): string {
   return path.join(relayDir(), 'hosts.json');
 }
+
+/** The full output of each remote command that failed, so an error can quote one line and point at the rest. */
+export function remoteLogDir(): string {
+  return path.join(bellwetherHome(), 'logs', 'ssh');
+}

@@ -84,7 +84,7 @@ async function until(what: string, check: () => boolean, timeoutMs = 3_000): Pro
  * A watcher over one child. `adopt` registers the child through agent_adopt's
  * own path rather than writing a spawned child's record.
  */
-async function rig(pane: Pane, options: { adopt?: boolean } = {}): Promise<Rig> {
+async function rig(pane: Pane, options: { adopt?: boolean; child?: Partial<ChildRecord> } = {}): Promise<Rig> {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'bellwether-noise-'));
   const previous = process.env['BELLWETHER_HOME'];
   process.env['BELLWETHER_HOME'] = home;
@@ -97,7 +97,7 @@ async function rig(pane: Pane, options: { adopt?: boolean } = {}): Promise<Rig> 
     childId = (await adoptPane(client, parent, { target: PANE })).child.id;
   } else {
     const now = new Date().toISOString();
-    const child: ChildRecord = { id: 'c0ffee02', name: 'kid', kind: 'pi', harness: 'pi', paneId: PANE, tabId: 'w1:t1', host: 'local', startedAt: now, lastStatus: pane.status as ChildRecord['lastStatus'], statusChangedAt: now, lastBusyAt: now, depth: 1, harnessSeenAt: now, ...(pane.seq === undefined ? {} : { completionSeq: pane.seq }) };
+    const child: ChildRecord = { id: 'c0ffee02', name: 'kid', kind: 'pi', harness: 'pi', paneId: PANE, tabId: 'w1:t1', host: 'local', startedAt: now, lastStatus: pane.status as ChildRecord['lastStatus'], statusChangedAt: now, lastBusyAt: now, depth: 1, harnessSeenAt: now, ...(pane.seq === undefined ? {} : { completionSeq: pane.seq }), ...options.child };
     const record = readParent(parent.id)!;
     record.children.push(child);
     saveParent(record);
@@ -271,6 +271,94 @@ test('an event never carries another event\'s text', async () => {
     assert.match(idle!, /SECOND-ANSWER/);
     assert.doesNotMatch(idle!, /REPORT-ONE/, 'the idle event quoted the report of an older turn');
     assert.doesNotMatch(report!, /SECOND-ANSWER/);
+  } finally {
+    await r.stop();
+  }
+});
+
+// Issue #100: an idle event from a child that never called parent_report reads
+// like a quiet finish. The idle event says so in its first line, and that line
+// rides on the one event the turn already sends.
+const SILENT = /has not called parent_report since/;
+
+test('a turn that ends with no report since the start says so in its one idle event', async () => {
+  const r = await rig(new Pane(2));
+  try {
+    await r.settle();
+    r.pane.set('idle', { endsTurn: true, screen: 'parent_report was refused, giving up\n>' });
+    await until('the idle event', () => r.published.length === 1);
+    r.pane.detected();
+    await r.settle();
+    r.restartWatcher();
+    await r.settle();
+    assert.deepEqual(events(r), ['idle'], `the parent got ${JSON.stringify(r.published.map((entry) => [entry.event, entry.text]))}`);
+    const [first, ...rest] = r.published[0]!.text.split('\n');
+    assert.match(first!, /^kid \(w1:p1\) went idle after \d+s, and it has not called parent_report since it started at \S+Z:$/);
+    assert.match(rest.join('\n'), /parent_report was refused/);
+  } finally {
+    await r.stop();
+  }
+});
+
+test('each silent turn carries the line once, in its own idle event', async () => {
+  const r = await rig(new Pane(2));
+  try {
+    await r.settle();
+    r.pane.set('idle', { endsTurn: true, screen: 'turn one\n>' });
+    await until('the first idle', () => r.published.length === 1);
+    r.pane.set('working');
+    await r.settle();
+    r.pane.set('idle', { endsTurn: true, screen: 'turn two\n>' });
+    await until('the second idle', () => r.published.length === 2);
+    await r.settle();
+    assert.deepEqual(events(r), ['idle', 'idle']);
+    for (const entry of r.published) assert.equal(entry.text.match(new RegExp(SILENT, 'g'))?.length, 1, entry.text);
+  } finally {
+    await r.stop();
+  }
+});
+
+test('a child that reported progress and then went idle sends one idle event without the line', async () => {
+  const r = await rig(new Pane(2));
+  try {
+    await r.settle();
+    r.report('progress', 'halfway');
+    await until('the report', () => r.published.length === 1);
+    r.pane.set('idle', { endsTurn: true, screen: 'finished quietly\n>' });
+    await until('the idle event', () => r.published.length === 2);
+    await r.settle();
+    assert.deepEqual(events(r), ['report', 'idle']);
+    assert.doesNotMatch(r.published[1]!.text, SILENT);
+  } finally {
+    await r.stop();
+  }
+});
+
+test('a report from before the latest resume does not count for the resumed run', async () => {
+  const before = new Date(Date.now() - 60_000).toISOString();
+  const resumed = new Date(Date.now() - 1_000).toISOString();
+  const r = await rig(new Pane(2), { child: { startedAt: before, resumedAt: resumed, lastReport: { status: 'done', text: 'the old run finished', at: before, seq: 1 } } });
+  try {
+    await r.settle();
+    r.pane.set('idle', { endsTurn: true, screen: 'resumed turn\n>' });
+    await until('the idle event', () => r.published.length === 1);
+    assert.match(r.published[0]!.text, new RegExp(`has not called parent_report since it resumed at ${resumed.replace(/[.]/g, '\\.')}:`));
+  } finally {
+    await r.stop();
+  }
+});
+
+test('an adopted child that never reported names its adoption as the start', async () => {
+  const pane = new Pane(3);
+  pane.status = 'idle';
+  const r = await rig(pane, { adopt: true });
+  try {
+    await r.settle();
+    r.pane.set('working');
+    await r.settle();
+    r.pane.set('idle', { endsTurn: true, screen: 'adopted turn\n>' });
+    await until('the idle event', () => r.published.length === 1);
+    assert.match(r.published[0]!.text, /has not called parent_report since Bellwether adopted it at \S+Z:/);
   } finally {
     await r.stop();
   }

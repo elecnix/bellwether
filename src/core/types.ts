@@ -242,6 +242,14 @@ export interface ChildRecord {
    */
   harnessEnded?: 'before-start' | 'in-pane';
   /**
+   * Set when herdr closed the tab of a child whose harness had already ended
+   * in it. herdr can name one close twice, as `pane_closed` and `tab_closed`,
+   * so the watcher releases the workspace and starts retirement for the first
+   * and ignores the second. Cleared with `harnessEnded` when the child comes
+   * back.
+   */
+  tabClosedAt?: string;
+  /**
    * Set when the child asked to be retired. The daemon cleans up once herdr
    * reports the pane gone. Every retirement field is optional, so an older
    * record loads unchanged.

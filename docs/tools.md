@@ -83,6 +83,16 @@ An unread `blocked` or `stuck` event drops out once the child moves on, so a dia
 
 The parent hears about each turn once. When a child ends its turn with a `done` or `needs-input` report, the parent gets only the `report` event. A `progress` report leaves the turn open. One `idle` event still follows when that turn ends, and it quotes the turn's own last message, from the transcript or the screen, never a report.
 
+When a child has not called `parent_report` since its latest start, resume or adoption, its `idle` event says so in the first line: `builder (w1:p3) went idle after 4 min, and it has not called parent_report since it started at 2026-11-27T14:02:10Z:`. A harness that refuses the child's report ends the turn like a quiet finish, and so does a model that never calls the tool. Read the child with `agent_read` to learn which.
+
+That clause states the fact without a reason, because the child record doesn't keep one, and it doesn't wake the parent a second time.
+
+Its limits:
+
+- An adopted child counts from its adoption, so a report it sent to another parent before then doesn't count.
+- When the daemon reads a report after the `idle` event settled, the report arrives as a `report` event of its own, and the earlier `idle` event still carries the clause.
+- When a harness doesn't keep a transcript, the clause comes before the screen lines, which may be all the parent has to read.
+
 Bellwether compares each finished turn with the last turn it told the parent about, not with herdr's current status. The child record keeps that turn as `turnNotified`, with the pane that ran it, so herdr repeating a status doesn't resend the turn. Nor does a later snapshot of the same turn, or a daemon that takes over. An adopted child starts from the turns its pane had already finished, and its first event is the end of its next turn.
 
 For the same child, a newer event replaces an older unread one, except for a report, which stays until the parent reads it.

@@ -3,10 +3,12 @@ import type { ToolSource } from './tool-source.ts';
 export type AgentStatus = 'idle' | 'working' | 'blocked' | 'done' | 'unknown';
 
 /**
- * Where Bellwether learned of a dialog: a pi child's extension, a Claude Code
- * child's Notification hook, or the screen check before an idle event.
+ * Where Bellwether learned of a dialog: the harness whose adapter named it,
+ * such as `pi` for a pi child's extension or `claude-code` for a Claude Code
+ * child's Notification hook, or `screen` for the screen check before an idle
+ * event.
  */
-export type PromptSource = 'pi' | 'claude-code' | 'screen';
+export type PromptSource = string;
 
 /** A dialog a child waits on, named in one line, and where Bellwether learned of it. */
 export interface ChildPrompt {
@@ -27,7 +29,7 @@ export type ChildEventKind = 'report' | 'idle' | 'blocked' | 'stuck' | 'inactive
 /** The three things a child can report through parent_report. */
 export type ReportStatus = 'done' | 'needs-input' | 'progress';
 
-/** The harnesses Bellwether has an adapter for. */
+/** The harnesses a parent session runs in, which have a Bellwether adapter. A child's harness is any name in the harness registry. */
 export type Harness = 'pi' | 'claude-code' | 'opencode';
 
 /**
@@ -77,9 +79,10 @@ export interface ChildRecord {
   model?: ModelPair & { source: 'caller' | 'parent' | 'session' };
   /** The route the child was launched through, or absent for a bare start. A restart or resume that changes route rewrites it. */
   route?: ChildRoute;
-  /** The herdr agent kind: pi, claude, codex, opencode or cline. */
+  /** The herdr agent kind, which names the child's entry in the harness registry. */
   kind: string;
-  harness: Harness | 'other';
+  /** The harness's name from its registry entry, such as `claude-code`. A record written before the registry knew its kind says `other`. */
+  harness: string;
   /**
    * The OpenCode store an OpenCode child's session lives in. The spawn passes
    * the same path to the child as OPENCODE_DB, so both sides read one file.

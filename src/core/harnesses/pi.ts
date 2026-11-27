@@ -1,0 +1,62 @@
+// Pi. herdr reports its session as the path of its session file. A child
+// loads the Bellwether extension of the package that spawned it with -e, and
+// runs on a provider and model pair, which it inherits from its parent unless
+// the caller names both.
+import { argValue } from '../args.ts';
+import { LOCAL_HOST } from '../machine.ts';
+import { piExtensionEntry, piFallback, resolvePiExtension } from '../pi-extension.ts';
+import { locatePiTranscript, piSessionModel } from '../transcript.ts';
+import type { ModelPair } from '../types.ts';
+import { modelFlag } from './shared.ts';
+import type { HarnessEntry } from './types.ts';
+
+export const pi: HarnessEntry = {
+  kind: 'pi',
+  harness: 'pi',
+  label: 'pi',
+  // Pi takes the argument whole and strips only the @, and attaches the file.
+  brief: { where: 'prompts', argument: (file) => `@${file}` },
+  chosenBy: 'pair',
+  launchArgs({ model, provider, extra = [], resume = [], files }) {
+    return [
+      // pi needs both flags. A flag the caller already put in its arguments is not repeated.
+      ...(provider && argValue(extra, '--provider') === undefined ? ['--provider', provider] : []),
+      ...modelFlag(model, extra),
+      // A pi child loads the extension it is given, whatever the host's pi settings hold.
+      ...(files.piExtension ? ['-e', files.piExtension] : []),
+      ...(files.briefFile ? [pi.brief.argument(files.briefFile)] : []),
+      ...resume,
+      ...extra,
+    ];
+  },
+  session: { from: 'herdr', kind: 'path' },
+  reports: {
+    via: 'extension',
+    // Resolved before anything else is written, so a missing extension writes nothing.
+    local: (_child, context) => ({ piExtension: resolvePiExtension((context.piExtension ?? piExtensionEntry)()) }),
+    remote: 'piExtension',
+  },
+  conversation: { locate: (session) => locatePiTranscript(session), modelOf: piSessionModel },
+  resume: { args: (session) => ['--session', session.value], fromTranscript: (file) => ({ value: file, kind: 'path' }) },
+  classify: { status: 'herdr', dialogs: { from: 'extension' }, activity: 'transcript' },
+  movable: true,
+  /**
+   * Which provider account and model a pi child runs on, since the account is
+   * what pays. With no pair passed and no session file yet, it names the
+   * default pi's settings point to, where they set it, and that the pair is
+   * unverified.
+   */
+  modelNote(child) {
+    const model = child.model;
+    const on = (pair: ModelPair): string => `provider account ${pair.provider}, model ${pair.id}`;
+    if (model?.source === 'caller') return `${child.name} runs on ${on(model)}, as the spawn named.`;
+    if (model?.source === 'parent') return `${child.name} runs on ${on(model)}, the same account and model as this session.`;
+    const head = 'This session did not say which provider and model it runs on, so Bellwether passed none.';
+    if (model) return `${head} ${child.name} runs on ${on(model)}, pi's own default, read from its session file.`;
+    const tail = 'This is unverified until pi writes its session file, and agent_list shows the pair pi chose once it does.';
+    if ((child.host ?? LOCAL_HOST) !== LOCAL_HOST) return `${head} ${child.name} starts on pi's own default on machine ${child.host}, set in that machine's ~/.pi/agent/settings.json, which Bellwether cannot read from here. The pair is unverified, and its session file stays on that machine.`;
+    const fallback = piFallback(child.cwd);
+    const target = fallback.provider && fallback.id ? on({ provider: fallback.provider, id: fallback.id }) : undefined;
+    return `${head} ${child.name} starts on pi's own default${target ? `, ${target}` : ''}: ${fallback.reason}. ${tail}`;
+  },
+};

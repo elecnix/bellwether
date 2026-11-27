@@ -292,8 +292,6 @@ export async function moveChild(deps: MoveDeps, parentId: string, request: MoveR
       const resumed = await resumeChild(targetClient, parent, { child: moved, session: { kind: harness === 'pi' ? 'path' : 'id', value: moved.session?.value ?? '' } }, { registerRemote: deps.registerRemote, cleanupRemote: deps.cleanupRemote, startupTimeoutMs: deps.startupTimeoutMs, redrawMs: deps.redrawMs });
       started = resumed.child;
       stage = 'started';
-      // A child that cannot report from its new machine has not fully arrived.
-      if (resumed.reportWarning) throw new Error(resumed.reportWarning);
     } catch (error) {
       const failure = (error as Error).message;
       const plan = rollbackPlan(stage);

@@ -47,19 +47,6 @@ export function pruneBriefs(now = Date.now()): void {
   }
 }
 
-/**
- * The one argument that hands the brief to the harness. Claude Code and Pi
- * attach a file named with @ to the first message, so the child spends no tool
- * call reading it. Any other harness gets a sentence that names the file.
- */
-export function briefArgument(kind: string, file: string): string {
-  // Claude Code reads a mention out of the prompt text, so a path with a space
-  // needs quotes there. Pi takes the argument whole and strips only the @.
-  if (kind === 'claude') return /\s/.test(file) ? `@"${file}"` : `@${file}`;
-  if (kind === 'pi') return `@${file}`;
-  return `Your task is in ${file}. Read it, then do what it says.`;
-}
-
 /** The directory a child's working directory holds its brief in. It ignores itself in git. */
 export const WORKDIR_BRIEF_DIR = '.bellwether';
 

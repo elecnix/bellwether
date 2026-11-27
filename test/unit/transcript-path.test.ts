@@ -6,7 +6,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { claudeProjectDir, claudeTranscriptPath, locateTranscript } from '../../src/core/transcript.ts';
+import { claudeProjectDir, claudeTranscriptPath } from '../../src/core/transcript.ts';
+import { locateTranscript } from '../../src/core/harnesses/index.ts';
 
 function scratch(t: test.TestContext): string {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'bellwether-tpath-')));

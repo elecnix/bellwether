@@ -9,6 +9,7 @@ import { listParents, readParent, updateChild } from './registry.ts';
 import { MODAL_LINE_LIMIT } from './modal.ts';
 import { readRelayRecord, type RelayRecord } from './relay-records.ts';
 import type { CallerIdentity, ChildRecord, ParentRecord, ReportStatus, SpoolReport } from './types.ts';
+import { harnessNamed } from './harnesses/index.ts';
 
 export function harnessForEnv(): string {
   if (process.env['BELLWETHER_HARNESS']) return process.env['BELLWETHER_HARNESS'];
@@ -199,7 +200,7 @@ export function isReportStatus(value: unknown): value is ReportStatus {
 export const PROMPT_NOTICE = 'child_prompt';
 
 /** Record or clear the dialog the calling child waits on. */
-export function notePromptForCaller(caller: CallerIdentity, notice: { open: boolean; title?: string; kind?: string; source?: 'pi' | 'claude-code' }): string {
+export function notePromptForCaller(caller: CallerIdentity, notice: { open: boolean; title?: string; kind?: string; source?: string }): string {
   const found = childOfCaller(caller);
   if (!found) throw new Error(`${PROMPT_NOTICE} came from ${caller.paneId ? `pane ${caller.paneId}` : 'no pane'}, where no Bellwether child on this machine runs.`);
   const { parent, child } = found;
@@ -210,7 +211,7 @@ export function notePromptForCaller(caller: CallerIdentity, notice: { open: bool
       return;
     }
     const kind = notice.kind?.trim() || undefined;
-    const harness = source === 'pi' ? 'pi' : 'Claude Code';
+    const harness = harnessNamed(source)?.label ?? source;
     const line = clipLine(notice.title?.trim() || `a ${harness} ${kind ?? 'dialog'} prompt with no title`);
     entry.prompt = { line, source, ...(kind ? { kind } : {}), since: entry.prompt?.source === source ? entry.prompt.since : new Date().toISOString() };
   });

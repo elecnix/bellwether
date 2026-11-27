@@ -80,38 +80,41 @@ function cwdForms(cwd: string): string[] {
   }
 }
 
-/**
- * Locate the transcript for a harness session. Pi and Claude Code both keep
- * one JSONL file per session, named after the session id, under a per-project
- * directory. When there is no file, the answer says why, because a child that
- * exits before its first turn never gets one.
- */
-export function locateTranscript(harness: string, sessionId: string | undefined, cwd: string | undefined): TranscriptLookup {
-  if (!sessionId) return { missing: 'herdr has not reported the session yet' };
-  // Pi reports its session as a path, Claude Code as an id. Take a path as one.
-  if (sessionId.includes('/') || sessionId.endsWith('.jsonl')) return fs.existsSync(sessionId) ? { path: sessionId } : { missing: `the session file ${sessionId} does not exist` };
-  if (harness === 'claude-code') {
-    const expected = cwd ? cwdForms(cwd).map((form) => claudeTranscriptPath(sessionId, form)) : [];
-    const direct = expected.find((file) => fs.existsSync(file));
-    if (direct) return { path: direct };
-    // A session started in another directory, or under a rule this code does not know.
-    const root = path.join(claudeConfigDir(), 'projects');
-    const found = newestFile(root, endsWith(sessionId), 1);
-    if (found) return { path: found };
-    const where = expected[0] ?? `${root}/*/${sessionId}.jsonl`;
-    return { missing: `Claude Code has not written ${where}. It writes the file at the session's first turn, so a child that exits before one has no transcript.` };
-  }
-  if (harness === 'pi') {
-    const root = path.join(process.env['PI_CODING_AGENT_DIR'] ?? path.join(os.homedir(), '.pi', 'agent'), 'sessions');
-    const found = newestFile(root, endsWith(sessionId));
-    return found ? { path: found } : { missing: `no file under ${root} ends in ${sessionId}.jsonl` };
-  }
-  return { missing: `Bellwether reads no transcript for the ${harness} harness` };
+/** A session herdr reported as a path is the transcript itself. */
+export function locateSessionPath(sessionId: string): TranscriptLookup | undefined {
+  if (!(sessionId.includes('/') || sessionId.endsWith('.jsonl'))) return undefined;
+  return fs.existsSync(sessionId) ? { path: sessionId } : { missing: `the session file ${sessionId} does not exist` };
 }
 
-/** The transcript's path for a harness session, when the file exists on this machine. */
-export function resolveTranscript(harness: string, sessionId: string | undefined, cwd: string | undefined): string | undefined {
-  return locateTranscript(harness, sessionId, cwd).path;
+/**
+ * Claude Code's transcript for a session: one JSONL file named after the
+ * session id, under the directory Claude Code names after the working
+ * directory. When there is no file, the answer says why, because a child
+ * that exits before its first turn never gets one.
+ */
+export function locateClaudeTranscript(sessionId: string | undefined, cwd: string | undefined): TranscriptLookup {
+  if (!sessionId) return { missing: 'herdr has not reported the session yet' };
+  const asPath = locateSessionPath(sessionId);
+  if (asPath) return asPath;
+  const expected = cwd ? cwdForms(cwd).map((form) => claudeTranscriptPath(sessionId, form)) : [];
+  const direct = expected.find((file) => fs.existsSync(file));
+  if (direct) return { path: direct };
+  // A session started in another directory, or under a rule this code does not know.
+  const root = path.join(claudeConfigDir(), 'projects');
+  const found = newestFile(root, endsWith(sessionId), 1);
+  if (found) return { path: found };
+  const where = expected[0] ?? `${root}/*/${sessionId}.jsonl`;
+  return { missing: `Claude Code has not written ${where}. It writes the file at the session's first turn, so a child that exits before one has no transcript.` };
+}
+
+/** Pi's session file: herdr reports its path, or a file under pi's sessions directory ends in the session id. */
+export function locatePiTranscript(sessionId: string | undefined): TranscriptLookup {
+  if (!sessionId) return { missing: 'herdr has not reported the session yet' };
+  const asPath = locateSessionPath(sessionId);
+  if (asPath) return asPath;
+  const root = path.join(process.env['PI_CODING_AGENT_DIR'] ?? path.join(os.homedir(), '.pi', 'agent'), 'sessions');
+  const found = newestFile(root, endsWith(sessionId));
+  return found ? { path: found } : { missing: `no file under ${root} ends in ${sessionId}.jsonl` };
 }
 
 /** herdr's agent_session for a pane, as a kind and a value. */

@@ -15,6 +15,7 @@ import { Watcher } from '../../src/core/watcher.ts';
 import type { CallerIdentity, ChildRecord, SpoolReport } from '../../src/core/types.ts';
 import { runBellwetherTool, toolsFor, type ToolContext } from '../../src/integrations/tools.ts';
 import { startFakeHerdr, type FakeHerdr } from '../fixtures/fake-herdr.ts';
+import { FAKE_KIND } from '../fixtures/fake-harness.ts';
 
 interface Session {
   ctx: ToolContext;
@@ -79,7 +80,7 @@ function record(session: Session, childId: string): ChildRecord {
   return found;
 }
 
-const spawnGrandchild = (b: Session): Promise<string> => runBellwetherTool(b.ctx, 'agent_spawn', { kind: 'codex', name: 'grandchild', cwd: os.tmpdir() }, b.caller);
+const spawnGrandchild = (b: Session): Promise<string> => runBellwetherTool(b.ctx, 'agent_spawn', { kind: FAKE_KIND, name: 'grandchild', cwd: os.tmpdir() }, b.caller);
 
 test('a child at the limit asks, its parent grants, and the grandchildren spawn', async (t) => {
   const { herdr, a, b } = await tree(t, { tree: 3, a: 3 });
@@ -101,7 +102,7 @@ test('a child at the limit asks, its parent grants, and the grandchildren spawn'
   assert.match(prompts(herdr, 'w1:pB').join('\n'), new RegExp(`granted your depth request ${id}.*depth 3`, 's'));
 
   const started = await spawnGrandchild(b);
-  assert.match(started, /grandchild started as a codex agent/);
+  assert.match(started, /grandchild started as a fake-agent agent/);
   const grandchild = readParent(b.ctx.parentId)?.children.find((entry) => entry.name === 'grandchild');
   assert.equal(grandchild?.depth, 3);
   assert.equal(grandchild?.maxDepth, 3, 'a grandchild inherits the ceiling its parent was granted, and no more');
@@ -205,9 +206,9 @@ test('a depth-0 session has no one to ask, and the call says so rather than hang
 
 test('a non-root spawn holds max_depth to its own ceiling, and the top session sets the tree', async (t) => {
   const { root, a } = await tree(t, { tree: 2, a: 2 });
-  const held = await runBellwetherTool(a.ctx, 'agent_spawn', { kind: 'codex', name: 'deep', cwd: os.tmpdir(), max_depth: 9 }, a.caller);
+  const held = await runBellwetherTool(a.ctx, 'agent_spawn', { kind: FAKE_KIND, name: 'deep', cwd: os.tmpdir(), max_depth: 9 }, a.caller);
   assert.match(held, /max_depth 9 is past this session's own ceiling of 2, so the child got 2/);
   assert.equal(readParent(a.ctx.parentId)?.children.find((entry) => entry.name === 'deep')?.maxDepth, 2);
-  await runBellwetherTool(root.ctx, 'agent_spawn', { kind: 'codex', name: 'wide', cwd: os.tmpdir(), max_depth: 5 }, root.caller);
+  await runBellwetherTool(root.ctx, 'agent_spawn', { kind: FAKE_KIND, name: 'wide', cwd: os.tmpdir(), max_depth: 5 }, root.caller);
   assert.equal(readParent(root.ctx.parentId)?.maxDepth, 5);
 });

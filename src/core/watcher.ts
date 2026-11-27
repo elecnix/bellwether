@@ -12,10 +12,10 @@ import { DEFAULT_LIMITS, advance, limitsFor, markReported, seedFor, type Classif
 import { LOCAL_HOST, hostOf, type ClientFor } from './machine.ts';
 import { Outbox } from './outbox.ts';
 import { mutateParent, readParent, updateChild } from './registry.ts';
-import { DIALOG_NAMES, detectDialog, watchStartup } from './startup-dialogs.ts';
+import { detectDialog, dialogName, watchStartup } from './startup-dialogs.ts';
+import { harnessFor, harnessNamed } from './harnesses/index.ts';
 import { detectModal } from './modal.ts';
-import { agentNameOf, lastAssistantMessage, locateTranscript, piSessionModel, sessionFrom } from './transcript.ts';
-import { openCodeLastMessage, openCodeSessionState } from './opencode.ts';
+import { agentNameOf, lastAssistantMessage, sessionFrom } from './transcript.ts';
 import { removeChildFiles } from './mcp-config.ts';
 import { childLabel } from './label.ts';
 import { spoolPath } from './paths.ts';
@@ -74,7 +74,7 @@ export interface WatcherOptions {
 // wait exactly, including a dialog refused while herdr kept reporting idle,
 // which holds here until the child next works.
 export function hookDialogClosed(prompt: ChildRecord['prompt'], previous: AgentStatus, status: AgentStatus): boolean {
-  return prompt?.source === 'claude-code' && status !== previous && (status === 'working' || previous === 'blocked');
+  return harnessNamed(prompt?.source)?.classify.dialogs.from === 'hook' && status !== previous && (status === 'working' || previous === 'blocked');
 }
 
 /**
@@ -106,7 +106,7 @@ export class Watcher {
   private readonly states = new Map<string, ClassifierState>();
   private readonly screenReadAt = new Map<string, number>();
   private readonly transcriptSizes = new Map<string, number>();
-  /** Each OpenCode child's session update time at the last look, read from its store. */
+  /** Each store-backed child's activity stamp at the last look, read from its harness's store. */
   private readonly storeStamps = new Map<string, number>();
   private readonly transcriptLookAt = new Map<string, number>();
 
@@ -771,13 +771,14 @@ export class Watcher {
    * answer already failed, which then reaches the parent as blocked.
    */
   private answerStartupDialog(child: ChildRecord, screen: string): boolean {
-    const dialog = detectDialog(screen);
-    if (!dialog || child.kind !== 'claude' || this.gaveUp.has(child.id)) return false;
+    const dialogs = harnessFor(child.kind)?.startup;
+    const dialog = dialogs ? detectDialog(screen, dialogs) : undefined;
+    if (!dialogs || !dialog || this.gaveUp.has(child.id)) return false;
     if (this.answering.has(child.id)) return true;
     this.answering.add(child.id);
-    this.log(`${child.name} is on ${DIALOG_NAMES[dialog]}; answering it`);
+    this.log(`${child.name} is on ${dialogName(dialog, dialogs)}; answering it`);
     void (async () => {
-      const watch = await watchStartup(await this.clientFor(hostOf(child)), child.paneId, this.controller?.signal);
+      const watch = await watchStartup(await this.clientFor(hostOf(child)), child.paneId, this.controller?.signal, { dialogs });
       try {
         await watch.answer();
       } finally {
@@ -832,10 +833,11 @@ export class Watcher {
    * written only when that changes.
    */
   private recordTranscript(child: ChildRecord, session: string): string | undefined {
-    const found = locateTranscript(child.harness, session, child.cwd);
+    const conversation = harnessFor(child.kind)?.conversation;
+    const found = conversation ? conversation.locate(session, child.cwd) : { missing: `Bellwether knows no ${child.kind} harness` };
     if (found.path) {
       // A pi child started on pi's default names it in its session file.
-      const model = child.kind === 'pi' && !child.model ? piSessionModel(found.path) : undefined;
+      const model = !child.model ? conversation?.modelOf?.(found.path) : undefined;
       updateChild(this.parentId, child.id, (entry) => {
         entry.transcript = found.path;
         delete entry.transcriptMissing;
@@ -853,14 +855,15 @@ export class Watcher {
 
   /** Whether the child moved since the last look. Transcript growth, then screen. */
   private async childIsBusy(child: ChildRecord, now: number): Promise<boolean> {
-    // An OpenCode session's row changes with each step it takes, and the store
-    // says so without a screen read.
-    if (child.harness === 'opencode' && child.store && child.session && hostOf(child) === LOCAL_HOST) {
-      const state = openCodeSessionState(child.store, child.session.value);
-      if (!state) return false;
+    // A harness with a store of its own, such as OpenCode, changes a row with
+    // each step its session takes, and the store says so without a screen read.
+    const activity = harnessFor(child.kind)?.conversation.activity;
+    if (activity) {
+      const stamp = activity(child);
+      if (stamp === undefined) return false;
       const previous = this.storeStamps.get(child.id);
-      this.storeStamps.set(child.id, state.updatedAt);
-      if (previous === undefined || state.updatedAt <= previous) return false;
+      this.storeStamps.set(child.id, stamp);
+      if (previous === undefined || stamp <= previous) return false;
       updateChild(this.parentId, child.id, (entry) => {
         entry.lastBusyAt = new Date().toISOString();
       });
@@ -974,7 +977,8 @@ export class Watcher {
 
   /** The child's last assistant message, read from its transcript. */
   private async lastMessage(child: ChildRecord): Promise<string | undefined> {
-    if (child.harness === 'opencode') return child.store && child.session && hostOf(child) === LOCAL_HOST ? openCodeLastMessage(child.store, child.session.value) : undefined;
+    const fromStore = harnessFor(child.kind)?.conversation.lastMessage;
+    if (fromStore) return fromStore(child);
     const transcript = await this.transcriptFor(child);
     return transcript ? lastAssistantMessage(transcript) : undefined;
   }

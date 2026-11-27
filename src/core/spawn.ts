@@ -5,33 +5,26 @@ import os from 'node:os';
 import { HerdrApiError, type HerdrClient } from './herdr-client.ts';
 import { LOCAL_HOST } from './machine.ts';
 import { newChildId } from './outbox.ts';
-import { PI_EXTENSION_ENV, piExtensionEntry, piFallback, resolvePiExtension } from './pi-extension.ts';
-import { briefArgument, writeBrief, writeBriefIn } from './brief.ts';
+import { PI_EXTENSION_ENV } from './pi-extension.ts';
+import { writeBrief, writeBriefIn } from './brief.ts';
 import { DEFAULT_MAX_DEPTH, tooDeep } from './depth.ts';
 import { resolveInactiveMs } from './inactivity.ts';
-import { removeChildFiles, writeChildToolFiles, type ChildToolFiles } from './mcp-config.ts';
-import type { ToolSource } from './tool-source.ts';
-import { OPENCODE_SESSION_WAIT_MS, findOpenCodeSession, newOpenCodeSessionId, openCodeArgs, openCodeBriefLine, openCodeDbPath, probeOpenCode, requireOpenCodeV2, writeOpenCodeMcpConfig, type OpenCodeProbe } from './opencode.ts';
+import { removeChildFiles } from './mcp-config.ts';
+import { argValue } from './args.ts';
+import { requireHarness, spawnRefusal, type ChildFiles, type HarnessEntry, type HarnessHooks } from './harnesses/index.ts';
 import { removeChild, updateChild, upsertChild } from './registry.ts';
 import { watchStartup, type StartupDialog, type StartupWatch } from './startup-dialogs.ts';
-import { agentNameOf, locateTranscript, piSessionModel, sessionFrom } from './transcript.ts';
+import { agentNameOf, sessionFrom } from './transcript.ts';
 import type { RemoteRegistration } from './remote.ts';
 import { BARE, RoutesFileError, launchLine, readRoutes, resolveRoute, routeConfig, routeLaunch, type RouteConfig, type RouteLaunch, type RoutesFile } from './routes.ts';
 import { openChildTab, parseWorkspaces, placeChild, undoChildTab, type ChildTab, type WorkspaceEntry } from './workspace.ts';
-import type { ChildRecord, ChildRoute, Harness, ModelPair, ParentRecord } from './types.ts';
+import type { ChildRecord, ChildRoute, ModelPair, ParentRecord } from './types.ts';
 
 /** How deep a Bellwether child may spawn. The design starts at 2. */
 export { DEFAULT_MAX_DEPTH } from './depth.ts';
 
-export const AGENT_KINDS = ['pi', 'claude', 'codex', 'opencode', 'cline'] as const;
-export type AgentKind = (typeof AGENT_KINDS)[number];
-
-export function harnessOf(kind: string): Harness | 'other' {
-  if (kind === 'pi') return 'pi';
-  if (kind === 'claude') return 'claude-code';
-  if (kind === 'opencode') return 'opencode';
-  return 'other';
-}
+export { harnessOf } from './harnesses/index.ts';
+export { argValue } from './args.ts';
 
 export interface SpawnOptions {
   kind: string;
@@ -88,71 +81,23 @@ export interface SpawnResult {
   /** Which provider and model a pi child runs on, and why, for the spawn reply. */
   modelNote?: string;
   link: string;
-  /** Why a child on another machine cannot call parent_report, when its registration there failed. */
-  reportWarning?: string;
   /** The startup dialogs the spawn answered, in order. */
   answered?: StartupDialog[];
 }
 
-/** How long the watcher holds a new Claude Code child's events. Longer than the dialog wait. */
+/** How long the watcher holds the events of a new child that shows startup dialogs. Longer than the dialog wait. */
 export const STARTUP_HOLD_MS = 45_000;
 
-/** How long the spawn waits for a Claude Code child to get past its dialogs. */
+/** How long the spawn waits for a child to get past its startup dialogs. */
 export const STARTUP_TIMEOUT_MS = 30_000;
 
-/** The files a child starts with, each written or resolved before its tab opens. */
-export interface ChildLaunch {
-  /** The private file that holds the brief. */
-  briefFile?: string;
-  /** A Claude Code child's own Bellwether server. */
-  mcpConfigFile?: string;
-  /** A Claude Code child's own settings: the hook that reports its dialogs, and a Bellwether plugin turned off so it has one set of tools. */
-  claudeSettingsFile?: string;
-  /** The Bellwether extension a pi child loads, on the machine it runs on. */
-  piExtension?: string;
-  /** The session id an OpenCode child creates, which the spawn mints. */
-  openCodeSession?: string;
-}
-
 /**
- * The arguments a child harness starts with. The brief is never one of them:
- * the harness gets a one-line pointer to the file that holds it.
+ * The arguments a child harness starts with, from its registry entry. The
+ * brief is never one of them: the harness gets a one-line pointer to the
+ * file that holds it.
  */
-export function childArgs(kind: string, options: SpawnOptions, launch: ChildLaunch = {}): string[] {
-  const { briefFile, mcpConfigFile, claudeSettingsFile, piExtension } = launch;
-  // OpenCode 2's terminal UI takes no --model: the model rides in the child's
-  // configuration file, and the session id and brief line are its arguments.
-  if (kind === 'opencode' && launch.openCodeSession) return openCodeArgs(launch.openCodeSession, briefFile, options.args);
-  const args: string[] = [];
-  // pi needs both flags. A flag the caller already put in args is not repeated.
-  if (options.provider && kind === 'pi' && argValue(options.args, '--provider') === undefined) args.push('--provider', options.provider);
-  if (options.model && argValue(options.args, '--model') === undefined) args.push('--model', options.model);
-  // A pi child loads the extension it is given, whatever the host's pi settings hold.
-  if (kind === 'pi' && piExtension) args.push('-e', piExtension);
-  // --mcp-config is a list flag too, so it takes the equals form for the same reason.
-  if (kind === 'claude' && mcpConfigFile) args.push(`--mcp-config=${mcpConfigFile}`);
-  // Claude Code merges these settings with every other source, so the child
-  // gains its Notification hook, loses a duplicate Bellwether plugin, and
-  // keeps the rest of the operator's own settings.
-  if (kind === 'claude' && claudeSettingsFile) args.push(`--settings=${claudeSettingsFile}`);
-  // Claude Code reads this flag as a list and keeps taking values until the
-  // next flag, so the two-argument form swallowed the prompt that follows it.
-  // The equals form pins the flag to one value.
-  if (kind === 'claude') args.push('--dangerously-load-development-channels=server:bellwether');
-  if (briefFile) args.push(briefArgument(kind, briefFile));
-  if (options.args?.length) args.push(...options.args);
-  return args;
-}
-
-/** The value of `--flag value` or `--flag=value` in a list of arguments. */
-export function argValue(args: string[] | undefined, flag: string): string | undefined {
-  if (!args) return undefined;
-  for (let index = 0; index < args.length; index += 1) {
-    const arg = args[index] as string;
-    if (arg === flag) return args[index + 1] ?? '';
-    if (arg.startsWith(`${flag}=`)) return arg.slice(flag.length + 1);
-  }
-  return undefined;
+export function childArgs(kind: string, options: Pick<SpawnOptions, 'model' | 'provider' | 'args'>, files: ChildFiles = {}, extra: { session?: ChildRecord['session']; resume?: string[] } = {}): string[] {
+  return requireHarness(kind).launchArgs({ model: options.model, provider: options.provider, extra: options.args, files, ...extra });
 }
 
 /**
@@ -163,7 +108,7 @@ export function argValue(args: string[] | undefined, flag: string): string | und
  * pair unknown too, no flag is passed and pi picks its own default.
  */
 export function chooseChildModel(options: Pick<SpawnOptions, 'kind' | 'name' | 'model' | 'provider' | 'args' | 'parentModel'>): (ModelPair & { source: 'caller' | 'parent' }) | undefined {
-  if (options.kind !== 'pi') {
+  if (requireHarness(options.kind).chosenBy !== 'pair') {
     if (options.provider) throw new Error(`${options.name} was not started: provider applies to a pi child, and this is a ${options.kind} child. Put the provider in model if the harness takes one.`);
     return undefined;
   }
@@ -177,25 +122,9 @@ export function chooseChildModel(options: Pick<SpawnOptions, 'kind' | 'name' | '
   return parent ? { ...parent, source: 'parent' } : undefined;
 }
 
-/**
- * The line of a spawn reply that says which provider account and model a pi
- * child runs on, since the account is what pays. With no pair passed and no
- * session file yet, it names the default pi's settings point to, where they
- * set it, and that the pair is unverified.
- */
+/** The line of a spawn reply that says which model the child runs on, when its harness has one to say. */
 export function modelNote(child: Pick<ChildRecord, 'name' | 'kind' | 'model' | 'host' | 'cwd'>): string | undefined {
-  if (child.kind !== 'pi') return undefined;
-  const model = child.model;
-  const on = (pair: ModelPair): string => `provider account ${pair.provider}, model ${pair.id}`;
-  if (model?.source === 'caller') return `${child.name} runs on ${on(model)}, as the spawn named.`;
-  if (model?.source === 'parent') return `${child.name} runs on ${on(model)}, the same account and model as this session.`;
-  const head = 'This session did not say which provider and model it runs on, so Bellwether passed none.';
-  if (model) return `${head} ${child.name} runs on ${on(model)}, pi's own default, read from its session file.`;
-  const tail = 'This is unverified until pi writes its session file, and agent_list shows the pair pi chose once it does.';
-  if ((child.host ?? LOCAL_HOST) !== LOCAL_HOST) return `${head} ${child.name} starts on pi's own default on machine ${child.host}, set in that machine's ~/.pi/agent/settings.json, which Bellwether cannot read from here. The pair is unverified, and its session file stays on that machine.`;
-  const fallback = piFallback(child.cwd);
-  const target = fallback.provider && fallback.id ? on({ provider: fallback.provider, id: fallback.id }) : undefined;
-  return `${head} ${child.name} starts on pi's own default${target ? `, ${target}` : ''}: ${fallback.reason}. ${tail}`;
+  return requireHarness(child.kind).modelNote?.(child);
 }
 
 /**
@@ -215,103 +144,72 @@ export interface SpawnHooks {
   piExtension?: () => string;
   /** The workspaces on the parent's machine, so a local id passed for a remote child is refused by name. */
   localWorkspaces?: () => Promise<WorkspaceEntry[]>;
-  /** How an OpenCode child is checked and found. Tests point it at a fixture store and a scripted version. */
-  openCode?: {
-    probe?: () => Promise<OpenCodeProbe>;
-    db?: string;
-    waitMs?: number;
-    intervalMs?: number;
-  };
+  /** How a harness with a store of its own is checked and found. Tests point it at a fixture store and a scripted version. */
+  harness?: HarnessHooks;
 }
 
-/**
- * Refuse an OpenCode spawn that cannot work, before anything is written. A
- * child on another machine is not supported yet: its store and version sit on
- * that machine. OpenCode reads outside its directory only after a question,
- * so the brief goes in the working directory, which the spawn needs. Its
- * terminal UI takes a model only from configuration, as provider/model.
- */
-async function checkOpenCode(options: SpawnOptions, host: string, probe: () => Promise<OpenCodeProbe>): Promise<void> {
-  if (host !== LOCAL_HOST) throw new Error(`${options.name} was not started: an opencode child runs on this machine only for now, because its store and its version are read where it runs. Omit machine.`);
-  if (!options.cwd) throw new Error(`${options.name} was not started: an opencode child needs cwd, because OpenCode asks before it reads a file outside its directory, and the brief goes inside it.`);
-  if (options.model && !/^[^/#]+\/[^#]+(?:#[^#]+)?$/.test(options.model)) throw new Error(`${options.name} was not started: OpenCode 2 takes a model as provider/model, optionally with #variant, and "${options.model}" is not one.`);
-  requireOpenCodeV2(await probe(), options.name);
-}
-
-/** The files a child starts with, wherever it runs, and what its spawn reply should warn about. */
-export interface ChildStartFiles {
-  /** The brief's path on the child's own machine. */
-  briefFile?: string;
-  /** The MCP config's path on the child's own machine. */
-  mcpConfigFile?: string;
-  /** The Claude Code settings' path on the child's own machine, when the child needs any: the dialog hook, and a duplicate plugin turned off. */
-  claudeSettingsFile?: string;
-  /** Which server gives a Claude Code child its Bellwether tools, for its record. */
-  toolSource?: ToolSource;
-  /** The Bellwether extension a pi child loads, on its own machine. */
-  piExtension?: string;
-  /** Why the child's reports cannot reach this machine, when they cannot. */
-  warning?: string;
+/** The files a child starts with, wherever it runs. */
+export interface ChildStartFiles extends ChildFiles {
   /** Whether the child's machine holds files that must go with the child. */
   registered: boolean;
 }
 
 /**
- * Write the files a child starts with, on the machine it runs on. A child on
- * this machine gets them here. A child on another machine is registered there
- * first, and that machine writes them: its brief arrives over the SSH
- * transport, on standard input, so the harness is pointed at a file that
- * exists where it runs. A child with a brief that cannot be delivered is not
- * started, because it would run with no task: this throws. Without a brief, a
- * failed registration does not stop the spawn: herdr status still follows the
- * child, and the warning says why its reports cannot arrive. A pi child
- * starts with the Bellwether extension of the package on its own machine, and
- * one whose extension cannot be found is not started either, because it would
- * have no tools.
+ * Write the files a child starts with, on the machine it runs on, as its
+ * harness's entry says. A child on this machine gets them here: its tool
+ * files first, so a missing pi extension writes nothing, then its brief. A
+ * child on another machine is registered there first, and that machine
+ * writes them: its brief arrives over the SSH transport, on standard input,
+ * so the harness is pointed at a file that exists where it runs. A child
+ * whose brief or tools cannot be set up is not started, because it would run
+ * with no task or no way to report: this throws.
  */
-export async function childStartFiles(child: ChildRecord, prompt: string | undefined, register?: RegisterRemote, piExtension: () => string = piExtensionEntry): Promise<ChildStartFiles> {
-  const pi = child.kind === 'pi';
-  if (child.kind === 'opencode') {
-    // Local only, which checkOpenCode settled. The brief goes inside the
-    // working directory, and the configuration names the child's server.
-    const briefFile = prompt !== undefined && child.cwd ? writeBriefIn(child.cwd, child.id, prompt) : undefined;
-    return { briefFile, registered: false };
-  }
+export async function childStartFiles(parent: ParentRecord, child: ChildRecord, prompt: string | undefined, register?: RegisterRemote, piExtension?: () => string, model?: string): Promise<ChildStartFiles> {
+  const entry = requireHarness(child.kind);
+  const reports = entry.reports;
+  if (reports.via === 'none') throw new Error(spawnRefusal(entry, child.name));
   if ((child.host ?? LOCAL_HOST) === LOCAL_HOST) {
-    // Resolved first, so a missing extension writes nothing.
-    const extension = pi ? resolvePiExtension(piExtension()) : undefined;
-    const tools = childToolFiles(child);
-    return { briefFile: prompt !== undefined ? writeBrief(child.id, prompt) : undefined, ...toolLaunch(tools), ...(extension ? { piExtension: extension } : {}), registered: false };
+    const tools = reports.local(child, { env: childEnv(parent, child), model, piExtension });
+    const briefFile = prompt === undefined ? undefined : entry.brief.where === 'workdir' && child.cwd ? writeBriefIn(child.cwd, child.id, prompt) : writeBrief(child.id, prompt);
+    return { ...tools, ...(briefFile ? { briefFile } : {}), registered: false };
   }
-  const reports = child.harness === 'claude-code' || child.harness === 'pi';
-  if (!reports && prompt === undefined) return { registered: false };
+  if (!reports.remote) throw new Error(`${child.name} was not started on machine ${child.host}: ${reports.remoteRefusal ?? `Bellwether cannot give a ${entry.kind} child on another machine its tools`}. Omit machine.`);
+  const needsExtension = reports.remote === 'piExtension';
   if (!register) {
-    if (pi) throw new Error(`${child.name} was not started on machine ${child.host}: this session cannot register children there, so Bellwether cannot name the pi extension it would load.`);
+    if (needsExtension) throw new Error(`${child.name} was not started on machine ${child.host}: this session cannot register children there, so Bellwether cannot name the ${entry.label} extension it would load.`);
     if (prompt !== undefined) throw new Error(`${child.name} was not started on machine ${child.host}: this session cannot register children there, so its brief cannot reach that machine.`);
-    if (child.kind === 'claude') throw new Error(withoutIdentity(child, 'this session cannot register children there'));
-    return { warning: `${child.name} runs on machine ${child.host}, and this session cannot register it there, so it cannot call parent_report.`, registered: false };
+    throw new Error(withoutIdentity(child, 'this session cannot register children there'));
   }
   let registration: RemoteRegistration;
   try {
     registration = await register(child, prompt);
   } catch (error) {
-    if (pi) throw new Error(`${child.name} was not started on machine ${child.host}, because Bellwether could not register it there to name the pi extension it would load: ${(error as Error).message}`);
+    if (needsExtension) throw new Error(`${child.name} was not started on machine ${child.host}, because Bellwether could not register it there to name the ${entry.label} extension it would load: ${(error as Error).message}`);
     if (prompt !== undefined) throw new Error(`${child.name} was not started on machine ${child.host}, because its brief could not be copied there: ${(error as Error).message}`);
-    if (child.kind === 'claude') throw new Error(withoutIdentity(child, `Bellwether could not register it there: ${(error as Error).message}`));
-    return { warning: `${child.name} could not be registered on machine ${child.host}, so it cannot call parent_report: ${(error as Error).message}`, registered: false };
+    throw new Error(withoutIdentity(child, `Bellwether could not register it there: ${(error as Error).message}`));
   }
   return {
-    briefFile: registration.brief,
-    ...(child.kind === 'claude'
+    ...(registration.brief ? { briefFile: registration.brief } : {}),
+    ...(reports.remote === 'mcpConfig'
       ? {
           mcpConfigFile: registration.mcpConfig,
           ...(registration.claudeSettings ? { claudeSettingsFile: registration.claudeSettings } : {}),
           toolSource: registration.toolSource ?? { server: 'per-child' as const, suppressed: [], unchecked: `the Bellwether on machine ${child.host} predates this check, so a Bellwether plugin or server there may still add a second set of tools` },
         }
       : {}),
-    ...(pi ? { piExtension: registration.piExtension } : {}),
+    ...(needsExtension && registration.piExtension ? { piExtension: registration.piExtension } : {}),
     registered: true,
   };
+}
+
+/**
+ * Refuse a spawn of a kind whose child could not report, or whose harness
+ * says it cannot work here, before anything is written.
+ */
+async function checkHarness(entry: HarnessEntry, options: SpawnOptions, model: string | undefined, hooks: HarnessHooks): Promise<void> {
+  const refused = spawnRefusal(entry, options.name);
+  if (refused) throw new Error(refused);
+  await entry.preflight?.({ name: options.name, cwd: options.cwd, model, host: options.host ?? LOCAL_HOST }, hooks);
 }
 
 export async function spawnChild(client: HerdrClient, parent: ParentRecord, options: SpawnOptions, signal?: AbortSignal, hooks: SpawnHooks = {}): Promise<SpawnResult> {
@@ -321,6 +219,7 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
   if (depth > spawnerCeiling) throw new Error(tooDeep(parent, spawnerCeiling, options.name));
 
   // Refused before the record, so a wrong route or half a pair leaves nothing behind.
+  const entry = requireHarness(options.kind);
   const routes = routesFor(options.via);
   const resolved = resolveRoute({ name: options.name, kind: options.kind, via: options.via, model: options.model, keyFile: options.keyFile, host: options.host }, routes);
   if (resolved.route && options.provider) throw new Error(`${options.name} was not started: provider applies to a bare pi start, and on route ${resolved.route.name} the tier picks the model. Drop provider, or pass via ${BARE}.`);
@@ -328,9 +227,10 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
   const harnessOptions: SpawnOptions = { ...options, model: resolved.harnessModel };
   const chosen = resolved.route ? undefined : chooseChildModel(harnessOptions);
   const launchVia = resolved.route ? { route: resolved.route, config: routeConfig(routes, resolved.route, options.name) } : undefined;
-  const openCode = options.kind === 'opencode';
+  const harnessHooks = hooks.harness ?? {};
+  const store = entry.session.from === 'store' ? entry.session : undefined;
   // On a route the tier picks the model, so the check sees the model the harness itself gets.
-  if (openCode) await checkOpenCode(harnessOptions, options.host ?? LOCAL_HOST, hooks.openCode?.probe ?? (() => probeOpenCode()));
+  await checkHarness(entry, options, harnessOptions.model, harnessHooks);
   // The workspace is settled before the record too, so a name that matches
   // nothing leaves nothing behind. Nothing is created yet.
   const host = options.host ?? LOCAL_HOST;
@@ -350,7 +250,7 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
     id: newChildId(),
     name: options.name,
     kind: options.kind,
-    harness: harnessOf(options.kind),
+    harness: entry.harness,
     paneId: '',
     host,
     origin: 'spawn',
@@ -363,32 +263,26 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
     maxDepth,
     stuckMs: options.stuckMinutes === undefined ? undefined : Math.max(1_000, Math.round(options.stuckMinutes * 60_000)),
     inactiveMs: resolveInactiveMs(options.inactiveMinutes),
-    // herdr reports no session for OpenCode, so the spawn names it.
-    ...(openCode ? { session: { kind: 'id', value: newOpenCodeSessionId() }, store: hooks.openCode?.db ?? openCodeDbPath() } : {}),
+    // herdr reports no session for a harness with a store of its own, so the spawn names it.
+    ...(store ? { session: { kind: 'id', value: store.mint() }, store: store.storePath(harnessHooks) } : {}),
   };
   // 1. The record lands before herdr is asked for anything.
   upsertChild(parent.id, child);
 
   let opened: ChildTab | undefined;
   let startup: StartupWatch | undefined;
-  let reportWarning: string | undefined;
   let registered = false;
   let keptBrief: string | undefined;
   try {
-    const files = await childStartFiles(child, options.prompt || undefined, hooks.registerRemote, hooks.piExtension);
-    const { briefFile, mcpConfigFile, claudeSettingsFile, piExtension } = files;
-    registered = files.registered;
-    reportWarning = files.warning;
+    const { registered: there, ...files } = await childStartFiles(parent, child, options.prompt || undefined, hooks.registerRemote, hooks.piExtension, harnessOptions.model);
+    const { briefFile } = files;
+    registered = there;
     if (files.toolSource) child.toolSource = files.toolSource;
-    keptBrief = openCode ? briefFile : undefined;
+    keptBrief = store ? briefFile : undefined;
 
-    // 2. The tab carries the environment the child needs to find its parent.
-    const env = childEnv(parent, child, piExtension);
-    if (openCode && child.store) {
-      // The child's private server reads its own configuration and this store.
-      env['OPENCODE_CONFIG'] = writeOpenCodeMcpConfig(child.id, { ...env }, harnessOptions.model);
-      env['OPENCODE_DB'] = child.store;
-    }
+    // 2. The tab carries the environment the child needs to find its parent,
+    // and whatever its harness's tool files add.
+    const env = { ...childEnv(parent, child, files.piExtension), ...files.env };
     // A new workspace is made on the child's machine, through that machine's
     // herdr, and the child runs in its root pane, so it holds no empty shell.
     const tab = await openChildTab(client, placement, { cwd: options.cwd, label: child.name, env, focus: options.focus ?? false }, signal);
@@ -400,28 +294,27 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
     child.workspaceId = tab.workspaceId;
     if (tab.workspaceLabel) child.workspaceLabel = tab.workspaceLabel;
     if (tab.ownsWorkspace) child.ownsWorkspace = true;
-    // Claude Code opens on dialogs the spawn answers, so the watcher holds the
-    // child's events until then, and the status watch opens before the start.
-    if (options.kind === 'claude') {
+    // A harness that opens on dialogs the spawn answers, such as Claude Code,
+    // has its events held until then, and the status watch opens before the start.
+    if (entry.startup) {
       const timeoutMs = options.startupTimeoutMs ?? STARTUP_TIMEOUT_MS;
       child.startingUntil = new Date(Date.now() + Math.max(STARTUP_HOLD_MS, timeoutMs + 15_000)).toISOString();
-      startup = await watchStartup(client, tab.paneId, signal, { timeoutMs, redrawMs: options.redrawMs });
+      startup = await watchStartup(client, tab.paneId, signal, { timeoutMs, redrawMs: options.redrawMs, dialogs: entry.startup });
     }
     upsertChild(parent.id, child);
 
     // 3. Start the harness in the tab's root pane. A tab answers tab.create
     // before its shell is at a prompt, so herdr refuses the start with
     // agent_pane_busy until the shell is ready.
-    const args = childArgs(options.kind, { ...harnessOptions, ...(chosen ? { provider: chosen.provider, model: chosen.id } : {}) }, { briefFile, mcpConfigFile, claudeSettingsFile, piExtension, openCodeSession: openCode ? child.session?.value : undefined });
+    const args = childArgs(options.kind, { ...harnessOptions, ...(chosen ? { provider: chosen.provider, model: chosen.id } : {}) }, files, { session: child.session });
     await startHarness(client, { name: child.name, kind: options.kind, paneId: tab.paneId, args, ...(launchVia ? { launch: routeLaunch(launchVia.config, launchVia.route, options.kind, args) } : {}) }, signal);
 
-    // OpenCode's store is the only proof the brief arrived: herdr reports no
-    // session for it. A session that never shows fails the spawn, which keeps
-    // the brief so a person can see what the child was given.
-    if (openCode && child.session && child.store && briefFile && child.cwd) {
-      const waitMs = hooks.openCode?.waitMs ?? OPENCODE_SESSION_WAIT_MS;
+    // The harness's store is the only proof the brief arrived when herdr
+    // reports no session for it. A session that never shows fails the spawn,
+    // which keeps the brief so a person can see what the child was given.
+    if (store && child.session && child.store && briefFile && child.cwd) {
       try {
-        await findOpenCodeSession({ db: child.store, sessionId: child.session.value, cwd: child.cwd, prompt: openCodeBriefLine(briefFile), waitMs, intervalMs: hooks.openCode?.intervalMs });
+        await store.confirm({ store: child.store, session: child.session.value, cwd: child.cwd, briefFile }, harnessHooks);
       } catch (error) {
         throw new Error(`${child.name} was not started: ${(error as Error).message} The brief stays at ${briefFile} for inspection, and the pane is closed.`);
       }
@@ -456,7 +349,7 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
     const result = await client.request('agent.get', { target: child.paneId }, { signal });
     const agent = typeof result === 'object' && result !== null ? (result as Record<string, unknown>)['agent'] : undefined;
     const pane = typeof agent === 'object' && agent !== null ? (agent as Record<string, unknown>) : {};
-    // An OpenCode child's session is the one the spawn minted and the store showed.
+    // A child whose session the spawn minted keeps the one its store showed.
     const session = child.session ? undefined : sessionFrom(pane['agent_session']);
     if (session) {
       child.session = session;
@@ -464,11 +357,11 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
       if (child.host === LOCAL_HOST) {
         // Claude Code writes its file at the first turn, which can come after
         // this look. The watcher looks again until the file appears.
-        const found = locateTranscript(child.harness, session.value, child.cwd);
+        const found = entry.conversation.locate(session.value, child.cwd);
         child.transcript = found.path;
         child.transcriptMissing = found.missing;
-        // With no pair passed, the session file says which default pi chose.
-        const fromSession = !child.model && child.kind === 'pi' && found.path ? piSessionModel(found.path) : undefined;
+        // With no pair passed, the session file says which default the harness chose.
+        const fromSession = !child.model && found.path ? entry.conversation.modelOf?.(found.path) : undefined;
         if (fromSession) child.model = { ...fromSession, source: 'session' };
       }
     }
@@ -497,7 +390,7 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
   });
 
   const note = modelNote(child);
-  return { child, link: herdrLink('pane', child.paneId), answered, ...(note ? { modelNote: note } : {}), ...(reportWarning ? { reportWarning } : {}) };
+  return { child, link: herdrLink('pane', child.paneId), answered, ...(note ? { modelNote: note } : {}) };
 }
 
 /**
@@ -518,29 +411,8 @@ async function abandon(client: HerdrClient, parentId: string, child: ChildRecord
 }
 
 /**
- * Write a Claude Code child's start files on this machine: its MCP
- * configuration, and its settings, with the Notification hook that reports
- * its dialogs and whatever keeps another Bellwether server in its environment
- * from adding a second set of tools. A server and the hook talk to the daemon
- * on their own machine, so a child on another machine gets the files its own
- * machine writes when the spawn registers it there, without the hook: only a
- * local child's record lives in this daemon, and a remote child's dialogs are
- * read off the screen.
- */
-export function childToolFiles(child: Pick<ChildRecord, 'id' | 'kind' | 'host' | 'cwd'>): ChildToolFiles | undefined {
-  if (child.kind !== 'claude' || (child.host ?? LOCAL_HOST) !== LOCAL_HOST) return undefined;
-  return writeChildToolFiles(child.id, child.cwd, { hook: true });
-}
-
-/** The launch fields for a child's tool files. */
-function toolLaunch(tools: ChildToolFiles | undefined): Pick<ChildStartFiles, 'mcpConfigFile' | 'claudeSettingsFile' | 'toolSource'> {
-  if (!tools) return {};
-  return { mcpConfigFile: tools.mcpConfig, ...(tools.claudeSettings ? { claudeSettingsFile: tools.claudeSettings } : {}), toolSource: tools.toolSource };
-}
-
-/**
- * Why a Claude Code child on another machine is not started without its own
- * server. Only that server carries the child id. A Bellwether plugin or server
+ * Why a child on another machine is not started without its own server.
+ * Only that server carries the child id. A Bellwether plugin or server
  * that the machine loads on its own has no id, so the child's parent_report
  * would reach no parent, and a child that cannot report is not started.
  */
@@ -630,7 +502,7 @@ export function nextLaunch(child: Pick<ChildRecord, 'name' | 'kind' | 'host' | '
     if (change.provider) throw new Error(`${child.name} was not ${verb}: provider applies to a bare pi start, and on route ${resolved.route.name} the tier picks the model. Drop provider, or pass via ${BARE}.`);
     return { route: resolved.route, config: routeConfig(routes, resolved.route, child.name) };
   }
-  if (child.kind !== 'pi') return resolved.harnessModel ? { harnessModel: resolved.harnessModel } : {};
+  if (requireHarness(child.kind).chosenBy !== 'pair') return resolved.harnessModel ? { harnessModel: resolved.harnessModel } : {};
   // A pi session records its provider, so a pi child that leaves a route needs
   // a provider the bare pi can reach, and Bellwether does not guess one.
   const provider = change.provider ?? (change.model ? undefined : child.model?.provider);

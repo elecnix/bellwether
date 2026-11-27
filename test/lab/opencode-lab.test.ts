@@ -111,7 +111,7 @@ test('the OpenCode drill: a real OpenCode 2 gets its brief, reports to its paren
   const parentId = saveParent(emptyParent('claude-code', `opencode-lab-${path.basename(root)}`, cwd, { workspaceId })).id;
 
   const prompt = 'The drill word is heron. Call the parent_report tool with status done and the text "The drill word is heron." Then answer with one sentence that says you reported it.';
-  const { child } = await spawnChild(herdr, readParent(parentId)!, { kind: 'opencode', name: 'oc-lab', prompt, cwd }, undefined, { openCode: { db, waitMs: 90_000 } });
+  const { child } = await spawnChild(herdr, readParent(parentId)!, { kind: 'opencode', name: 'oc-lab', prompt, cwd }, undefined, { harness: { store: db, waitMs: 90_000 } });
   paneId = child.paneId;
 
   // herdr detects OpenCode 2, and reports no session for it.

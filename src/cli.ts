@@ -18,14 +18,15 @@ import { hostName } from './core/spawn.ts';
 import { RELAY_SCHEMA, listForwards, readRelayRecord, removeRelayRecord, saveRelayRecord, updateRelayRecord } from './core/relay-records.ts';
 import { relayChildPath, relayOutboxDir } from './core/paths.ts';
 import { removeBriefAt, writeBrief, writeBriefIn } from './core/brief.ts';
-import { removeChildFiles, writeChildToolFiles } from './core/mcp-config.ts';
+import { removeChildFiles } from './core/mcp-config.ts';
+import { harnessFor, harnessNamed } from './core/harnesses/index.ts';
 import { describeUpgrade, farPairing, gatherUpgrade } from './daemon/upgrade-status.ts';
 import { describeState } from './core/hygiene.ts';
 import { HEARTBEAT_MISSES } from './core/ssh.ts';
 import { DaemonClient, REFUSED_EXIT, ReportRefused, drainDaemon, ensureDaemon, postReport, relayStatus } from './daemon/client.ts';
 import { readMemory, runsOn } from './daemon/relay-links.ts';
 import type { RelayHostState } from './daemon/protocol.ts';
-import { describePiTools, guardlessPiCopies, resolvePiExtension } from './core/pi-extension.ts';
+import { describePiTools, guardlessPiCopies } from './core/pi-extension.ts';
 import { describeClaudeTools, describeToolSource, findAmbientServers } from './core/tool-source.ts';
 import { readLock } from './daemon/lock.ts';
 import { BELLWETHER_BUILD, BELLWETHER_BUILD_ID, BELLWETHER_VERSION, describeBuild } from './core/version.ts';
@@ -290,7 +291,7 @@ async function checkMoves(): Promise<void> {
     console.log(`  info  move: the saved herdr machines could not be listed (${(error as Error).message}), so only this machine is checked`);
     hosts = [LOCAL_HOST];
   }
-  const children = listParents().flatMap((parent) => parent.children).filter((child): child is ChildRecord & { harness: MovableHarness } => !child.exitedAt && (child.harness === 'pi' || child.harness === 'claude-code'));
+  const children = listParents().flatMap((parent) => parent.children).filter((child): child is ChildRecord & { harness: MovableHarness } => !child.exitedAt && harnessNamed(child.harness)?.movable === true);
   const endpointFor = moveEndpoints(undefined, { timeoutMs: budgetMs, signal });
   const probes = new Map<string, ProbeResult | string>();
   await Promise.all(
@@ -614,18 +615,20 @@ function relayRegister(argv: string[]): number {
   const childId = values['child'];
   const parentId = values['parent'];
   if (!childId || !parentId) throw new Error('relay-register needs --child and --parent');
-  // A pi child loads this machine's own extension, so a missing one fails here, before anything is written.
-  const piExtension = values['kind'] === 'pi' ? resolvePiExtension() : undefined;
   const cwd = values['cwd'];
+  // The child's tools, as its harness's entry says: a Claude Code child's own
+  // server, with whatever keeps this machine's other Bellwether servers from
+  // adding a second set, or the extension a pi child loads, which fails here,
+  // before anything else is written, when it is missing.
+  const reports = harnessFor(values['kind'])?.reports;
+  const tools = reports && reports.via !== 'none' && reports.remote ? reports.local({ id: childId, cwd, host: LOCAL_HOST }, { env: {}, farEnd: true }) : undefined;
   let brief: string | undefined;
   if (values['brief-stdin'] === 'yes') {
     const text = fs.readFileSync(0, 'utf8');
     brief = cwd ? writeBriefIn(cwd, childId, text) : writeBrief(childId, text);
   }
   saveRelayRecord({ schema: RELAY_SCHEMA, childId, name: values['name'] ?? childId, kind: values['kind'] ?? 'other', parentId, ...(cwd ? { cwd } : {}), ...(brief ? { brief } : {}), registeredAt: new Date().toISOString() });
-  // A Claude Code child's own server, and whatever keeps this machine's other Bellwether servers from adding a second set of tools.
-  const tools = values['kind'] === 'claude' ? writeChildToolFiles(childId, cwd, { hook: false }) : undefined;
-  console.log(JSON.stringify({ record: relayChildPath(childId), version: BELLWETHER_VERSION, build: BELLWETHER_BUILD_ID, ...(brief ? { brief } : {}), ...(tools ? { mcpConfig: tools.mcpConfig, ...(tools.claudeSettings ? { claudeSettings: tools.claudeSettings } : {}), toolSource: tools.toolSource } : {}), ...(piExtension ? { piExtension } : {}) }));
+  console.log(JSON.stringify({ record: relayChildPath(childId), version: BELLWETHER_VERSION, build: BELLWETHER_BUILD_ID, ...(brief ? { brief } : {}), ...(tools?.mcpConfigFile ? { mcpConfig: tools.mcpConfigFile, ...(tools.claudeSettingsFile ? { claudeSettings: tools.claudeSettingsFile } : {}), toolSource: tools.toolSource } : {}), ...(tools?.piExtension ? { piExtension: tools.piExtension } : {}) }));
   return 0;
 }
 

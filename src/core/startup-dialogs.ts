@@ -14,27 +14,44 @@
 // changed fails the spawn instead of taking a stray Enter.
 import type { HerdrClient, Subscription } from './herdr-client.ts';
 
-export type StartupDialog = 'trust' | 'channel';
+/** A startup dialog's id within its harness's set, such as `trust`. */
+export type StartupDialog = string;
 
-const TRUST = /Is this a project you created or one you trust|Accessing workspace:/;
-const CHANNEL = /WARNING: Loading development channels/;
-const TRUST_ACCEPT = 'Yes, I trust this folder';
-const CHANNEL_ACCEPT = 'I am using this for local development';
+/**
+ * The startup dialogs one harness shows before its prompt, which the spawn
+ * answers for the person. Each names the text that shows it and the option
+ * that accepts it. A harness's registry entry carries its set.
+ */
+export interface StartupDialogSet {
+  /** The harness's name in an error. */
+  harness: string;
+  dialogs: readonly { id: StartupDialog; name: string; shows: RegExp; accept: string }[];
+  /** The dialog that comes last, after which the child is at its prompt. */
+  last?: StartupDialog;
+}
+
 const SELECTED = /^\s*[❯>]\s/;
 
-/** What each dialog is called in a message to the person. */
-export const DIALOG_NAMES: Record<StartupDialog, string> = {
-  trust: 'the folder-trust question',
-  channel: 'the development-channel question',
+/** Claude Code's two: the folder-trust question, and the development-channel confirmation. */
+export const CLAUDE_STARTUP: StartupDialogSet = {
+  harness: 'Claude Code',
+  dialogs: [
+    { id: 'trust', name: 'the folder-trust question', shows: /Is this a project you created or one you trust|Accessing workspace:/, accept: 'Yes, I trust this folder' },
+    { id: 'channel', name: 'the development-channel question', shows: /WARNING: Loading development channels/, accept: 'I am using this for local development' },
+  ],
+  last: 'channel',
 };
+
+/** What a dialog is called in a message to the person. */
+export function dialogName(id: StartupDialog, set: StartupDialogSet = CLAUDE_STARTUP): string {
+  return set.dialogs.find((dialog) => dialog.id === id)?.name ?? id;
+}
 
 /** herdr's statuses for a child that is past its dialogs. */
 const READY = new Set(['idle', 'working', 'done']);
 
-export function detectDialog(screen: string): StartupDialog | undefined {
-  if (TRUST.test(screen)) return 'trust';
-  if (CHANNEL.test(screen)) return 'channel';
-  return undefined;
+export function detectDialog(screen: string, set: StartupDialogSet = CLAUDE_STARTUP): StartupDialog | undefined {
+  return set.dialogs.find((dialog) => dialog.shows.test(screen))?.id;
 }
 
 /**
@@ -82,12 +99,15 @@ export interface StartupWatchOptions {
   timeoutMs?: number;
   /** How long a screen takes to redraw after a key. */
   redrawMs?: number;
+  /** The harness's dialogs. Claude Code's by default. */
+  dialogs?: StartupDialogSet;
 }
 
-/** Open the status watch for a Claude Code child. Call before agent.start. */
+/** Open the status watch for a child whose harness shows startup dialogs. Call before agent.start. */
 export async function watchStartup(client: HerdrClient, paneId: string, signal?: AbortSignal, options: StartupWatchOptions = {}): Promise<StartupWatch> {
   const timeoutMs = options.timeoutMs ?? 30_000;
   const redrawMs = options.redrawMs ?? 300;
+  const set = options.dialogs ?? CLAUDE_STARTUP;
   const controller = new AbortController();
   signal?.addEventListener('abort', () => controller.abort(), { once: true });
   let status = 'unknown';
@@ -130,9 +150,10 @@ export async function watchStartup(client: HerdrClient, paneId: string, signal?:
         // this read, as would `channelsEnabled` with `allowedChannelPlugins` in managed
         // settings for the channel question (docs/probes.md, section 7).
         screen = await client.paneRead({ paneId, source: 'visible', lines: 40 }).catch(() => screen);
-        dialog = detectDialog(screen);
+        dialog = detectDialog(screen, set);
         if (dialog) {
-          const key = keyToward(screen, dialog === 'trust' ? TRUST_ACCEPT : CHANNEL_ACCEPT);
+          const wanted = set.dialogs.find((entry) => entry.id === dialog)?.accept ?? '';
+          const key = keyToward(screen, wanted);
           if (key) {
             // TODO(api): keys typed into the pane answer a question no API reaches. A
             // documented way to pre-answer Claude Code's development-channel and
@@ -144,15 +165,15 @@ export async function watchStartup(client: HerdrClient, paneId: string, signal?:
           await sleep(redrawMs);
           continue;
         }
-        // The channel confirmation comes last, so once it is answered and gone
-        // the child is at its prompt. A child started with no development
-        // channel never shows it, and herdr's status says when it is ready.
-        if (answered.includes('channel') || READY.has(status)) return answered;
+        // The set's last dialog, Claude Code's channel confirmation, comes
+        // last, so once it is answered and gone the child is at its prompt. A
+        // child that never shows it is ready when herdr's status says so.
+        if ((set.last !== undefined && answered.includes(set.last)) || READY.has(status)) return answered;
         // A blocked pane with no dialog on screen is still drawing it.
         await nextStatus(status === 'blocked' ? redrawMs : Math.max(0, deadline - Date.now()));
       }
-      if (controller.signal.aborted) throw new Error(`the spawn was cancelled while Claude Code in pane ${paneId} was starting`);
-      throw timeoutError(paneId, timeoutMs, dialog, status, screen);
+      if (controller.signal.aborted) throw new Error(`the spawn was cancelled while ${set.harness} in pane ${paneId} was starting`);
+      throw timeoutError(set, paneId, timeoutMs, dialog, status, screen);
     },
     close() {
       subscription.close();
@@ -161,13 +182,13 @@ export async function watchStartup(client: HerdrClient, paneId: string, signal?:
   };
 }
 
-function timeoutError(paneId: string, timeoutMs: number, dialog: StartupDialog | undefined, status: string, screen: string): StartupDialogTimeout {
+function timeoutError(set: StartupDialogSet, paneId: string, timeoutMs: number, dialog: StartupDialog | undefined, status: string, screen: string): StartupDialogTimeout {
   const seconds = Math.round(timeoutMs / 1000);
   const tail = screen.trim().split('\n').slice(-12).join('\n');
   if (dialog) {
     const selected = selectedOption(screen);
     const where = selected ? `with "${selected}" selected` : 'with no option selected';
-    return new StartupDialogTimeout(`Claude Code in pane ${paneId} was still on ${DIALOG_NAMES[dialog]}, ${where}, when the spawn timed out after ${seconds} s. The screen:\n${tail}`, dialog);
+    return new StartupDialogTimeout(`${set.harness} in pane ${paneId} was still on ${dialogName(dialog, set)}, ${where}, when the spawn timed out after ${seconds} s. The screen:\n${tail}`, dialog);
   }
-  return new StartupDialogTimeout(`Claude Code in pane ${paneId} never reached its prompt before the spawn timed out after ${seconds} s: herdr reported it ${status}, on a screen Bellwether does not answer. The screen:\n${tail}`, undefined);
+  return new StartupDialogTimeout(`${set.harness} in pane ${paneId} never reached its prompt before the spawn timed out after ${seconds} s: herdr reported it ${status}, on a screen Bellwether does not answer. The screen:\n${tail}`, undefined);
 }

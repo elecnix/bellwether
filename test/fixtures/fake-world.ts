@@ -54,7 +54,7 @@ export interface FakeWorld {
   respond(request: RecordedRequest): { result: unknown } | { error: { code: string; message: string } } | undefined;
 }
 
-const HARNESSES = new Set(['claude', 'pi', 'codex', 'opencode', 'cline']);
+const HARNESSES = new Set(['claude', 'pi', 'codex', 'opencode', 'cline', 'fake-agent']);
 
 /**
  * Split a line into words as a POSIX shell does for the forms a launch line

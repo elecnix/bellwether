@@ -10,18 +10,15 @@ import { newChildId } from './outbox.ts';
 import { readParent, removeChild, updateChild, upsertChild } from './registry.ts';
 import { clearRetirement } from './retire.ts';
 import { openChildTab, returnPlacement, undoChildTab, type ChildTab } from './workspace.ts';
-import { STARTUP_HOLD_MS, STARTUP_TIMEOUT_MS, childArgs, childEnv, childStartFiles, harnessOf, herdrLink, nextLaunch, startHarness, type RegisterRemote } from './spawn.ts';
+import { STARTUP_HOLD_MS, STARTUP_TIMEOUT_MS, childArgs, childEnv, childStartFiles, herdrLink, nextLaunch, startHarness, type RegisterRemote } from './spawn.ts';
+import { agentKinds, harnessFor, harnessNamed, requireHarness, type HarnessSession } from './harnesses/index.ts';
 import { routeLaunch } from './routes.ts';
 import { watchStartup, type StartupDialog, type StartupWatch } from './startup-dialogs.ts';
-import { locateTranscript, sessionFrom } from './transcript.ts';
+import { sessionFrom } from './transcript.ts';
 import type { ChildRecord, ParentRecord } from './types.ts';
 import { resolveInactiveMs } from './inactivity.ts';
 
-/** A harness session, as herdr names it: an id, or the path of its file. */
-export interface HarnessSession {
-  value: string;
-  kind: 'id' | 'path';
-}
+export type { HarnessSession } from './harnesses/index.ts';
 
 /**
  * The session a child record names: the one herdr reported, kept after exit.
@@ -32,16 +29,15 @@ export interface HarnessSession {
 export function sessionOf(child: Pick<ChildRecord, 'harness' | 'transcript' | 'session'>): HarnessSession | undefined {
   if (child.session?.value) return { value: child.session.value, kind: child.session.kind === 'path' ? 'path' : 'id' };
   if (!child.transcript) return undefined;
-  if (child.harness === 'claude-code') return { value: path.basename(child.transcript, '.jsonl'), kind: 'id' };
-  if (child.harness === 'pi') return { value: child.transcript, kind: 'path' };
-  return undefined;
+  return harnessNamed(child.harness)?.resume?.fromTranscript?.(child.transcript);
 }
 
 /** The arguments that make a harness reopen a session, or an error for one that cannot. */
 export function resumeArgs(kind: string, session: HarnessSession): string[] {
-  if (kind === 'claude') return ['--resume', session.kind === 'path' ? path.basename(session.value, '.jsonl') : session.value];
-  if (kind === 'pi') return ['--session', session.value];
-  throw new Error(`Bellwether cannot resume a ${kind} agent: only claude and pi have a resume flag it knows. Call agent_spawn without resume to start a fresh ${kind} child.`);
+  const resume = harnessFor(kind)?.resume;
+  if (resume) return resume.args(session);
+  const known = agentKinds().filter((name) => harnessFor(name)?.resume);
+  throw new Error(`Bellwether cannot resume a ${kind} agent: only ${known.join(' and ')} have a resume flag it knows. Call agent_spawn without resume to start a fresh ${kind} child.`);
 }
 
 /** Whether a live pane holds this session. Pi may report the path where a caller gave the id. */
@@ -93,8 +89,6 @@ export interface ResumeResult {
   child: ChildRecord;
   session: HarnessSession;
   link: string;
-  /** Why a child on another machine cannot call parent_report, when its registration there failed. */
-  reportWarning?: string;
   /** The startup dialogs the resume answered, in order. */
   answered?: StartupDialog[];
 }
@@ -113,7 +107,7 @@ export async function resumeChild(client: HerdrClient, parent: ParentRecord, tar
   const now = new Date().toISOString();
   const existing = target.child;
   const kind = existing?.kind ?? target.kind;
-  if (!kind) throw new Error('A session no child of this parent ran needs a kind, claude or pi, to resume it.');
+  if (!kind) throw new Error(`A session no child of this parent ran needs a kind, ${agentKinds().filter((name) => harnessFor(name)?.resume).join(' or ')}, to resume it.`);
   // A harness with no resume flag fails here, before anything is written.
   resumeArgs(kind, { value: '', kind: 'id' });
   const session = target.session ?? (existing ? sessionOf(existing) : undefined);
@@ -139,7 +133,7 @@ export async function resumeChild(client: HerdrClient, parent: ParentRecord, tar
         id: newChildId(),
         name: target.name ?? `resumed-${path.basename(session.value, '.jsonl').slice(-8)}`,
         kind,
-        harness: harnessOf(kind),
+        harness: requireHarness(kind).harness,
         paneId: '',
         host: target.host ?? LOCAL_HOST,
         origin: 'resume',
@@ -158,7 +152,7 @@ export async function resumeChild(client: HerdrClient, parent: ParentRecord, tar
     delete child.model;
   } else {
     delete child.route;
-    if (kind === 'pi' && launch.provider && launch.harnessModel) child.model = { provider: launch.provider, id: launch.harnessModel, source: 'caller' };
+    if (requireHarness(kind).chosenBy === 'pair' && launch.provider && launch.harnessModel) child.model = { provider: launch.provider, id: launch.harnessModel, source: 'caller' };
   }
 
   // 1. The record lands first, with no pane, so a crash still says what was asked.
@@ -212,17 +206,14 @@ export async function resumeChild(client: HerdrClient, parent: ParentRecord, tar
   let tabId: string | undefined;
   let opened: ChildTab | undefined;
   let startup: StartupWatch | undefined;
-  let reportWarning: string | undefined;
   try {
     // The same child id as before, so the server resolves to the same record.
     // A child on another machine gets its brief there, or the resume fails.
-    const files = await childStartFiles({ ...child, kind }, options.prompt || undefined, options.registerRemote, options.piExtension);
-    const { briefFile, mcpConfigFile, claudeSettingsFile, piExtension } = files;
-    registered = files.registered;
-    reportWarning = files.warning;
+    const { registered: there, ...files } = await childStartFiles(parent, { ...child, kind }, options.prompt || undefined, options.registerRemote, options.piExtension, launch.harnessModel);
+    registered = there;
     if (files.toolSource) child.toolSource = files.toolSource;
     const placement = await returnPlacement(client, child, fallback, signal);
-    const tab = await openChildTab(client, placement, { cwd: child.cwd, label: child.name, env: childEnv(parent, child, piExtension), focus: options.focus ?? false }, signal);
+    const tab = await openChildTab(client, placement, { cwd: child.cwd, label: child.name, env: { ...childEnv(parent, child, files.piExtension), ...files.env }, focus: options.focus ?? false }, signal);
     opened = tab;
     tabId = tab.tabId ?? tab.paneId;
     if (!tab.paneId) throw new Error('herdr created no pane for the resumed tab');
@@ -232,15 +223,16 @@ export async function resumeChild(client: HerdrClient, parent: ParentRecord, tar
     if (tab.workspaceLabel) child.workspaceLabel = tab.workspaceLabel;
     // A resumed Claude Code child paints the same development-channel dialog
     // as a new one, so the watcher holds its events while the resume answers.
-    if (kind === 'claude') {
+    const dialogs = requireHarness(kind).startup;
+    if (dialogs) {
       const timeoutMs = options.startupTimeoutMs ?? STARTUP_TIMEOUT_MS;
       child.startingUntil = new Date(Date.now() + Math.max(STARTUP_HOLD_MS, timeoutMs + 15_000)).toISOString();
-      startup = await watchStartup(client, tab.paneId, signal, { timeoutMs, redrawMs: options.redrawMs });
+      startup = await watchStartup(client, tab.paneId, signal, { timeoutMs, redrawMs: options.redrawMs, dialogs });
     }
     upsertChild(parent.id, child);
 
     // 3. Start the harness on the session.
-    const harnessArgs = childArgs(kind, { kind, name: child.name, model: launch.harnessModel, provider: launch.provider, args: [...args, ...(options.args ?? [])] }, { briefFile, mcpConfigFile, claudeSettingsFile, piExtension });
+    const harnessArgs = childArgs(kind, { model: launch.harnessModel, provider: launch.provider, args: options.args }, files, { resume: args });
     await startHarness(client, { name: child.name, kind, paneId: tab.paneId, args: harnessArgs, ...(launch.route && launch.config ? { launch: routeLaunch(launch.config, launch.route, kind, harnessArgs) } : {}) }, signal);
   } catch (error) {
     startup?.close();
@@ -284,7 +276,7 @@ export async function resumeChild(client: HerdrClient, parent: ParentRecord, tar
     if (child.host === LOCAL_HOST) {
       // The same session in the same directory is the same file, so a resumed
       // child keeps the path it had.
-      const found = locateTranscript(child.harness, kept.value, child.cwd);
+      const found = requireHarness(kind).conversation.locate(kept.value, child.cwd);
       entry.transcript = found.path ?? entry.transcript;
       if (entry.transcript) delete entry.transcriptMissing;
       else entry.transcriptMissing = found.missing;
@@ -297,5 +289,5 @@ export async function resumeChild(client: HerdrClient, parent: ParentRecord, tar
   });
 
   const saved = readParent(parent.id)?.children.find((entry) => entry.id === child.id) ?? child;
-  return { child: saved, session, link: herdrLink('pane', child.paneId), answered, ...(reportWarning ? { reportWarning } : {}) };
+  return { child: saved, session, link: herdrLink('pane', child.paneId), answered };
 }

@@ -2,7 +2,7 @@
 // naming the operation and the release that brought it.
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { FEATURES, featureNamed, missingFeatureMessage, missingFrom, serves, unknownTo } from '../../src/daemon/features.ts';
+import { FEATURES, featureNamed, missingFeatureMessage, missingFrom, serves, unknownTo, unservedArgument } from '../../src/daemon/features.ts';
 import { refusalMessage } from '../../src/daemon/client.ts';
 import { DAEMON_PROTOCOL, MIN_CLIENT_PROTOCOL, ProtocolError, parseRequest } from '../../src/daemon/protocol.ts';
 import { daemonCallNames, toolNames } from '../../src/integrations/tools.ts';
@@ -51,4 +51,17 @@ test('a refusal quotes the range the daemon serves and names the install to upda
   const old = refusalMessage('/h/daemon.sock', { daemonProtocol: 1, reason: 'the client spoke another protocol' }, { version: '0.1.5', protocol: 4 }, '/opt/bellwether');
   assert.match(old, /serves protocol 1,/);
   assert.match(old, /Upgrade the Bellwether install that started that daemon/);
+});
+
+test('an argument an older daemon would ignore is refused by name before the call, and an unset one passes', () => {
+  const old = { protocol: 3, version: '0.1.4' };
+  assert.equal(unservedArgument(old, 'agent_spawn', { kind: 'pi', name: 'x', workspace: 'new' }), 'agent_spawn.workspace');
+  assert.equal(unservedArgument(old, 'agent_spawn', { kind: 'pi', name: 'x', workspace: undefined }), undefined);
+  // A daemon from before this argument, on the same protocol, lists what it reads.
+  assert.equal(unservedArgument({ protocol: 4, version: '0.1.5', features: ['agent_spawn'] }, 'agent_spawn', { workspace_label: 'x' }), 'agent_spawn.workspace_label');
+  assert.equal(unservedArgument({ protocol: 4, features: FEATURES.map((feature) => feature.name) }, 'agent_spawn', { workspace: 'new', workspace_label: 'x' }), undefined);
+  assert.equal(
+    missingFeatureMessage('agent_spawn.workspace', old),
+    '`agent_spawn.workspace` needs protocol 4 (Bellwether 0.1.5); this daemon serves protocol 3 (Bellwether 0.1.4). Upgrade the machine holding the daemon when convenient. Every other tool keeps working.',
+  );
 });

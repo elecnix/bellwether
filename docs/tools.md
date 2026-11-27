@@ -27,17 +27,17 @@ A child record keeps the session file that herdr reports for a pi child, includi
 
 ## Workspaces
 
-A child opens in your own herdr workspace unless the spawn names another with `workspace`. The value `"new"` asks herdr for a workspace of the child's own, labelled with the child's name, or with `workspace_label` when you pass one. The child runs in that workspace's first tab, so the workspace never holds an empty shell. Its own children open in that workspace too, because each session's children default to its own workspace, so a whole subtree stays out of yours.
+A child opens in your own herdr workspace unless the spawn sets `workspace` to another one. The value `"new"` asks herdr for a workspace of the child's own, labelled with the child's name, or with `workspace_label` when you pass one. The child runs in that workspace's first tab, so no empty shell sits beside it. Its own children open in that workspace too. Each session's children default to its own workspace, so a whole subtree stays out of yours.
 
-Any other value names an existing workspace, by id and then by label. A name that matches nothing fails the spawn before anything is written, and the error lists the workspaces there. So does a label that two workspaces share. `"new"` always means a new workspace, even where one is labelled `new`.
+Any other value identifies an existing workspace, by id and then by label. A name that doesn't match any workspace fails the spawn before Bellwether writes anything, and the error lists the workspaces there. A label that two workspaces share fails the same way. `"new"` always means a new workspace, even where an existing workspace has the label `new`.
 
-A child on another machine gets its workspace on that machine: `"new"` creates it through that machine's herdr. A workspace id from this machine means nothing there. Passing one fails the spawn with an error that says so, names the workspace on this machine, and lists the ones on the child's machine.
+A child on another machine gets its workspace on that machine, because `"new"` creates it through that machine's herdr. A workspace id from this machine means nothing there. Passing one fails the spawn. The error identifies the workspace on this machine and lists the ones on the child's machine.
 
 `max_depth` counts the same in a new workspace as anywhere else.
 
-Bellwether closes only a workspace it created, and only once it holds no tab. herdr already closes a workspace when its last tab closes, so the close covers a herdr that leaves an empty one. A workspace that still holds another tab stays open, and so does any workspace a person made, even an empty one. A restart or resume of a child whose workspace herdr has closed opens a new one under the same label.
+Bellwether closes only a workspace it created, and only once no tab remains in it. herdr closes a workspace with its last tab, so the close covers a herdr that leaves an empty one. A workspace that still has another tab remains open, and so does any workspace a person made, even an empty one. A restart or resume of a child whose workspace herdr has closed opens a new one under the same label.
 
-`agent_list` has a `workspace` column, and `bellwether doctor` names the workspace of each live child. Both mark a workspace that Bellwether made for the child with `[made for it]`.
+`agent_list` has a `workspace` column, and `bellwether doctor` names the workspace of each live child. Both mark a workspace Bellwether made for the child with `[made for it]`.
 
 ## Events a parent receives
 

@@ -11,20 +11,25 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
-function readVersion(): string {
+function readPackage(): { version: string; dir?: string } {
   let dir = import.meta.dirname;
   for (let depth = 0; depth < 4; depth += 1) {
     const file = path.join(dir, 'package.json');
     if (fs.existsSync(file)) {
       const manifest = JSON.parse(fs.readFileSync(file, 'utf8')) as { name?: string; version?: string };
-      if (manifest.name === '@elecnix/bellwether' && manifest.version) return manifest.version;
+      if (manifest.name === '@elecnix/bellwether' && manifest.version) return { version: manifest.version, dir };
     }
     dir = path.dirname(dir);
   }
-  return 'unknown';
+  return { version: 'unknown' };
 }
 
-export const BELLWETHER_VERSION = readVersion();
+const found = readPackage();
+
+export const BELLWETHER_VERSION = found.version;
+
+/** The directory of the install this code runs from, so an error can say which install to update. */
+export const BELLWETHER_PACKAGE_DIR = found.dir ?? import.meta.dirname;
 
 /** Which code an install runs, beyond its version number. */
 export interface BuildInfo {

@@ -7,9 +7,9 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { compareVersions, decideHandOver, drainDecision } from '../../src/daemon/handover.ts';
-import { DAEMON_PROTOCOL, MIN_CLIENT_PROTOCOL, ProtocolError, acceptsClientProtocol, parseRequest } from '../../src/daemon/protocol.ts';
+import { DAEMON_PROTOCOL, MIN_CLIENT_PROTOCOL, PROTOCOL_HISTORY, ProtocolError, acceptsClientProtocol, parseRequest } from '../../src/daemon/protocol.ts';
 import { acquire, readLock, release } from '../../src/daemon/lock.ts';
-import { describeUpgrade } from '../../src/daemon/upgrade-status.ts';
+import { describePairing, describeUpgrade, farPairing } from '../../src/daemon/upgrade-status.ts';
 import { RelayOutbox } from '../../src/daemon/relay.ts';
 import { relayOutboxPath } from '../../src/core/paths.ts';
 import type { SessionInfo, SessionsReply } from '../../src/daemon/protocol.ts';
@@ -50,18 +50,20 @@ test('the reason for a replacement names both versions', () => {
   assert.match(decision.reason, /0\.1\.5 on protocol 4/);
 });
 
-test('a daemon serves its own protocol and the one before it, and nothing else', () => {
-  assert.equal(MIN_CLIENT_PROTOCOL, DAEMON_PROTOCOL - 1);
-  assert.equal(acceptsClientProtocol(DAEMON_PROTOCOL), true);
-  assert.equal(acceptsClientProtocol(DAEMON_PROTOCOL - 1), true);
-  assert.equal(acceptsClientProtocol(DAEMON_PROTOCOL - 2), false);
+test('a daemon serves every protocol back to the last bump that breaks, and nothing newer than its own', () => {
+  const breaking = PROTOCOL_HISTORY.filter((entry) => entry.breaks).map((entry) => entry.protocol);
+  assert.equal(MIN_CLIENT_PROTOCOL, Math.max(...breaking));
+  assert.equal(PROTOCOL_HISTORY.at(-1)?.protocol, DAEMON_PROTOCOL, 'every bump has an entry that says whether it breaks');
+  for (let protocol = MIN_CLIENT_PROTOCOL; protocol <= DAEMON_PROTOCOL; protocol += 1) assert.equal(acceptsClientProtocol(protocol), true, `protocol ${protocol}`);
+  assert.equal(acceptsClientProtocol(MIN_CLIENT_PROTOCOL - 1), false);
   assert.equal(acceptsClientProtocol(DAEMON_PROTOCOL + 1), false);
 });
 
-test('a report from the previous protocol parses, and one from before it is refused', () => {
+test('a report from any served protocol parses, and one from below the floor is refused', () => {
   const report = (protocol: number): string => JSON.stringify({ type: 'report', id: 'r1', protocol, report: { childId: 'c1', status: 'done', text: 'finished' } });
   assert.equal(parseRequest(report(DAEMON_PROTOCOL - 1)).type, 'report');
-  assert.throws(() => parseRequest(report(DAEMON_PROTOCOL - 2)), (error: unknown) => error instanceof ProtocolError && error.code === 'protocol_mismatch');
+  assert.equal(parseRequest(report(MIN_CLIENT_PROTOCOL)).type, 'report');
+  assert.throws(() => parseRequest(report(MIN_CLIENT_PROTOCOL - 1)), (error: unknown) => error instanceof ProtocolError && error.code === 'protocol_mismatch');
 });
 
 test('a draining daemon waits for its calls in flight, up to a grace period', () => {
@@ -151,4 +153,38 @@ test('a report a 0.1.4 daemon kept for its own retries is still offered to the p
     else process.env['BELLWETHER_HOME'] = previous;
     fs.rmSync(home, { recursive: true, force: true });
   }
+});
+
+test('doctor states the pairing: an older daemon refuses the newer tools by name, and upgrading it gains them', () => {
+  const report = describeUpgrade({ installed, lock: { pid: 4242, startedAt: 0, protocol: 3, version: '0.1.4', socket: '/h/daemon.sock' }, lockAlive: true, sockets: [{ name: 'daemon.sock', answers: true }], daemonSocket: 'daemon.sock', sessions: { error: 'unknown_type: unknown request type "sessions"' } });
+  const text = report.lines.join('\n');
+  assert.match(text, /pairing on this machine: this install speaks protocol 4, the daemon 3 \(Bellwether 0\.1\.4\); they speak protocol 3/);
+  assert.match(text, /degraded on this machine: the daemon refuses agent_restart, agent_move \(protocol 4, Bellwether 0\.1\.5\) by name; every other tool works\. Upgrading the daemon there gains them, when convenient\./);
+});
+
+test('doctor says a daemon newer than this install leaves it behind, not finished, and names what updating gains', () => {
+  const report = describeUpgrade({
+    installed,
+    lock: { ...liveLock, version: '0.2.0', protocol: 5 },
+    lockAlive: true,
+    sockets: [{ name: 'daemon.sock', answers: true }],
+    daemonSocket: 'daemon.sock',
+    sessions: sessionsReply([{}], { version: '0.2.0', protocol: 5, minClientProtocol: 2, features: ['agent_list', 'agent_move', 'agent_clone'] }),
+  });
+  assert.equal(report.state, 'behind');
+  const text = report.lines.join('\n');
+  assert.doesNotMatch(text, /upgrade: finished/);
+  assert.match(text, /behind on this machine: the daemon serves agent_clone, which this install does not offer\. Updating this install gains it, when convenient\./);
+  assert.match(text, /upgrade: this install, 0\.1\.5, is older than the daemon, 0\.2\.0/);
+});
+
+test('doctor says a matching pair loses nothing', () => {
+  assert.match(describePairing(installed, { protocol: 4, version: '0.1.5' }).join('\n'), /nothing is degraded, and neither side gains anything by updating/);
+});
+
+test('doctor names, per relay machine, its daemon and what updating that machine gains', () => {
+  const base = { host: 'far', status: 'connected' as const, since: 't', attempts: 0, children: [] };
+  assert.equal(farPairing(base), '');
+  assert.equal(farPairing({ ...base, farProtocol: 4, farVersion: '0.1.5' }), ', on protocol 4; nothing to gain by updating it');
+  assert.equal(farPairing({ ...base, farProtocol: 3, farVersion: '0.1.4' }), ', on protocol 3; updating that machine gains agent_restart, agent_move (protocol 4, Bellwether 0.1.5), when convenient');
 });

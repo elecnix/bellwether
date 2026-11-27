@@ -15,7 +15,7 @@ import { RELAY_SCHEMA, listForwards, readRelayRecord, removeRelayRecord, saveRel
 import { relayChildPath, relayOutboxDir } from './core/paths.ts';
 import { removeBriefAt, writeBrief, writeBriefIn } from './core/brief.ts';
 import { removeChildFiles, writeMcpConfig } from './core/mcp-config.ts';
-import { describeUpgrade, gatherUpgrade } from './daemon/upgrade-status.ts';
+import { describeUpgrade, farPairing, gatherUpgrade } from './daemon/upgrade-status.ts';
 import { describeState } from './core/hygiene.ts';
 import { HEARTBEAT_MISSES } from './core/ssh.ts';
 import { DaemonClient, REFUSED_EXIT, ReportRefused, drainDaemon, ensureDaemon, postReport, relayStatus } from './daemon/client.ts';
@@ -623,7 +623,7 @@ export function describeRelayHost(state: RelayHostState): { ok: boolean; label: 
   const as = state.target && state.target !== state.host ? ` as ${state.target}` : '';
   const drain = state.lastDrainAt ? `, last drain ${state.lastDrainAt}` : ', not drained yet';
   const children = `${state.children.length} child(ren) there`;
-  if (state.status === 'connected') return { ok: true, label, detail: `connected since ${state.since}${as}, running ${runsOn({ version: state.farVersion, build: state.farBuild }).replace(/^bellwether /, '')}${drain}, ${children}` };
+  if (state.status === 'connected') return { ok: true, label, detail: `connected since ${state.since}${as}, running ${runsOn({ version: state.farVersion, build: state.farBuild }).replace(/^bellwether /, '')}${drain}, ${children}${farPairing(state)}` };
   const next = state.nextAttemptAt ? `, next attempt ${state.nextAttemptAt}` : '';
   const heard = state.lastConnectedAt ? `last connected ${state.lastConnectedAt}` : 'never connected';
   return { ok: false, label, detail: `${state.status} since ${state.since}${as}, ${state.attempts} failed attempt(s)${next}, ${heard}${drain}, ${children}, not hearing from them: ${state.lastError ?? 'no attempt has finished yet'}` };

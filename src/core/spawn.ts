@@ -264,7 +264,8 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
     stuckMs: options.stuckMinutes === undefined ? undefined : Math.max(1_000, Math.round(options.stuckMinutes * 60_000)),
     inactiveMs: resolveInactiveMs(options.inactiveMinutes),
     // herdr reports no session for a harness with a store of its own, so the spawn names it.
-    ...(store ? { session: { kind: 'id', value: store.mint() }, store: store.storePath(harnessHooks) } : {}),
+    // A harness that takes a session id on its launch line gets one minted here.
+    ...(store ? { ...(store.mint ? { session: { kind: 'id' as const, value: store.mint() } } : {}), store: store.storePath(harnessHooks) } : {}),
   };
   // 1. The record lands before herdr is asked for anything.
   upsertChild(parent.id, child);
@@ -310,11 +311,15 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
     await startHarness(client, { name: child.name, kind: options.kind, paneId: tab.paneId, args, ...(launchVia ? { launch: routeLaunch(launchVia.config, launchVia.route, options.kind, args) } : {}) }, signal);
 
     // The harness's store is the only proof the brief arrived when herdr
-    // reports no session for it. A session that never shows fails the spawn,
-    // which keeps the brief so a person can see what the child was given.
-    if (store && child.session && child.store && briefFile && child.cwd) {
+    // reports no session for it. A harness that takes a session id was given
+    // the minted one; any other gets the id the store found. A session that
+    // never shows fails the spawn, which keeps the brief so a person can see
+    // what the child was given.
+    if (store && child.store && briefFile && child.cwd) {
       try {
-        await store.confirm({ store: child.store, session: child.session.value, cwd: child.cwd, briefFile }, harnessHooks);
+        const found = await store.confirm({ store: child.store, ...(child.session ? { session: child.session.value } : {}), cwd: child.cwd, briefFile, since: child.startedAt }, harnessHooks);
+        child.session = { kind: 'id', value: found };
+        upsertChild(parent.id, child);
       } catch (error) {
         throw new Error(`${child.name} was not started: ${(error as Error).message} The brief stays at ${briefFile} for inspection, and the pane is closed.`);
       }
@@ -349,8 +354,9 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
     const result = await client.request('agent.get', { target: child.paneId }, { signal });
     const agent = typeof result === 'object' && result !== null ? (result as Record<string, unknown>)['agent'] : undefined;
     const pane = typeof agent === 'object' && agent !== null ? (agent as Record<string, unknown>) : {};
-    // A child whose session the spawn minted keeps the one its store showed.
-    const session = child.session ? undefined : sessionFrom(pane['agent_session']);
+    // A child whose session its store showed keeps that one, and its
+    // transcript is looked up the same way as a session herdr reports.
+    const session = child.session ?? sessionFrom(pane['agent_session']);
     if (session) {
       child.session = session;
       // A remote child's transcript sits on its own machine's disk.

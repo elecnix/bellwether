@@ -15,7 +15,10 @@ import { relayChildPath } from './core/paths.ts';
 import { writeMcpConfig } from './core/mcp-config.ts';
 import { REFUSED_EXIT } from './core/ssh.ts';
 import { lastAssistantMessage, resolveTranscript } from './core/transcript.ts';
-import { DaemonClient, ReportRefused, postReport } from './daemon/client.ts';
+import { DaemonClient, ReportRefused, drainDaemon, postReport } from './daemon/client.ts';
+import { readLock } from './daemon/lock.ts';
+import { DAEMON_PROTOCOL } from './daemon/protocol.ts';
+import { BELLWETHER_VERSION } from './core/version.ts';
 import { daemonIsLive, startDaemon } from './daemon/server.ts';
 import type { OutboxEntry } from './core/types.ts';
 
@@ -174,10 +177,20 @@ function checkPackaging(): number {
 
 async function doctor(): Promise<number> {
   let failures = 0;
+  console.log(`bellwether ${BELLWETHER_VERSION}, daemon protocol ${DAEMON_PROTOCOL}`);
   console.log(`bellwether home  ${bellwetherHome()}`);
   const daemonSocket = path.join(bellwetherHome(), 'daemon.sock');
   const daemonLive = daemonIsLive(bellwetherHome());
   console.log(`  ${daemonLive ? 'ok   ' : 'info '} daemon: ${daemonLive ? 'running' : 'idle, starts on demand'} (${daemonSocket})`);
+  if (daemonLive) {
+    const lock = readLock(bellwetherHome());
+    const running = `${lock?.version ?? 'a version older than 0.1.4'} on protocol ${lock?.protocol ?? 'unknown'}`;
+    if (lock?.version === BELLWETHER_VERSION && lock.protocol === DAEMON_PROTOCOL) {
+      console.log(`  ok    daemon version: ${running}`);
+    } else {
+      console.log(`  info  daemon version: ${running}, not this install's ${BELLWETHER_VERSION}. Run bellwether drain to replace it.`);
+    }
+  }
   failures += checkPackaging();
   const socket = resolveSocketPath();
   if (!fs.existsSync(socket)) {
@@ -203,9 +216,16 @@ async function main(): Promise<number> {
   const [command = 'help', ...rest] = process.argv.slice(2);
   const { positional, flags } = parseArgs(rest);
 
+  if (command === 'version' || command === '--version') {
+    console.log(BELLWETHER_VERSION);
+    return 0;
+  }
+
   if (command === 'help' || command === '--help') {
-    console.log('Usage: bellwether <daemon|spawn|watch|list|read|send|stop|report|parents|doctor>');
+    console.log('Usage: bellwether <daemon|drain|spawn|watch|list|read|send|stop|report|parents|doctor|version>');
     console.log('  daemon [--socket PATH]                   run the local daemon in the foreground');
+    console.log('  drain  [--socket PATH]                   stop the running daemon once its calls finish, so the next session starts the installed one');
+    console.log('  version                                  print the installed version (also --version)');
     console.log('  spawn  --kind KIND --name NAME [--cwd DIR] [--prompt TEXT] [--model M] [--parent ID] [--focus]');
     console.log('  watch  [--parent ID] [--tick-ms N]      one line per child event, then keeps reading');
     console.log('  list   [--parent ID]');
@@ -228,6 +248,17 @@ async function main(): Promise<number> {
     process.on('SIGTERM', stop);
     process.on('SIGINT', stop);
     await daemon.whenClosed();
+    return 0;
+  }
+
+  if (command === 'drain') {
+    const socketPath = str(flags, 'socket') ?? process.env['BELLWETHER_DAEMON_SOCKET'] ?? path.join(bellwetherHome(), 'daemon.sock');
+    const lock = readLock(bellwetherHome());
+    if (!(await drainDaemon(socketPath))) {
+      console.log(`no daemon answers on ${socketPath}; the next session starts one from its own install`);
+      return 0;
+    }
+    console.log(`drained the daemon ${lock?.version ?? 'from before 0.1.4'} on protocol ${lock?.protocol ?? 'unknown'} (pid ${lock?.pid ?? 'unknown'}); the next session call starts the daemon from that session's install`);
     return 0;
   }
 
@@ -306,7 +337,7 @@ async function main(): Promise<number> {
       if (!child) throw new Error('stop needs a child');
       console.log(await daemon.tool('agent_stop', { child, force: flags['force'] === true }));
     } else {
-      console.log('Usage: bellwether <daemon|spawn|watch|list|read|send|stop|report|parents|doctor>');
+      console.log('Usage: bellwether <daemon|drain|spawn|watch|list|read|send|stop|report|parents|doctor|version>');
       return 1;
     }
   } finally {

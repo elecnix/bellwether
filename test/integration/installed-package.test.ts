@@ -67,6 +67,15 @@ test('the installed bellwether command prints its usage', () => {
   assert.match(run.stdout, /^Usage: bellwether /);
 });
 
+test('the installed bellwether command prints the version it was published as', () => {
+  const manifest = JSON.parse(fs.readFileSync(path.join(installed, 'package.json'), 'utf8')) as { version: string };
+  for (const flag of ['--version', 'version']) {
+    const run = spawnSync(bin('bellwether'), [flag], { env: isolatedEnv(), encoding: 'utf8' });
+    assert.equal(run.status, 0, run.stderr);
+    assert.equal(run.stdout.trim(), manifest.version);
+  }
+});
+
 test('the installed doctor starts, finds its own entry points and reaches the herdr check', () => {
   const run = spawnSync(bin('bellwether'), ['doctor'], { env: isolatedEnv(), encoding: 'utf8' });
   assert.doesNotMatch(run.stderr, /ERR_/, run.stderr);

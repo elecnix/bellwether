@@ -11,7 +11,7 @@ import type { HerdrClient, HerdrEvent, Subscription } from './herdr-client.ts';
 import { DEFAULT_LIMITS, advance, limitsFor, markReported, seedFor, type ClassifierState, type SettleLimits } from './classifier.ts';
 import { LOCAL_HOST, hostOf, type ClientFor } from './machine.ts';
 import { Outbox } from './outbox.ts';
-import { mutateParent, readParent, updateChild } from './registry.ts';
+import { describeDecisions, mutateParent, readParent, recordDecisions, takeUntoldDecisions, updateChild } from './registry.ts';
 import { detectDialog, dialogName, watchStartup } from './startup-dialogs.ts';
 import { harnessFor, harnessNamed } from './harnesses/index.ts';
 import { detectModal } from './modal.ts';
@@ -23,7 +23,7 @@ import { childLabel } from './label.ts';
 import { spoolPath } from './paths.ts';
 import { realRetireOps, reapChild, retirementPending, type RetireOps } from './retire.ts';
 import { isMoving } from './move-plan.ts';
-import type { AgentStatus, ChildEventKind, ChildMessage, ChildRecord, OutboxEntry, RelayHostState, SpoolReport } from './types.ts';
+import type { AgentStatus, ChildEventKind, ChildMessage, ChildRecord, DialogDecision, OutboxEntry, RelayHostState, SpoolReport } from './types.ts';
 import { unreadSessionMessages } from './send.ts';
 import { releaseWorkspace } from './workspace.ts';
 
@@ -783,12 +783,16 @@ export class Watcher {
           entry.inactiveNotifiedFor = notifiedFor;
         });
       }
-      // Bellwether reports a dialog and never answers it, apart from Claude
-      // Code's own startup questions, which answerStartupDialog owns. Approving
-      // a permission question is the operator's decision, not the tool's: do not
-      // add a keystroke on this path. test/integration/blocked-modal.test.ts
-      // fails when one reaches the pane.
+      // Bellwether reports a dialog and never answers it, apart from the
+      // dialogs in the harness's set, which answerStartupDialog owns: Claude
+      // Code's startup questions, and the two questions it declines for a
+      // child it started. Approving a permission question is the operator's
+      // decision, not the tool's: do not add a keystroke on this path.
+      // test/integration/blocked-modal.test.ts fails when one reaches the pane.
       if (event === 'blocked') {
+        // A dialog the hook already named reaches the parent as it is: herdr
+        // reports a Claude Code dialog blocked at 3 s, before the hook's 6 s, so
+        // a question Bellwether answers is read from the screen below first.
         if (child.prompt) {
           this.offer(child, event, this.describeBlocked(child, child.prompt.line));
           continue;
@@ -895,13 +899,15 @@ export class Watcher {
    */
   private answerStartupDialog(child: ChildRecord, screen: string): boolean {
     const dialogs = harnessFor(child.kind)?.startup;
-    const dialog = dialogs ? detectDialog(screen, dialogs) : undefined;
+    const dialog = dialogs && this.answers(child) ? detectDialog(screen, dialogs) : undefined;
     if (!dialogs || !dialog || this.gaveUp.has(child.id)) return false;
     if (this.answering.has(child.id)) return true;
     this.answering.add(child.id);
     this.log(`${child.name} is on ${dialogName(dialog, dialogs)}; answering it`);
     void (async () => {
-      const watch = await watchStartup(await this.clientFor(hostOf(child)), child.paneId, this.controller?.signal, { dialogs });
+      // Each decision goes on the record as its Enter goes out, ahead of the idle event it causes.
+      const onDecision = (decision: DialogDecision): void => recordDecisions(this.parentId, child.id, [decision]);
+      const watch = await watchStartup(await this.clientFor(hostOf(child)), child.paneId, this.controller?.signal, { dialogs, by: 'watcher', onDecision });
       try {
         await watch.answer();
       } finally {
@@ -916,6 +922,16 @@ export class Watcher {
       })
       .finally(() => this.answering.delete(child.id));
     return true;
+  }
+
+  /**
+   * Whether Bellwether answers this child's dialogs: only for a child it
+   * started. An adopted child's session began under someone else's settings,
+   * and a parent never types into a pane it does not own, so each of its
+   * dialogs reaches the parent as blocked.
+   */
+  private answers(child: ChildRecord): boolean {
+    return child.origin !== 'adopt' && Boolean(harnessFor(child.kind)?.startup);
   }
 
   /**
@@ -1118,7 +1134,12 @@ export class Watcher {
     return transcript ? lastAssistantMessage(transcript) : undefined;
   }
 
-  private offer(child: ChildRecord, event: ChildEventKind, text: string): void {
+  private offer(child: ChildRecord, event: ChildEventKind, given: string): void {
+    // The parent hears each answer Bellwether gave for the child once, with
+    // the first event after it, right under the event's first line.
+    const { taken, earlier } = takeUntoldDecisions(this.parentId, child.id);
+    const [headline = '', ...rest] = given.split('\n');
+    const text = taken.length ? [headline, describeDecisions(childLabel(child), taken, earlier), ...rest].join('\n') : given;
     const state = event === 'blocked' || event === 'stuck' || event === 'idle' ? { status: child.lastStatus, stateChangeSeq: child.stateChangeSeq } : {};
     this.outbox.offer({ childId: child.id, name: child.name, kind: child.kind, paneId: child.paneId, event, text, at: new Date().toISOString(), ...state });
     this.outbox.prune();

@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { removeBrief, removeBriefAt, workdirBriefPath } from './brief.ts';
-import { removeClaudeSettings, writeClaudeSettings } from './claude-hooks.ts';
+import { childReadSet, removeClaudeSettings, writeClaudeSettings } from './claude-hooks.ts';
 import { mcpConfigPath, mcpDir } from './paths.ts';
 import { CHILD_SERVER_NAME, findAmbientServers, planToolSource, type ToolSource } from './tool-source.ts';
 
@@ -75,11 +75,12 @@ export interface ChildToolFiles {
  * turns off a Bellwether plugin that would add a second set of tools. `cwd`
  * is where the child runs, whose project settings Claude Code also reads.
  */
-export function writeChildToolFiles(childId: string, cwd: string | undefined, options: { hook: boolean }): ChildToolFiles {
+export function writeChildToolFiles(childId: string, cwd: string | undefined, options: { hook: boolean; reads?: readonly string[] }): ChildToolFiles {
   const plan = planToolSource(findAmbientServers(cwd));
   const mcp = writeMcpConfig(childId, plan.standDown);
-  const settings = writeClaudeSettings(childId, { hook: options.hook, disablePlugins: plan.disablePlugins });
-  return { mcpConfig: mcp, ...(settings ? { claudeSettings: settings } : {}), toolSource: plan.source };
+  // The launch's read set: the Bellwether home, then any path the parent named for this child.
+  const settings = writeClaudeSettings(childId, { hook: options.hook, disablePlugins: plan.disablePlugins, reads: [...childReadSet(), ...(options.reads ?? [])] });
+  return { mcpConfig: mcp, claudeSettings: settings, toolSource: plan.source };
 }
 
 /**

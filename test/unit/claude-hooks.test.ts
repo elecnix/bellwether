@@ -2,7 +2,10 @@
 // Claude Code 2.1.332 sends, by the schema in its build, and the watcher's
 // rule says when herdr's status ends a dialog the hook named.
 import assert from 'node:assert/strict';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
+import { promptPath } from '../../src/core/paths.ts';
 import { DIALOG_NOTIFICATIONS, claudeChildSettings, dialogFromHook, hookCommand } from '../../src/core/claude-hooks.ts';
 import { hookDialogClosed } from '../../src/core/watcher.ts';
 import type { ChildPrompt } from '../../src/core/types.ts';
@@ -36,13 +39,24 @@ test('the settings hold one Notification hook, and its command quotes every argu
   assert.ok(hookCommand("example-it's").endsWith(`'claude-hook' '--child' 'example-it'\\''s'`), hookCommand("example-it's"));
 });
 
-test('one settings file holds both parts a child needs, and a child that needs neither gets none', () => {
-  const both = claudeChildSettings('example-child', { hook: true, disablePlugins: ['bellwether@example-market'] });
-  assert.deepEqual(Object.keys(both ?? {}).sort(), ['enabledPlugins', 'hooks']);
-  assert.deepEqual(both?.enabledPlugins, { 'bellwether@example-market': false });
-  // A child on another machine gets no hook, and only the plugin part.
-  assert.deepEqual(claudeChildSettings('example-child', { hook: false, disablePlugins: ['bellwether@example-market'] }), { enabledPlugins: { 'bellwether@example-market': false } });
-  assert.equal(claudeChildSettings('example-child', { hook: false }), undefined);
+test('one settings file holds every part a child needs, and every child gets its read set', () => {
+  const reads = ['/example/bellwether-home'];
+  const both = claudeChildSettings('example-child', { hook: true, disablePlugins: ['bellwether@example-market'], reads });
+  assert.deepEqual(Object.keys(both).sort(), ['enabledPlugins', 'hooks', 'permissions', 'sandbox']);
+  assert.deepEqual(both.enabledPlugins, { 'bellwether@example-market': false });
+  const readSet = { permissions: { additionalDirectories: reads }, sandbox: { filesystem: { allowRead: reads } } };
+  // A child on another machine gets no hook, and only the plugin part beside its read set.
+  assert.deepEqual(claudeChildSettings('example-child', { hook: false, disablePlugins: ['bellwether@example-market'], reads }), { ...readSet, enabledPlugins: { 'bellwether@example-market': false } });
+  assert.deepEqual(claudeChildSettings('example-child', { hook: false, reads }), readSet);
+});
+
+test('the read set is the Bellwether home, which holds the brief, and nothing above it', () => {
+  const settings = claudeChildSettings('example-child', { hook: false });
+  const home = path.resolve(process.env['BELLWETHER_HOME'] ?? '');
+  assert.deepEqual(settings.permissions.additionalDirectories, [home]);
+  assert.deepEqual(settings.sandbox.filesystem.allowRead, [home]);
+  assert.ok(promptPath('example-child').startsWith(`${home}${path.sep}`), 'the brief is inside the read set');
+  assert.ok(!settings.permissions.additionalDirectories.includes(os.homedir()), "the operator's home is not in the read set");
 });
 
 test('a hook dialog holds while herdr calls the child idle or blocked, and ends when it works or leaves blocked', () => {

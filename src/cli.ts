@@ -5,6 +5,7 @@
 // Claude channel run, and prints one line per child event, so a supervisor can
 // read the stream instead of polling herdr.
 import { describeRoutes, readRoutes } from './core/routes.ts';
+import { checkReads } from './core/reads.ts';
 import { workspaceColumn } from './core/workspace.ts';
 import fs from 'node:fs';
 import net from 'node:net';
@@ -377,7 +378,7 @@ async function main(argv: string[]): Promise<number> {
     console.log('  ancestry AGENT [--json] [--socket PATH]  the agent\'s ancestors, nearest first, and which still run; AGENT is <harness>:<session>, such as claude:<id> or pi:<id>');
     console.log('  report --child ID --status done|needs-input|progress --text TEXT [--parent ID] [--receipt ID]');
     console.log('  claude-hook --child ID                   a Claude Code child\'s Notification hook: the hook input on stdin, the dialog to the daemon, nothing on stdout');
-    console.log('  relay-register --child ID --name NAME --kind KIND --parent ID [--cwd DIR] [--brief-stdin yes]');
+    console.log('  relay-register --child ID --name NAME --kind KIND --parent ID [--cwd DIR] [--reads JSON] [--brief-stdin yes]');
     console.log('  relay-cleanup --child ID                 remove the brief and MCP config relay-register wrote');
     console.log('  relay-bridge [--heartbeat-ms N]          join stdin and stdout to this machine\'s daemon; a parent\'s daemon runs it over SSH');
     console.log('  move-probe|move-export|move-import|move-discard|move-commit   the machine side of a move: a JSON request on stdin, one JSON line out; a parent\'s daemon runs them over SSH');
@@ -661,7 +662,7 @@ function farEnd(command: string, run: () => number): number {
  * machine, which it names in `envDropped`. The record holds none of them.
  */
 function relayRegister(argv: string[]): number {
-  const values = exactFlags(argv, ['child', 'name', 'kind', 'parent', 'cwd', 'brief-stdin']);
+  const values = exactFlags(argv, ['child', 'name', 'kind', 'parent', 'cwd', 'reads', 'brief-stdin']);
   const childId = values['child'];
   const parentId = values['parent'];
   if (!childId || !parentId) throw new Error('relay-register needs --child and --parent');
@@ -671,7 +672,9 @@ function relayRegister(argv: string[]): number {
   // adding a second set, or the extension a pi child loads, which fails here,
   // before anything else is written, when it is missing.
   const reports = harnessFor(values['kind'])?.reports;
-  const tools = reports && reports.via !== 'none' && reports.remote ? reports.local({ id: childId, cwd, host: LOCAL_HOST }, { env: {}, farEnd: true }) : undefined;
+  // The paths the parent named for the child, checked again here against this machine's home.
+  const reads = values['reads'] === undefined ? undefined : checkReads(JSON.parse(values['reads']));
+  const tools = reports && reports.via !== 'none' && reports.remote ? reports.local({ id: childId, cwd, host: LOCAL_HOST, ...(reads ? { reads } : {}) }, { env: {}, farEnd: true }) : undefined;
   const { env, dropped } = farEnvironment(tools?.env);
   let brief: string | undefined;
   if (values['brief-stdin'] === 'yes') {

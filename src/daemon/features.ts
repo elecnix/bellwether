@@ -109,6 +109,11 @@ const BASE: readonly Feature[] = [
   ...brought('request', 4, '0.1.6', {
     'relay-adopt': "`agent_adopt` takes a pane on another machine, and that machine's daemon answers who already watches it.",
   }),
+  // An older daemon would start the child without the paths, and its read of them would be asked about.
+  ...brought('argument', 4, '0.1.7', {
+    'agent_spawn.reads': "A spawn adds paths to the child's read set, which its launch settings list.",
+    'agent_restart.reads': "A restart replaces the paths in the child's read set.",
+  }),
   // A child's adapter acknowledges a parent's message that entered its session, rather than its pane.
   ...brought('request', 4, '0.1.7', {
     'message-ack': "A parent's message enters a Claude Code, pi or omp child's session, where herdr used to type it into the pane, and the child's adapter acknowledges it.",

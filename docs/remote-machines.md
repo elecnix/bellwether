@@ -55,3 +55,5 @@ Outages leave each new report in the relay outbox on the child's machine. A new 
 Refusals from the parent's daemon are final. A refused report stays on disk, marked `refused`, and the child's machine doesn't send it again.
 
 Each report crosses to the parent's machine as one line of the daemon protocol, and that line can't exceed 4 MiB. On the child's machine, the daemon refuses a longer report before it saves it. Its error message tells the child to report a shorter summary and leave the rest in a file.
+
+An older Bellwether may have saved a longer report already. When a parent's daemon connects, the child's daemon marks that report `refused` and leaves it on disk, and the reports after it still arrive.

@@ -63,8 +63,10 @@ export const CLINE_OPT_IN = ['-y', '--yolo'];
 /** What the spawn reply says of a child started the default way: where it runs, and what it shares. */
 export function clineSandboxNote(dataDir: string, settingsDir: string): string {
   return (
-    `Cline runs this child in Cline's sandbox mode, with its own data directory at ${dataDir}: its session runs in the child's own process, not in Cline's shared hub, so it loads only its own Bellwether server, and it keeps Cline's default mode. ` +
-    `It signs in with your provider settings, through a link to ${settingsDir}. Its session is in its own store, so \`cline history\` does not list it; agent_read does.`
+    `Cline runs this child in Cline's sandbox mode, with its own data directory at ${dataDir}. ` +
+    "Its session runs in the child's own process, outside Cline's shared hub, and loads only its own Bellwether server. " +
+    `It keeps Cline's default mode, and it signs in with your provider settings through a link to ${settingsDir}. ` +
+    "Cline records the session in the child's own store, so `cline history` does not list it. agent_read reads it there."
   );
 }
 

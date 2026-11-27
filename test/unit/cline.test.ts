@@ -90,7 +90,7 @@ test('only -y or --yolo turns on benchmark mode, and each note names only what b
   assert.equal(clineOptedIn(['--yolo']), true);
   const sandbox = clineSandboxNote('/b/cline/c-1', '/home/u/.cline/data/settings');
   assert.match(sandbox, /sandbox mode, with its own data directory at \/b\/cline\/c-1/);
-  assert.match(sandbox, /not in Cline's shared hub/);
+  assert.match(sandbox, /outside Cline's shared hub/);
   assert.match(sandbox, /keeps Cline's default mode/);
   assert.match(sandbox, /through a link to \/home\/u\/\.cline\/data\/settings/);
   assert.doesNotMatch(sandbox, /-y|benchmark/);

@@ -26,6 +26,8 @@ export interface FakeHerdrOptions {
   respond?: (request: RecordedRequest) => { result: unknown } | { error: { code: string; message: string } } | undefined;
   /** Wait this long before each answer, as a busy herdr would. */
   delayMs?: number;
+  /** The status herdr reports after it detects a typed start: idle by default, or null for none. */
+  statusAfterStart?: string | null;
 }
 
 export interface FakeHerdr {
@@ -191,13 +193,16 @@ export async function startFakeHerdr(options: FakeHerdrOptions = {}): Promise<Fa
         const own = options.respond?.(request);
         const answer = own ?? refuseUnsafeArguments(request) ?? { result: defaultResult(request) };
         const reply = `${JSON.stringify({ id: request.id, ...answer })}\n`;
-        // herdr finds a harness typed at a shell prompt by its process, and says so.
+        // herdr finds a harness typed at a shell prompt by its process, says
+        // so, and then reports the harness at its prompt.
         const typed = own === undefined ? harnessStart(request) : undefined;
         if (typed?.via === 'typed') {
-          setTimeout(() => {
-            const frame = `${JSON.stringify({ event: 'pane_agent_detected', data: { pane_id: typed.paneId, agent: typed.kind, workspace_id: typed.paneId.split(':')[0] } })}\n`;
-            for (const open of connections) open.write(frame);
-          }, 20);
+          const workspace = typed.paneId.split(':')[0];
+          const emit = (frame: unknown): void => {
+            for (const open of connections) open.write(`${JSON.stringify(frame)}\n`);
+          };
+          setTimeout(() => emit({ event: 'pane_agent_detected', data: { pane_id: typed.paneId, agent: typed.kind, workspace_id: workspace } }), 20);
+          if (options.statusAfterStart !== null) setTimeout(() => emit({ event: 'pane_agent_status_changed', data: { pane_id: typed.paneId, agent: typed.kind, workspace_id: workspace, agent_status: options.statusAfterStart ?? 'idle' } }), 40);
         }
         if (options.delayMs) setTimeout(() => !socket.destroyed && socket.write(reply), options.delayMs);
         else socket.write(reply);

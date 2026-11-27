@@ -233,6 +233,12 @@ export interface HarnessEntry {
   };
   /** The startup dialogs a spawn answers for the person, which no API reaches. */
   startup?: StartupDialogSet;
+  /**
+   * The line the harness prints when it stops at startup on an error it
+   * cannot recover from, and then waits at its prompt. With it, a spawn waits
+   * for the child's first status and fails on this line (issue #130).
+   */
+  startupFatal?: RegExp;
   classify: Classification;
   /** Whether agent_move can copy and resume this harness's session on another machine. */
   movable: boolean;

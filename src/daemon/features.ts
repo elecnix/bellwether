@@ -105,6 +105,10 @@ const BASE: readonly Feature[] = [
   ...brought('request', 4, '0.1.6', {
     ancestry: "`bellwether ancestry <agent> --json` answers an agent's tree from the daemon, so another program no longer reads the registry files.",
   }),
+  // After 0.1.5: a parent's daemon adopts a pane on another machine and asks that machine who watches it.
+  ...brought('request', 4, '0.1.6', {
+    'relay-adopt': "`agent_adopt` takes a pane on another machine, and that machine's daemon answers who already watches it.",
+  }),
 ];
 
 /**

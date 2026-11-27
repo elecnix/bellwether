@@ -19,6 +19,7 @@ import { RelayLinks } from './relay-links.ts';
 import { hostOf } from '../core/machine.ts';
 import { acceptLocalReport, isReportStatus, localParentOf, routeReport, type ReportInput } from '../core/report.ts';
 import { readRelayRecord } from '../core/relay-records.ts';
+import { claimPane } from '../core/pane-claims.ts';
 import { lastAssistantMessage } from '../core/transcript.ts';
 import { resolveTranscript } from '../core/harnesses/index.ts';
 import type { CallerIdentity, OutboxEntry } from '../core/types.ts';
@@ -398,6 +399,17 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
           reply({ type: 'result', id: request.id, text: (transcript && lastAssistantMessage(transcript)) || '' });
         } catch (error) {
           reply({ type: 'result', id: request.id, error: (error as Error).message });
+        }
+        return;
+      }
+      if (request.type === 'relay-adopt') {
+        // A parent on another machine adopts a pane here. This machine holds both its own parents and the claims of parents elsewhere, so it answers who watches the pane.
+        try {
+          const answer = claimPane({ parentId: request.parentId, childId: request.childId, name: request.name, kind: request.kind, paneId: request.paneId, ...(request.session ? { session: request.session } : {}) });
+          log(`relay-adopt: pane ${request.paneId} ${answer.held ? 'was already' : 'is now'} a child of ${request.parentId} on another machine, as ${answer.childId}`);
+          reply({ type: 'result', id: request.id, text: JSON.stringify(answer) });
+        } catch (error) {
+          reply({ type: 'result', id: request.id, error: (error as Error).message, code: 'pane_watched' });
         }
         return;
       }

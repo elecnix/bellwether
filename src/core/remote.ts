@@ -14,6 +14,7 @@ import { describeFailure, runRemoteBellwether, type SshOptions } from './ssh.ts'
 import type { ChildRecord, ParentRecord } from './types.ts';
 import type { ToolSource } from './tool-source.ts';
 import type { PaneClaim } from './pane-claims.ts';
+import type { SessionReach } from './adopted-session.ts';
 
 /** What the child's machine wrote when it registered the child. */
 export interface RemoteRegistration {
@@ -49,7 +50,7 @@ export interface RemoteOps {
   /** The child's last assistant message, read on its own machine, or undefined when it has none. */
   lastMessage(child: ChildRecord): Promise<string | undefined>;
   /** Ask the pane's machine to record an adoption, or say who already watches the pane there. Absent when the session holds no relay. */
-  claim?(host: string, claim: PaneClaim): Promise<{ childId: string; held: boolean }>;
+  claim?(host: string, claim: PaneClaim): Promise<{ childId: string; held: boolean; session?: SessionReach }>;
 }
 
 /** The arguments `bellwether relay-register` takes on the child's machine. */
@@ -111,7 +112,7 @@ export function installedThere(registration: Pick<RemoteRegistration, 'version' 
 export interface RemoteReader {
   lastMessage(child: ChildRecord): Promise<string | undefined>;
   /** Record an adoption on the pane's machine, over the same connection. */
-  adopt?(host: string, claim: PaneClaim): Promise<{ childId: string; held: boolean }>;
+  adopt?(host: string, claim: PaneClaim): Promise<{ childId: string; held: boolean; session?: SessionReach }>;
 }
 
 export function remoteOps(resolve: MachineResolver = resolveMachine, options: SshOptions = {}, reader?: RemoteReader): RemoteOps {

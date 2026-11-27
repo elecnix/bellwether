@@ -634,6 +634,19 @@ export class DaemonClient {
       for (const handler of this.paneHandlers.get(reply.paneId) ?? []) handler(reply.status);
       return;
     }
+    if (reply.type === 'tools') {
+      // The session's tools changed while it stayed connected, as when a parent adopts it.
+      if (!Array.isArray(reply.tools) || !reply.tools.every((tool) => tool && typeof tool.name === 'string')) {
+        this.warnOnce('tools-shape', 'the daemon sent a tool list without names; it was ignored');
+        return;
+      }
+      const before = JSON.stringify(this.tools());
+      this.served = reply.tools.map((tool) => ({ ...tool }));
+      const after = this.tools();
+      if (JSON.stringify(after) === before) return;
+      for (const handler of this.toolHandlers) handler(after);
+      return;
+    }
     if (reply.type === 'result') {
       const waiting = this.waiting.get(reply.id);
       if (!waiting) return;

@@ -25,6 +25,10 @@ interface World {
   dirty: string;
   ciConclusion: string;
   formulaOnMain: string;
+  /** What `npm install --global` of the release tarball answers over the previous version, when it fails. */
+  installOver?: RunResult;
+  /** What the installed `bellwether --version` prints. */
+  installedVersion?: string;
 }
 
 /** A scripted npm, git and gh. Each call is recorded as one line, and the world answers it. */
@@ -114,6 +118,15 @@ async function harness(overrides: Partial<World> = {}) {
     if (line.includes('git/ref/heads/bellwether-')) return { code: 1, stdout: '', stderr: 'Not Found' };
     if (line.includes('git/ref/heads/main')) return ok('base1\n');
     if (line.startsWith('tar -xzOf')) return ok('export const DAEMON_PROTOCOL = 2;\n');
+    if (line.startsWith('npm pack')) return ok(JSON.stringify([{ filename: 'elecnix-bellwether-0.1.4.tgz' }]));
+    if (line.startsWith('npm install --global')) {
+      const prefix = args[args.indexOf('--prefix') + 1]!;
+      if (world.installOver && args.at(-1)!.endsWith('.tgz') && path.basename(prefix) === 'over') return world.installOver;
+      return ok();
+    }
+    if (cmd.endsWith(`${path.sep}bin${path.sep}bellwether`)) {
+      return args[0] === '--version' ? ok(`${world.installedVersion ?? '0.1.4'}\n`) : ok('  relay-bridge                             join stdin and stdout to this machine\'s daemon\n');
+    }
     return ok();
   };
 
@@ -287,4 +300,39 @@ test('each release message points at a docs file that exists, never at the READM
       }
     }
   }
+});
+
+test('the release tarball installs into an empty global prefix and over the published latest before it is staged', async () => {
+  const h = await harness({ mainVersion: '0.1.4' });
+  await release({ version: '0.1.4' }, h.deps);
+  const pack = h.calls.findIndex((call) => call.startsWith('npm pack'));
+  const installs = h.calls.filter((call) => call.startsWith('npm install'));
+  const stage = h.calls.findIndex((call) => call.startsWith('npx -y npm@12 stage publish'));
+  assert.ok(pack >= 0 && pack < stage, h.calls.join('\n'));
+  assert.equal(installs.length, 3, installs.join('\n'));
+  for (const call of installs) assert.match(call, /^npm install --global --prefix \S+bellwether-install-\S+ /, 'every install names a throwaway prefix, never the real global one');
+  assert.match(installs[0]!, /\/empty .*\.tgz$/);
+  assert.match(installs[1]!, /\/over .*@elecnix\/bellwether@0\.1\.3$/, 'the previous version goes in first');
+  assert.match(installs[2]!, /\/over .*\.tgz$/, 'then the release tarball goes over it');
+  const checks = h.calls.filter((call) => call.includes(`${path.sep}bin${path.sep}bellwether `));
+  assert.deepEqual(checks.map((call) => call.split(' ').slice(1).join(' ')), ['--version', 'help', '--version', 'help']);
+  assert.ok(h.calls.findLastIndex((call) => call.includes(`${path.sep}bin${path.sep}bellwether `)) < stage, 'every check runs before the stage');
+});
+
+test('a release tarball that fails to install over the published latest stops the release before it is staged', async () => {
+  const installOver = { code: 217, stdout: '', stderr: "npm ERR! code ENOTEMPTY\nnpm ERR! syscall rename\nnpm ERR! ENOTEMPTY: directory not empty, rename '/p/lib/node_modules/@elecnix/bellwether' -> '/p/lib/node_modules/@elecnix/.bellwether-Ab12'\n" };
+  const h = await harness({ mainVersion: '0.1.4', installOver });
+  await assert.rejects(release({ version: '0.1.4' }, h.deps), (error: Error) => {
+    assert.match(error.message, /over 0\.1\.3/);
+    assert.match(error.message, /npm exited with 217/);
+    assert.match(error.message, /ENOTEMPTY: directory not empty/);
+    return true;
+  });
+  assert.ok(!h.calls.some((call) => call.includes('stage publish')), 'nothing was staged');
+});
+
+test('an installed release that reports another version or lacks relay-bridge stops before it is staged', async () => {
+  const h = await harness({ mainVersion: '0.1.4', installedVersion: '0.1.3' });
+  await assert.rejects(release({ version: '0.1.4' }, h.deps), /into an empty global prefix.*prints 0\.1\.3, not 0\.1\.4/s);
+  assert.ok(!h.calls.some((call) => call.includes('stage publish')));
 });

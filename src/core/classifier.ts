@@ -151,7 +151,9 @@ export function advance(state: ClassifierState, observation: Observation, now: n
     next.status = observation.status;
     next.statusSince = now;
     next.firedStuckSince = undefined;
-    next.firedBlocked = undefined;
+    // A dialog that stays open across the change is the same block. Claude
+    // Code's hook can name it before herdr moves the child from working to idle.
+    if (state.prompt === undefined || observation.prompt === undefined) next.firedBlocked = undefined;
   }
   const becameReady = isReady(observation.status) && !isReady(state.status);
   const counted = !seqMoved && observation.completionSeq === undefined && becameReady;

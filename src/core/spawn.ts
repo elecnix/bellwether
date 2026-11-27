@@ -7,6 +7,7 @@ import { LOCAL_HOST } from './machine.ts';
 import { newChildId } from './outbox.ts';
 import { PI_EXTENSION_ENV, piExtensionEntry, piFallback, resolvePiExtension } from './pi-extension.ts';
 import { briefArgument, writeBrief } from './brief.ts';
+import { DEFAULT_MAX_DEPTH, tooDeep } from './depth.ts';
 import { resolveInactiveMs } from './inactivity.ts';
 import { removeChildFiles, writeMcpConfig } from './mcp-config.ts';
 import { removeChild, updateChild, upsertChild } from './registry.ts';
@@ -16,7 +17,7 @@ import type { RemoteRegistration } from './remote.ts';
 import type { ChildRecord, Harness, ModelPair, ParentRecord } from './types.ts';
 
 /** How deep a Bellwether child may spawn. The design starts at 2. */
-export const DEFAULT_MAX_DEPTH = 2;
+export { DEFAULT_MAX_DEPTH } from './depth.ts';
 
 export const AGENT_KINDS = ['pi', 'claude', 'codex', 'opencode', 'cline'] as const;
 export type AgentKind = (typeof AGENT_KINDS)[number];
@@ -49,8 +50,10 @@ export interface SpawnOptions {
   inactiveMinutes?: number;
   /** The workspace to open the tab in. Defaults to the parent's own. */
   workspaceId?: string;
-  /** How deep a child may itself spawn. */
+  /** The new child's ceiling: the deepest generation its own descendants may reach. */
   maxDepth?: number;
+  /** The spawning session's own ceiling, which the new child's depth may not pass. Defaults to maxDepth. */
+  spawnerCeiling?: number;
   /** How long the startup dialogs may take. Tests shorten it. */
   startupTimeoutMs?: number;
   /** How long a screen takes to redraw after a key. Tests shorten it. */
@@ -243,7 +246,8 @@ export async function childStartFiles(child: ChildRecord, prompt: string | undef
 export async function spawnChild(client: HerdrClient, parent: ParentRecord, options: SpawnOptions, signal?: AbortSignal, hooks: SpawnHooks = {}): Promise<SpawnResult> {
   const depth = parent.depth + 1;
   const maxDepth = options.maxDepth ?? DEFAULT_MAX_DEPTH;
-  if (depth > maxDepth) throw new Error(`Bellwether is ${maxDepth} levels deep already, so ${options.name} would go one level too far. Raise max_depth on the spawn if that is what you want.`);
+  const spawnerCeiling = options.spawnerCeiling ?? maxDepth;
+  if (depth > spawnerCeiling) throw new Error(tooDeep(parent, spawnerCeiling, options.name));
 
   // Refused before the record, so half a pair leaves nothing behind.
   const chosen = chooseChildModel(options);
@@ -263,6 +267,7 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
     statusChangedAt: now,
     lastBusyAt: now,
     depth,
+    maxDepth,
     stuckMs: options.stuckMinutes === undefined ? undefined : Math.max(1_000, Math.round(options.stuckMinutes * 60_000)),
     inactiveMs: resolveInactiveMs(options.inactiveMinutes),
   };
@@ -412,6 +417,7 @@ export function childEnv(parent: ParentRecord, child: ChildRecord, piExtension?:
     BELLWETHER_CHILD: child.id,
     BELLWETHER_CHILD_NAME: child.name,
     BELLWETHER_DEPTH: String(child.depth),
+    ...(child.maxDepth === undefined ? {} : { BELLWETHER_MAX_DEPTH: String(child.maxDepth) }),
     BELLWETHER_HARNESS: child.harness,
     ...(piExtension ? { [PI_EXTENSION_ENV]: piExtension } : {}),
   };

@@ -50,7 +50,15 @@ export class RelayOutbox {
    */
   subscribe(subscriber: RelaySubscriber): { sent: number; stop: () => void } {
     this.subscribers.add(subscriber);
-    const waiting = this.waiting(subscriber.parentIds);
+    const waiting = this.waiting(subscriber.parentIds).filter((entry) => {
+      // One already on disk, from an older Bellwether or a hand, would cut this connection and every one after it.
+      const tooLong = overLong(entry);
+      if (!tooLong) return true;
+      saveForward({ ...entry, refused: `the report ${tooLong}` });
+      this.log(`relay: set aside report ${entry.receipt} from child ${entry.childId}, kept in ${relayOutboxPath(entry.receipt)} as refused: it ${tooLong}`);
+      this.settleRecord(entry.childId, false);
+      return false;
+    });
     for (const entry of waiting) subscriber.send(toReport(entry));
     if (waiting.length) this.log(`relay: sent ${waiting.length} waiting report(s) to a parent's daemon for ${[...subscriber.parentIds].join(', ')}`);
     return { sent: waiting.length, stop: () => this.subscribers.delete(subscriber) };
@@ -86,12 +94,9 @@ export class RelayOutbox {
    */
   async report(record: RelayRecord, status: ReportStatus, text: string): Promise<string> {
     const entry: ForwardEntry = { receipt: newReportReceipt(), childId: record.childId, parentId: record.parentId, status, text, at: new Date(this.now()).toISOString() };
-    // The report crosses as one protocol line, and the parent's daemon cuts a connection that sends a longer one.
-    // A report kept here past that size would cut every connection it was sent on, so it is refused before it is kept.
-    const line = formatReply({ type: 'relay-report', report: toReport(entry) }).length;
-    if (line > MAX_DAEMON_FRAME_BYTES) {
-      throw new Error(`parent_report text is too long to cross to the parent's machine: as one relay line it takes ${line} characters, over the ${MAX_DAEMON_FRAME_BYTES} a line may carry. Nothing was saved. Report a shorter summary, and leave the rest in a file the parent can read with agent_read or over SSH.`);
-    }
+    // A report kept here past one relay line would cut every connection it was sent on, so it is refused before it is kept.
+    const tooLong = overLong(entry);
+    if (tooLong) throw new Error(`parent_report ${tooLong} Nothing was saved. Report a shorter summary, and leave the rest in a file the parent can read with agent_read or over SSH.`);
     saveForward(entry);
     this.settleRecord(entry.childId, false);
     const listeners = [...this.subscribers].filter((subscriber) => subscriber.parentIds.has(entry.parentId));
@@ -127,6 +132,17 @@ export class RelayOutbox {
       else record.unforwarded = waiting;
     });
   }
+}
+
+/**
+ * Why a report cannot cross to the parent's machine, or undefined when it can.
+ * It crosses as one protocol line, and the parent's daemon cuts a connection
+ * that sends a line longer than a frame.
+ */
+function overLong(entry: ForwardEntry): string | undefined {
+  const line = formatReply({ type: 'relay-report', report: toReport(entry) }).length;
+  if (line <= MAX_DAEMON_FRAME_BYTES) return undefined;
+  return `text is too long to cross to the parent's machine: as one relay line it takes ${line} characters, over the ${MAX_DAEMON_FRAME_BYTES} a line may carry.`;
 }
 
 function toReport(entry: ForwardEntry): RelayReport {

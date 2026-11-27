@@ -337,7 +337,9 @@ export class RelayLinks {
       try {
         reply = JSON.parse(line) as DaemonReply;
       } catch {
-        this.log(`relay: machine ${link.host} sent a line that is not JSON`);
+        // An older bellwether there prints its usage for a command it does not know, and exits.
+        link.farError ??= `the bellwether command on machine ${link.host} does not speak the relay protocol; it printed ${JSON.stringify(line.slice(0, 120))}. Update @elecnix/bellwether on machine ${link.host}.`;
+        this.log(`relay: machine ${link.host} sent a line that is not the relay protocol`);
         continue;
       }
       this.dispatch(link, child, reply);

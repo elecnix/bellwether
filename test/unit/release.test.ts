@@ -35,6 +35,8 @@ interface World {
   site: string[];
   /** The feature table in the release tree's `src/daemon/features.ts`. */
   treeFeatures: Feature[];
+  /** What `vale sync` answers in the release worktree. */
+  valeSync?: RunResult;
 }
 
 /** A documentation page as the pages workflow deploys it, with the byline that names `version`. */
@@ -64,6 +66,7 @@ async function harness(overrides: Partial<World> = {}) {
   const bodies: string[] = [];
   let sleeps = 0;
   const siteReads: string[] = [];
+  const syncDirs: string[] = [];
   const ok = (stdout = ''): RunResult => ({ code: 0, stdout, stderr: '' });
   const content = (text: string) => ok(JSON.stringify({ content: Buffer.from(text).toString('base64'), sha: 'blob1' }));
 
@@ -99,6 +102,10 @@ async function harness(overrides: Partial<World> = {}) {
       await mkdir(path.join(tree, '.claude-plugin'), { recursive: true });
       await writeFile(path.join(tree, '.claude-plugin/plugin.json'), `${JSON.stringify({ name: 'bellwether', version: world.mainVersion }, null, 2)}\n`);
       return ok();
+    }
+    if (line === 'vale sync') {
+      syncDirs.push(options.cwd ?? '');
+      return world.valeSync ?? ok();
     }
     if (line.startsWith('npm version')) {
       await writeFile(path.join(options.cwd!, 'package.json'), JSON.stringify({ type: 'module', version: args[1] }));
@@ -157,7 +164,7 @@ async function harness(overrides: Partial<World> = {}) {
     log: (line) => logs.push(line),
     cwd: top,
   };
-  return { deps, world, calls, logs, bodies, root, siteReads, sleeps: () => sleeps };
+  return { deps, world, calls, logs, bodies, root, siteReads, syncDirs, sleeps: () => sleeps };
 }
 
 test('a version that is not three numbers is refused before any command runs', async () => {
@@ -200,6 +207,40 @@ test('a dirty tree is refused before anything is pushed', async () => {
   const h = await harness({ dirty: ' M src/cli.ts\n' });
   await assert.rejects(release({ version: '0.1.4' }, h.deps), /uncommitted changes/);
   assert.ok(!h.calls.some((call) => call.startsWith('git push') || call.startsWith('npm version')));
+});
+
+// The 0.1.6 release stopped after its whole test run: the fresh worktree had
+// never run `vale sync`, so the prose gate found no style pack (issue #134).
+test('a fresh release syncs the prose styles in its worktree before the gates', async () => {
+  const h = await harness();
+  await release({ version: '0.1.4' }, h.deps);
+  const tree = path.join(h.root, 'release-0.1.4');
+  assert.deepEqual(h.syncDirs, [tree], 'vale sync runs once, in the release worktree');
+  const order = ['npm ci', 'vale sync', 'npm run typecheck', 'npm test'];
+  let at = -1;
+  for (const step of order) {
+    const next = h.calls.findIndex((call, index) => index > at && call === step);
+    assert.ok(next > at, `${step} runs after the step before it:\n${h.calls.join('\n')}`);
+    at = next;
+  }
+});
+
+test('a vale sync that fails stops the release before the tests, naming the command', async () => {
+  const h = await harness({ valeSync: { code: 2, stdout: '', stderr: 'E100 [sync] Runtime error\ndial tcp: lookup github.com: no such host' } });
+  const error = await release({ version: '0.1.4' }, h.deps).then(() => undefined, (caught: unknown) => caught);
+  assert.ok(error instanceof ReleaseError, String(error));
+  const tree = path.join(h.root, 'release-0.1.4');
+  assert.match(error.message, /`vale sync` failed in /);
+  assert.ok(error.message.includes(`cd ${tree} && vale sync`), error.message);
+  assert.match(error.message, /no such host/, 'the error keeps what Vale said');
+  assert.ok(!h.calls.some((call) => call === 'npm test' || call === 'npm run typecheck'), 'no gate runs without the styles');
+  assert.ok(!h.calls.some((call) => call.startsWith('git push')), 'nothing is pushed');
+});
+
+test('a release on a machine without Vale names the version to install', async () => {
+  const h = await harness({ valeSync: { code: 127, stdout: '', stderr: 'Error: spawn vale ENOENT' } });
+  await assert.rejects(release({ version: '0.1.4' }, h.deps), /Install Vale 3\.20\.0/);
+  assert.ok(!h.calls.some((call) => call === 'npm test'));
 });
 
 test('a red main is refused before the gates run', async () => {

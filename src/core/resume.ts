@@ -128,6 +128,12 @@ export async function resumeChild(client: HerdrClient, parent: ParentRecord, tar
     const pane = panes.find((entry) => entry.paneId === existing.paneId);
     if (pane?.agent) throw new Error(`${existing.name} is still alive in pane ${existing.paneId}, so Bellwether refused to start a second copy. Talk to it with agent_send.`);
   }
+  // Retirement removed the worktree this child ran in, and a harness started
+  // there would fail every command it runs (issue #143).
+  const removedDir = existing?.retireOutcome === 'removed' ? (existing.cwd ?? existing.retireIntent?.worktree) : undefined;
+  if (existing && removedDir && !fs.existsSync(removedDir)) {
+    throw new Error(`${existing.name}'s working directory ${removedDir} no longer exists: retirement removed it at ${existing.retiredAt}, so Bellwether refused to resume the child there. Create it again, such as a worktree of the same branch, then resume.`);
+  }
   const holder = panes.find((pane) => holdsSession(pane, session));
   if (holder) throw new Error(`Session ${session.value} is still alive in pane ${holder.paneId}${holder.name ? ` (${holder.name})` : ''}, so Bellwether refused to start a second copy.`);
 

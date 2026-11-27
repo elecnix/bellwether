@@ -6,11 +6,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { adoptedParentOf } from '../../src/core/adopted-session.ts';
 import { HerdrClient } from '../../src/core/herdr-client.ts';
 import { emptyParent, readParent, saveParent, updateChild } from '../../src/core/registry.ts';
+import { childOfCaller } from '../../src/core/report.ts';
 import { RETIRE_TOOL, retireLogPath } from '../../src/core/retire.ts';
 import { Watcher } from '../../src/core/watcher.ts';
-import type { ChildRecord } from '../../src/core/types.ts';
+import type { ChildRecord, DialogDecision } from '../../src/core/types.ts';
 import { runBellwetherTool, toolsFor, type ToolContext } from '../../src/integrations/tools.ts';
 import { startFakeHerdr, type FakeHerdr } from '../fixtures/fake-herdr.ts';
 import { fakeGit, type FakeGit } from '../fixtures/fake-git.ts';
@@ -145,7 +147,7 @@ test('a clean, merged child that asks to be retired is removed once its pane is 
 
 test('a pull request merged by squash counts as safe', async (t) => {
   const w = await world(t);
-  w.git.settledPrs.add(`${REPO}:feat/x`);
+  w.git.mergedPrs.add(`${REPO}:feat/x`);
   const { watcher } = await requested(w);
   w.exit();
   await until('the outcome', () => w.child().retireOutcome);
@@ -186,13 +188,13 @@ test('a stash left on the branch is refused', async (t) => {
 test('an unmerged and unpushed branch is refused, naming the reason', async (t) => {
   const w = await world(t);
   const { watcher, text } = await requested(w);
-  assert.match(text, /Failing now: branch feat\/x is not merged into origin\/main/);
+  assert.match(text, /Failing now: branch feat\/x has 1 commit\(s\) on no remote, is not merged into origin\/main/);
   w.exit();
   await until('the outcome', () => w.child().retireOutcome);
   await watcher.retirements();
   const child = w.child();
   assert.equal(child.retireOutcome, 'refused');
-  assert.match(child.retireReason ?? '', /^condition 3 \(work is safe\): branch feat\/x is not merged into origin\/main, and no merged or closed pull request has its tip.*Merge the branch, or push it and merge or close its pull request/);
+  assert.match(child.retireReason ?? '', /^condition 3 \(work is safe\): branch feat\/x has 1 commit\(s\) on no remote, is not merged into origin\/main, and no merged pull request has its tip.*Push the branch or merge it/);
   assert.deepEqual(w.git.calls, []);
   assert.equal(w.git.worktrees.has(WORKTREE), true);
 });
@@ -354,7 +356,7 @@ test('agent_stop first, pane_closed second: a child that asked to be retired is 
   const { watcher } = await requested(w);
   // herdr answers tab.close before it drops the pane from its list, so the stop's own attempt waits.
   const text = await stop(w, watcher);
-  assert.match(text, /^Closed feat-x\. It asked to be retired/);
+  assert.equal(text, 'Closed feat-x. Retirement pending: Bellwether removes worktree /work/x/feat-x and branch feat/x once herdr no longer lists the pane, if it can still prove the work merged. agent_list and retire.log show the outcome.');
   await watcher.retirements();
   assert.ok(w.child().exitedAt, 'the stop marks the child exited');
   assert.equal(w.child().retireOutcome, undefined, 'the pane is still listed, so nothing is removed yet');
@@ -406,26 +408,118 @@ test('pane_closed first, agent_stop second: the child is retired once, and the s
   assert.deepEqual(w.log().map((line) => line['outcome']), ['removed'], 'retire.log gets one line');
 });
 
-test('a stopped child that never asked to be retired is exited, not retired, and its worktree stays', async (t) => {
+// A parent's agent_stop is a retirement too: the child never has to remove
+// the directory its harness runs every command from. Issue #143.
+
+test('agent_stop retires a child that never asked, once its branch is merged, and the stop line says so', async (t) => {
   const w = await world(t);
   w.git.merged.add(`${REPO}:feat/x`);
   const watcher = w.watcher();
   watcher.start();
   await w.herdr.waitFor('events.subscribe');
-  assert.equal(await stop(w, watcher), 'Closed feat-x.');
-  w.panes.delete(PANE);
-  w.herdr.send({ event: 'pane_closed', data: { pane_id: PANE, tab_id: TAB } });
-  await new Promise((resolve) => setTimeout(resolve, 100));
-  await watcher.retirements();
+  const text = await stop(w, watcher, () => {
+    w.panes.delete(PANE);
+  });
+  assert.equal(text, 'Closed feat-x. Retired: removed worktree /work/x/feat-x and branch feat/x, because branch feat/x is merged into origin/main.');
   const child = w.child();
-  assert.ok(child.exitedAt);
-  assert.equal(child.retireRequestedAt, undefined);
-  assert.equal(child.retireOutcome, undefined);
-  assert.equal(child.retiredAt, undefined);
-  assert.deepEqual(w.git.calls, []);
-  assert.deepEqual(w.log(), [], 'retire.log is for retirements, and nobody asked for one');
+  assert.equal(child.retireOutcome, 'removed');
+  assert.equal(child.retireProof, 'branch feat/x is merged into origin/main');
+  assert.equal(child.retireIntent?.reason, 'agent_stop by the parent');
+  assert.deepEqual(w.git.calls, [`worktree remove ${WORKTREE}`, 'branch -D feat/x']);
+  assert.ok(w.git.calls.every((call) => !call.includes('--force')), 'no case runs git worktree remove --force');
+  assert.deepEqual(w.log().map((line) => [line['outcome'], line['proof']]), [['removed', 'branch feat/x is merged into origin/main']]);
   const listed = await runBellwetherTool(w.ctx(watcher), 'agent_list', {});
-  assert.equal(listed.split('\n')[1]?.split('\t')[3], 'exited');
+  assert.equal(listed.split('\n')[1]?.split('\t')[3], 'exited, retired');
+  // The worktree is gone because Bellwether removed it, so agent_read gives the retire line, not a warning.
+  w.git.override.inspect = async () => ({ error: 'unreachable' });
+  const read = await runBellwetherTool(w.ctx(watcher), 'agent_read', { child: 'feat-x' }).catch((error: unknown) => String(error));
+  assert.match(read, /^Retired: removed worktree \/work\/x\/feat-x and branch feat\/x, because branch feat\/x is merged into origin\/main\./);
+  // A resume would start the child where nothing is left, so it is refused by name.
+  updateChild(w.parentId, 'c-retire', (entry) => {
+    entry.session = { kind: 'id', value: 'session-feat-x' };
+  });
+  await assert.rejects(runBellwetherTool(w.ctx(watcher), 'agent_spawn', { resume: 'feat-x' }), /feat-x's working directory \/work\/x\/feat-x no longer exists: retirement removed it at .*, so Bellwether refused to resume the child there\./);
+});
+
+test('a branch whose commits are all on the remote counts as merged', async (t) => {
+  const w = await world(t);
+  w.git.onRemote.add(`${REPO}:feat/x`);
+  const watcher = w.watcher();
+  watcher.start();
+  await w.herdr.waitFor('events.subscribe');
+  const text = await stop(w, watcher, () => {
+    w.panes.delete(PANE);
+  });
+  assert.equal(text, 'Closed feat-x. Retired: removed worktree /work/x/feat-x and branch feat/x, because every commit on branch feat/x is on a remote branch.');
+  assert.deepEqual(w.git.calls, [`worktree remove ${WORKTREE}`, 'branch -D feat/x']);
+});
+
+test('agent_stop leaves a worktree whose branch has unpushed commits, and the stop line says why', async (t) => {
+  const w = await world(t);
+  w.git.unpushed.set(`${REPO}:feat/x`, 2);
+  const watcher = w.watcher();
+  watcher.start();
+  await w.herdr.waitFor('events.subscribe');
+  const text = await stop(w, watcher, () => {
+    w.panes.delete(PANE);
+  });
+  assert.equal(text, 'Closed feat-x. Retirement left worktree /work/x/feat-x and branch feat/x in place, because Bellwether could not prove the work merged: branch feat/x has 2 commit(s) on no remote, is not merged into origin/main, and no merged pull request has its tip abc123def456, so its work may exist nowhere else. Push the branch or merge it, then remove the worktree and the branch by hand.');
+  assert.equal(w.child().retireOutcome, 'refused');
+  assert.deepEqual(w.git.calls, []);
+  assert.equal(w.git.worktrees.has(WORKTREE), true);
+  assert.equal(w.git.branches.has(`${REPO}:feat/x`), true);
+  assert.deepEqual(w.log().map((line) => line['outcome']), ['refused']);
+});
+
+test('agent_stop leaves a working directory that is not a git worktree, and a main worktree, and says so', async (t) => {
+  const plain = await world(t, { cwd: '/work/notes' });
+  plain.git.dirs.add('/work/notes');
+  const watcher = plain.watcher();
+  watcher.start();
+  await plain.herdr.waitFor('events.subscribe');
+  const text = await stop(plain, watcher, () => {
+    plain.panes.delete(PANE);
+  });
+  assert.equal(text, 'Closed feat-x. Its working directory /work/notes is not a git worktree, so retirement leaves it in place.');
+  assert.equal(plain.child().retireRequestedAt, undefined);
+  assert.deepEqual(plain.log(), []);
+
+  const main = await world(t, { cwd: MAIN });
+  const mainWatcher = main.watcher();
+  mainWatcher.start();
+  await main.herdr.waitFor('events.subscribe');
+  const mainText = await stop(main, mainWatcher, () => {
+    main.panes.delete(PANE);
+  });
+  assert.equal(mainText, "Closed feat-x. Retirement leaves /work/x/main in place: it is the repository's main worktree (it has the default branch main checked out), and Bellwether never removes a main worktree.");
+  assert.deepEqual(main.git.calls, []);
+});
+
+test('a child whose working directory is gone is named by agent_read and request_retirement, and agent_stop still closes it', async (t) => {
+  const w = await world(t);
+  w.git.merged.add(`${REPO}:feat/x`);
+  // The child removed its own worktree: the directory and the worktree entry are gone, the record still names it.
+  w.git.worktrees.delete(WORKTREE);
+  const watcher = w.watcher();
+  watcher.start();
+  await w.herdr.waitFor('events.subscribe');
+  const gone = "feat-x's working directory /work/x/feat-x no longer exists. A harness that starts each command there, as pi does, now fails every shell command; the child's Bellwether tools still work, so it can still call parent_report, and agent_stop still closes it.";
+
+  const read = await runBellwetherTool(w.ctx(watcher), 'agent_read', { child: 'feat-x' });
+  assert.equal(read.split('\n')[0], gone);
+
+  await assert.rejects(runBellwetherTool(w.ctx(watcher), RETIRE_TOOL, {}, caller), (error: Error) => {
+    assert.equal(error.message, 'Your working directory /work/x/feat-x no longer exists, so a harness that starts each command there fails every shell command, and there is no worktree left to retire. Call parent_report, which needs no shell, to tell your parent, and ask it to close you with agent_stop. Nothing was written.');
+    return true;
+  });
+  assert.equal(w.child().retireRequestedAt, undefined);
+
+  const text = await stop(w, watcher, () => {
+    w.panes.delete(PANE);
+  });
+  assert.equal(text, "Closed feat-x. feat-x's working directory /work/x/feat-x no longer exists, so retirement had no worktree left to remove.");
+  assert.ok(w.child().exitedAt);
+  assert.deepEqual(w.git.calls, []);
 });
 
 test('a pane_closed that lands while the stop is still checking the pane gets the cleanup a second look', async (t) => {
@@ -442,4 +536,70 @@ test('a pane_closed that lands while the stop is still checking the pane gets th
   await watcher.retirements();
   assert.equal(w.child().retireOutcome, 'removed');
   assert.deepEqual(w.log().map((line) => line['outcome']), ['removed']);
+});
+
+// herdr reuses a pane id once its agent ends. A retired child keeps its old
+// pane id on its record, and a session adopted later in that pane must answer
+// to its adopter by every route: the report routing and the adopted-session
+// lookup agree, and neither picks the retired child. Issue #143 with #152.
+test('a retired child and a session adopted later in the same pane id agree on the adopter as the parent', async (t) => {
+  const w = await world(t);
+  w.git.merged.add(`${REPO}:feat/x`);
+  const watcher = w.watcher();
+  watcher.start();
+  await w.herdr.waitFor('events.subscribe');
+  await stop(w, watcher, () => {
+    w.panes.delete(PANE);
+  });
+  assert.equal(w.child().retireOutcome, 'removed');
+  assert.equal(w.child().paneId, PANE, 'the retired record keeps its old pane id');
+
+  const adopter = emptyParent('claude-code', `adopter-${path.basename(w.parentId)}`, '/work', { paneId: 'w1:p2' });
+  const long = new Date(Date.now() - 60_000).toISOString();
+  adopter.children.push({ id: 'c-adopted', name: 'by-hand', kind: 'pi', harness: 'pi', paneId: PANE, host: 'local', origin: 'adopt', cwd: '/work/other', startedAt: long, lastStatus: 'idle', statusChangedAt: long, lastBusyAt: long, depth: 1, session: { kind: 'path', value: '/sessions/by-hand.jsonl' } });
+  saveParent(adopter);
+
+  assert.deepEqual(adoptedParentOf({ paneId: PANE, session: 'by-hand' }), { parentId: adopter.id, childId: 'c-adopted', name: 'by-hand', where: 'here' });
+  const routed = childOfCaller({ paneId: PANE });
+  assert.equal(routed?.parent.id, adopter.id);
+  assert.equal(routed?.child.id, 'c-adopted');
+
+  // The adopted session gets parent_report but never request_retirement, and asking anyway writes nothing.
+  await assert.rejects(runBellwetherTool(w.ctx(watcher), RETIRE_TOOL, {}, { paneId: PANE }), /carries no BELLWETHER_CHILD/);
+  assert.equal(readParent(adopter.id)?.children[0]?.retireRequestedAt, undefined);
+});
+
+test('a read declined just before retirement reaches the parent with the exit, and the retired record keeps it', async (t) => {
+  // The watcher declined a read, and the child asked to be retired before any event carried the decline.
+  const declined: DialogDecision = {
+    dialog: 'outside-read',
+    name: 'the question about a read outside the working directories',
+    question: 'Allow this read outside the working directories?',
+    answer: 'No, and ask again next time',
+    decided: 'declined the read, which is outside the directories its launch allowed, and saved nothing to the settings',
+    keys: ['3'],
+    at: new Date().toISOString(),
+    by: 'watcher',
+    outcome: 'declined',
+    path: '/srv/example-other/eslint.config.js',
+  };
+  const w = await world(t, { decisions: [declined] });
+  w.git.merged.add(`${REPO}:feat/x`);
+  const { watcher } = await requested(w);
+
+  w.exit();
+  await until('the outcome', () => w.child().retireOutcome);
+  await watcher.retirements();
+  assert.equal(w.child().retireOutcome, 'removed');
+  assert.equal(w.git.worktrees.has(WORKTREE), false, 'the worktree is gone');
+
+  // The exit event carries the decline, once.
+  const exited = await until('the exit event', () => watcher.outboxEntries().find((entry) => entry.event === 'exited'));
+  assert.match(exited.text, /Bellwether declined feat-x \([^)]*\)'s read of \/srv\/example-other\/eslint\.config\.js/);
+  // The record outlives the worktree: the decision is still there, marked told.
+  const kept = w.child().decisions;
+  assert.equal(kept?.length, 1);
+  assert.equal(kept?.[0]?.outcome, 'declined');
+  assert.equal(kept?.[0]?.path, '/srv/example-other/eslint.config.js');
+  assert.equal(kept?.[0]?.told, true);
 });

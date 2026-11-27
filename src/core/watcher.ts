@@ -176,10 +176,12 @@ export class Watcher {
    * Start the cleanup of a child that agent_stop closed. The stop marks the
    * child exited itself, so the pane_closed that follows finds the exit
    * already recorded. Both start the cleanup, and whichever comes first does
-   * the work. A child that never asked to be retired is left as it is.
+   * the work. agent_stop records a retirement for a child that never asked,
+   * so the parent's stop is the child's retirement. The promise settles when
+   * this pass ends, which may leave the work pending until herdr drops the pane.
    */
-  childStopped(childId: string): void {
-    void this.retire(childId);
+  childStopped(childId: string): Promise<void> {
+    return this.retire(childId);
   }
 
   /**

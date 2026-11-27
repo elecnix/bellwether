@@ -15,7 +15,7 @@ import { LOCAL_HOST, hostOf, knownHosts, type ClientFor } from '../core/machine.
 import { spawnResume } from '../core/spawn-resume.ts';
 import { describeMessages, messageChild, type Inbox } from '../core/send.ts';
 import { RESTART_TOOL, runAgentRestart, type RestartHooks } from '../core/restart.ts';
-import { RETIRE_TOOL, realRetireOps, requestRetirement, retirementPending, type RetireOps } from '../core/retire.ts';
+import { RETIRE_TOOL, goneCwdLine, realRetireOps, requestRetirement, retireLine, retireOnStop, type RetireOps } from '../core/retire.ts';
 import type { RemoteOps } from '../core/remote.ts';
 import { lastAssistantMessage } from '../core/transcript.ts';
 import { moveChild } from '../core/move.ts';
@@ -242,7 +242,7 @@ export const childTools: ToolDefinition[] = [
 export const retireTools: ToolDefinition[] = [
   {
     name: RETIRE_TOOL,
-    description: 'Ask to be retired once you exit: the Bellwether daemon then removes your worktree and deletes your branch, but only after your pane and tab are gone, the worktree is not a main worktree, is clean and has no stash, the branch is merged or pushed with its pull request merged or closed, and no process works inside it. The call removes nothing. It runs the checks it can run now and says which pass, records the request, and leaves the rest to the daemon. Close your tab afterwards.',
+    description: 'Ask to be retired once you exit: the Bellwether daemon then removes your worktree and deletes your branch, but only after your pane and tab are gone, the worktree is not a main worktree, is clean and has no stash, the work is merged into the default branch, on a remote branch, or in a merged pull request whose head is your tip, and no process works inside it. The call removes nothing. It runs the checks it can run now and says which pass, records the request, and leaves the rest to the daemon. Never remove your own worktree: your harness runs every command from it until your tab closes. Close your tab afterwards.',
     schema: {
       type: 'object',
       properties: {
@@ -357,6 +357,9 @@ export function adoptTarget(target: string, machine?: string): { host: string; t
   if (machine && machine !== prefix) throw new Error(`agent_adopt names machine ${machine}, but its target ${target} names machine ${prefix}. Name one.`);
   return { host: prefix, target: rest };
 }
+
+/** How long agent_stop waits for the retirement it starts before it answers without the outcome. */
+const STOP_RETIRE_WAIT_MS = 10_000;
 
 /** A child's host, with a warning when the daemon is not hearing from that machine. */
 function hostColumn(child: ChildRecord, relayState: ToolContext['relayState']): string {
@@ -579,25 +582,10 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
     // Pane feature: agent_read with lines, a screen the parent asked to see.
     if (lines) return (await herdr.paneRead({ paneId: child.paneId, source: 'recent_unwrapped', lines })).trim();
     if (hostOf(child) !== LOCAL_HOST) return readRemoteChild(ctx, child, herdr);
-    // A harness whose conversation sits in a store of its own, such as
-    // OpenCode's, answers from there, not from a transcript file.
-    const conversation = harnessFor(child.kind)?.conversation;
-    if (conversation?.lastMessage) {
-      const answer = conversation.lastMessage(child);
-      if (answer) return answer;
-      const pending = conversation.pending?.(child);
-      if (pending) {
-        if (!pending.withScreen) return pending.note;
-        // Pane feature: agent_read for a child whose store holds no answer yet.
-        const screen = (await herdr.paneRead({ paneId: child.paneId, source: 'recent_unwrapped', lines: 40 }).catch(() => '')).trim();
-        return screen ? `${pending.note}\n${screen}` : pending.note;
-      }
-    }
-    const transcript = child.transcript ?? transcriptFromSession(ctx.parentId, child);
-    const message = transcript ? lastAssistantMessage(transcript) : undefined;
-    if (message) return message;
-    // Pane feature: agent_read for a child whose transcript holds no message yet.
-    return (await herdr.paneRead({ paneId: child.paneId, source: 'recent_unwrapped', lines: 40 })).trim();
+    // A working directory that is gone, or a retirement, comes first, in one line.
+    const note = goneCwdLine(child, ctx.retireOps ?? realRetireOps()) ?? (child.retireOutcome ? retireLine(child) : undefined);
+    if (note) return `${note}\n${await readLocalChild(ctx, child, herdr)}`;
+    return readLocalChild(ctx, child, herdr);
   }
 
   if (name === GRANT_DEPTH_TOOL) {
@@ -623,6 +611,10 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
       const tail = await herdr.paneRead({ paneId: child.paneId, source: 'recent_unwrapped', lines: 20 }).catch(() => '');
       return `${child.name} is ${child.lastStatus}, so agent_stop refused to close it. Pass force to close it anyway.\n${tail.trim()}`;
     }
+    // The stop retires the child: the intent is written before the tab closes,
+    // and the daemon removes the worktree after it, never the child. Issue #143.
+    const retireOps = ctx.retireOps ?? realRetireOps();
+    const leftAlone = await retireOnStop(ctx.parentId, child, retireOps).catch((error: unknown) => `Retirement could not read its working directory ${child.cwd}, so it leaves it in place: ${(error as Error).message}`);
     if (child.tabId) await herdr.tabClose(child.tabId);
     else await herdr.paneClose(child.paneId);
     updateChild(ctx.parentId, child.id, (entry) => {
@@ -639,8 +631,13 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
     // The stop marked the exit, so the pane_closed that follows finds it
     // recorded. The cleanup starts here as well, and the first to see the pane
     // gone does it, once. Issue #120.
-    ctx.watcher.childStopped(child.id);
-    const retireNote = retirementPending(child) ? ` It asked to be retired, so Bellwether removes its worktree and branch once herdr no longer lists its pane, and writes the outcome to retire.log.` : '';
+    // The reply waits a bounded time for that pass, so it can say what became of the worktree.
+    let waited: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([ctx.watcher.childStopped(child.id), new Promise<void>((done) => (waited = setTimeout(done, STOP_RETIRE_WAIT_MS)))]);
+    clearTimeout(waited);
+    const settled = readParent(ctx.parentId)?.children.find((entry) => entry.id === child.id) ?? child;
+    const line = leftAlone ?? retireLine(settled);
+    const retireNote = line ? ` ${line}` : '';
     // A child on another machine has its brief, config and relay record there.
     if (hostOf(child) !== LOCAL_HOST && ctx.remote) {
       try {
@@ -654,6 +651,29 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
   }
 
   throw new UnknownTool(name);
+}
+
+/** A local child's last message, from its harness's store or transcript, or its screen when neither holds one yet. */
+async function readLocalChild(ctx: ToolContext, child: ChildRecord, herdr: HerdrClient): Promise<string> {
+  // A harness whose conversation sits in a store of its own, such as
+  // OpenCode's, answers from there, not from a transcript file.
+  const conversation = harnessFor(child.kind)?.conversation;
+  if (conversation?.lastMessage) {
+    const answer = conversation.lastMessage(child);
+    if (answer) return answer;
+    const pending = conversation.pending?.(child);
+    if (pending) {
+      if (!pending.withScreen) return pending.note;
+      // Pane feature: agent_read for a child whose store holds no answer yet.
+      const screen = (await herdr.paneRead({ paneId: child.paneId, source: 'recent_unwrapped', lines: 40 }).catch(() => '')).trim();
+      return screen ? `${pending.note}\n${screen}` : pending.note;
+    }
+  }
+  const transcript = child.transcript ?? transcriptFromSession(ctx.parentId, child);
+  const message = transcript ? lastAssistantMessage(transcript) : undefined;
+  if (message) return message;
+  // Pane feature: agent_read for a child whose transcript holds no message yet.
+  return (await herdr.paneRead({ paneId: child.paneId, source: 'recent_unwrapped', lines: 40 })).trim();
 }
 
 /**

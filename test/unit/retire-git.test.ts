@@ -96,11 +96,11 @@ test('safety: unmerged and unpushed is unsafe, an open pull request is unsafe, m
 
   const none = await ask([]);
   assert.equal(none.safe, false);
-  assert.match(none.how, /^branch feat is not merged into main, and no merged or closed pull request has its tip/);
+  assert.match(none.how, /^branch feat has 2 commit\(s\) on no remote, is not merged into main, and no merged pull request has its tip/);
   const stale = await ask([{ number: 3, state: 'MERGED', headRefOid: 'deadbeef' }]);
   assert.equal(stale.safe, false, 'a merged pull request for an older tip does not cover new commits');
   const open = await ask([{ number: 4, state: 'OPEN', headRefOid: tip }]);
-  assert.deepEqual(open, { safe: false, how: 'branch feat is pushed but pull request #4 is still open' });
+  assert.deepEqual(open, { safe: false, how: 'branch feat has 2 commit(s) on no remote, and pull request #4 is still open' });
   const squashed = await ask([{ number: 5, state: 'MERGED', headRefOid: tip }]);
   assert.deepEqual(squashed, { safe: true, how: 'branch feat is pushed and pull request #5 is merged' });
 

@@ -79,20 +79,45 @@ With an `inactive` event, the child has been inactive for its threshold. It may 
 
 ## Retiring a child
 
-A child that has finished calls `request_retirement`, then closes its own tab. The call only records the request. It reports which checks already pass, such as uncommitted changes, stashes on the branch, and whether its commits exist anywhere else. A parent can close the tab instead with `agent_stop`. Both the stop and herdr's report that the pane closed start the cleanup. It runs once, from whichever finds the pane gone first, and never waits for a daemon restart.
+A child never removes its own worktree. Its harness starts commands in that directory, and pi resets to it before every command, so a child that deletes it fails each command after that, `cd ~` included. The daemon removes the worktree after the tab closes, and only when it can prove the work exists somewhere else.
+
+A finished child calls `request_retirement` and then closes its own tab. The worktree stays where it is. Alternatively, a parent's `agent_stop` closes a child and retires it, whether or not the child asked. Either call records the worktree and the branch on the child record before the tab closes. The stop and herdr's report that the pane closed both start the cleanup. It runs once, from whichever finds the pane gone first, and never waits for a daemon restart.
 
 Once herdr reports the pane gone, the daemon removes the worktree and the branch, but only when all of these hold:
 
 1. herdr lists neither the pane nor any pane in its tab.
-2. The worktree isn't a main worktree, matches what the child asked about, has a clean status and no stash on its branch.
-3. The default branch contains the branch, or GitHub shows a merged or closed pull request whose head is the branch's commit.
+2. The worktree isn't a main worktree, matches the one recorded, has a clean status and no stash on its branch.
+3. One of three proofs shows the work exists elsewhere:
+   - The default branch contains the branch's tip.
+   - Every commit on the branch is on a remote branch as of the last fetch.
+   - GitHub shows a merged pull request whose head is the tip.
+
+   A pull request closed without merging doesn't count as a proof.
 4. No process works inside the worktree.
 
-Bellwether refuses a child it adopted, a child on another machine, a detached HEAD and any main worktree. A worktree counts as main when its git directory is the repository itself, when git lists it first, when it has the default branch checked out, or when its name is `main` or `master`.
+The removal runs `git worktree remove` without `--force`, so git itself refuses a worktree that holds changes.
 
-On the child record, `retireOutcome` shows `removed` or `refused`. After a refusal, `retireReason` states the failed check and what a person would do about it. Each outcome also goes to `~/.bellwether/retire.log` as one JSON line. After a restart mid-retirement, the daemon finishes the remaining steps. Resuming a child cancels its request.
+Bellwether leaves a child it adopted, a child on another machine, a detached HEAD and any main worktree in place. A worktree counts as main when its git directory is the repository itself, when git lists it first, when it has the default branch checked out, or when its name is `main` or `master`.
 
-A child that `agent_stop` closes without having asked for retirement keeps its worktree and branch. Its record shows it exited, with no retirement fields. The daemon leaves `retire.log` alone too, because that log records retirements and nobody asked for one.
+`agent_stop` waits up to 10 seconds for the cleanup, and its reply ends with one line about the worktree:
+
+| Case | The line |
+| --- | --- |
+| Removed | `Retired: removed worktree <dir> and branch <branch>, because <proof>.` |
+| No proof | `Retirement left worktree <dir> and branch <branch> in place, because Bellwether could not prove the work merged: <what git found>. Push the branch or merge it, then remove the worktree and the branch by hand.` |
+| Another check failed | `Retirement left worktree <dir> and branch <branch> in place, because <the check and what to do>` |
+| Pane still listed | `Retirement pending: Bellwether removes worktree <dir> and branch <branch> once herdr no longer lists the pane, if it can still prove the work merged. agent_list and retire.log show the outcome.` |
+| Not a git worktree | `Its working directory <dir> is not a git worktree, so retirement leaves it in place.` |
+| Main worktree | `Retirement leaves <dir> in place: it is the repository's main worktree (<why>), and Bellwether never removes a main worktree.` |
+| Directory already gone | `<name>'s working directory <dir> no longer exists, so retirement had no worktree left to remove.` |
+
+On the child record, `retireOutcome` shows `removed` or `refused`. After a removal, `retireProof` names the proof. After a refusal, `retireReason` states the failed check and what a person would do about it.
+
+Each outcome also goes to `~/.bellwether/retire.log` as one JSON line, and `agent_read` puts the line above the child's last message. After a restart mid-retirement, the daemon finishes the remaining steps. Resuming a child cancels its request. Bellwether refuses to resume a child whose retirement removed its worktree until the directory exists again.
+
+## A working directory that no longer exists
+
+When a child's working directory no longer exists, `agent_read` says so on its first line, before the child's last message, and `request_retirement` refuses with the same news. The child's Bellwether tools don't run in that directory, so it can still call `parent_report`. `agent_stop` still closes it.
 
 ## Pruning old parent records, briefs and logs
 

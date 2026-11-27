@@ -38,7 +38,7 @@ test('the routes file is BELLWETHER_ROUTES when set, and ~/.config/bellwether/ro
 test('a missing routes file defines no routes, and a broken one is refused by its path', (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bw-routes-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-  assert.deepEqual(readRoutes(path.join(dir, 'absent.json')).routes, {});
+  assert.deepEqual(readRoutes(path.join(dir, 'absent.json')), { file: path.join(dir, 'absent.json'), missing: true, routes: {} });
   const file = path.join(dir, 'routes.json');
   fs.writeFileSync(file, '{"routes":{"example-router":{"launcher":[]}}}');
   assert.throws(() => readRoutes(file), new RegExp(`${file} cannot be used: route example-router needs launcher`));
@@ -109,9 +109,18 @@ test('a key file needs via, and a route that declares a key', (t) => {
 
 test('an unknown route names the routes the file does define', () => {
   assert.throws(() => resolveRoute({ name: 'worker', kind: 'claude', via: 'example-other' }, routes()), {
-    message: 'worker was not started: via example-other names no route in /config/bellwether/routes.json. Routes defined there: example-router. Pass one of them, or via none for a bare start.',
+    message: 'worker was not started: via example-other names no route in /config/bellwether/routes.json. Routes defined there: example-router. Pass one of them, add example-other to that file, or pass via none for a bare start.',
   });
-  assert.throws(() => resolveRoute({ name: 'worker', kind: 'claude', via: 'example-other' }, { file: '/r.json', routes: {} }), /That file defines no routes\./);
+});
+
+test('a route asked for with no routes file, or with a file that defines none, says which and what to do', () => {
+  assert.throws(() => resolveRoute({ name: 'worker', kind: 'claude', via: 'example-router' }, { file: '/r.json', missing: true, routes: {} }), {
+    message: 'worker was not started: via example-router names a route, and the routes file /r.json does not exist. Create it with a route named example-router (docs/routes.md gives the fields), or pass via none for a bare start.',
+  });
+  assert.throws(() => resolveRoute({ name: 'worker', kind: 'claude', via: 'example-router' }, { file: '/r.json', routes: {} }), {
+    message: 'worker was not started: via example-router names a route, and the routes file /r.json defines none. Add a route named example-router there, or pass via none for a bare start.',
+  });
+  assert.deepEqual(describeRoutes(() => ({ file: '/r.json', missing: true, routes: {} }), []), ['info  routes: /r.json does not exist, so every child starts bare']);
 });
 
 test('a route is refused for a harness it does not run, and for another machine', () => {

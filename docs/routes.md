@@ -66,7 +66,9 @@ Each refusal happens before Bellwether writes a record or opens a tab, and names
 | --- | --- |
 | A tier of some route, passed as `model` without `via` | names the route that has the tier, and says to add `via` |
 | `via` a route, with a `model` that is not one of its tiers | names the route's tiers, and says to drop `model` or drop `via` |
-| `via` a name the routes file does not define | lists the defined routes |
+| `via` a route, with no routes file at all | names the file, and says to create it with that route or pass `via none` |
+| `via` a route, with a routes file that defines none | names the file, and says to add the route there or pass `via none` |
+| `via` a name the routes file does not define | lists the defined routes, and offers `via none` for a bare start |
 | `key_file` that does not exist or is empty | names the file |
 | `key_file` without `via`, or on a route with no `key` | says to add `via`, or to add `key` to the route |
 | `provider` on a route | says to drop `provider`, because the tier picks the model |

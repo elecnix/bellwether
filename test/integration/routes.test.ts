@@ -173,6 +173,9 @@ test('each mismatch is refused by name before any tab opens', async (t) => {
   await assert.rejects(r.tool('agent_spawn', { kind: 'claude', name: 'd', via: 'example-router', key_file: empty }), /d was not started: key_file .* is empty\./);
   await assert.rejects(r.tool('agent_spawn', { kind: 'claude', name: 'e', via: 'example-other' }), /via example-other names no route in .*routes\.json\. Routes defined there: example-router\./);
   await assert.rejects(r.tool('agent_spawn', { kind: 'claude', name: 'f', key_file: r.keyFile }), /key_file needs via/);
+  // The first thing someone meets after installing: no routes file at all.
+  fs.rmSync(process.env['BELLWETHER_ROUTES'] as string);
+  await assert.rejects(r.tool('agent_spawn', { kind: 'claude', name: 'g', via: 'example-router' }), /g was not started: via example-router names a route, and the routes file .*routes\.json does not exist\. Create it with a route named example-router/);
   assert.equal(calls(r.fake, 'tab.create').length, 0, 'no tab opened');
   assert.deepEqual(readParent(r.parentId)?.children, [], 'no record left behind');
 });

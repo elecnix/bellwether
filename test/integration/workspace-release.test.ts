@@ -146,3 +146,19 @@ test('agent_list names each child\'s workspace, and marks one Bellwether made fo
   assert.equal(roomy?.split('\t')[6], 'w5 (roomy) [made for it]');
   assert.equal(plain?.split('\t')[6], 'w1');
 });
+
+test('an exit that arrives twice, from the reconcile and then from pane_closed, is handled once', async (t) => {
+  const w = await world(t, { ownsWorkspace: true }, []);
+  await w.client.tabClose(TAB);
+  const watcher = w.watcher();
+  watcher.start();
+  await w.herdr.waitFor('events.subscribe');
+  // The reconcile finds the pane gone first; the event for the same exit lands after it.
+  await until('the exit', () => Boolean(readParent(w.parentId)?.children[0]?.exitedAt));
+  await until('the workspace close', () => closes(w.herdr).length > 0);
+  w.herdr.send({ event: 'pane_closed', data: { pane_id: PANE } });
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  await watcher.retirements();
+  assert.deepEqual(closes(w.herdr), [WORKSPACE], 'the workspace was closed once');
+  assert.equal(w.herdr.requests.filter((request) => request.method === 'tab.list').length, 1, 'the release ran once');
+});

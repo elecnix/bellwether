@@ -54,6 +54,8 @@ export interface RouteConfig {
 export interface RoutesFile {
   /** Where the routes came from, for messages. */
   file: string;
+  /** Set when the file does not exist, so a message can say to create it rather than to edit it. */
+  missing?: boolean;
   routes: Record<string, RouteConfig>;
 }
 
@@ -121,7 +123,7 @@ export function readRoutes(file: string = routesPath()): RoutesFile {
   try {
     text = fs.readFileSync(file, 'utf8');
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { file, routes: {} };
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { file, missing: true, routes: {} };
     throw new RoutesFileError(file, (error as Error).message);
   }
   let parsed: unknown;
@@ -170,6 +172,14 @@ function routeNames(routes: RoutesFile): string {
   return names.length ? `Routes defined there: ${names.join(', ')}.` : 'That file defines no routes.';
 }
 
+/** Why a route name resolves to nothing: no routes file, a file with no routes, or a file without that one. */
+function unknownRoute(via: string, routes: RoutesFile): string {
+  if (routes.missing) return `via ${via} names a route, and the routes file ${routes.file} does not exist. Create it with a route named ${via} (docs/routes.md gives the fields), or pass via ${BARE} for a bare start.`;
+  const names = Object.keys(routes.routes);
+  if (!names.length) return `via ${via} names a route, and the routes file ${routes.file} defines none. Add a route named ${via} there, or pass via ${BARE} for a bare start.`;
+  return `via ${via} names no route in ${routes.file}. Routes defined there: ${names.join(', ')}. Pass one of them, add ${via} to that file, or pass via ${BARE} for a bare start.`;
+}
+
 /** The route whose tiers name this model, if any. */
 function routeOfTier(routes: RoutesFile, model: string): string | undefined {
   return Object.entries(routes.routes).find(([, route]) => route.tiers?.includes(model))?.[0];
@@ -194,7 +204,7 @@ export function resolveRoute(request: RouteRequest, routes: RoutesFile): Resolve
     return model ? { harnessModel: model } : {};
   }
   const route = routes.routes[via];
-  if (!route) throw new Error(`${lead} via ${via} names no route in ${routes.file}. ${routeNames(routes)} Pass one of them, or via ${BARE} for a bare start.`);
+  if (!route) throw new Error(`${lead} ${unknownRoute(via, routes)}`);
   if ((request.host ?? 'local') !== 'local') throw new Error(`${lead} route ${via} describes this machine's launcher, and ${name} would run on machine ${request.host}. Drop via, or define the route on that machine and start the child from there.`);
   const harnesses = route.harnesses ?? DEFAULT_HARNESSES;
   if (!harnesses.includes(kind)) throw new Error(`${lead} route ${via} runs ${harnesses.join(', ')}, not ${kind}. Drop via, or pass a kind the route runs.`);
@@ -305,7 +315,7 @@ export function describeRoutes(read: () => RoutesFile, children: { name: string;
     if (!child.route) continue;
     used.set(child.route.name, [...(used.get(child.route.name) ?? []), child.name]);
   }
-  const lines = [names.length ? `ok    routes: ${routes.file} defines ${names.join(', ')}` : `info  routes: ${routes.file} defines none, so every child starts bare`];
+  const lines = [names.length ? `ok    routes: ${routes.file} defines ${names.join(', ')}` : routes.missing ? `info  routes: ${routes.file} does not exist, so every child starts bare` : `info  routes: ${routes.file} defines none, so every child starts bare`];
   for (const name of new Set([...names, ...used.keys()])) {
     const on = used.get(name);
     const who = on ? ` (${on.join(', ')})` : '';

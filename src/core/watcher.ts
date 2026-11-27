@@ -343,28 +343,20 @@ export class Watcher {
    * touched.
    */
   private async releaseWorkspace(child: ChildRecord): Promise<void> {
-    if (!child.ownsWorkspace || !child.workspaceId) return;
-    // An exit can arrive as a pane event and again from a reconcile, so one
-    // release per workspace runs at a time, and a closed one is not closed again.
-    const key = `${hostOf(child)}:${child.workspaceId}`;
-    if (this.releasing.has(key)) return;
-    this.releasing.add(key);
-    let outcome: Awaited<ReturnType<typeof releaseWorkspace>> | undefined;
+    if (!child.ownsWorkspace) return;
     try {
-      outcome = await releaseWorkspace(await this.clientFor(hostOf(child)), child);
+      const outcome = await releaseWorkspace(await this.clientFor(hostOf(child)), child);
       if (outcome === 'closed') this.log(`closed workspace ${child.workspaceId}, which Bellwether made for ${child.name} and which nothing else used`);
     } catch (error) {
       this.log(`could not check ${child.name}'s workspace ${child.workspaceId}: ${(error as Error).message}`);
-    } finally {
-      // A workspace another tab kept, or one the check failed on, may be released later.
-      if (outcome !== 'closed' && outcome !== 'gone') this.releasing.delete(key);
     }
   }
 
-  /** Workspaces whose release is running or done, by host and id. */
-  private readonly releasing = new Set<string>();
-
   private markExited(child: ChildRecord, code: number | undefined, ended?: 'in-pane'): void {
+    // One exit can arrive twice: the reconcile after a subscribe finds the pane
+    // gone, and the pane_closed event for it lands too. The record decides, so
+    // the exit is offered, the workspace released and retirement started once.
+    if (readParent(this.parentId)?.children.find((entry) => entry.id === child.id)?.exitedAt) return;
     // A child that exits between two looks wrote its file after the last one,
     // so look once more. The session and transcript stay on the record, so a
     // retired child can still be read and resumed.

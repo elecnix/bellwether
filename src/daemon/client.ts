@@ -404,6 +404,8 @@ export class DaemonClient {
       const child = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', entry, '--socket', this.socketPath], {
         detached: true,
         stdio: 'ignore',
+        // Never the caller's directory, which for a child is its worktree.
+        cwd: this.home,
         env: daemonEnv(process.env, this.home),
       });
       child.unref();

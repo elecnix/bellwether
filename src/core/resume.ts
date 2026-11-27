@@ -9,6 +9,7 @@ import { removeChildFiles } from './mcp-config.ts';
 import { LOCAL_HOST } from './machine.ts';
 import { newChildId } from './outbox.ts';
 import { readParent, removeChild, updateChild, upsertChild } from './registry.ts';
+import { clearRetirement } from './retire.ts';
 import { STARTUP_HOLD_MS, STARTUP_TIMEOUT_MS, childArgs, childEnv, childMcpConfig, harnessOf, herdrLink, startWithRetry } from './spawn.ts';
 import { watchStartup, type StartupDialog, type StartupWatch } from './startup-dialogs.ts';
 import { resolveTranscript, sessionFrom } from './transcript.ts';
@@ -141,6 +142,8 @@ export async function resumeChild(client: HerdrClient, parent: ParentRecord, tar
   delete child.exitedAt;
   delete child.exitCode;
   delete child.reportPending;
+  // A child brought back did not ask for this run to end its worktree.
+  clearRetirement(child);
   child.lastStatus = 'unknown';
   child.statusChangedAt = now;
   child.lastBusyAt = now;

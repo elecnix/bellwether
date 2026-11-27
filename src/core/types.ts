@@ -88,6 +88,36 @@ export interface ChildRecord {
   /** Set once the child is gone, so its events stop. */
   exitedAt?: string;
   exitCode?: number;
+  /**
+   * Set when the child asked to be retired. The daemon cleans up once herdr
+   * reports the pane gone. Every retirement field is optional, so an older
+   * record loads unchanged.
+   */
+  retireRequestedAt?: string;
+  /** What the child asked to have removed, as the daemon read it while the child was alive. */
+  retireIntent?: RetireIntent;
+  /** How far the cleanup got, so a daemon restarted part of the way through skips what is done. */
+  retireStage?: 'worktree-removed' | 'branch-deleted';
+  /** When the cleanup finished, whichever way. */
+  retiredAt?: string;
+  retireOutcome?: 'removed' | 'refused';
+  /** For a refusal: the condition that failed, and what a person would do about it. */
+  retireReason?: string;
+}
+
+/** The worktree and branch a child asked to have removed once it is gone. */
+export interface RetireIntent {
+  /** The worktree root. */
+  worktree: string;
+  /** The repository's common git directory. */
+  repo: string;
+  branch: string;
+  /** The commit the branch pointed at when the child asked. */
+  head: string;
+  /** The default branch the work must be merged into, as `origin/main`. */
+  defaultBranch?: string;
+  /** Why the child asked, in its own words. */
+  reason?: string;
 }
 
 /** The registry layout this code writes. Version 2 added the child host. */

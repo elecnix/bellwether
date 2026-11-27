@@ -2,6 +2,40 @@
 
 Bellwether is the agent-supervision tool described in the design at `/Users/nicolas/design/bellwether.html`. Read that first. It carries the decisions, the references and the phase plan.
 
+The [README](README.md) is for a person deciding whether to use Bellwether, and `docs/` is for one who has decided. Keep the README to its five questions, and put any detail a user needs into the topic file under `docs/` that covers it.
+
+## Parts and their roles
+
+A parent session runs an adapter: the Pi extension in `src/integrations/pi/`, or the Claude Code MCP channel server in `src/integrations/claude/`. Adapters share the tool list in `src/integrations/tools.ts` and talk to one daemon per machine. Whichever session needs the daemon first starts it detached. It exits once no session stays connected and nothing remains to forward.
+
+- **Daemon** (`src/daemon/`). It listens on a socket under the Bellwether home, and it is the only process with state. That state covers the registry and the outbox, the relay outbox, and the herdr subscriptions. It starts without the identity variables of the session that launched it. A lock file (`daemon.lock`, which also records the version, protocol and entry point) and a version handshake keep a second daemon from starting. A client on a newer `DAEMON_PROTOCOL` drains an older daemon, which exits once no call is in flight. `bellwether drain` does the same by hand, and `bellwether daemon` runs one in the foreground.
+- **herdr client** (`src/core/herdr-client.ts`). Newline-delimited JSON on the herdr socket, one connection per request and one held open for the subscription. The subscription waits for the `subscription_started` acknowledgement, and keeps any event that arrives in the same read.
+- **Registry** (`src/core/registry.ts`). One JSON file per parent session under `~/.bellwether/parents/`, written only by the daemon. A child record stores its name, kind, host, pane, tab, start time, last status, last `completion_seq`, harness session and transcript path, and keeps them after the child exits. A file written before registry version 2 gains `host: local` on its next write.
+- **Watcher** (`src/core/watcher.ts`). It subscribes to `pane.agent_status_changed` for each child pane, plus `pane.exited`, `pane.closed` and `pane.agent_detected`. On connect it subscribes first, reads a snapshot on a second connection, then reconciles. A dropped subscription reconnects with backoff and takes a fresh snapshot. It also sends the answer to a resumed Claude Code session's startup dialog, and starts retirement when a pane exits.
+- **Classifier** (`src/core/classifier.ts`). A pure function of state, clock and observation that turns herdr states into child events, each with its settle time. [docs/tools.md](docs/tools.md) lists the events.
+- **Outbox** (`src/core/outbox.ts`). One pending entry per child, where a newer state replaces an older one. At delivery, an unread `blocked` or `stuck` entry drops out once the child has moved on. The receipt id in an entry marks it read once the parent's model context shows that id.
+- **Relay** (`src/daemon/relay.ts`, `src/core/relay-records.ts`, `src/core/ssh.ts`). It carries a remote child's `parent_report` to the parent's daemon over SSH. [docs/remote-machines.md](docs/remote-machines.md) describes the hop, the retries and the refusals.
+- **Spawn, resume and retire** (`src/core/spawn.ts`, `src/core/spawn-resume.ts`, `src/core/retire.ts`). Spawn writes the record, the brief and a Claude child's MCP config, then opens the tab and sends the answers to the startup dialogs. Resume holds a per-child lock under `~/.bellwether/locks/` while herdr decides between a message and a new tab. Retirement records `retireStage` after each removal, so a restarted daemon finishes it without repeating a step. [docs/recovery.md](docs/recovery.md) gives the behavior a user sees.
+
+Each adapter sends its session's identity with every call: the herdr pane it runs in, and the child id its spawn gave it. The daemon resolves that identity against its child records, so a `parent_report` goes to the parent whose registry lists the child, whichever process made the call. When no record matches, the error gives the pane and the path of the MCP config file the spawn should have written.
+
+The Claude Code server speaks MCP over stdio, so every log line goes to stderr and stdout carries only the protocol. It exits when stdin closes.
+
+## Layout
+
+```
+src/core/          herdr client, registry, watcher, classifier, outbox, spawn, resume, retire, relay records
+src/daemon/        the daemon: protocol, server, client, lock, relay, parent service
+src/integrations/  the tool list, shared by both adapters, with pi/ and claude/
+bin/               the bellwether command and MCP server, run from the sources in a checkout
+dist/              the compiled JavaScript that npm publishes, built by `npm run build`
+scripts/           the release script and the phase 0 probe scripts
+docs/              user topics, probe results and test briefs
+test/unit/         tier 1
+test/integration/  tier 2: a fake herdr socket and the daemon
+test/lab/          tier 3: a real isolated herdr server
+```
+
 ## Gates
 
 Run these before a pull request. CI runs the same commands.

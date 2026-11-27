@@ -38,6 +38,8 @@ A resume goes back to the machine where the child last ran. To change that machi
 
 Backoff runs from 1 second to 5 minutes when the parent's daemon retries a connection that fails or drops.
 
+The parent's daemon also sends a heartbeat line every 15 seconds, and `bellwether relay-bridge` exits after three intervals of silence, so a dead network link ends on the child's machine too.
+
 A machine is in one of three states: `connecting`, `connected` or `reconnecting`. Alongside that state, the daemon keeps the error from its last failed attempt and the time of its last connection. It also keeps the last drain. That is the most recent time the parent had every report waiting on that machine.
 
 - `bellwether doctor` prints that state for each machine. It counts a machine it can't reach as a failure.

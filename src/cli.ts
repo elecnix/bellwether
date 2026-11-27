@@ -16,6 +16,7 @@ import { relayChildPath, relayOutboxDir } from './core/paths.ts';
 import { writeBrief } from './core/brief.ts';
 import { removeChildFiles, writeMcpConfig } from './core/mcp-config.ts';
 import { describeUpgrade, gatherUpgrade } from './daemon/upgrade-status.ts';
+import { HEARTBEAT_MISSES } from './core/ssh.ts';
 import { DaemonClient, REFUSED_EXIT, ReportRefused, drainDaemon, ensureDaemon, postReport, relayStatus } from './daemon/client.ts';
 import { readMemory } from './daemon/relay-links.ts';
 import type { RelayHostState } from './daemon/protocol.ts';
@@ -325,7 +326,7 @@ async function main(): Promise<number> {
     console.log('  report --child ID --status done|needs-input|progress --text TEXT [--parent ID] [--receipt ID]');
     console.log('  relay-register --child ID --name NAME --kind KIND --parent ID [--cwd DIR] [--brief-stdin yes]');
     console.log('  relay-cleanup --child ID                 remove the brief and MCP config relay-register wrote');
-    console.log('  relay-bridge                             join stdin and stdout to this machine\'s daemon; a parent\'s daemon runs it over SSH');
+    console.log('  relay-bridge [--heartbeat-ms N]          join stdin and stdout to this machine\'s daemon; a parent\'s daemon runs it over SSH');
     console.log('  move-probe|move-export|move-import|move-discard|move-commit   the machine side of a move: a JSON request on stdin, one JSON line out; a parent\'s daemon runs them over SSH');
     return 0;
   }
@@ -362,7 +363,7 @@ async function main(): Promise<number> {
   if (command === 'report') return report(rest);
   if (command === 'relay-register') return relayRegister(rest);
   if (command === 'relay-cleanup') return relayCleanup(rest);
-  if (command === 'relay-bridge') return relayBridge();
+  if (command === 'relay-bridge') return relayBridge(rest);
   if ((MOVE_VERBS as readonly string[]).includes(command)) return moveVerb(command as MoveVerb);
 
   const { id: parentId } = parentFor(flags);
@@ -508,8 +509,15 @@ function relayCleanup(argv: string[]): number {
  * machine's daemon socket, starting the daemon when none runs, and exit when
  * either side closes. It writes nothing of its own to stdout, which belongs
  * to the protocol.
+ *
+ * With --heartbeat-ms, the parent promises a line at least that often. A
+ * connection that dies without closing, as a network does, never ends this
+ * process's standard input, so after three intervals with nothing from the
+ * parent the bridge exits on its own. Its socket closes, and the daemon drops
+ * the subscription, so it sends no more reports into a dead connection.
  */
-async function relayBridge(): Promise<number> {
+async function relayBridge(argv: string[]): Promise<number> {
+  const heartbeatMs = Number(exactFlags(argv, ['heartbeat-ms'])['heartbeat-ms'] ?? 0);
   const home = bellwetherHome();
   const socketPath = process.env['BELLWETHER_DAEMON_SOCKET'] ?? path.join(home, 'daemon.sock');
   await ensureDaemon(home, socketPath);
@@ -525,6 +533,19 @@ async function relayBridge(): Promise<number> {
   socket.pipe(process.stdout);
   process.stdout.on('error', () => socket.destroy());
   process.stdin.on('end', () => socket.end());
+  if (Number.isFinite(heartbeatMs) && heartbeatMs > 0) {
+    let heard = Date.now();
+    process.stdin.on('data', () => {
+      heard = Date.now();
+    });
+    const watchdog = setInterval(() => {
+      if (Date.now() - heard <= heartbeatMs * HEARTBEAT_MISSES) return;
+      console.error(`bellwether relay-bridge: nothing from the parent for ${Date.now() - heard} ms, over ${HEARTBEAT_MISSES} heartbeats of ${heartbeatMs} ms; the connection is dead, so the bridge exits`);
+      clearInterval(watchdog);
+      socket.destroy();
+    }, heartbeatMs);
+    watchdog.unref();
+  }
   await new Promise<void>((resolve) => {
     socket.on('close', () => resolve());
     socket.on('error', (error) => {

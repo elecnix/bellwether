@@ -34,7 +34,7 @@ When the protocol stays the same, sessions reconnect to the new daemon after `be
 
 To run a commit ahead of the next release, build its tarball and install that. Don't install from a git URL. `npm install -g github:elecnix/bellwether#main` fails on an empty prefix: npm builds the clone with config from the global prefix, so the build finds no `tsgo` and exits 127.
 
-Over an existing install, the same command stops earlier with `ENOTEMPTY` on the installed package's directory, and leaves that package as it was. Running `npm uninstall -g` first doesn't help. [#57](https://github.com/elecnix/bellwether/issues/57) has the details.
+Over an existing install, npm 9 stops earlier with `ENOTEMPTY` on the installed package's directory, and npm 11 exits 127 as before. Both leave that package as it was. Running `npm uninstall -g` first doesn't help. [#57](https://github.com/elecnix/bellwether/issues/57) has the details.
 
 ```sh
 git clone --depth 1 https://github.com/elecnix/bellwether.git && cd bellwether
@@ -42,3 +42,13 @@ npm ci && npm run build && npm install -g "$(npm pack --silent)"
 ```
 
 A release installs from the npm registry and doesn't need this. It installs over the version already there, with no uninstall first.
+
+Before staging, `npm run release` installs the tarball into an empty global prefix and over the previous release.
+
+If you doubt a global install, check it. `npm ls -g @elecnix/bellwether` names the installed version, and `bellwether help | grep relay-bridge` prints one line on a build from 0.1.5 on. When the package directory is missing or partial, repair it in three steps:
+
+1. Run `npm uninstall -g @elecnix/bellwether`.
+2. Delete any `<prefix>/lib/node_modules/@elecnix/.bellwether-*` directory npm left behind. `npm prefix -g` prints `<prefix>`.
+3. Install from the registry, or from a packed tarball for a build npm hasn't published.
+
+In [#57](https://github.com/elecnix/bellwether/issues/57), three git-URL installs over an existing package, one each with npm 9.2.0, 11.19.1 and 11.20.0, all left it whole. These steps cover a later failure that doesn't.

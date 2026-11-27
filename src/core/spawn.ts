@@ -10,7 +10,7 @@ import { resolveInactiveMs } from './inactivity.ts';
 import { removeChildFiles, writeMcpConfig } from './mcp-config.ts';
 import { removeChild, updateChild, upsertChild } from './registry.ts';
 import { watchStartup, type StartupDialog, type StartupWatch } from './startup-dialogs.ts';
-import { resolveTranscript, sessionFrom } from './transcript.ts';
+import { locateTranscript, sessionFrom } from './transcript.ts';
 import type { ChildRecord, Harness, ParentRecord } from './types.ts';
 
 /** How deep a Bellwether child may spawn. The design starts at 2. */
@@ -218,7 +218,13 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
     if (session) {
       child.session = session;
       // A remote child's transcript sits on its own machine's disk.
-      if (child.host === LOCAL_HOST) child.transcript = resolveTranscript(child.harness, session.value, child.cwd);
+      if (child.host === LOCAL_HOST) {
+        // Claude Code writes its file at the first turn, which can come after
+        // this look. The watcher looks again until the file appears.
+        const found = locateTranscript(child.harness, session.value, child.cwd);
+        child.transcript = found.path;
+        child.transcriptMissing = found.missing;
+      }
     }
     const status = pane['agent_status'];
     if (typeof status === 'string' && status) child.lastStatus = status as ChildRecord['lastStatus'];
@@ -229,7 +235,10 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
   child.startingUntil = undefined;
   updateChild(parent.id, child.id, (entry) => {
     if (child.session) entry.session = child.session;
-    if (child.transcript) entry.transcript = child.transcript;
+    if (child.transcript) {
+      entry.transcript = child.transcript;
+      delete entry.transcriptMissing;
+    } else if (child.transcriptMissing) entry.transcriptMissing = child.transcriptMissing;
     if (entry.lastStatus !== child.lastStatus) entry.statusChangedAt = new Date().toISOString();
     entry.lastStatus = child.lastStatus;
     // The hold ends with the answers, which are activity. The inactivity clock

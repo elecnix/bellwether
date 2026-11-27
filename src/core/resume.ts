@@ -12,7 +12,7 @@ import { readParent, removeChild, updateChild, upsertChild } from './registry.ts
 import { clearRetirement } from './retire.ts';
 import { STARTUP_HOLD_MS, STARTUP_TIMEOUT_MS, childArgs, childEnv, childReportPath, harnessOf, herdrLink, startWithRetry, type RegisterRemote } from './spawn.ts';
 import { watchStartup, type StartupDialog, type StartupWatch } from './startup-dialogs.ts';
-import { resolveTranscript, sessionFrom } from './transcript.ts';
+import { locateTranscript, sessionFrom } from './transcript.ts';
 import type { ChildRecord, ParentRecord } from './types.ts';
 import { resolveInactiveMs } from './inactivity.ts';
 
@@ -239,7 +239,14 @@ export async function resumeChild(client: HerdrClient, parent: ParentRecord, tar
   const kept = reported ?? { kind: session.kind, value: session.value };
   updateChild(parent.id, child.id, (entry) => {
     entry.session = kept;
-    if (child.host === LOCAL_HOST) entry.transcript = resolveTranscript(child.harness, kept.value, child.cwd) ?? entry.transcript;
+    if (child.host === LOCAL_HOST) {
+      // The same session in the same directory is the same file, so a resumed
+      // child keeps the path it had.
+      const found = locateTranscript(child.harness, kept.value, child.cwd);
+      entry.transcript = found.path ?? entry.transcript;
+      if (entry.transcript) delete entry.transcriptMissing;
+      else entry.transcriptMissing = found.missing;
+    }
     if (status && entry.lastStatus !== status) {
       entry.statusChangedAt = new Date().toISOString();
       entry.lastStatus = status;

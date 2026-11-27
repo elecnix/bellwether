@@ -10,6 +10,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { after, before, test } from 'node:test';
 import { SESSION_IDENTITY } from '../../src/daemon/client.ts';
+import { readLock } from '../../src/daemon/lock.ts';
 import { daemonsUnder, stopDaemonsUnder } from '../fixtures/daemons.ts';
 
 const root = path.resolve(import.meta.dirname, '../..');
@@ -130,6 +131,10 @@ test('the installed MCP server starts its daemon, reports ready and exits when s
   await ready;
   // The daemon it started holds a lock in the scratch home, and the cleanup stops it.
   assert.doesNotMatch(stderr, /could not reach its daemon/, stderr);
+  // The lock names the entry point inside the installed package, and says it is one.
+  const lock = readLock(path.join(scratch, 'home'));
+  assert.equal(lock?.entry, fs.realpathSync(path.join(installed, 'dist', 'daemon', 'main.js')));
+  assert.equal(lock?.origin, 'package');
   child.stdin.end();
   assert.equal(await exited, 0, stderr);
 });

@@ -3,6 +3,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { startDaemon } from './server.ts';
 
 const log = (message: string): void => console.error('[bellwether-daemon]', message);
@@ -26,6 +27,8 @@ async function main(): Promise<void> {
     socketPath,
     home,
     log,
+    // The lock says which copy of Bellwether this is: an installed package or a checkout.
+    entry: fileURLToPath(import.meta.url),
     ...(Number.isFinite(idleMs) ? { idleMs } : {}),
   });
   log(`listening on ${socketPath} with pid ${daemon.pid}`);

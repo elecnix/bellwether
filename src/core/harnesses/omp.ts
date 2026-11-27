@@ -117,6 +117,8 @@ export const omp: HarnessEntry = {
     remote: 'piExtension',
     remoteEnv: [OMP_SKIP_SETUP],
   },
+  // omp loads the same pi extension, whose sendMessage takes a parent's message.
+  inbox: { via: 'pi-message' },
   conversation: {
     // herdr's omp integration reports the session file's path; an id comes only from a session omp does not save.
     locate: (session) => (session ? locateSessionPath(session) : undefined) ?? { missing: session ? `omp reported session ${session} without a file, so it saves no transcript` : 'herdr has not reported the session yet' },

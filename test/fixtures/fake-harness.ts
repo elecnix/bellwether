@@ -32,6 +32,7 @@ export const fakeHarness: HarnessEntry = {
     local: (child) => ({ mcpConfigFile: writeMcpConfig(child.id) }),
     remote: 'mcpConfig',
   },
+  inbox: { via: 'none', reason: 'fake-agent is a test harness with no inbound path' },
   conversation: {
     locate: (session) => (session ? locateSessionPath(session) : undefined) ?? { missing: 'fake-agent names its session file as its session' },
     // The transcript is the session file, in the JSONL form Claude Code and pi share.

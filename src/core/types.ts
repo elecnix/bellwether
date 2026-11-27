@@ -175,6 +175,8 @@ export interface ChildRecord {
    * reads it.
    */
   briefs?: ChildBrief[];
+  /** The newest messages a parent sent the child, with the path each took. */
+  messages?: ChildMessage[];
   /** The last report the child sent, and when. */
   lastReport?: { status: ReportStatus; text: string; at: string; seq: number };
   /**
@@ -313,6 +315,31 @@ export interface DepthRequest {
   decidedBy?: string;
   /** For a refusal, what the child was told. */
   refusal?: string;
+}
+
+/**
+ * One message a parent sent a child, and how it got there. `session` means
+ * the child's own Bellwether server or extension put it in the session as a
+ * message; `keystrokes` means herdr typed it into the child's pane.
+ */
+export interface ChildMessage {
+  id: string;
+  at: string;
+  path: 'session' | 'keystrokes';
+  /** For the session path: the adapter that carried it, `claude-channel` or `pi-message`. */
+  via?: string;
+  /** For keystrokes: why the session path was not taken. */
+  reason?: string;
+  /** For the session path: when the child's model received it. */
+  readAt?: string;
+  /** Why the message never reached the child's model. */
+  undelivered?: string;
+  /** The start of the text, for agent_list and the exit event. */
+  preview: string;
+  /** The whole text, kept only while a session message waits to be read, so a reconnected session can take it again. */
+  text?: string;
+  /** Who sent it, as the child reads it, kept with the text. */
+  from?: string;
 }
 
 /** One raise of a child's ceiling, for the audit trail agent_list shows. */

@@ -16,7 +16,7 @@ import { herdrLink, nextLaunch } from './spawn.ts';
 import { agentKinds, harnessFor } from './harnesses/index.ts';
 import { routeLabel } from './routes.ts';
 import { isMoving } from './move-plan.ts';
-import { promptChild } from './send.ts';
+import { messageChild, type Inbox } from './send.ts';
 import type { ChildRecord } from './types.ts';
 
 export interface SpawnResumeRequest extends Omit<ResumeOptions, 'workspaceId'> {
@@ -27,6 +27,10 @@ export interface SpawnResumeRequest extends Omit<ResumeOptions, 'workspaceId'> {
   name?: string;
   cwd?: string;
   host?: string;
+  /** The daemon's way into a live child's session, for the prompt. Without it, the prompt is typed into the pane. */
+  inbox?: Inbox;
+  /** Who sends the prompt, as the child reads it. */
+  from?: string;
 }
 
 export type SpawnResumeResult =
@@ -119,7 +123,7 @@ export async function spawnResume(clientFor: (host: string) => Promise<HerdrClie
         });
         delete child.exitedAt;
       }
-      const reply = request.prompt ? await promptChild(client, child, request.prompt) : `${child.name} is alive in pane ${child.paneId}, and there was no prompt to send.`;
+      const reply = request.prompt ? (await messageChild({ herdr: client, parentId, from: request.from ?? parentId, child, text: request.prompt, inbox: request.inbox })).text : `${child.name} is alive in pane ${child.paneId}, and there was no prompt to send.`;
       return { action: 'messaged', child, reply, link: herdrLink('pane', child.paneId), corrected };
     }
 
@@ -135,7 +139,7 @@ export async function spawnResume(clientFor: (host: string) => Promise<HerdrClie
       const own = panes.find((pane) => pane.paneId === child.paneId && pane.agent === child.kind);
       if (!child.exitedAt && own) {
         refuseLiveRouteChange(child, request);
-        const reply = request.prompt ? await promptChild(client, child, request.prompt) : `${child.name} is alive in pane ${child.paneId}, and there was no prompt to send.`;
+        const reply = request.prompt ? (await messageChild({ herdr: client, parentId, from: request.from ?? parentId, child, text: request.prompt, inbox: request.inbox })).text : `${child.name} is alive in pane ${child.paneId}, and there was no prompt to send.`;
         return { action: 'messaged', child, reply, link: herdrLink('pane', child.paneId) };
       }
       resumeArgs(child.kind, { value: '', kind: 'id' });

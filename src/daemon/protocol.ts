@@ -17,6 +17,11 @@ export type { RelayHostState, RelayLinkStatus } from '../core/types.ts';
 //    every connection (relay-status). A child's machine never connects out.
 //    Later, without a bump: a parent's daemon adopts a pane there and asks
 //    that machine who watches it (relay-adopt).
+//    Later, without a bump: a session that names `accepts: ["message"]` in its
+//    hello takes a parent's message as a `message` push and answers it with
+//    message-ack, so the message enters the child's session rather than its
+//    pane. A daemon that predates it never pushes one, and an adapter that
+//    predates it never names it, so either side falls back to typing.
 //
 // Change the wire additively: a new request type, or a new optional field,
 // needs no bump, because a daemon answers a request it does not know with
@@ -99,6 +104,12 @@ export interface ParentHello {
   maxDepth?: number;
   /** The parent id the session's environment names, BELLWETHER_PARENT, which gives it parent_report. Added without a protocol bump. */
   reportsTo?: string;
+  /**
+   * What the adapter takes from the daemon beyond events: `message`, a
+   * parent's message to put in this session. Added without a protocol bump;
+   * a daemon that predates it ignores the field and never pushes a message.
+   */
+  accepts?: string[];
 }
 
 /** One tool as a session offers it to its model: the daemon's definition, which the adapter passes on unchanged. */
@@ -215,6 +226,22 @@ export interface RelayAdoptAnswer {
   held: boolean;
 }
 
+/**
+ * From a child's adapter, about one `message` push: `queued` once the harness
+ * holds it, `read` once its model received it, `refused` when the adapter
+ * could not hand it over. Added without a protocol bump: only a daemon that
+ * pushes messages receives it.
+ */
+export interface MessageAckRequest {
+  type: 'message-ack';
+  id: string;
+  outcome: 'queued' | 'read' | 'refused';
+  /** For queued: the adapter's path, `claude-channel` or `pi-message`. */
+  via?: string;
+  /** For refused: why. */
+  reason?: string;
+}
+
 /** The state of every connection this daemon holds to another machine. */
 export interface RelayStatusRequest {
   type: 'relay-status';
@@ -238,7 +265,7 @@ export interface AncestryRequest {
   agent: string;
 }
 
-export type DaemonRequest = HelloRequest | CallRequest | ReceiptRequest | ByeRequest | DrainRequest | WatchRequest | ReportRequest | RelaySubscribeRequest | RelayAckRequest | RelayReadRequest | RelayAdoptRequest | RelayStatusRequest | SessionsRequest | AncestryRequest;
+export type DaemonRequest = HelloRequest | CallRequest | ReceiptRequest | ByeRequest | DrainRequest | WatchRequest | ReportRequest | RelaySubscribeRequest | RelayAckRequest | RelayReadRequest | RelayAdoptRequest | RelayStatusRequest | SessionsRequest | AncestryRequest | MessageAckRequest;
 
 export interface HelloReply {
   type: 'hello';
@@ -282,6 +309,23 @@ export interface ResultReply {
 export interface EventsPush {
   type: 'events';
   entries: OutboxEntry[];
+}
+
+/** A parent's message, which the child's adapter puts in its session. */
+export interface InboxMessage {
+  id: string;
+  /** Who sent it: the parent's child name, or its session. */
+  from: string;
+  text: string;
+  at: string;
+}
+
+/** A parent's message for the session on this connection. Sent only to a session whose hello accepts `message`. */
+export interface MessagePush {
+  type: 'message';
+  message: InboxMessage;
+  /** Sent again after the session reconnected, so the adapter first checks whether the harness already has it. */
+  replay?: boolean;
 }
 
 export interface ErrorReply {
@@ -386,7 +430,7 @@ export interface AncestryReply {
   answer: AncestryAnswer;
 }
 
-export type DaemonReply = HelloReply | ResultReply | EventsPush | ErrorReply | ClosedReply | StatusPush | RelayHelloReply | RelayReportPush | RelayDrainedPush | RelayStatusReply | SessionsReply | AncestryReply;
+export type DaemonReply = HelloReply | ResultReply | EventsPush | ErrorReply | ClosedReply | StatusPush | RelayHelloReply | RelayReportPush | RelayDrainedPush | RelayStatusReply | SessionsReply | AncestryReply | MessagePush;
 
 /** A report as it crosses from a child's machine to its parent's. The receipt makes it unique. */
 export interface RelayReport {
@@ -499,6 +543,14 @@ export function parseRequest(line: string): DaemonRequest {
       if (!id || !agent) throw new ProtocolError('invalid_ancestry', 'an ancestry request needs an id and an agent');
       return { type: 'ancestry', id, agent };
     }
+    case 'message-ack': {
+      const id = text(value['id']);
+      const outcome = value['outcome'];
+      if (!id || (outcome !== 'queued' && outcome !== 'read' && outcome !== 'refused')) throw new ProtocolError('invalid_ack', 'a message acknowledgement needs an id and an outcome of queued, read or refused');
+      const via = text(value['via']);
+      const reason = text(value['reason']);
+      return { type: 'message-ack', id, outcome, ...(via ? { via } : {}), ...(reason ? { reason } : {}) };
+    }
     case 'watch': {
       const paneId = text(value['paneId']);
       if (!paneId) throw new ProtocolError('invalid_watch', 'a watch needs a pane id');
@@ -539,12 +591,13 @@ function parseHello(value: Record<string, unknown>): HelloRequest {
   const depth = typeof parent['depth'] === 'number' && Number.isFinite(parent['depth']) ? parent['depth'] : 0;
   const optional = (key: string): string | undefined => (typeof parent[key] === 'string' && parent[key] ? (parent[key] as string) : undefined);
   const maxDepth = typeof parent['maxDepth'] === 'number' && Number.isInteger(parent['maxDepth']) ? parent['maxDepth'] : undefined;
+  const accepts = Array.isArray(parent['accepts']) ? parent['accepts'].filter((entry): entry is string => typeof entry === 'string' && entry.length > 0) : [];
   return {
     type: 'hello',
     protocol,
     client: text(value['client']) || 'unknown',
     ...(text(value['build']) ? { build: text(value['build']) } : {}),
-    parent: { harness, session, cwd, host, depth, herdrSocket, paneId: optional('paneId'), workspaceId: optional('workspaceId'), childId: optional('childId'), ...(maxDepth === undefined ? {} : { maxDepth }), ...(optional('reportsTo') ? { reportsTo: optional('reportsTo') } : {}) },
+    parent: { harness, session, cwd, host, depth, herdrSocket, paneId: optional('paneId'), workspaceId: optional('workspaceId'), childId: optional('childId'), ...(maxDepth === undefined ? {} : { maxDepth }), ...(optional('reportsTo') ? { reportsTo: optional('reportsTo') } : {}), ...(accepts.length ? { accepts } : {}) },
   };
 }
 

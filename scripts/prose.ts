@@ -62,13 +62,25 @@ export function coverageConfig(ini: string, stylesPath: string): string {
     .join('\n');
 }
 
+/**
+ * The error for a Vale run that could not lint. A checkout that never ran
+ * `vale sync` has no style packs, and Vale reports that as E100 from
+ * loadStyles; the gate names the command and the directory instead (issue
+ * #134). Any other failure keeps Vale's own text.
+ */
+export function valeFailure(root: string, status: number | null, output: string): string {
+  const missing = [...output.matchAll(/style '([^']+)' does not exist on StylesPath/g)].map((match) => match[1]);
+  if (missing.length > 0) {
+    return `The Vale style packs are not synced in ${root}, so the prose gate cannot run (missing: ${[...new Set(missing)].join(', ')}). Run \`cd ${root} && vale sync\`, then run the check again.`;
+  }
+  return `vale exited ${status}: ${output.trim()}`;
+}
+
 function vale(root: string, args: string[]): { status: number | null; stdout: string; stderr: string } {
   const result = spawnSync('vale', args, { cwd: root, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
   if (result.error) throw new Error(`vale did not run (${result.error.message}). Install Vale 3.20.0, the version CI pins.`);
   // Vale exits 1 when it reports an error-level alert, and 2 when it cannot run.
-  if (result.status !== 0 && result.status !== 1) {
-    throw new Error(`vale exited ${result.status}: ${result.stderr.trim() || result.stdout.trim()}\nRun \`vale sync\` once to fetch the rule packages.`);
-  }
+  if (result.status !== 0 && result.status !== 1) throw new Error(valeFailure(root, result.status, result.stderr.trim() || result.stdout));
   return { status: result.status, stdout: result.stdout, stderr: result.stderr };
 }
 
@@ -210,4 +222,12 @@ function main(mode: string | undefined): number {
   return 2;
 }
 
-if (process.argv[1] !== undefined && path.resolve(process.argv[1]) === import.meta.filename) process.exitCode = main(process.argv[2]);
+if (process.argv[1] !== undefined && path.resolve(process.argv[1]) === import.meta.filename) {
+  try {
+    process.exitCode = main(process.argv[2]);
+  } catch (error) {
+    // The message names the remedy; a stack trace would bury it.
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 2;
+  }
+}

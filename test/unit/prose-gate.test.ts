@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { COVERAGE_RULE, coverage, coverageConfig, lint, PROSE_PATHS, RELEASE_BODIES, releaseBodyAlerts, SIGNATURE_CASES, signatureFindings, trackedPages } from '../../scripts/prose.ts';
+import { COVERAGE_RULE, coverage, coverageConfig, lint, valeFailure, PROSE_PATHS, RELEASE_BODIES, releaseBodyAlerts, SIGNATURE_CASES, signatureFindings, trackedPages } from '../../scripts/prose.ts';
 
 const root = path.resolve(import.meta.dirname, '../..');
 
@@ -129,5 +129,42 @@ test('a .vale.ini without the signature exception fails the signature cases', { 
     for (const name of rejected) assert.ok(findings.some((finding) => finding.includes(name) && finding.includes('rejects a signature')), `${name} is reported`);
   } finally {
     cleanup();
+  }
+});
+
+// The 0.1.6 release worktree had never run `vale sync`, and the gate surfaced
+// Vale's own E100 after the whole test run (issue #134). The error names the
+// command and the directory to run it in, and never asks the reader what
+// StylesPath is.
+const MISSING_STYLE = "E100 [loadStyles] Runtime error\n\nstyle 'ai-tells' does not exist on StylesPath\n";
+
+test('a missing style pack reads as styles that are not synced, with the command to run', () => {
+  const message = valeFailure('/work/release-0.1.6', 2, MISSING_STYLE);
+  assert.match(message, /style packs are not synced/);
+  assert.ok(message.includes('cd /work/release-0.1.6 && vale sync'), message);
+  assert.match(message, /ai-tells/, 'the message names the missing pack');
+  assert.doesNotMatch(message, /E100|loadStyles|StylesPath/, 'the message is the gate\'s, not Vale\'s');
+});
+
+test('any other failure to run Vale keeps its own text and does not blame the sync', () => {
+  const message = valeFailure('/work/main', 2, 'E100 [.vale.ini] Runtime error\n\nunknown key Bogus\n');
+  assert.match(message, /unknown key Bogus/);
+  assert.doesNotMatch(message, /vale sync/);
+});
+
+test('the lint in a checkout that never ran vale sync names the remedy', { skip: hasVale ? false : 'vale is not on PATH' }, () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'bw-unsynced-'));
+  try {
+    fs.mkdirSync(path.join(repo, 'styles'));
+    fs.mkdirSync(path.join(repo, 'docs'));
+    for (const file of ['README.md', 'AGENTS.md', 'docs/a.md']) fs.writeFileSync(path.join(repo, file), `# ${file}\n\nA page.\n`);
+    fs.writeFileSync(path.join(repo, '.vale.ini'), 'StylesPath = styles\n\n[*.md]\nBasedOnStyles = ai-tells\n');
+    assert.throws(() => lint(repo), (error: Error) => {
+      assert.ok(error.message.includes(`cd ${repo} && vale sync`), error.message);
+      assert.doesNotMatch(error.message, /loadStyles|StylesPath/);
+      return true;
+    });
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
   }
 });

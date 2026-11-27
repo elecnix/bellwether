@@ -9,7 +9,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { BELLWETHER_BUILD_ID, BELLWETHER_PACKAGE_DIR, BELLWETHER_VERSION } from '../core/version.ts';
 import { missingFeatureMessage, featureNamed, serves, unservedArgument, type DaemonOffer } from './features.ts';
-import { DAEMON_PROTOCOL, MAX_DAEMON_FRAME_BYTES, MIN_DAEMON_PROTOCOL, formatRequest, type DaemonReply, type ParentHello, type RelayHostState, type ReportRequest, type ServedTool, type SessionsReply } from './protocol.ts';
+import { DAEMON_PROTOCOL, MAX_DAEMON_FRAME_BYTES, MIN_DAEMON_PROTOCOL, formatRequest, type DaemonReply, type InboxMessage, type MessageAckRequest, type ParentHello, type RelayHostState, type ReportRequest, type ServedTool, type SessionsReply } from './protocol.ts';
 import { fallbackTools } from '../integrations/tools.ts';
 import { isAlive, readLock } from './lock.ts';
 import { HANDOVER_TIMEOUT_MS, decideHandOver, type DaemonIdentity } from './handover.ts';
@@ -123,6 +123,11 @@ export class DaemonClient {
   private readonly paneHandlers = new Map<string, Set<(status: string) => void>>();
   private readonly received = new Map<string, OutboxEntry>();
   private readonly unsentReceipts: string[] = [];
+  private readonly messageHandlers = new Set<(message: InboxMessage, replay: boolean) => void>();
+  /** Messages that arrived before the adapter set its handler, which a session that accepts messages holds for it. */
+  private readonly heldMessages: { message: InboxMessage; replay: boolean }[] = [];
+  /** Acknowledgements written while no connection was open, sent on the next one. */
+  private readonly unsentAcks: string[] = [];
   private sequence = 0;
   private stopped = false;
   private reconnecting = false;
@@ -281,6 +286,26 @@ export class DaemonClient {
     });
   }
 
+  /**
+   * Hear a parent's message for this session. The daemon pushes one only to
+   * a session whose hello accepts `message`, so the adapter names it there.
+   */
+  onMessage(handler: (message: InboxMessage, replay: boolean) => void): () => void {
+    this.messageHandlers.add(handler);
+    for (const held of this.heldMessages.splice(0)) handler(held.message, held.replay);
+    return () => this.messageHandlers.delete(handler);
+  }
+
+  /** Tell the daemon what became of a parent's message: queued in the harness, read by the model, or refused. */
+  messageAck(id: string, outcome: MessageAckRequest['outcome'], detail: { via?: string; reason?: string } = {}): void {
+    const line = formatRequest({ type: 'message-ack', id, outcome, ...detail });
+    if (!this.connection) {
+      this.unsentAcks.push(line);
+      return;
+    }
+    this.write(line);
+  }
+
   receipts(receipts: string[]): void {
     if (!receipts.length) return;
     for (const receipt of receipts) this.received.delete(receipt);
@@ -430,6 +455,7 @@ export class DaemonClient {
     try {
       this.adopt(await this.establish());
       if (this.unsentReceipts.length) this.write(formatRequest({ type: 'receipt', receipts: this.unsentReceipts.splice(0) }));
+      for (const line of this.unsentAcks.splice(0)) this.write(line);
     } finally {
       this.reconnecting = false;
     }
@@ -586,6 +612,22 @@ export class DaemonClient {
         }
       }
       if (unread.length) for (const handler of this.handlers) handler(unread);
+      return;
+    }
+    if (reply.type === 'message') {
+      const message = reply.message;
+      if (!message || typeof message.id !== 'string' || typeof message.text !== 'string') {
+        this.warnOnce('message-shape', 'the daemon sent a message without an id and text; it was ignored');
+        return;
+      }
+      const replay = reply.replay === true;
+      if (!this.messageHandlers.size) {
+        // A replay arrives with the hello, before the adapter has set its handler.
+        if (this.parent.accepts?.includes('message')) this.heldMessages.push({ message, replay });
+        else this.messageAck(message.id, 'refused', { reason: 'this session has no handler for messages' });
+        return;
+      }
+      for (const handler of this.messageHandlers) handler(message, replay);
       return;
     }
     if (reply.type === 'status') {

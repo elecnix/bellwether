@@ -21,7 +21,8 @@ import { childLabel } from './label.ts';
 import { spoolPath } from './paths.ts';
 import { realRetireOps, reapChild, retirementPending, type RetireOps } from './retire.ts';
 import { isMoving } from './move-plan.ts';
-import type { AgentStatus, ChildEventKind, ChildRecord, OutboxEntry, RelayHostState, SpoolReport } from './types.ts';
+import type { AgentStatus, ChildEventKind, ChildMessage, ChildRecord, OutboxEntry, RelayHostState, SpoolReport } from './types.ts';
+import { unreadSessionMessages } from './send.ts';
 import { releaseWorkspace } from './workspace.ts';
 
 /** herdr's status for a pane, or the child's last known status. */
@@ -452,18 +453,26 @@ export class Watcher {
     // A child the parent never heard from never ran its task, whatever ended it.
     const beforeStart = !this.heardFrom(child);
     const harnessEnded = ended ? (beforeStart ? 'before-start' : 'in-pane') : undefined;
+    let unread: ChildMessage[] = [];
     updateChild(this.parentId, child.id, (entry) => {
       entry.exitedAt = new Date().toISOString();
       entry.exitCode = code;
       entry.lastStatus = 'unknown';
       if (harnessEnded) entry.harnessEnded = harnessEnded;
+      // A message in the session that the model never received is undelivered, and the exit event says so.
+      unread = unreadSessionMessages(entry);
+      for (const message of unread) {
+        message.undelivered = 'the child exited before its model received it';
+        delete message.text;
+        delete message.from;
+      }
     });
     child = { ...child, ...(harnessEnded ? { harnessEnded } : {}) };
     removeChildFiles(child.id, hostOf(child) === LOCAL_HOST ? child.cwd : undefined);
     if (hostOf(child) !== LOCAL_HOST && this.cleanupRemote) {
       this.cleanupRemote(child).catch((error: unknown) => this.log(`could not remove ${child.name}'s files on machine ${hostOf(child)}: ${(error as Error).message}`));
     }
-    this.offer(child, 'exited', this.describeExit(child, code, beforeStart));
+    this.offer(child, 'exited', `${this.describeExit(child, code, beforeStart)}${unreadNote(unread)}`);
     void this.releaseWorkspace(child);
     void this.retire(child.id);
   }
@@ -1275,4 +1284,11 @@ export function silence(child: ChildRecord): string {
   if (Number.isFinite(reportedAt) && reportedAt >= Date.parse(started)) return '';
   const since = child.resumedAt ? 'it resumed' : child.origin === 'adopt' ? 'Bellwether adopted it' : 'it started';
   return `, and it has not called parent_report since ${since} at ${started}`;
+}
+
+/** The sentence an exit event adds for each session message the child never read. */
+function unreadNote(unread: readonly ChildMessage[]): string {
+  if (!unread.length) return '';
+  const list = unread.map((message) => `${message.id} (sent at ${message.at}: "${message.preview}")`).join(', ');
+  return ` It never read ${unread.length === 1 ? 'message' : 'messages'} ${list}, which ${unread.length === 1 ? 'is' : 'are'} undelivered: send ${unread.length === 1 ? 'it' : 'them'} again once the child runs, if ${unread.length === 1 ? 'it' : 'they'} still matter.`;
 }

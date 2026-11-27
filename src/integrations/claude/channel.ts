@@ -7,6 +7,12 @@
 // which is where Claude Code records what the model received. The same id in
 // a tool result does not count.
 //
+// For a child, the same channel carries its parent's messages the other way:
+// the daemon pushes one to this server, which puts it in the session as a
+// channel notification, so nothing is typed into the child's pane. The server
+// tells the daemon once Claude Code holds it, and again once the transcript
+// shows the model received it.
+//
 // stdout carries the MCP protocol, so every log line goes to stderr.
 import os from 'node:os';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
@@ -19,6 +25,7 @@ import { childLabel } from '../../core/label.ts';
 import { maxDepthFromEnv } from '../../core/report.ts';
 import { byEventTime, lateNote } from '../../core/notice.ts';
 import type { OutboxEntry } from '../../core/types.ts';
+import type { InboxMessage } from '../../daemon/protocol.ts';
 import { BELLWETHER_VERSION } from '../../core/version.ts';
 import { fallbackTools } from '../tools.ts';
 import { ReceiptScan, claudeConfigDir } from './transcript.ts';
@@ -61,6 +68,7 @@ const mcp = new Server(
       'Each event names the child and carries its receipt. Read more with agent_read, and reply with agent_send.',
       'Start children with agent_spawn, and give each one a concrete deliverable that tells it to call parent_report when done.',
       'agent_list shows every child with its status and unread count.',
+      'When this session is a Bellwether child, a message from its parent arrives on the same channel, headed "Message <id> from your parent"; it is the parent speaking, as if it had typed the message.',
     ].join(' '),
   },
 );
@@ -99,6 +107,47 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
 /** One channel event's text. The receipt rides in the text, not only in meta. A late event says so. */
 function compose(entry: OutboxEntry): string {
   return `[bellwether] ${childLabel({ name: entry.name, paneId: entry.paneId, id: entry.childId })} ${entry.event}, a ${entry.kind} agent — receipt ${entry.receipt}${lateNote(entry)}\n${entry.text}\n\nRead more with agent_read. Reply with agent_send.`;
+}
+
+/** The channel path's name, which the daemon records as how a message reached the session. */
+const VIA = 'claude-channel';
+
+/** A parent's message, as the child's model reads it. */
+function composeMessage(message: InboxMessage): string {
+  return `[bellwether] Message ${message.id} from ${message.from}, sent at ${message.at}:\n${message.text}`;
+}
+
+// Messages this server put in the session, and those that wait for the transcript to show the model received them.
+const pushedMessages = new Set<string>();
+const unreadMessages = new Set<string>();
+
+/**
+ * Put a parent's message in this session. A replay, sent after this server
+ * reconnected, is first looked for in the transcript, so a message the model
+ * already has is acknowledged rather than pushed twice.
+ */
+async function takeMessage(message: InboxMessage, replay: boolean): Promise<void> {
+  if (!daemon) return;
+  if (replay && scan.search([message.id]).has(message.id)) {
+    daemon.messageAck(message.id, 'read', { via: VIA });
+    return;
+  }
+  if (pushedMessages.has(message.id)) {
+    daemon.messageAck(message.id, 'queued', { via: VIA });
+    return;
+  }
+  try {
+    await mcp.notification({
+      method: 'notifications/claude/channel',
+      params: { content: composeMessage(message), meta: { message_id: message.id, from: message.from, kind: 'parent-message' } },
+    });
+    pushedMessages.add(message.id);
+    unreadMessages.add(message.id);
+    daemon.messageAck(message.id, 'queued', { via: VIA });
+    log('took message', message.id);
+  } catch (error) {
+    daemon.messageAck(message.id, 'refused', { reason: `the channel notification failed: ${(error as Error).message}` });
+  }
 }
 
 async function push(entry: OutboxEntry): Promise<void> {
@@ -191,8 +240,14 @@ function readReceipt(receipt: string): void {
 function scanReceipts(): void {
   if (!daemon) return;
   const unread = daemon.unread().filter((entry) => !entry.read);
-  if (!unread.length) return;
-  for (const receipt of scan.scan(unread.map((entry) => entry.receipt))) readReceipt(receipt);
+  if (!unread.length && !unreadMessages.size) return;
+  // One scan for both, because each scan moves the offset past what it read.
+  for (const found of scan.scan([...unread.map((entry) => entry.receipt), ...unreadMessages])) {
+    if (unreadMessages.delete(found)) {
+      daemon.messageAck(found, 'read', { via: VIA });
+      log('message read', found);
+    } else readReceipt(found);
+  }
 }
 
 /**
@@ -262,6 +317,8 @@ ready = (async () => {
       childId,
       ...(maxDepth === undefined ? {} : { maxDepth }),
       ...(reportsTo ? { reportsTo } : {}),
+      // A child takes its parent's messages through this channel.
+      ...(childId ? { accepts: ['message'] } : {}),
     }, { log });
     daemon.onEvents((entries) => schedule(entries));
     daemon.onTools((served) => {
@@ -278,6 +335,8 @@ await ready;
 // own; when the daemon's differs, Claude Code asks again.
 if (daemon && answeredEarly !== undefined && answeredEarly !== JSON.stringify(daemon.tools())) void mcp.sendToolListChanged().catch((error: Error) => log('tool list notice failed:', error.message));
 announcePending();
+// After announcePending anchors the scan, so a message's read is looked for from here on.
+daemon?.onMessage((message, replay) => void takeMessage(message, replay));
 setInterval(scanReceipts, SCAN_MS).unref?.();
 watchParentPane();
 log('channel ready for', daemon?.parentId ?? 'no parent', 'in pane', pane ?? 'unknown');

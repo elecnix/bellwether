@@ -51,6 +51,8 @@ export const opencode: HarnessEntry = {
     }),
     remoteRefusal: 'an opencode child runs on this machine only for now, because its store and its version are read where it runs',
   },
+  // OpenCode has no inbound path: it loads Bellwether as an ordinary MCP server, and its MCP client takes no message from a server into the session, so a parent's message is typed into its pane.
+  inbox: { via: 'none', reason: 'OpenCode loads Bellwether as an ordinary MCP server, and its MCP client takes no message from a server into the session' },
   conversation: {
     locate: noTranscript('OpenCode'),
     lastMessage: (child) => (child.store && child.session && (child.host ?? LOCAL_HOST) === LOCAL_HOST ? openCodeLastMessage(child.store, child.session.value) : undefined),

@@ -52,6 +52,8 @@ export const claude: HarnessEntry = {
     },
     remote: 'mcpConfig',
   },
+  // The child's own server is a channel, so a parent's message arrives as a channel notification.
+  inbox: { via: 'claude-channel' },
   conversation: { locate: locateClaudeTranscript },
   resume: {
     args: (session) => ['--resume', session.kind === 'path' ? path.basename(session.value, '.jsonl') : session.value],

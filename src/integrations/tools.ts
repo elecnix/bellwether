@@ -10,6 +10,7 @@ import { adoptPane } from '../core/adopt.ts';
 import { LOCAL_HOST, hostOf, type ClientFor } from '../core/machine.ts';
 import { spawnResume } from '../core/spawn-resume.ts';
 import { promptChild } from '../core/send.ts';
+import { RESTART_TOOL, runAgentRestart, type RestartHooks } from '../core/restart.ts';
 import { RETIRE_TOOL, realRetireOps, requestRetirement, type RetireOps } from '../core/retire.ts';
 import type { RemoteOps } from '../core/remote.ts';
 import { lastAssistantMessage, locateTranscript } from '../core/transcript.ts';
@@ -29,6 +30,8 @@ export interface ToolContext {
   remote?: RemoteOps;
   /** How the daemon's connection to a remote host stands, so a list can say which hosts it is not hearing from. */
   relayState?: (host: string) => RelayHostState | undefined;
+  /** How a restart is deferred, waited on and stopped. The daemon supplies it; a test passes its own. */
+  restart?: RestartHooks;
 }
 
 function clientFor(ctx: ToolContext, host: string): Promise<HerdrClient> {
@@ -126,6 +129,17 @@ export const parentTools: ToolDefinition[] = [
       required: ['child'],
     },
   },
+  {
+    name: RESTART_TOOL,
+    description: 'Restart an agent in place of its session: a child by name, id or pane, another session by its parent id, session id or pane, or yourself when you omit the target. The daemon closes the old pane, then runs the same harness on the same session in a new tab, in the same directory, so the conversation continues and no pane is left over. A child keeps its child id, so its history, receipts and retire state continue. Restarting yourself returns first: the daemon acts once your turn ends, so finish your reply and say where you will land. It refuses a target with no session to name, one on another machine, a pane no registry holds, a parent pane that now holds another session, and a target that is still mid-turn when the wait runs out.',
+    schema: {
+      type: 'object',
+      properties: {
+        target: { type: 'string', description: 'What to restart: a child name, id or pane, or a parent session id or pane. Omit it to restart this session.' },
+        wait_seconds: { type: 'number', description: 'How long to wait for the target\'s turn to end before refusing. Defaults to 30, and is held under 45 so the call can still answer.' },
+      },
+    },
+  },
 ];
 
 /** The one tool a child gets, when its environment names a parent. */
@@ -198,8 +212,9 @@ function hostColumn(child: ChildRecord, relayState: ToolContext['relayState']): 
 function describeChild(child: ChildRecord, watcher: Watcher, relayState?: ToolContext['relayState']): string {
   const unread = watcher.outboxEntries().filter((entry) => !entry.read && entry.childId === child.id).length;
   const age = Math.max(0, Math.round((Date.now() - Date.parse(child.startedAt)) / 1000));
+  const restart = child.restartRequestedAt ? ', restart pending' : '';
   const retire = child.retireOutcome === 'removed' ? ', retired' : child.retireOutcome === 'refused' ? ', retirement refused' : child.retireRequestedAt ? ', retirement requested' : '';
-  const state = `${child.exitedAt ? `exited${child.exitCode === undefined ? '' : ` (${child.exitCode})`}` : child.lastStatus}${retire}`;
+  const state = `${child.exitedAt ? `exited${child.exitCode === undefined ? '' : ` (${child.exitCode})`}` : child.lastStatus}${restart}${retire}`;
   const name = child.agentName ? `${child.name} (${child.agentName})` : child.name;
   const kind = child.model ? `${child.kind} (${child.model.provider}/${child.model.id})` : child.kind;
   return `${name}\t${kind}\t${state}\t${age}s\t${hostColumn(child, relayState)}\t${child.paneId}\tunread ${unread}\t${child.cwd ?? ''}`;
@@ -222,6 +237,11 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
   if (name === RETIRE_TOOL) {
     // Routed by the caller's identity and this daemon's records, like parent_report.
     return requestRetirement(caller, ctx.retireOps ?? realRetireOps(), optionalString(args['reason']));
+  }
+
+  if (name === RESTART_TOOL) {
+    // Routed by the caller's identity and the records this daemon holds.
+    return runAgentRestart(ctx.client, ctx.parentId, caller, { ...(ctx.restart ?? {}), reset: (childId) => ctx.watcher.reset(childId) }, optionalString(args['target']), typeof args['wait_seconds'] === 'number' ? (args['wait_seconds'] as number) : undefined);
   }
 
   const record = readParent(ctx.parentId);

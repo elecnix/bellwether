@@ -1,3 +1,9 @@
+/* Copied, not linked: this file is a copy of report-page.css from the
+   visual-style agent skill. scripts/build-site.ts pastes this copy into every
+   page, so a change to the skill's version reaches the site only when someone
+   copies it here, and a rebuild alone changes nothing. Change the skill first,
+   then copy its file over this one below this comment.
+   -------------------------------------------------------------------------- */
 /* report-page.css: the style for a plan, report or design page Nicolas reads
    in Chrome, such as ~/design/ci-rebuild-plan.html. Paste it into the page's
    <style> block. Fonts follow SKILL.md. Colors are oklch tokens with a light
@@ -143,15 +149,15 @@ tr:last-child td { border-bottom: 0; }
 
 /* ---- contents rail (optional, default open) -------------------------------
    Wrap <main> and <aside class="rail"> in one <div class="wrap">. The rail is
-   sticky beside the reading column and never scrolls on its own: the page
-   keeps its single vertical scroll. The entry he is reading carries .on, which
-   draws a --hl bar in --accent. Below 1080px the rail sits above the page and
-   starts collapsed. The two buttons are .iconbtn--contents (chevron up while
+   sticky beside the reading column, 88px clear of it, and never scrolls on its
+   own: the page keeps its single vertical scroll. The entry he is reading
+   carries .on, which draws a --hl bar in --accent. Below 1080px the rail sits
+   above the page and starts collapsed. The two buttons are .iconbtn--contents (chevron up while
    open, down while closed) and .iconbtn--theme (half disc auto, crescent dark,
    sun light); the page script toggles data-open on .rail and data-theme on
    <html>.
    -------------------------------------------------------------------------- */
-.wrap { display: grid; grid-template-columns: 236px minmax(0, 980px); gap: 44px; width: 100%; max-width: 1292px; margin: 0 auto; padding: 0 16px; flex: 1 0 auto; }
+.wrap { display: grid; grid-template-columns: 236px minmax(0, 980px); gap: 88px; width: 100%; max-width: 1336px; margin: 0 auto; padding: 0 16px; flex: 1 0 auto; }
 /* main keeps its own 16px gutter, so the column is the same 980px with or
    without a rail, and the text column tint below still has a margin inside. */
 .wrap > main { width: 100%; min-width: 0; max-width: none; margin: 0; }

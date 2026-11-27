@@ -112,7 +112,8 @@ test('a new turn with no status change is persisted as activity', async () => {
   snapshotStub.snapshot = async () => ({ agents: [{ pane_id: 'w1:p1', agent_status: 'idle', completion_seq: 2 }] });
   const clock = { now: Date.parse(before.lastBusyAt) };
   const watcher = watcherFor(parent.id, stub, clock);
-  await (watcher as unknown as { reconcile(children: unknown[], signal: AbortSignal): Promise<void> }).reconcile(
+  await (watcher as unknown as { reconcile(client: unknown, children: unknown[], signal: AbortSignal): Promise<void> }).reconcile(
+    stub,
     [before],
     new AbortController().signal,
   );

@@ -24,14 +24,15 @@ import { harnessFor, harnessNamed } from './core/harnesses/index.ts';
 import { describeUpgrade, farPairing, gatherUpgrade } from './daemon/upgrade-status.ts';
 import { describeState } from './core/hygiene.ts';
 import { HEARTBEAT_MISSES } from './core/ssh.ts';
-import { DaemonClient, REFUSED_EXIT, ReportRefused, drainDaemon, ensureDaemon, postReport, relayStatus } from './daemon/client.ts';
+import { DaemonClient, REFUSED_EXIT, ReportRefused, daemonAncestry, drainDaemon, ensureDaemon, postReport, relayStatus } from './daemon/client.ts';
+import { ancestry, type AncestryAnswer, type AncestryLevel } from './core/ancestry.ts';
 import { readMemory, runsOn } from './daemon/relay-links.ts';
 import type { RelayHostState } from './daemon/protocol.ts';
 import { describePiTools, guardlessPiCopies } from './core/pi-extension.ts';
 import { describeClaudeTools, describeToolSource, findAmbientServers } from './core/tool-source.ts';
 import { DAEMON_ENTRY, lockPath, readLock } from './daemon/lock.ts';
 import { BELLWETHER_BUILD, BELLWETHER_BUILD_ID, BELLWETHER_VERSION, describeBuild } from './core/version.ts';
-import { daemonIsLive, startDaemon } from './daemon/server.ts';
+import { canConnect, daemonIsLive, startDaemon } from './daemon/server.ts';
 import type { ChildRecord, OutboxEntry } from './core/types.ts';
 import { LOCAL_HOST, hostOf, knownHosts } from './core/machine.ts';
 import { MOVE_CHECK_BUDGET_MS, MOVE_VERBS, moveEndpoints, serveMoveVerb, type MoveVerb } from './core/move-endpoint.ts';
@@ -53,7 +54,8 @@ function parseArgs(argv: string[]): { positional: string[]; flags: Flags } {
     }
     const key = token.slice(2);
     const next = argv[index + 1];
-    if (next === undefined || next.startsWith('--')) {
+    // --json takes no value, so the word after it stays positional, as in `ancestry --json claude:<id>`.
+    if (next === undefined || next.startsWith('--') || key === 'json') {
       flags[key] = true;
       continue;
     }
@@ -359,7 +361,7 @@ async function main(argv: string[]): Promise<number> {
   }
 
   if (command === 'help' || command === '--help') {
-    console.log('Usage: bellwether <daemon|drain|spawn|watch|list|read|send|stop|move|report|parents|doctor|version> [--debug]');
+    console.log('Usage: bellwether <daemon|drain|spawn|watch|list|read|send|stop|move|report|parents|ancestry|doctor|version> [--debug]');
     console.log('  --debug                                  print the stack trace of a failure, as BELLWETHER_DEBUG=1 does');
     console.log('  daemon [--socket PATH]                   run the local daemon in the foreground');
     console.log('  drain  [--socket PATH]                   stop the running daemon once its calls finish, so the next session starts the installed one');
@@ -372,6 +374,7 @@ async function main(argv: string[]): Promise<number> {
     console.log('  send   CHILD [--text TEXT | --keys KEY,...]');
     console.log('  stop   CHILD [--force]');
     console.log('  move   CHILD [--machine M] [--cwd DIR] [--reason TEXT]  move a live claude or pi child to another machine, keeping its id and conversation');
+    console.log('  ancestry AGENT [--json] [--socket PATH]  the agent\'s ancestors, nearest first, and which still run; AGENT is <harness>:<session>, such as claude:<id> or pi:<id>');
     console.log('  report --child ID --status done|needs-input|progress --text TEXT [--parent ID] [--receipt ID]');
     console.log('  claude-hook --child ID                   a Claude Code child\'s Notification hook: the hook input on stdin, the dialog to the daemon, nothing on stdout');
     console.log('  relay-register --child ID --name NAME --kind KIND --parent ID [--cwd DIR] [--brief-stdin yes]');
@@ -414,6 +417,7 @@ async function main(argv: string[]): Promise<number> {
     return 0;
   }
 
+  if (command === 'ancestry') return ancestryCommand(positional[0], flags);
   if (command === 'report') return report(rest);
   if (command === HOOK_COMMAND) return claudeHook(rest);
   if (command === 'relay-register') return farEnd(command, () => relayRegister(rest));
@@ -503,6 +507,45 @@ async function main(argv: string[]): Promise<number> {
   }
   return 0;
 }
+
+/**
+ * The agent tree above one agent, from the daemon. It never starts a daemon:
+ * when none answers, or the one that answers predates the request, it reads
+ * the registry files and marks the answer stale, so the caller decides.
+ */
+async function ancestryCommand(agent: string | undefined, flags: Flags): Promise<number> {
+  if (!agent) throw new Error('ancestry needs an agent, such as claude:<session> or pi:<session>');
+  const socketPath = str(flags, 'socket') ?? process.env['BELLWETHER_DAEMON_SOCKET'] ?? path.join(bellwetherHome(), 'daemon.sock');
+  let answer: AncestryAnswer;
+  if (!(await canConnect(socketPath))) {
+    answer = ancestry(agent, listParents(), { stale: `no daemon answers on ${socketPath}` });
+  } else {
+    try {
+      answer = await daemonAncestry(socketPath, agent, ANCESTRY_TIMEOUT_MS);
+    } catch (error) {
+      const message = (error as Error).message;
+      const reason = message.startsWith('unknown_type') ? `the daemon on ${socketPath} predates the ancestry request, which needs Bellwether 0.1.6` : `the daemon on ${socketPath} did not answer: ${message}`;
+      answer = ancestry(agent, listParents(), { stale: reason });
+    }
+  }
+  if (flags['json'] === true) {
+    console.log(JSON.stringify(answer, null, 2));
+    return 0;
+  }
+  if (answer.stale) console.log(`stale: ${answer.staleReason ?? 'the daemon did not answer'}`);
+  if (answer.status === 'unknown') {
+    console.log(`unknown: no Bellwether record names ${agent}`);
+    return 0;
+  }
+  const line = (level: AncestryLevel): string => `${level.agent ?? `child ${level.childId ?? '?'}`}${level.childName ? ` (${level.childName})` : ''} on ${level.host}: ${level.alive === null ? 'unknown' : level.alive ? 'alive' : 'not alive'}, ${level.evidence}${level.since ? ` since ${level.since}` : ''}`;
+  if (answer.agent) console.log(`agent  ${line(answer.agent)}`);
+  answer.chain.forEach((level, index) => console.log(`${index === answer.nearestAlive ? 'alive' : 'up   '}  ${line(level)}`));
+  console.log(`top    ${answer.top}`);
+  return 0;
+}
+
+/** How long `bellwether ancestry` waits for the daemon before it reads the files. */
+const ANCESTRY_TIMEOUT_MS = 3_000;
 
 /**
  * Post one report to this machine's daemon. A child's own shell may leave out

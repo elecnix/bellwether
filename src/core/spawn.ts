@@ -11,6 +11,7 @@ import { removeChildFiles, writeMcpConfig } from './mcp-config.ts';
 import { removeChild, updateChild, upsertChild } from './registry.ts';
 import { watchStartup, type StartupDialog, type StartupWatch } from './startup-dialogs.ts';
 import { locateTranscript, sessionFrom } from './transcript.ts';
+import type { RemoteRegistration } from './remote.ts';
 import type { ChildRecord, Harness, ParentRecord } from './types.ts';
 
 /** How deep a Bellwether child may spawn. The design starts at 2. */
@@ -93,36 +94,63 @@ export function childArgs(kind: string, options: SpawnOptions, briefFile?: strin
 
 /**
  * Record a child on the machine it runs on, so that machine's daemon carries
- * its reports back here. It resolves with the MCP config path on that machine
- * for a Claude Code child.
+ * its reports back here, and copy its brief there when it has one.
  */
-export type RegisterRemote = (child: ChildRecord) => Promise<{ mcpConfig?: string }>;
+export type RegisterRemote = (child: ChildRecord, brief?: string) => Promise<RemoteRegistration>;
 
 export interface SpawnHooks {
   /** Drop whatever the watcher holds for a child whose spawn failed. */
   forget?: (childId: string) => void;
-  /** Register a child on another machine. Without it, such a child cannot report. */
+  /** Register a child on another machine. Without it, such a child cannot report or get a brief. */
   registerRemote?: RegisterRemote;
+  /** Remove what the registration wrote on the child's machine, for a spawn that failed after it. */
+  cleanupRemote?: (child: ChildRecord) => Promise<void>;
+}
+
+/** The files a child starts with, wherever it runs, and what its spawn reply should warn about. */
+export interface ChildStartFiles {
+  /** The brief's path on the child's own machine. */
+  briefFile?: string;
+  /** The MCP config's path on the child's own machine. */
+  mcpConfigFile?: string;
+  /** Why the child's reports cannot reach this machine, when they cannot. */
+  warning?: string;
+  /** Whether the child's machine holds files that must go with the child. */
+  registered: boolean;
 }
 
 /**
- * How a child will reach parent_report: the MCP config it starts with, and a
- * warning when it cannot report at all. A child on this machine gets a config
- * here. A Claude Code or Pi child on another machine is registered there
- * first, and its config is the one that machine wrote. A failed registration
- * does not stop the spawn: herdr status still follows the child, and the
- * warning says why its reports cannot arrive.
+ * Write the files a child starts with, on the machine it runs on. A child on
+ * this machine gets them here. A child on another machine is registered there
+ * first, and that machine writes them: its brief arrives over the SSH
+ * transport, on standard input, so the harness is pointed at a file that
+ * exists where it runs. A child with a brief that cannot be delivered is not
+ * started, because it would run with no task: this throws. Without a brief, a
+ * failed registration does not stop the spawn: herdr status still follows the
+ * child, and the warning says why its reports cannot arrive.
  */
-export async function childReportPath(child: ChildRecord, register?: RegisterRemote): Promise<{ mcpConfigFile?: string; warning?: string }> {
-  if ((child.host ?? LOCAL_HOST) === LOCAL_HOST) return { mcpConfigFile: childMcpConfig(child) };
-  if (child.harness !== 'claude-code' && child.harness !== 'pi') return {};
-  if (!register) return { warning: `${child.name} runs on machine ${child.host}, and this session cannot register it there, so it cannot call parent_report.` };
-  try {
-    const { mcpConfig } = await register(child);
-    return { mcpConfigFile: child.kind === 'claude' ? mcpConfig : undefined };
-  } catch (error) {
-    return { warning: `${child.name} could not be registered on machine ${child.host}, so it cannot call parent_report: ${(error as Error).message}` };
+export async function childStartFiles(child: ChildRecord, prompt: string | undefined, register?: RegisterRemote): Promise<ChildStartFiles> {
+  if ((child.host ?? LOCAL_HOST) === LOCAL_HOST) {
+    return { briefFile: prompt !== undefined ? writeBrief(child.id, prompt) : undefined, mcpConfigFile: childMcpConfig(child), registered: false };
   }
+  const reports = child.harness === 'claude-code' || child.harness === 'pi';
+  if (!reports && prompt === undefined) return { registered: false };
+  if (!register) {
+    if (prompt !== undefined) throw new Error(`${child.name} was not started on machine ${child.host}: this session cannot register children there, so its brief cannot reach that machine.`);
+    return { warning: `${child.name} runs on machine ${child.host}, and this session cannot register it there, so it cannot call parent_report.`, registered: false };
+  }
+  let registration: RemoteRegistration;
+  try {
+    registration = await register(child, prompt);
+  } catch (error) {
+    if (prompt !== undefined) throw new Error(`${child.name} was not started on machine ${child.host}, because its brief could not be copied there: ${(error as Error).message}`);
+    return { warning: `${child.name} could not be registered on machine ${child.host}, so it cannot call parent_report: ${(error as Error).message}`, registered: false };
+  }
+  return {
+    briefFile: registration.brief,
+    mcpConfigFile: child.kind === 'claude' ? registration.mcpConfig : undefined,
+    registered: true,
+  };
 }
 
 export async function spawnChild(client: HerdrClient, parent: ParentRecord, options: SpawnOptions, signal?: AbortSignal, hooks: SpawnHooks = {}): Promise<SpawnResult> {
@@ -154,11 +182,12 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
   let tabId: string | undefined;
   let startup: StartupWatch | undefined;
   let reportWarning: string | undefined;
+  let registered = false;
   try {
-    const briefFile = options.prompt ? writeBrief(child.id, options.prompt) : undefined;
-    const reportPath = await childReportPath(child, hooks.registerRemote);
-    const mcpConfigFile = reportPath.mcpConfigFile;
-    reportWarning = reportPath.warning;
+    const files = await childStartFiles(child, options.prompt || undefined, hooks.registerRemote);
+    const { briefFile, mcpConfigFile } = files;
+    registered = files.registered;
+    reportWarning = files.warning;
 
     // 2. The tab carries the environment the child needs to find its parent.
     const env = childEnv(parent, child);
@@ -186,7 +215,7 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
     await startWithRetry(client, { name: child.name, kind: options.kind, paneId: tab.paneId, args: childArgs(options.kind, options, briefFile, mcpConfigFile) }, signal);
   } catch (error) {
     startup?.close();
-    await abandon(client, parent.id, child.id, tabId, hooks);
+    await abandon(client, parent.id, child, tabId, hooks, registered);
     throw error;
   }
 
@@ -200,7 +229,7 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
       answered = await startup.answer();
     } catch (error) {
       startup.close();
-      await abandon(client, parent.id, child.id, tabId, hooks);
+      await abandon(client, parent.id, child, tabId, hooks, registered);
       throw error;
     }
     startup.close();
@@ -255,11 +284,14 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
  * the watcher finds no child when the tab-closed event arrives and the parent
  * hears nothing about a child that never ran.
  */
-async function abandon(client: HerdrClient, parentId: string, childId: string, tabId: string | undefined, hooks: SpawnHooks): Promise<void> {
-  removeChild(parentId, childId);
-  hooks.forget?.(childId);
-  removeChildFiles(childId);
+async function abandon(client: HerdrClient, parentId: string, child: ChildRecord, tabId: string | undefined, hooks: SpawnHooks, registered: boolean): Promise<void> {
+  removeChild(parentId, child.id);
+  hooks.forget?.(child.id);
+  removeChildFiles(child.id);
   if (tabId) await client.tabClose(tabId).catch(() => {});
+  // The brief and config on the child's machine go too. A failed hop leaves
+  // them for that machine's week-old prune, as nothing else can reach them.
+  if (registered) await hooks.cleanupRemote?.(child).catch(() => {});
 }
 
 /**

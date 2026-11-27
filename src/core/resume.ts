@@ -4,13 +4,12 @@
 // child's outbox entries and receipts are keyed by that id, so they continue.
 import path from 'node:path';
 import type { HerdrClient, HerdrPane } from './herdr-client.ts';
-import { writeBrief } from './brief.ts';
 import { removeChildFiles } from './mcp-config.ts';
 import { LOCAL_HOST } from './machine.ts';
 import { newChildId } from './outbox.ts';
 import { readParent, removeChild, updateChild, upsertChild } from './registry.ts';
 import { clearRetirement } from './retire.ts';
-import { STARTUP_HOLD_MS, STARTUP_TIMEOUT_MS, childArgs, childEnv, childReportPath, harnessOf, herdrLink, startWithRetry, type RegisterRemote } from './spawn.ts';
+import { STARTUP_HOLD_MS, STARTUP_TIMEOUT_MS, childArgs, childEnv, childStartFiles, harnessOf, herdrLink, startWithRetry, type RegisterRemote } from './spawn.ts';
 import { watchStartup, type StartupDialog, type StartupWatch } from './startup-dialogs.ts';
 import { locateTranscript, sessionFrom } from './transcript.ts';
 import type { ChildRecord, ParentRecord } from './types.ts';
@@ -76,6 +75,8 @@ export interface ResumeOptions {
   redrawMs?: number;
   /** Register a child on another machine again, so its reports still come back. */
   registerRemote?: RegisterRemote;
+  /** Remove what the registration wrote on the child's machine, for a resume that failed after it. */
+  cleanupRemote?: (child: ChildRecord) => Promise<void>;
 }
 
 export interface ResumeResult {
@@ -154,8 +155,11 @@ export async function resumeChild(client: HerdrClient, parent: ParentRecord, tar
   child.resumedAt = now;
   upsertChild(parent.id, child);
 
+  let registered = false;
   const restore = (): void => {
     removeChildFiles(child.id);
+    // The files on the child's machine go too; a failed hop leaves them to that machine's prune.
+    if (registered) void options.cleanupRemote?.(child).catch(() => {});
     // A resume of a session no child ran made the record, so a failure drops
     // it, as a failed spawn does: the parent hears nothing of a child that never ran.
     if (!previous) {
@@ -178,11 +182,12 @@ export async function resumeChild(client: HerdrClient, parent: ParentRecord, tar
   let startup: StartupWatch | undefined;
   let reportWarning: string | undefined;
   try {
-    const briefFile = options.prompt ? writeBrief(child.id, options.prompt) : undefined;
     // The same child id as before, so the server resolves to the same record.
-    const reportPath = await childReportPath({ ...child, kind }, options.registerRemote);
-    const mcpConfigFile = reportPath.mcpConfigFile;
-    reportWarning = reportPath.warning;
+    // A child on another machine gets its brief there, or the resume fails.
+    const files = await childStartFiles({ ...child, kind }, options.prompt || undefined, options.registerRemote);
+    const { briefFile, mcpConfigFile } = files;
+    registered = files.registered;
+    reportWarning = files.warning;
     const tab = await client.tabCreate({ workspaceId, cwd: child.cwd, label: child.name, env: childEnv(parent, child), focus: options.focus ?? false }, signal);
     tabId = tab.tabId ?? tab.paneId;
     if (!tab.paneId) throw new Error('herdr created no pane for the resumed tab');

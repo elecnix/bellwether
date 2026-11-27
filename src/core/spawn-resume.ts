@@ -66,7 +66,7 @@ export async function spawnResume(clientFor: (host: string) => Promise<HerdrClie
     // this one may have just brought the child back.
     const record = readParent(parentId) ?? first;
     const panes = await client.agentList(signal);
-    const options: ResumeOptions = { prompt: request.prompt, model: request.model, args: request.args, focus: request.focus, startupTimeoutMs: request.startupTimeoutMs, redrawMs: request.redrawMs, registerRemote: request.registerRemote };
+    const options: ResumeOptions = { prompt: request.prompt, model: request.model, args: request.args, focus: request.focus, startupTimeoutMs: request.startupTimeoutMs, redrawMs: request.redrawMs, registerRemote: request.registerRemote, cleanupRemote: request.cleanupRemote };
 
     if (!known) {
       const wanted = sessionTarget(request.target);

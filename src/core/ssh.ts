@@ -50,6 +50,8 @@ export interface SshOptions {
   /** The ssh binary. Defaults to the one on PATH, which is what tests replace. */
   ssh?: string;
   timeoutMs?: number;
+  /** Text for the remote command's standard input, so a brief never sits on a command line. */
+  input?: string;
 }
 
 /**
@@ -59,13 +61,16 @@ export interface SshOptions {
  */
 export function runRemoteBellwether(target: string, args: string[], options: SshOptions = {}): Promise<SshResult> {
   return new Promise((resolve) => {
-    execFile(options.ssh ?? 'ssh', sshArgv(target, args), { timeout: options.timeoutMs ?? 30_000, maxBuffer: 8 * 1024 * 1024, encoding: 'utf8' }, (error, stdout, stderr) => {
+    const child = execFile(options.ssh ?? 'ssh', sshArgv(target, args), { timeout: options.timeoutMs ?? 30_000, maxBuffer: 8 * 1024 * 1024, encoding: 'utf8' }, (error, stdout, stderr) => {
       if (!error) return resolve({ code: 0, stdout, stderr });
       const fault = error as NodeJS.ErrnoException & { code?: number | string; killed?: boolean };
       if (fault.code === 'ENOENT') return resolve({ code: 127, stdout, stderr: `ssh is not installed: ${fault.message}` });
       if (fault.killed) return resolve({ code: 124, stdout, stderr: `${stderr}\nssh to ${target} timed out after ${options.timeoutMs ?? 30_000} ms`.trim() });
       resolve({ code: typeof fault.code === 'number' ? fault.code : 1, stdout, stderr: stderr || fault.message });
     });
+    // A closed pipe only means ssh exited first; its exit code says why.
+    child.stdin?.on('error', () => {});
+    child.stdin?.end(options.input ?? '');
   });
 }
 

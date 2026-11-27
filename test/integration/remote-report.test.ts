@@ -23,7 +23,7 @@ import { Relay } from '../../src/daemon/relay.ts';
 import { startDaemon, type Daemon, type ParentService } from '../../src/daemon/server.ts';
 import { runBellwetherTool } from '../../src/integrations/tools.ts';
 import { stopDaemonsUnder } from '../fixtures/daemons.ts';
-import { startFakeHerdr } from '../fixtures/fake-herdr.ts';
+import { startFakeHerdr, type FakeHerdrOptions } from '../fixtures/fake-herdr.ts';
 import { installFakeSsh, type FakeSsh } from '../fixtures/fake-ssh.ts';
 import { LIVE_HOME } from '../fixtures/isolation.ts';
 
@@ -371,4 +371,84 @@ test('the relay outbox and records are private to the operator', async (t) => {
   assert.equal(fs.statSync(path.join(relayOutboxDir(), entry ?? '')).mode & 0o777, 0o600);
   assert.equal(fs.statSync(relayChildPath('c-mode')).mode & 0o777, 0o600);
   assert.equal(fs.statSync(relayOutboxDir()).mode & 0o777, 0o700);
+});
+
+/** A fake herdr whose new pane goes idle after the start, so a Claude Code spawn gets past its dialog wait. */
+async function idleHerdr(t: test.TestContext, respond?: FakeHerdrOptions['respond']): Promise<Awaited<ReturnType<typeof startFakeHerdr>>> {
+  let herdr: Awaited<ReturnType<typeof startFakeHerdr>> | undefined;
+  herdr = await startFakeHerdr({
+    respond: (request) => {
+      const answer = respond?.(request);
+      if (answer) return answer;
+      if (request.method === 'agent.start') setTimeout(() => herdr?.send({ event: 'pane_agent_status_changed', data: { pane_id: 'w1:p1', agent_status: 'idle' } }), 20);
+      return undefined;
+    },
+  });
+  t.after(() => herdr?.stop());
+  return herdr;
+}
+
+const profiles = async (label: string) => ({ id: label, label, target: label, session: 'default', enabled: true });
+
+function startArgs(herdr: Awaited<ReturnType<typeof startFakeHerdr>>): string[] {
+  return (herdr.requests.find((request) => request.method === 'agent.start')?.params['args'] as string[]) ?? [];
+}
+
+test('a spawn on another machine copies the brief there over ssh, and points the child at that copy', async (t) => {
+  const w = world(t);
+  fs.writeFileSync(configPath(), JSON.stringify({ sshTarget: 'parent-box' }));
+  const parent = saveParent(emptyParent('claude-code', 'brief-sender', '/work', { workspaceId: 'w1' }));
+  const herdr = await idleHerdr(t);
+  const ops = remoteOps(profiles);
+  const brief = 'Line one of the task.\nLine two, with a \'quote\' and $HOME left alone.\n';
+  const { child } = await spawnChild(new HerdrClient({ socketPath: herdr.socketPath }), parent, { kind: 'claude', name: 'briefed', host: 'remote-box', prompt: brief, startupTimeoutMs: 2_000, redrawMs: 10 }, undefined, { registerRemote: (entry, text) => ops.register(parent, entry, text) });
+
+  const remoteBrief = path.join(w.remoteHome, 'prompts', `${child.id}.md`);
+  assert.equal(fs.readFileSync(remoteBrief, 'utf8'), brief, 'the brief arrived whole on the child\'s machine');
+  assert.equal(fs.statSync(remoteBrief).mode & 0o777, 0o600);
+  assert.ok(!fs.existsSync(path.join(w.childHome, 'prompts', `${child.id}.md`)), 'no brief was left on the parent\'s machine');
+  assert.ok(startArgs(herdr).includes(`@${remoteBrief}`), `the child is pointed at the copy that exists where it runs: ${startArgs(herdr).join(' ')}`);
+  // The brief never rode on a command line, on either machine.
+  for (const argv of w.ssh.calls()) assert.ok(!argv.join(' ').includes('Line one of the task'));
+  for (const call of w.ssh.remoteCalls()) assert.ok(!call.argv.join(' ').includes('Line one of the task'));
+  assert.ok(w.ssh.remoteCalls()[0]?.argv.includes('--brief-stdin'));
+
+  // The child's exit takes the copy with it.
+  await ops.cleanup(child);
+  assert.ok(!fs.existsSync(remoteBrief));
+  assert.ok(!fs.existsSync(path.join(w.remoteHome, 'mcp', `${child.id}.json`)));
+  assert.ok(inHome(w.remoteHome, () => readRelayRecord(child.id)), 'the relay record stays for a report still in flight');
+});
+
+test('a spawn on another machine whose brief cannot be copied fails, with no tab and no record', async (t) => {
+  const w = world(t);
+  w.ssh.plan(['refuse']);
+  const parent = saveParent(emptyParent('claude-code', 'brief-lost', '/work', { workspaceId: 'w1' }));
+  const herdr = await idleHerdr(t);
+  const ops = remoteOps(profiles);
+  await assert.rejects(
+    spawnChild(new HerdrClient({ socketPath: herdr.socketPath }), parent, { kind: 'claude', name: 'mute', host: 'remote-box', prompt: 'do the thing', startupTimeoutMs: 2_000, redrawMs: 10 }, undefined, { registerRemote: (entry, text) => ops.register(parent, entry, text) }),
+    /mute was not started on machine remote-box, because its brief could not be copied there: ssh remote-box exited with 255/,
+  );
+  assert.equal(herdr.requests.filter((request) => request.method === 'tab.create').length, 0, 'no tab was opened');
+  assert.equal(herdr.requests.filter((request) => request.method === 'agent.start').length, 0);
+  assert.deepEqual(readParent(parent.id)?.children, [], 'the record went with the spawn');
+  assert.ok(!fs.existsSync(path.join(w.childHome, 'prompts')) || fs.readdirSync(path.join(w.childHome, 'prompts')).length === 0);
+});
+
+test('a spawn that fails after its brief was copied removes the copy on the child\'s machine', async (t) => {
+  const w = world(t);
+  fs.writeFileSync(configPath(), JSON.stringify({ sshTarget: 'parent-box' }));
+  const parent = saveParent(emptyParent('pi', 'start-fails', '/work', { workspaceId: 'w1' }));
+  const herdr = await idleHerdr(t, (request) => (request.method === 'agent.start' ? { error: { code: 'agent_start_failed', message: 'no such agent kind' } } : undefined));
+  const ops = remoteOps(profiles);
+  await assert.rejects(
+    spawnChild(new HerdrClient({ socketPath: herdr.socketPath }), parent, { kind: 'pi', name: 'never-ran', host: 'remote-box', prompt: 'a task' }, undefined, { registerRemote: (entry, text) => ops.register(parent, entry, text), cleanupRemote: (entry) => ops.cleanup(entry) }),
+    /no such agent kind/,
+  );
+  const [registered] = w.ssh.remoteCalls();
+  const childId = registered?.argv[registered.argv.indexOf('--child') + 1] ?? '';
+  assert.ok(childId);
+  assert.ok(w.ssh.remoteCalls().some((call) => call.argv[0] === 'relay-cleanup' && call.argv.includes(childId)));
+  assert.ok(!fs.existsSync(path.join(w.remoteHome, 'prompts', `${childId}.md`)), 'the copied brief is gone');
 });

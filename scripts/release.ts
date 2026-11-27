@@ -90,14 +90,27 @@ export function protocolOf(source: string): number | undefined {
   return match?.[1] ? Number(match[1]) : undefined;
 }
 
+/** Where the release and upgrade docs live, for a pull request body that GitHub renders. */
+const DOCS_URL = 'https://github.com/elecnix/bellwether/blob/main/docs';
+
+/** The line printed beside the approve command when the daemon protocol moves. */
+export function approvalNotice(change: ProtocolChange): string {
+  return `The daemon protocol moves from ${change.from} to ${change.to}. Before you approve, follow the protocol-change steps in docs/releasing.md#a-release-that-changes-the-daemon-protocol.`;
+}
+
+/** The line printed once the version is on npm. */
+export function installNotice(version: string, formula: string): string {
+  return `${PACKAGE}@${version} is on npm, and ${formula}. Install it on each machine in the order docs/upgrading.md#order-on-each-machine gives.`;
+}
+
 export function prBody(version: string, previous: string | undefined, change: ProtocolChange | undefined): string {
   const since = previous ? ` since ${previous}` : '';
   const lines = [
-    `The version in \`package.json\` and \`package-lock.json\` moves to ${version}, so the next publish carries every change merged${since}. \`npm run release\` opened the pull request and merges it once CI passes.`,
+    `The version in \`package.json\` and \`package-lock.json\` moves to ${version}, so the next publish includes every change merged${since}. \`npm run release\` opened the pull request and merges it once CI passes.`,
     '',
   ];
   if (change) {
-    lines.push(`The daemon protocol moves from ${change.from} to ${change.to}. A session still on the old daemon drains it at its next call, as the release section of the README describes.`);
+    lines.push(`The daemon protocol moves from ${change.from} to ${change.to}. A session on the new install drains the old daemon at its next call, and a session still on the old install fails its tool calls until it restarts. Before approving, follow [the steps for a protocol change](${DOCS_URL}/releasing.md#a-release-that-changes-the-daemon-protocol). [docs/upgrading.md](${DOCS_URL}/upgrading.md#daemon-protocol-changes) says what each session sees.`);
   } else {
     lines.push('The daemon protocol stays the same, so a running daemon keeps serving sessions after the upgrade.');
   }
@@ -444,12 +457,12 @@ async function main(argv: string[]): Promise<number> {
     if (outcome.state === 'awaiting-approval') {
       console.log(`\n${PACKAGE}@${version} is staged as ${outcome.stageId} and passed the registry's review.`);
       if (outcome.protocolChange) {
-        console.log(`The daemon protocol moves from ${outcome.protocolChange.from} to ${outcome.protocolChange.to}: see "Release" in the README before you approve.`);
+        console.log(approvalNotice(outcome.protocolChange));
       }
       console.log(`Approve it with your one-time code:\n\n  ${outcome.approve}\n\nThen run \`npm run release -- ${version}\` again to bump the Homebrew formula.`);
     } else {
       const formula = outcome.formula === 'merged' ? `the tap formula moved to ${version} in ${outcome.tapPr}` : outcome.formula === 'current' ? `the tap formula already points at ${version}` : 'the tap was skipped';
-      console.log(`\n${PACKAGE}@${version} is on npm, and ${formula}. Install it in the order the README's "Release" section gives.`);
+      console.log(`\n${installNotice(version, formula)}`);
     }
     return 0;
   } catch (error) {

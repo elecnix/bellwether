@@ -15,6 +15,7 @@ import { mutateParent, readParent, updateChild } from './registry.ts';
 import { DIALOG_NAMES, detectDialog, watchStartup } from './startup-dialogs.ts';
 import { detectModal } from './modal.ts';
 import { agentNameOf, lastAssistantMessage, locateTranscript, piSessionModel, sessionFrom } from './transcript.ts';
+import { openCodeLastMessage, openCodeSessionState } from './opencode.ts';
 import { removeChildFiles } from './mcp-config.ts';
 import { childLabel } from './label.ts';
 import { spoolPath } from './paths.ts';
@@ -105,6 +106,8 @@ export class Watcher {
   private readonly states = new Map<string, ClassifierState>();
   private readonly screenReadAt = new Map<string, number>();
   private readonly transcriptSizes = new Map<string, number>();
+  /** Each OpenCode child's session update time at the last look, read from its store. */
+  private readonly storeStamps = new Map<string, number>();
   private readonly transcriptLookAt = new Map<string, number>();
 
   private controller: AbortController | undefined;
@@ -204,6 +207,7 @@ export class Watcher {
     this.startChecked.delete(childId);
     this.screenReadAt.delete(childId);
     this.transcriptSizes.delete(childId);
+    this.storeStamps.delete(childId);
     this.transcriptLookAt.delete(childId);
     this.lastScreen.delete(childId);
   }
@@ -232,6 +236,7 @@ export class Watcher {
     this.states.delete(childId);
     this.screenReadAt.delete(childId);
     this.transcriptSizes.delete(childId);
+    this.storeStamps.delete(childId);
     this.transcriptLookAt.delete(childId);
     this.lastScreen.delete(childId);
     if (this.outbox.drop(childId)) this.outbox.save(this.parentId);
@@ -346,7 +351,7 @@ export class Watcher {
 
   /** The tab of a child whose harness already ended was closed: forget the pane, and say nothing. */
   private closeQuietly(child: ChildRecord): void {
-    removeChildFiles(child.id);
+    removeChildFiles(child.id, hostOf(child) === LOCAL_HOST ? child.cwd : undefined);
     void this.releaseWorkspace(child);
     void this.retire(child.id);
   }
@@ -386,7 +391,7 @@ export class Watcher {
       if (harnessEnded) entry.harnessEnded = harnessEnded;
     });
     child = { ...child, ...(harnessEnded ? { harnessEnded } : {}) };
-    removeChildFiles(child.id);
+    removeChildFiles(child.id, hostOf(child) === LOCAL_HOST ? child.cwd : undefined);
     if (hostOf(child) !== LOCAL_HOST && this.cleanupRemote) {
       this.cleanupRemote(child).catch((error: unknown) => this.log(`could not remove ${child.name}'s files on machine ${hostOf(child)}: ${(error as Error).message}`));
     }
@@ -848,6 +853,19 @@ export class Watcher {
 
   /** Whether the child moved since the last look. Transcript growth, then screen. */
   private async childIsBusy(child: ChildRecord, now: number): Promise<boolean> {
+    // An OpenCode session's row changes with each step it takes, and the store
+    // says so without a screen read.
+    if (child.harness === 'opencode' && child.store && child.session && hostOf(child) === LOCAL_HOST) {
+      const state = openCodeSessionState(child.store, child.session.value);
+      if (!state) return false;
+      const previous = this.storeStamps.get(child.id);
+      this.storeStamps.set(child.id, state.updatedAt);
+      if (previous === undefined || state.updatedAt <= previous) return false;
+      updateChild(this.parentId, child.id, (entry) => {
+        entry.lastBusyAt = new Date().toISOString();
+      });
+      return true;
+    }
     const transcript = await this.transcriptFor(child);
     if (transcript) {
       try {
@@ -956,6 +974,7 @@ export class Watcher {
 
   /** The child's last assistant message, read from its transcript. */
   private async lastMessage(child: ChildRecord): Promise<string | undefined> {
+    if (child.harness === 'opencode') return child.store && child.session && hostOf(child) === LOCAL_HOST ? openCodeLastMessage(child.store, child.session.value) : undefined;
     const transcript = await this.transcriptFor(child);
     return transcript ? lastAssistantMessage(transcript) : undefined;
   }

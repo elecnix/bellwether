@@ -72,3 +72,15 @@ test('an argument an older daemon would ignore is refused by name before the cal
   assert.equal(unservedArgument(beforeRoutes, 'agent_restart', { target: 'x', via: 'none' }), 'agent_restart.via');
   assert.equal(unservedArgument(beforeRoutes, 'agent_spawn', { kind: 'claude', name: 'x' }), undefined);
 });
+
+test('kind "opencode" is refused by name on a daemon that predates the OpenCode harness, and other kinds pass', () => {
+  // A 0.1.5 daemon without the harness lists its features, and this one is not among them.
+  const before = { protocol: 4, version: '0.1.5', features: FEATURES.map((feature) => feature.name).filter((name) => name !== 'agent_spawn.kind=opencode') };
+  assert.equal(unservedArgument(before, 'agent_spawn', { kind: 'opencode', name: 'oc' }), 'agent_spawn.kind=opencode');
+  assert.equal(unservedArgument(before, 'agent_spawn', { kind: 'pi', name: 'p' }), undefined);
+  assert.equal(unservedArgument(before, 'agent_spawn', { kind: 'claude', name: 'c' }), undefined);
+  // A daemon too old to list its features is judged by protocol.
+  assert.equal(unservedArgument({ protocol: 3, version: '0.1.4' }, 'agent_spawn', { kind: 'opencode', name: 'oc' }), 'agent_spawn.kind=opencode');
+  assert.equal(unservedArgument({ protocol: 4, features: FEATURES.map((feature) => feature.name) }, 'agent_spawn', { kind: 'opencode', name: 'oc' }), undefined);
+  assert.match(missingFeatureMessage('agent_spawn.kind=opencode', before), /^`agent_spawn\.kind=opencode` needs Bellwether 0\.1\.5 \(protocol 4\); this daemon is an earlier build on protocol 4 \(Bellwether 0\.1\.5\)\./);
+});

@@ -61,6 +61,10 @@ function labEnvironment(root: string): NodeJS.ProcessEnv {
     HERDR_CONFIG_PATH: path.join(root, 'config', 'herdr', 'config.toml'),
     SHELL: '/bin/sh',
   };
+  // A provider key from the operator's shell would let a harness in a lab pane
+  // pick a real provider over the scripted one, and spend the operator's
+  // account. A lab reaches no real provider.
+  for (const key of Object.keys(env)) if (/_API_KEY$|_AUTH_TOKEN$/.test(key)) delete env[key];
   // Values inherited from a pane point at the live server.
   delete env['HERDR_ENV'];
   delete env['HERDR_PANE_ID'];

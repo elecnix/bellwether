@@ -19,6 +19,8 @@ Every session with Bellwether gets these tools, in Pi and in Claude Code alike.
 
 A parent sends input only to the panes it started, resumed or adopted.
 
+An `opencode` child needs OpenCode 2 and a `cwd`. [opencode.md](opencode.md) gives its launch, its session check and what it can report.
+
 A pi child runs on its parent's provider and model, so a spawn never bills another account by accident. pi needs both values, so Bellwether passes `--provider` and `--model` together.
 
 A caller who names both, in `provider` and `model` or in `args`, wins. Naming one without the other fails the spawn, and the error gives this session's pair. A Claude Code parent has no pi pair to pass, so its pi child starts on pi's own default.
@@ -124,4 +126,4 @@ A child started by `agent_spawn` gets these variables, for its own scripts and f
 | `BELLWETHER_CHILD` | this child's record id |
 | `BELLWETHER_CHILD_NAME` | this child's name |
 | `BELLWETHER_DEPTH` | how many levels deep this child sits |
-| `BELLWETHER_HARNESS` | `pi`, `claude-code`, or `other` |
+| `BELLWETHER_HARNESS` | `pi`, `claude-code`, `opencode`, or `other` |

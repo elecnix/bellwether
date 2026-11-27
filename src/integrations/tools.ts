@@ -15,6 +15,7 @@ import { RESTART_TOOL, runAgentRestart, type RestartHooks } from '../core/restar
 import { RETIRE_TOOL, realRetireOps, requestRetirement, type RetireOps } from '../core/retire.ts';
 import type { RemoteOps } from '../core/remote.ts';
 import { lastAssistantMessage, locateTranscript } from '../core/transcript.ts';
+import { openCodeLastMessage, openCodeSessionState } from '../core/opencode.ts';
 import { moveChild } from '../core/move.ts';
 import { routeLabel } from '../core/routes.ts';
 import { parseWorkspaces, releaseWorkspace, workspaceColumn, workspaceName } from '../core/workspace.ts';
@@ -72,9 +73,9 @@ export const parentTools: ToolDefinition[] = [
         resume: { type: 'string', description: 'Message an earlier child rather than start a new one: its name, its id, or its session id. herdr decides whether it is alive. A session id no child of this session ran also takes kind, name, cwd and machine, and comes back as a new child. Omit it to start a new child.' },
         kind: { type: 'string', enum: [...AGENT_KINDS], description: 'The harness to start: pi, claude, codex, opencode or cline. Required without resume.' },
         name: { type: 'string', description: 'A short handle for the child, unique in this session. Used as the herdr agent name and the tab label. Required without resume.' },
-        cwd: { type: 'string', description: 'The directory to start the child in. Use an absolute path, ideally a git worktree of its own.' },
+        cwd: { type: 'string', description: 'The directory to start the child in. Use an absolute path, ideally a git worktree of its own. Required for an opencode child, whose brief goes inside it.' },
         prompt: { type: 'string', description: 'The first message the child receives, or with resume the message for the earlier child. The whole prompt, not a path. Line breaks and any length are fine: Bellwether hands a new or resumed child the prompt through a private file.' },
-        model: { type: 'string', description: 'The model to pass to the child harness, or with via a tier of that route. A pi child needs provider with it; with neither, a pi child runs on the provider and model of this session. A tier passed without via is refused, and the refusal names the route that has it.' },
+        model: { type: 'string', description: 'The model to pass to the child harness, or with via a tier of that route. A pi child needs provider with it; with neither, a pi child runs on the provider and model of this session. A tier passed without via is refused, and the refusal names the route that has it. A bare opencode child takes provider/model, which goes in its configuration as the default model.' },
         via: { type: 'string', description: 'Start the child through a route: a launcher wrapper that this machine\'s routes file (~/.config/bellwether/routes.json, or BELLWETHER_ROUTES) defines, which runs the harness and routes it. model then names one of the route\'s tiers, and the route\'s default tier applies without one. Pass none for a bare start. With resume, a route moves the child onto it and none takes it off, on the same session; omit it to keep the route the child ran on.' },
         key_file: { type: 'string', description: 'A file that holds the key the route\'s launcher runs under, such as another tenant\'s. Needs via. The file must exist and not be empty. Its path goes on the child\'s record, and the pane\'s shell reads the file when the launch runs, so the key never appears on a command line.' },
         provider: { type: 'string', description: 'The pi provider for model. Pass both or neither.' },
@@ -510,6 +511,19 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
     // Pane feature: agent_read with lines, a screen the parent asked to see.
     if (lines) return (await herdr.paneRead({ paneId: child.paneId, source: 'recent_unwrapped', lines })).trim();
     if (hostOf(child) !== LOCAL_HOST) return readRemoteChild(ctx, child, herdr);
+    // An OpenCode child's conversation is in OpenCode's store, not in a file of its own.
+    if (child.harness === 'opencode' && child.store && child.session) {
+      const answer = openCodeLastMessage(child.store, child.session.value);
+      if (answer) return answer;
+      const state = openCodeSessionState(child.store, child.session.value);
+      if (state && !child.exitedAt) {
+        // Pane feature: agent_read for an OpenCode child with no answer in its store yet.
+        const screen = (await herdr.paneRead({ paneId: child.paneId, source: 'recent_unwrapped', lines: 40 }).catch(() => '')).trim();
+        const note = `OpenCode's store at ${child.store} holds no answer from session ${child.session.value} yet; it is ${state.busy ? 'mid-turn' : `idle${state.outcome ? ` after a turn that ${state.outcome}` : ''}`}.`;
+        return screen ? `${note}\n${screen}` : note;
+      }
+      return `OpenCode's store at ${child.store} holds no answer from session ${child.session.value}${state ? '' : ', and no such session'}.`;
+    }
     const transcript = child.transcript ?? transcriptFromSession(ctx.parentId, child);
     const message = transcript ? lastAssistantMessage(transcript) : undefined;
     if (message) return message;
@@ -545,7 +559,7 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
     updateChild(ctx.parentId, child.id, (entry) => {
       entry.exitedAt = new Date().toISOString();
     });
-    removeChildFiles(child.id);
+    removeChildFiles(child.id, hostOf(child) === LOCAL_HOST ? child.cwd : undefined);
     // A workspace Bellwether made for the child closes once nothing is left in it.
     const released = await releaseWorkspace(herdr, child).catch((error: unknown) => {
       ctx.log?.(`agent_stop: could not check ${child.name}'s workspace ${child.workspaceId}: ${(error as Error).message}`);

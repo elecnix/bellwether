@@ -45,17 +45,25 @@ export const FEATURES: readonly Feature[] = [
   ...['agent_spawn.workspace', 'agent_spawn.workspace_label'].map((name) => ({ name, kind: 'argument' as const, protocol: 4, version: '0.1.5' })),
   // An older daemon would start the child bare, off the route it was asked for, and say nothing.
   ...['agent_spawn.via', 'agent_spawn.key_file', 'agent_restart.via', 'agent_restart.model', 'agent_restart.key_file', 'agent_restart.provider'].map((name) => ({ name, kind: 'argument' as const, protocol: 4, version: '0.1.5' })),
+  // An older daemon lists opencode as a kind but starts it with a sentence that
+  // OpenCode v2 reads as a directory, so the child never gets its brief.
+  { name: 'agent_spawn.kind=opencode', kind: 'argument', protocol: 4, version: '0.1.5' },
 ];
 
 /**
- * The first argument of a call that the daemon would ignore, because it
- * predates it, or undefined when the daemon serves every argument passed.
+ * The first argument of a call that the daemon would ignore or misread,
+ * because it predates it, or undefined when the daemon serves every argument
+ * passed. A feature named `tool.argument=value` covers one value of an
+ * argument the daemon already knows, such as a harness kind.
  */
 export function unservedArgument(daemon: DaemonOffer, tool: string, args: Record<string, unknown>): string | undefined {
   for (const [key, value] of Object.entries(args)) {
     if (value === undefined || value === null || value === '') continue;
-    const feature = featureNamed(`${tool}.${key}`);
-    if (feature && !serves(daemon, feature)) return feature.name;
+    const names = [`${tool}.${key}`, ...(typeof value === 'string' ? [`${tool}.${key}=${value.trim()}`] : [])];
+    for (const name of names) {
+      const feature = featureNamed(name);
+      if (feature && !serves(daemon, feature)) return feature.name;
+    }
   }
   return undefined;
 }

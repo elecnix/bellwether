@@ -97,6 +97,7 @@ export async function spawnResume(clientFor: (host: string) => Promise<HerdrClie
         updateChild(parentId, child.id, (entry) => {
           delete entry.exitedAt;
           delete entry.exitCode;
+          delete entry.harnessEnded;
         });
         delete child.exitedAt;
       }

@@ -184,6 +184,7 @@ export class Watcher {
    */
   reset(childId: string): void {
     this.states.delete(childId);
+    this.startChecked.delete(childId);
     this.screenReadAt.delete(childId);
     this.transcriptSizes.delete(childId);
     this.transcriptLookAt.delete(childId);

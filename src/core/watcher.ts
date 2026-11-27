@@ -970,7 +970,7 @@ export class Watcher {
     // The turn's own last message, never the last report: a report is an event
     // of its own, and the record keeps it after the turn it belonged to.
     const text = (await this.lastMessage(child)) || trim(await this.screenTail(child));
-    return `${childLabel(child)} went idle after ${age}:${text ? `\n${text}` : ' no message and no readable screen.'}`;
+    return `${childLabel(child)} went idle after ${age}${silence(child)}:${text ? `\n${text}` : ' no message and no readable screen.'}`;
   }
 
   /**
@@ -1186,4 +1186,21 @@ function paneKey(children: ChildRecord[]): string {
     .map((child) => `${child.paneId}:${child.harness === 'other' ? 'raw' : 'agent'}`)
     .sort()
     .join(',');
+}
+
+/**
+ * For an idle event, the clause that says the child has not called
+ * parent_report since its latest start, resume or adoption, or nothing when it
+ * has. A harness that refuses the child's own report, or a model that never
+ * calls it, ends the turn the same way a quiet finish does, so the parent needs
+ * the fact to look closer. It names the fact, not a reason: the record cannot
+ * tell a refused call from one never made. It rides on the turn's one idle
+ * event, so it adds no wake.
+ */
+export function silence(child: ChildRecord): string {
+  const started = child.resumedAt ?? child.startedAt;
+  const reportedAt = child.lastReport ? Date.parse(child.lastReport.at) : NaN;
+  if (Number.isFinite(reportedAt) && reportedAt >= Date.parse(started)) return '';
+  const since = child.resumedAt ? 'it resumed' : child.origin === 'adopt' ? 'Bellwether adopted it' : 'it started';
+  return `, and it has not called parent_report since ${since} at ${started}`;
 }

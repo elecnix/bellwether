@@ -1,8 +1,8 @@
 // The rules of a hand-over. One daemon runs per home, and the newest install
 // on the machine decides which code it runs: a client from a newer release
 // drains the running daemon and starts its own, and every session already
-// connected reconnects to it, because a daemon serves the previous protocol
-// as well as its own. These functions decide; client.ts and server.ts act.
+// connected reconnects to it, because a daemon serves every protocol back to
+// MIN_CLIENT_PROTOCOL as well as its own. These functions decide; client.ts and server.ts act.
 import { BELLWETHER_VERSION } from '../core/version.ts';
 import { DAEMON_PROTOCOL } from './protocol.ts';
 

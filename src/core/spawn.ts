@@ -5,12 +5,13 @@ import os from 'node:os';
 import { HerdrApiError, type HerdrClient } from './herdr-client.ts';
 import { LOCAL_HOST } from './machine.ts';
 import { newChildId } from './outbox.ts';
+import { PI_EXTENSION_ENV, piExtensionEntry, resolvePiExtension } from './pi-extension.ts';
 import { briefArgument, writeBrief } from './brief.ts';
 import { resolveInactiveMs } from './inactivity.ts';
 import { removeChildFiles, writeMcpConfig } from './mcp-config.ts';
 import { removeChild, updateChild, upsertChild } from './registry.ts';
 import { watchStartup, type StartupDialog, type StartupWatch } from './startup-dialogs.ts';
-import { locateTranscript, sessionFrom } from './transcript.ts';
+import { agentNameOf, locateTranscript, sessionFrom } from './transcript.ts';
 import type { RemoteRegistration } from './remote.ts';
 import type { ChildRecord, Harness, ParentRecord } from './types.ts';
 
@@ -72,15 +73,26 @@ export const STARTUP_HOLD_MS = 45_000;
 /** How long the spawn waits for a Claude Code child to get past its dialogs. */
 export const STARTUP_TIMEOUT_MS = 30_000;
 
+/** The files a child starts with, each written or resolved before its tab opens. */
+export interface ChildLaunch {
+  /** The private file that holds the brief. */
+  briefFile?: string;
+  /** A Claude Code child's own Bellwether server. */
+  mcpConfigFile?: string;
+  /** The Bellwether extension a pi child loads, on the machine it runs on. */
+  piExtension?: string;
+}
+
 /**
  * The arguments a child harness starts with. The brief is never one of them:
- * `briefFile` names the private file that holds it, and the harness gets a
- * one-line pointer to that file. `mcpConfigFile` names a Claude Code child's
- * own Bellwether server.
+ * the harness gets a one-line pointer to the file that holds it.
  */
-export function childArgs(kind: string, options: SpawnOptions, briefFile?: string, mcpConfigFile?: string): string[] {
+export function childArgs(kind: string, options: SpawnOptions, launch: ChildLaunch = {}): string[] {
+  const { briefFile, mcpConfigFile, piExtension } = launch;
   const args: string[] = [];
   if (options.model) args.push('--model', options.model);
+  // A pi child loads the extension it is given, whatever the host's pi settings hold.
+  if (kind === 'pi' && piExtension) args.push('-e', piExtension);
   // --mcp-config is a list flag too, so it takes the equals form for the same reason.
   if (kind === 'claude' && mcpConfigFile) args.push(`--mcp-config=${mcpConfigFile}`);
   // Claude Code reads this flag as a list and keeps taking values until the
@@ -105,6 +117,8 @@ export interface SpawnHooks {
   registerRemote?: RegisterRemote;
   /** Remove what the registration wrote on the child's machine, for a spawn that failed after it. */
   cleanupRemote?: (child: ChildRecord) => Promise<void>;
+  /** Where this package's pi extension is. Tests point it at a missing file. */
+  piExtension?: () => string;
 }
 
 /** The files a child starts with, wherever it runs, and what its spawn reply should warn about. */
@@ -113,6 +127,8 @@ export interface ChildStartFiles {
   briefFile?: string;
   /** The MCP config's path on the child's own machine. */
   mcpConfigFile?: string;
+  /** The Bellwether extension a pi child loads, on its own machine. */
+  piExtension?: string;
   /** Why the child's reports cannot reach this machine, when they cannot. */
   warning?: string;
   /** Whether the child's machine holds files that must go with the child. */
@@ -127,15 +143,22 @@ export interface ChildStartFiles {
  * exists where it runs. A child with a brief that cannot be delivered is not
  * started, because it would run with no task: this throws. Without a brief, a
  * failed registration does not stop the spawn: herdr status still follows the
- * child, and the warning says why its reports cannot arrive.
+ * child, and the warning says why its reports cannot arrive. A pi child
+ * starts with the Bellwether extension of the package on its own machine, and
+ * one whose extension cannot be found is not started either, because it would
+ * have no tools.
  */
-export async function childStartFiles(child: ChildRecord, prompt: string | undefined, register?: RegisterRemote): Promise<ChildStartFiles> {
+export async function childStartFiles(child: ChildRecord, prompt: string | undefined, register?: RegisterRemote, piExtension: () => string = piExtensionEntry): Promise<ChildStartFiles> {
+  const pi = child.kind === 'pi';
   if ((child.host ?? LOCAL_HOST) === LOCAL_HOST) {
-    return { briefFile: prompt !== undefined ? writeBrief(child.id, prompt) : undefined, mcpConfigFile: childMcpConfig(child), registered: false };
+    // Resolved first, so a missing extension writes nothing.
+    const extension = pi ? resolvePiExtension(piExtension()) : undefined;
+    return { briefFile: prompt !== undefined ? writeBrief(child.id, prompt) : undefined, mcpConfigFile: childMcpConfig(child), ...(extension ? { piExtension: extension } : {}), registered: false };
   }
   const reports = child.harness === 'claude-code' || child.harness === 'pi';
   if (!reports && prompt === undefined) return { registered: false };
   if (!register) {
+    if (pi) throw new Error(`${child.name} was not started on machine ${child.host}: this session cannot register children there, so Bellwether cannot name the pi extension it would load.`);
     if (prompt !== undefined) throw new Error(`${child.name} was not started on machine ${child.host}: this session cannot register children there, so its brief cannot reach that machine.`);
     return { warning: `${child.name} runs on machine ${child.host}, and this session cannot register it there, so it cannot call parent_report.`, registered: false };
   }
@@ -143,12 +166,14 @@ export async function childStartFiles(child: ChildRecord, prompt: string | undef
   try {
     registration = await register(child, prompt);
   } catch (error) {
+    if (pi) throw new Error(`${child.name} was not started on machine ${child.host}, because Bellwether could not register it there to name the pi extension it would load: ${(error as Error).message}`);
     if (prompt !== undefined) throw new Error(`${child.name} was not started on machine ${child.host}, because its brief could not be copied there: ${(error as Error).message}`);
     return { warning: `${child.name} could not be registered on machine ${child.host}, so it cannot call parent_report: ${(error as Error).message}`, registered: false };
   }
   return {
     briefFile: registration.brief,
     mcpConfigFile: child.kind === 'claude' ? registration.mcpConfig : undefined,
+    ...(pi ? { piExtension: registration.piExtension } : {}),
     registered: true,
   };
 }
@@ -184,13 +209,13 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
   let reportWarning: string | undefined;
   let registered = false;
   try {
-    const files = await childStartFiles(child, options.prompt || undefined, hooks.registerRemote);
-    const { briefFile, mcpConfigFile } = files;
+    const files = await childStartFiles(child, options.prompt || undefined, hooks.registerRemote, hooks.piExtension);
+    const { briefFile, mcpConfigFile, piExtension } = files;
     registered = files.registered;
     reportWarning = files.warning;
 
     // 2. The tab carries the environment the child needs to find its parent.
-    const env = childEnv(parent, child);
+    const env = childEnv(parent, child, piExtension);
     // The parent's workspace id means nothing to another machine's herdr.
     const workspaceId = options.workspaceId ?? (child.host === LOCAL_HOST ? parent.workspaceId : undefined);
     const tab = await client.tabCreate({ workspaceId, cwd: options.cwd, label: child.name, env, focus: options.focus ?? false }, signal);
@@ -212,7 +237,7 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
     // 3. Start the harness in the tab's root pane. A tab answers tab.create
     // before its shell is at a prompt, so herdr refuses the start with
     // agent_pane_busy until the shell is ready.
-    await startWithRetry(client, { name: child.name, kind: options.kind, paneId: tab.paneId, args: childArgs(options.kind, options, briefFile, mcpConfigFile) }, signal);
+    await startWithRetry(client, { name: child.name, kind: options.kind, paneId: tab.paneId, args: childArgs(options.kind, options, { briefFile, mcpConfigFile, piExtension }) }, signal);
   } catch (error) {
     startup?.close();
     await abandon(client, parent.id, child, tabId, hooks, registered);
@@ -257,6 +282,7 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
     }
     const status = pane['agent_status'];
     if (typeof status === 'string' && status) child.lastStatus = status as ChildRecord['lastStatus'];
+    child.agentName = agentNameOf(pane, child.name);
   } catch {
     // A missed session id only costs the transcript-based summary until the
     // watcher reads it.
@@ -264,6 +290,7 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
   child.startingUntil = undefined;
   updateChild(parent.id, child.id, (entry) => {
     if (child.session) entry.session = child.session;
+    if (child.agentName) entry.agentName = child.agentName;
     if (child.transcript) {
       entry.transcript = child.transcript;
       delete entry.transcriptMissing;
@@ -304,14 +331,19 @@ export function childMcpConfig(child: Pick<ChildRecord, 'id' | 'kind' | 'host'>)
   return writeMcpConfig(child.id);
 }
 
-/** The environment a child's tab carries, so the child can find its parent. */
-export function childEnv(parent: ParentRecord, child: ChildRecord): Record<string, string> {
+/**
+ * The environment a child's tab carries, so the child can find its parent. A
+ * pi child's tab also names the extension it starts with, so another copy of
+ * the extension in the same session stands down.
+ */
+export function childEnv(parent: ParentRecord, child: ChildRecord, piExtension?: string): Record<string, string> {
   return {
     BELLWETHER_PARENT: parent.id,
     BELLWETHER_CHILD: child.id,
     BELLWETHER_CHILD_NAME: child.name,
     BELLWETHER_DEPTH: String(child.depth),
     BELLWETHER_HARNESS: child.harness,
+    ...(piExtension ? { [PI_EXTENSION_ENV]: piExtension } : {}),
   };
 }
 

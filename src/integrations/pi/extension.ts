@@ -4,8 +4,10 @@
 // through pi.sendMessage, and the receipt id in the message marks the event
 // read once the model context contains it.
 import os from 'node:os';
+import { fileURLToPath } from 'node:url';
 import { DaemonClient } from '../../daemon/client.ts';
 import { resolveSocketPath } from '../../core/herdr-client.ts';
+import { standDown } from '../../core/pi-extension.ts';
 import { hostName } from '../../core/spawn.ts';
 import { childLabel } from '../../core/label.ts';
 import type { OutboxEntry } from '../../core/types.ts';
@@ -52,6 +54,10 @@ function compose(entries: OutboxEntry[]): string {
 }
 
 export default function bellwether(pi: PiApi): void {
+  // A spawn starts a pi child with -e naming one copy of this extension. A
+  // host that also installed Bellwether as a pi package loads a second copy,
+  // which registers nothing, so each tool and handler exists once.
+  if (standDown(fileURLToPath(import.meta.url))) return;
   let daemon: DaemonClient | undefined;
   let burst: NodeJS.Timeout | undefined;
   let pending: OutboxEntry[] = [];

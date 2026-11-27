@@ -26,7 +26,14 @@ export interface ChildSession {
  */
 export interface ChildRecord {
   id: string;
+  /** The name the parent gave the child. Tools address the child by it. */
   name: string;
+  /**
+   * The name herdr reports for the agent, when the harness chose another one,
+   * as a pi naming extension does. A tool call may use it too, unless two
+   * children answer to it.
+   */
+  agentName?: string;
   /** The herdr agent kind: pi, claude, codex, opencode or cline. */
   kind: string;
   harness: Harness | 'other';

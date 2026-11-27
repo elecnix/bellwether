@@ -122,6 +122,12 @@ export function sessionFrom(agentSession: unknown): ChildSession | undefined {
   return { kind: typeof kind === 'string' && kind ? kind : value.includes('/') ? 'path' : 'id', value };
 }
 
+/** The name herdr reports for an agent, when it differs from the one the parent gave. */
+export function agentNameOf(agent: Record<string, unknown>, given: string): string | undefined {
+  const name = agent['name'];
+  return typeof name === 'string' && name && name !== given ? name : undefined;
+}
+
 /** The session value herdr reports for a pane, whatever shape it takes. */
 export function sessionValueFrom(agentSession: unknown): string | undefined {
   if (typeof agentSession === 'string') return agentSession;

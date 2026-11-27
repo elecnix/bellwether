@@ -17,6 +17,7 @@ import { requireHarness, spawnRefusal, type ChildFiles, type HarnessEntry, type 
 import { removeChild, updateChild, upsertChild } from './registry.ts';
 import { detectRefused, StartupDialogRefused, watchStartup, type StartupDialog, type StartupWatch } from './startup-dialogs.ts';
 import { agentNameOf, sessionFrom } from './transcript.ts';
+import { fatalLine, ForegroundTracker, HarnessStartFailed, processInfoOf, startupQuote, type StartOutcome } from './start-check.ts';
 import type { RemoteRegistration } from './remote.ts';
 import { BARE, RoutesFileError, bareLaunch, launchLine, readRoutes, resolveRoute, routeConfig, routeLaunch, type RouteConfig, type RouteLaunch, type RoutesFile } from './routes.ts';
 import { openChildTab, parseWorkspaces, placeChild, undoChildTab, type ChildTab, type WorkspaceEntry } from './workspace.ts';
@@ -71,6 +72,8 @@ export interface SpawnOptions {
   startupTimeoutMs?: number;
   /** How long a screen takes to redraw after a key. Tests shorten it. */
   redrawMs?: number;
+  /** How long the start waits for the first status of a harness that can stop on a fatal error. Tests shorten it. */
+  confirmMs?: number;
   /**
    * The herdr host to start the child on: `local`, or a saved herdr machine.
    * The caller passes the client for that host.
@@ -89,6 +92,8 @@ export interface SpawnResult {
   link: string;
   /** The startup dialogs the spawn answered, in order. */
   answered?: StartupDialog[];
+  /** Why the spawn could not confirm the child took its brief, for the spawn reply. */
+  startNote?: string;
 }
 
 /** How long the watcher holds the events of a new child that shows startup dialogs. Longer than the dialog wait. */
@@ -296,6 +301,7 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
   let registered = false;
   let keptBrief: string | undefined;
   let envNote: string | undefined;
+  let started: StartOutcome = { confirmed: true };
   try {
     const { registered: there, envDropped, ...files } = await childStartFiles(parent, child, options.prompt || undefined, hooks.registerRemote, hooks.piExtension, harnessOptions.model);
     const { briefFile } = files;
@@ -326,13 +332,17 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
       child.startingUntil = new Date(Date.now() + Math.max(STARTUP_HOLD_MS, timeoutMs + 15_000)).toISOString();
       startup = await watchStartup(client, tab.paneId, signal, { timeoutMs, redrawMs: options.redrawMs, dialogs: entry.startup });
     }
+    // A harness that can stop on a fatal error is held the same way while the
+    // start waits for its first status, so the parent hears no idle event
+    // from a child whose spawn then fails.
+    if (entry.startupFatal && !child.startingUntil) child.startingUntil = new Date(Date.now() + ROUTED_START_MS + START_CONFIRM_MS + 15_000).toISOString();
     upsertChild(parent.id, child);
 
     // 3. Start the harness in the tab's root pane. A tab answers tab.create
     // before its shell is at a prompt, so herdr refuses the start with
     // agent_pane_busy until the shell is ready.
     const args = childArgs(options.kind, { ...harnessOptions, ...(chosen ? { provider: chosen.provider, model: chosen.id } : {}) }, files, { session: child.session });
-    await startHarness(client, { name: child.name, kind: options.kind, paneId: tab.paneId, args, ...(launchVia ? { launch: routeLaunch(launchVia.config, launchVia.route, options.kind, args) } : {}) }, signal);
+    started = await startHarness(client, { name: child.name, kind: options.kind, paneId: tab.paneId, args, ...(entry.startupFatal ? { fatal: entry.startupFatal, confirmMs: options.confirmMs } : {}), ...(launchVia ? { launch: routeLaunch(launchVia.config, launchVia.route, options.kind, args) } : {}) }, signal);
 
     // The harness's store is the only proof the brief arrived when herdr
     // reports no session for it. A harness that takes a session id was given
@@ -430,7 +440,13 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
 
   const note = modelNote(child);
   const harnessNote = entry.spawnNote?.(child, options.args ?? []);
-  return { child, link: herdrLink('pane', child.paneId), answered, ...(note ? { modelNote: note } : {}), ...(harnessNote ? { harnessNote } : {}), ...(envNote ? { envNote } : {}) };
+  const startNote = started.confirmed ? undefined : unconfirmedNote(child, entry.label, started.waitedMs);
+  return { child, link: herdrLink('pane', child.paneId), answered, ...(note ? { modelNote: note } : {}), ...(harnessNote ? { harnessNote } : {}), ...(envNote ? { envNote } : {}), ...(startNote ? { startNote } : {}) };
+}
+
+/** What a spawn says of a child that was running but had not shown herdr a status when the wait ended. */
+export function unconfirmedNote(child: Pick<ChildRecord, 'name'>, label: string, waitedMs: number): string {
+  return `${child.name}'s ${label} was running but had not started a turn or reached its prompt ${Math.round(waitedMs / 1000)} s after the start, so Bellwether could not confirm that it took its brief. It may be slow rather than stuck: an exit or an idle event reaches this session as soon as herdr reports one.`;
 }
 
 /**
@@ -568,6 +584,14 @@ export interface HarnessStart {
   launch?: RouteLaunch;
   /** How long a start waits for herdr to detect the harness. Tests shorten it. */
   timeoutMs?: number;
+  /**
+   * The line a harness prints when it stops at startup on an error it cannot
+   * recover from. With it, the start waits for the first status and fails on
+   * this line. From the harness's entry.
+   */
+  fatal?: RegExp;
+  /** How long to wait for that first status. Tests shorten it. */
+  confirmMs?: number;
 }
 
 /**
@@ -576,27 +600,57 @@ export interface HarnessStart {
  * harness's executable behind `command`. Either way the line, and not the
  * shell's startup files, decides the arguments the harness gets.
  */
-export async function startHarness(client: HerdrClient, params: HarnessStart, signal?: AbortSignal): Promise<void> {
+export async function startHarness(client: HerdrClient, params: HarnessStart, signal?: AbortSignal): Promise<StartOutcome> {
   const launch = params.launch ?? bareLaunch(params.kind, params.args);
   const through = params.launch ? `through ${launch.argv[0]}` : `as \`command ${params.kind}\``;
   const timeoutMs = params.timeoutMs ?? ROUTED_START_MS;
   const controller = new AbortController();
   signal?.addEventListener('abort', () => controller.abort(), { once: true });
-  let detected!: () => void;
-  const seen = new Promise<void>((resolve) => {
-    detected = resolve;
-  });
-  // The watch opens before the line is typed, so the detection cannot slip past it.
+  let detected = false;
+  let released = false;
+  let status: string | undefined;
+  let wake: (() => void) | undefined;
+  // The watch opens before the line is typed, so neither the detection nor
+  // the first status can slip past it.
   const subscription = await client.subscribe(
-    [{ type: 'pane.agent_detected', pane_id: params.paneId }],
+    [
+      { type: 'pane.agent_detected', pane_id: params.paneId },
+      { type: 'pane.agent_status_changed', pane_id: params.paneId },
+    ],
     (event) => {
       if (event.data['pane_id'] !== params.paneId) return;
+      const value = event.data['agent_status'];
       const agent = event.data['agent'];
-      if (agent === undefined || agent === null || agent === params.kind) detected();
+      if (typeof value === 'string' && value) {
+        status = value;
+        // A status for the harness's own kind shows herdr has detected it.
+        if (agent === params.kind) detected = true;
+      } else if (event.data['released'] === true) released = true;
+      else {
+        if (agent === undefined || agent === null || agent === params.kind) detected = true;
+      }
+      wake?.();
     },
     controller.signal,
   );
-  let timer: NodeJS.Timeout | undefined;
+  /** Wait for the next event, or `ms`, whichever comes first. */
+  const next = (ms: number): Promise<void> =>
+    new Promise((resolve) => {
+      const timer = setTimeout(done, Math.max(0, ms));
+      function done(): void {
+        clearTimeout(timer);
+        wake = undefined;
+        resolve();
+      }
+      wake = done;
+    });
+  // Pane feature: a start that failed quotes the harness's own lines to the
+  // parent that asked for the spawn, so it reads why without opening the pane.
+  const quote = async (): Promise<string | undefined> => startupQuote(await client.paneRead({ paneId: params.paneId, source: 'visible', lines: 40 }, signal).catch(() => ''), params.kind, params.fatal);
+  const exited = async (when: string): Promise<HarnessStartFailed> => {
+    const said = await quote();
+    return new HarnessStartFailed(`${params.kind} in pane ${params.paneId} exited ${when}${said ? `, and printed: ${said}` : ', and printed nothing Bellwether could read'}`);
+  };
   try {
     // TODO(api): herdr's agent.start types the kind's bare name at the shell
     // prompt, where a shell function or alias of that name runs in its place
@@ -605,30 +659,86 @@ export async function startHarness(client: HerdrClient, params: HarnessStart, si
     // executed the harness itself, with a launcher argv prefix and environment
     // read from files, would retire this input.
     await client.sendInput(params.paneId, launchLine(launch), ['Enter'], signal);
-    await Promise.race([
-      seen,
-      new Promise<never>((_, reject) => {
+
+    // 1. Until herdr detects the harness, the pane's foreground says whether
+    // it runs. herdr sends no event for a program that ends inside a pane
+    // whose shell stays, so the start asks pane.process_info every half
+    // second, and only until detection or the deadline.
+    const foreground = new ForegroundTracker();
+    const deadline = Date.now() + timeoutMs;
+    while (!detected && !controller.signal.aborted) {
+      if (Date.now() >= deadline) {
+        const info = processInfoOf(await client.request('pane.process_info', { pane_id: params.paneId }, { signal }).catch(() => undefined));
+        if (foreground.exited(info) || (info && info.foregroundGroup === info.shellPid)) throw await exited(`before herdr detected it, within ${Math.round(timeoutMs / 1000)} s of starting it ${through}`);
         const check = params.launch ? `Check that the launcher runs ${params.kind} on this machine.` : `Check that ${params.kind} is on the PATH of this machine's login shell.`;
-        timer = setTimeout(() => reject(new Error(`herdr detected no ${params.kind} in pane ${params.paneId} within ${Math.round(timeoutMs / 1000)} s of starting it ${through}. ${check}`)), timeoutMs);
-      }),
-    ]);
+        throw new Error(`herdr detected no ${params.kind} in pane ${params.paneId} within ${Math.round(timeoutMs / 1000)} s of starting it ${through}. ${check}`);
+      }
+      await next(Math.min(PROCESS_CHECK_MS, deadline - Date.now()));
+      if (detected) break;
+      const info = processInfoOf(await client.request('pane.process_info', { pane_id: params.paneId }, { signal }).catch(() => undefined));
+      if (foreground.exited(info)) throw await exited(`at startup, before herdr detected it`);
+    }
+    if (controller.signal.aborted) throw new Error(`the spawn was cancelled while ${params.kind} in pane ${params.paneId} was starting`);
+
+    // 2. A harness that can stay up on a fatal error is confirmed by its
+    // first status: working means it took its prompt.
+    let outcome: StartOutcome = { confirmed: true };
+    if (params.fatal) {
+      const waitMs = params.confirmMs ?? START_CONFIRM_MS;
+      const until = Date.now() + waitMs;
+      status ??= await agentStatus(client, params.paneId, signal);
+      for (;;) {
+        if (released) throw await exited('right after it started');
+        if (status === 'working') break;
+        if (status === 'idle' || status === 'done') {
+          // TODO(api): pi reports no startup error through an API: it prints
+          // the error, stays at its prompt, and herdr calls it idle. An
+          // extension event for a model pi cannot authenticate, or an exit
+          // status, would retire this read.
+          const screen = await client.paneRead({ paneId: params.paneId, source: 'visible', lines: 40 }, signal).catch(() => '');
+          const line = fatalLine(screen, params.fatal);
+          if (line) throw new HarnessStartFailed(`${params.kind} in pane ${params.paneId} stopped at startup without taking its prompt, and printed: ${line}`);
+          break;
+        }
+        if (Date.now() >= until || controller.signal.aborted) {
+          outcome = { confirmed: false, waitedMs: waitMs };
+          break;
+        }
+        await next(until - Date.now());
+      }
+    }
+
+    // herdr gives an agent it detected no name, so a typed start names it. A
+    // harness that already named itself, as a pi naming extension does, keeps
+    // its own name, and the record keeps both.
+    const named = await client.request('agent.get', { target: params.paneId }, { signal }).then(
+      (result) => {
+        const agent = typeof result === 'object' && result !== null ? (result as Record<string, unknown>)['agent'] : undefined;
+        const name = typeof agent === 'object' && agent !== null ? (agent as Record<string, unknown>)['name'] : undefined;
+        return typeof name === 'string' && name !== '';
+      },
+      () => false,
+    );
+    if (!named) await client.agentRename(params.paneId, params.name, signal).catch(() => {});
+    return outcome;
   } finally {
-    if (timer) clearTimeout(timer);
     subscription.close();
     controller.abort();
   }
-  // herdr gives an agent it detected no name, so a typed start names it. A
-  // harness that already named itself, as a pi naming extension does, keeps
-  // its own name, and the record keeps both.
-  const named = await client.request('agent.get', { target: params.paneId }, { signal }).then(
-    (result) => {
-      const agent = typeof result === 'object' && result !== null ? (result as Record<string, unknown>)['agent'] : undefined;
-      const name = typeof agent === 'object' && agent !== null ? (agent as Record<string, unknown>)['name'] : undefined;
-      return typeof name === 'string' && name !== '';
-    },
-    () => false,
-  );
-  if (!named) await client.agentRename(params.paneId, params.name, signal).catch(() => {});
+}
+
+/** How often a start checks the pane's foreground until herdr detects the harness. */
+const PROCESS_CHECK_MS = 500;
+
+/** How long a start waits for the first status of a harness that can stop on a fatal error. */
+export const START_CONFIRM_MS = 20_000;
+
+/** The status herdr reports for the agent in a pane, if any. */
+async function agentStatus(client: HerdrClient, paneId: string, signal?: AbortSignal): Promise<string | undefined> {
+  const result = await client.request('agent.get', { target: paneId }, { signal }).catch(() => undefined);
+  const agent = typeof result === 'object' && result !== null ? (result as Record<string, unknown>)['agent'] : undefined;
+  const value = typeof agent === 'object' && agent !== null ? (agent as Record<string, unknown>)['agent_status'] : undefined;
+  return typeof value === 'string' && value && value !== 'unknown' ? value : undefined;
 }
 
 /** herdr refuses a start until the new tab's shell reaches its prompt. */

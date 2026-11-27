@@ -41,6 +41,9 @@ export const pi: HarnessEntry = {
   conversation: { locate: (session) => locatePiTranscript(session), modelOf: piSessionModel },
   resume: { args: (session) => ['--session', session.value], fromTranscript: (file) => ({ value: file, kind: 'path' }) },
   classify: { status: 'herdr', dialogs: { from: 'extension' }, activity: 'transcript' },
+  // pi 1.6 prints `Error: No API key found for <provider>.` for a provider it
+  // has no key for, then waits at its prompt without taking the brief.
+  startupFatal: /^\s*Error: \S/,
   movable: true,
   /**
    * Which provider account and model a pi child runs on, since the account is

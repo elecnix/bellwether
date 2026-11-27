@@ -9,6 +9,7 @@
 // way the child record keeps which path carried it and why.
 import crypto from 'node:crypto';
 import { HerdrApiError, type HerdrClient } from './herdr-client.ts';
+import { BLANK_SCREEN, shownScreen } from './screen.ts';
 import { harnessFor } from './harnesses/index.ts';
 import { updateChild } from './registry.ts';
 import type { ChildMessage, ChildRecord } from './types.ts';
@@ -130,8 +131,8 @@ async function typeInto(input: MessageInput, id: string, at: string, reason: str
       remember(parentId, child.id, refused);
       // Pane feature: herdr refused the parent's prompt, so the parent sees the
       // dialog that blocks the child and chooses the keys that answer it.
-      const dialog = await herdr.paneRead({ paneId: child.paneId, source: 'detection', lines: 30 }).catch(() => '');
-      return { message: refused, text: `herdr refused the prompt because ${child.name} is blocked. The dialog:\n${dialog.trim()}\n\nReply with agent_send keys, for example ["enter"] or ["down","enter"].` };
+      const dialog = shownScreen(await herdr.paneRead({ paneId: child.paneId, source: 'detection', lines: 30 }).catch(() => BLANK_SCREEN));
+      return { message: refused, text: `herdr refused the prompt because ${child.name} is blocked. The dialog:\n${dialog}\n\nReply with agent_send keys, for example ["enter"] or ["down","enter"].` };
     }
     throw error;
   }

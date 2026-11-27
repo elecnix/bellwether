@@ -3,6 +3,7 @@
 // what exists. A resume flag in the start arguments becomes the pane's session,
 // the way a harness reopens the session it was asked for.
 import type { RecordedRequest } from './fake-herdr.ts';
+import { paneReadAnswer } from './ghost-screens.ts';
 
 export interface FakePane {
   pane_id: string;
@@ -213,7 +214,7 @@ export function fakeWorld(workspace = 'w1'): FakeWorld {
         }
         case 'pane.read': {
           const pane = panes.get(String(params['pane_id']));
-          return { type: 'pane_read', read: { pane_id: String(params['pane_id']), source: String(params['source']), format: 'text', text: pane?.screen ?? '' } };
+          return paneReadAnswer(params, pane?.screen ?? '');
         }
         case 'agent.send_keys': {
           const pane = panes.get(String(params['target']));

@@ -4,6 +4,7 @@
 // line here detects the harness named after `command` or the launcher, and
 // reports it idle at its prompt.
 import { shellWords } from './fake-world.ts';
+import { BLANK_SCREEN, type Screen } from '../../src/core/screen.ts';
 
 type Handler = (event: { event: string; data: Record<string, unknown> }) => void;
 
@@ -16,7 +17,7 @@ export interface TypedLaunchStub {
   /** agent.get finds an agent with no name, as herdr reports one it detected. */
   request(method: string): Promise<unknown>;
   /** A screen with no error on it. */
-  paneRead(): Promise<string>;
+  paneRead(): Promise<Screen>;
 }
 
 export function typedLaunchStub(): TypedLaunchStub {
@@ -45,7 +46,7 @@ export function typedLaunchStub(): TypedLaunchStub {
     },
     async agentRename() {},
     async paneRead() {
-      return '';
+      return BLANK_SCREEN;
     },
     async request(method) {
       return method === 'agent.get' ? { type: 'agent_info', agent: {} } : {};

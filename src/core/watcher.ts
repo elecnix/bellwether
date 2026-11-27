@@ -15,6 +15,7 @@ import { mutateParent, readParent, updateChild } from './registry.ts';
 import { detectDialog, dialogName, watchStartup } from './startup-dialogs.ts';
 import { harnessFor, harnessNamed } from './harnesses/index.ts';
 import { detectModal } from './modal.ts';
+import { shownScreen } from './screen.ts';
 import { agentNameOf, lastAssistantMessage, sessionFrom } from './transcript.ts';
 import { keepsBriefs } from './brief-history.ts';
 import { removeChildFiles } from './mcp-config.ts';
@@ -802,6 +803,7 @@ export class Watcher {
         // as evidence. The same text names the dialog for the parent.
         const dialog = await this.clientFor(hostOf(child))
           .then((client) => client.paneRead({ paneId: child.paneId, source: 'detection', lines: 30 }))
+          .then((read) => read.content)
           .catch(() => '');
         if (this.answerStartupDialog(child, dialog)) continue;
         this.offer(child, event, this.describeBlocked(child, detectModal(dialog)));
@@ -824,8 +826,10 @@ export class Watcher {
         // daemon. A Claude Code hook that fires as any dialog opens, with no
         // delay, or a herdr status that maps every harness's dialog to blocked,
         // would retire the rest.
+        // Faint text is a suggestion the harness drew, so only content can be a dialog.
         const screen = await this.clientFor(hostOf(child))
           .then((client) => client.paneRead({ paneId: child.paneId, source: 'detection', lines: 30 }))
+          .then((read) => read.content)
           .catch(() => '');
         const line = detectModal(screen);
         if (line) {
@@ -1016,7 +1020,8 @@ export class Watcher {
       // pane's output revision, but herdr 0.9.5 offers it neither in events.subscribe
       // nor in events.wait, which answers that it supports only agent status matches.
       // A subscribable `pane_output_changed` would replace this read.
-      const screen = await (await this.clientFor(hostOf(child))).paneRead({ paneId: child.paneId, source: 'recent_unwrapped', lines: 40 });
+      // A suggestion that changes in the box is not the child at work, so the diff reads content only.
+      const screen = (await (await this.clientFor(hostOf(child))).paneRead({ paneId: child.paneId, source: 'recent_unwrapped', lines: 40 })).content;
       const lines = screen.split('\n').filter((line) => line.trim().length > 0 && !/⏱|\[\d+% ·/.test(line));
       const previous = this.lastScreen.get(child.id);
       this.lastScreen.set(child.id, lines.join('\n'));
@@ -1043,6 +1048,7 @@ export class Watcher {
       // Pane feature: the parent's event text names the dialog its child is blocked on.
       const dialog = await this.clientFor(hostOf(child))
         .then((client) => client.paneRead({ paneId: child.paneId, source: 'detection', lines: 30 }))
+        .then((read) => read.content)
         .catch(() => '');
       return this.describeBlocked(child, detectModal(dialog));
     }
@@ -1096,8 +1102,11 @@ export class Watcher {
   private async screenTail(child: ChildRecord, lines = 40): Promise<string> {
     // Pane feature: the last screen lines go into the parent's event text, for a
     // stuck or inactive child, or an idle one with no report and no transcript.
+    // A suggestion in the input box stays out of it, and its last line says what
+    // the box holds, so a parent never reads a suggestion as somebody's words.
     return this.clientFor(hostOf(child))
       .then((client) => client.paneRead({ paneId: child.paneId, source: 'recent_unwrapped', lines }))
+      .then(shownScreen)
       .catch(() => '');
   }
 

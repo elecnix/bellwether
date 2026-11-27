@@ -175,6 +175,17 @@ A child on another machine has neither the pi notice nor the hook, because each 
 
 A child that answers its dialog and works on stays in the same turn. Closing the dialog doesn't send an event, and the parent gets one `idle` event when the turn ends.
 
+### Text a child's harness suggests
+
+Claude Code shows a suggested next message in its input box, and Codex shows a placeholder there. Both draw that text faint. herdr's plain text read drops the styling, so a suggestion looks like a message somebody typed. Bellwether reads every screen in herdr's ANSI format, and it treats faint text as a suggestion and never as content.
+
+- A faint line is never a dialog, an option, a startup answer or a fatal error. A faint `(y/n)` suggestion leaves the child `idle`. The spawn never presses Enter on a faint option.
+- A screen that a parent reads leaves faint text out. This covers `agent_read`, the screen lines in a `stuck`, `inactive` or `idle` event, the dialog after a refused `agent_send`, and the screen `agent_stop` shows. The parent never sees the words of a suggestion.
+- That screen ends with one line about the input box. `Input box: EMPTY.` means nothing is in it. `Input box: GHOST.` means it holds a suggestion that nobody typed. `Input box: DRAFT.` means someone typed the text on its line and did not send it. Typed text beside a faint tail counts as a draft, and the screen shows the typed part.
+- When a dialog covers the box, or the screen has no box, Bellwether omits the line. An older herdr that answers without styling gives `Input box: unknown.`, because there a suggestion and a draft look the same. An empty box still reads `EMPTY`.
+
+The rule treats every harness alike. A harness that draws nothing faint never shows `GHOST`. Bellwether finds the box with the same method as the herdr skill's `herdr-box-state.sh`. That is the last line that starts with Claude Code's `❯` or Codex's `›`, or, for pi, the lines between its two rules when pi's cursor sits there.
+
 ### Delivery to the parent
 
 A busy parent gets each event at its next turn: after the tool calls in flight, before the next model call. For an idle parent, the event starts a turn. Several events from one burst arrive together in one message, oldest first, and an event more than a minute old gets a note such as `(late by 4m34s: it happened at 07:25:46 UTC)` after its receipt.

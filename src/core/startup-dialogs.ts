@@ -202,7 +202,9 @@ export async function watchStartup(client: HerdrClient, paneId: string, signal?:
         // pre-answers the folder-trust and development-channel questions would retire
         // this read, as would `channelsEnabled` with `allowedChannelPlugins` in managed
         // settings for the channel question (docs/probes.md, section 7).
-        screen = await client.paneRead({ paneId, source: 'visible', lines: 40 }).catch(() => screen);
+        // A faint line is a suggestion the harness drew, never an option it offers, so
+        // the dialog is read from the screen's content.
+        screen = (await client.paneRead({ paneId, source: 'visible', lines: 40 }).then((read) => read.content).catch(() => screen));
         // A dialog that grants a permission is never answered, and herdr can
         // read the pane as idle while it waits, so it is checked first.
         const refused = detectRefused(screen, set);

@@ -5,6 +5,8 @@
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import { detectModal } from './modal.ts';
+import { parseScreen, type Screen } from './screen.ts';
 
 export const MAX_FRAME_BYTES = 4 * 1024 * 1024;
 const MAX_PENDING_EVENTS = 4096;
@@ -310,14 +312,14 @@ function agentStatus(value: unknown): AgentStatus | undefined {
  * The text of a pane.read answer. herdr nests it: the frame is
  * `{type: 'pane_read', read: {pane_id, source, format, text}}`.
  */
-export function paneText(result: unknown): string {
-  if (typeof result === 'string') return result;
+export function paneText(result: unknown): { text: string; format: string | undefined } {
+  if (typeof result === 'string') return { text: result, format: undefined };
   if (isRecord(result)) {
     const read = result['read'];
-    if (isRecord(read) && typeof read['text'] === 'string') return read['text'];
-    if (typeof result['text'] === 'string') return result['text'];
+    if (isRecord(read) && typeof read['text'] === 'string') return { text: read['text'], format: optionalString(read['format']) };
+    if (typeof result['text'] === 'string') return { text: result['text'], format: optionalString(result['format']) };
   }
-  return '';
+  return { text: '', format: undefined };
 }
 
 /** Read the fields Bellwether needs, and nothing else, from a raw pane object. */
@@ -408,9 +410,15 @@ export class HerdrClient {
     return this.request('agent.start', { name: params.name, kind: params.kind, pane_id: params.paneId, args: params.args ?? [], timeout_ms: params.timeoutMs ?? null }, { signal }).then(() => undefined);
   }
 
-  async paneRead(params: { paneId: string; source: 'visible' | 'recent' | 'recent_unwrapped' | 'detection'; lines?: number }, signal?: AbortSignal): Promise<string> {
-    const result = await this.request('pane.read', { pane_id: params.paneId, source: params.source, lines: params.lines ?? null, format: 'text' }, { signal, timeoutMs: 8000 });
-    return paneText(result);
+  /**
+   * A pane's screen, read in herdr's ANSI format so faint text, which a
+   * harness draws for a suggestion, stays apart from content. A server that
+   * answers in text leaves the screen unstyled, and the Screen says so.
+   */
+  async paneRead(params: { paneId: string; source: 'visible' | 'recent' | 'recent_unwrapped' | 'detection'; lines?: number }, signal?: AbortSignal): Promise<Screen> {
+    const result = await this.request('pane.read', { pane_id: params.paneId, source: params.source, lines: params.lines ?? null, format: 'ansi' }, { signal, timeoutMs: 8000 });
+    const { text, format } = paneText(result);
+    return parseScreen(text, format, (content) => detectModal(content) !== undefined);
   }
 
   agentPrompt(target: string, text: string, signal?: AbortSignal): Promise<void> {

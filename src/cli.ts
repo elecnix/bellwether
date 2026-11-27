@@ -16,6 +16,7 @@ import { relayChildPath, relayOutboxDir } from './core/paths.ts';
 import { writeBrief } from './core/brief.ts';
 import { removeChildFiles, writeMcpConfig } from './core/mcp-config.ts';
 import { describeUpgrade, gatherUpgrade } from './daemon/upgrade-status.ts';
+import { describeState } from './core/hygiene.ts';
 import { HEARTBEAT_MISSES } from './core/ssh.ts';
 import { DaemonClient, REFUSED_EXIT, ReportRefused, drainDaemon, ensureDaemon, postReport, relayStatus } from './daemon/client.ts';
 import { readMemory } from './daemon/relay-links.ts';
@@ -196,10 +197,15 @@ async function doctor(): Promise<number> {
   const daemonSocket = path.join(bellwetherHome(), 'daemon.sock');
   const daemonLive = daemonIsLive(bellwetherHome());
   // The upgrade report: which code the daemon and each session run, and whether a hand-over has finished.
-  for (const line of describeUpgrade(await gatherUpgrade(bellwetherHome(), daemonSocket)).lines) console.log(`  ${line}`);
+  const upgrade = await gatherUpgrade(bellwetherHome(), daemonSocket);
+  for (const line of describeUpgrade(upgrade).lines) console.log(`  ${line}`);
   if (daemonLive) console.log(`  ${describeDaemonEntry(readLock(bellwetherHome()), path.join(import.meta.dirname, 'daemon', `main${path.extname(import.meta.url)}`))}`);
   failures += checkPackaging();
   failures += await checkRelay(daemonLive, daemonSocket);
+  // The size of the home, and what the next prune would remove, before it becomes a problem.
+  const connected = new Set(upgrade.sessions && 'sessions' in upgrade.sessions ? upgrade.sessions.sessions.map((session) => session.parentId) : []);
+  const listed = Boolean(upgrade.sessions && 'sessions' in upgrade.sessions);
+  for (const line of describeState({ connected, now: Date.now(), connectedUnknown: !listed })) console.log(`  ${line}`);
   const socket = resolveSocketPath();
   if (!fs.existsSync(socket)) {
     console.log(`  fail  herdr socket: ${socket} does not exist`);
@@ -213,8 +219,10 @@ async function doctor(): Promise<number> {
     console.log(`  fail  herdr api: ${String(error)}`);
     failures += 1;
   }
+  // A parent with no running child is counted in the state line, not listed.
   for (const parent of listParents()) {
     const live = parent.children.filter((child) => !child.exitedAt);
+    if (!live.length) continue;
     console.log(`  ${parent.id}: ${live.length} live of ${parent.children.length} children, updated ${parent.updatedAt}`);
   }
   await checkMoves();

@@ -77,3 +77,35 @@ Once herdr reports the pane gone, the daemon removes the worktree and the branch
 Bellwether refuses a child it adopted, a child on another machine, a detached HEAD and any main worktree. A worktree counts as main when its git directory is the repository itself, when git lists it first, when it has the default branch checked out, or when its name is `main` or `master`.
 
 On the child record, `retireOutcome` shows `removed` or `refused`. After a refusal, `retireReason` states the failed check and what a person would do about it. Each outcome also goes to `~/.bellwether/retire.log` as one JSON line. After a restart mid-retirement, the daemon finishes the remaining steps. Resuming a child cancels its request.
+
+## Pruning old parent records, briefs and logs
+
+Every session that says hello writes a parent record under `~/.bellwether/parents/`, and each spawn writes a brief and, for Claude Code, an MCP configuration. The daemon prunes these files a minute after it starts, then every hour. `parentVerdict` and `childFileVerdict` in `src/core/hygiene.ts` decide what goes.
+
+The daemon keeps a parent record while any of these is true:
+
+- a session of that parent has a connection to the daemon;
+- one of its children has not exited;
+- its outbox contains an unread event, or its spool contains a report the parent has not read;
+- it asked for a restart, or one of its children is partway through retirement.
+
+When none of them is true, the record goes with its outbox and spool, once it has been quiet for its period:
+
+| Record | Period | Why |
+| --- | --- | --- |
+| never had a child | 1 hour | It stores only the session's identity, which the next hello writes again. |
+| had children, all exited | 7 days | A resumed session finds its children by it, and a person resumes an exited child by name. |
+
+Briefs and MCP configurations go once their child exits or a prune removes its record. A spawn writes these files a moment before it saves the record, so a file whose child is missing from every record gets an hour's grace. Files of a child that runs here for a parent on another machine stay until `bellwether relay-cleanup` removes them.
+
+Logs rotate at 1 MiB: `retire.log`, `move.log` and `restart.log` each move to `<name>.1`, replacing the older copy. Each fresh log starts with one line that names that file, so each log keeps at most 2 MiB.
+
+`bellwether doctor` shows the growth before it becomes a problem:
+
+```
+  info  state: 65 parent records, 42 stale; 6 briefs, 6 MCP configurations; 3 outbox files holding 0 unread events; 3 spool files
+  info  logs: retire.log 1 KiB, each moved to <name>.1 past 1 MiB
+  info  prune: last ran 2026-11-27T09:00:00.000Z, removed 42 parent records
+```
+
+Stale means the next prune would remove it. Doctor's prune line comes from `~/.bellwether/hygiene.json`. Parents with a running child each get a line of their own, while the rest appear in the count.

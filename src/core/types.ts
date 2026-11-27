@@ -198,3 +198,27 @@ export interface CallerIdentity {
   paneId?: string;
   childId?: string;
 }
+
+/** How a parent's daemon stands with one remote host. */
+export type RelayLinkStatus = 'connecting' | 'connected' | 'reconnecting';
+
+export interface RelayHostState {
+  /** The herdr machine the children run on, as their records name it. */
+  host: string;
+  /** The SSH target that machine resolved to, once it has. */
+  target?: string;
+  status: RelayLinkStatus;
+  /** When the link entered its status. */
+  since: string;
+  /** Why the newest connection failed or ended. */
+  lastError?: string;
+  lastConnectedAt?: string;
+  /** When the parent last held every report that waited on that machine. */
+  lastDrainAt?: string;
+  /** Failed attempts since the last connection. */
+  attempts: number;
+  /** When the next attempt starts, while reconnecting. */
+  nextAttemptAt?: string;
+  /** The children on that machine this daemon is waiting to hear from. */
+  children: string[];
+}

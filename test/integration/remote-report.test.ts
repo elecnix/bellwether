@@ -1,25 +1,30 @@
 // Tier 2: a report from a child on another machine. Two machines are two
 // Bellwether homes in one temporary root, joined by a fake ssh on PATH that
-// runs each remote command against the home assigned to its target. The
-// child's machine runs its daemon in this process; the parent's machine gets
-// whatever daemon `bellwether report` starts there, as it would in use.
+// runs each remote command against the home assigned to its target.
+//
+// The parent dials out. Its daemon runs in this process and holds one SSH
+// connection to the child's machine, which runs `bellwether relay-bridge`
+// there; the bridge starts that machine's daemon when none runs, as it would
+// in use. The child's machine never runs ssh, which the fake ssh proves by
+// recording every target it was asked for.
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { execFile, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import { HerdrClient } from '../../src/core/herdr-client.ts';
-import { configPath, relayChildPath, relayOutboxDir, spoolPath } from '../../src/core/paths.ts';
+import { relayChildPath, relayOutboxDir, spoolPath } from '../../src/core/paths.ts';
 import { emptyParent, readParent, saveParent, upsertChild } from '../../src/core/registry.ts';
-import { RELAY_SCHEMA, listForwards, readRelayRecord, saveRelayRecord, type RelayRecord } from '../../src/core/relay-records.ts';
+import { RELAY_SCHEMA, listForwards, readRelayRecord, saveForward, saveRelayRecord, type RelayRecord } from '../../src/core/relay-records.ts';
 import { remoteOps } from '../../src/core/remote.ts';
 import { spawnChild } from '../../src/core/spawn.ts';
 import { claudeProjectDir } from '../../src/core/transcript.ts';
 import type { ChildRecord, SpoolReport } from '../../src/core/types.ts';
 import { Watcher } from '../../src/core/watcher.ts';
 import { DaemonClient } from '../../src/daemon/client.ts';
-import { Relay } from '../../src/daemon/relay.ts';
+import { RelayOutbox } from '../../src/daemon/relay.ts';
+import { RelayLinks } from '../../src/daemon/relay-links.ts';
 import { startDaemon, type Daemon, type ParentService } from '../../src/daemon/server.ts';
 import { runBellwetherTool } from '../../src/integrations/tools.ts';
 import { stopDaemonsUnder } from '../fixtures/daemons.ts';
@@ -32,12 +37,10 @@ const PARENT_ID = 'claude-code-the-parent';
 
 interface World {
   root: string;
-  /** The child's machine: this process. */
-  childHome: string;
-  /** The parent's machine, reached as `parent-box`. */
+  /** The parent's machine: this process. */
   parentHome: string;
-  /** A third machine a parent spawns onto, reached as `remote-box`. */
-  remoteHome: string;
+  /** The child's machine, reached as `child-box`. */
+  childHome: string;
   ssh: FakeSsh;
   logs: string[];
   /** Run at the end of the case, newest first, so a client closes before its daemon. */
@@ -55,30 +58,32 @@ function inHome<T>(home: string, fn: () => T): T {
   }
 }
 
-function world(t: test.TestContext): World {
+function world(t: test.TestContext, here: 'parent' | 'child' = 'parent'): World {
   // Under /tmp, because macOS caps a Unix socket path at 104 bytes.
   const root = fs.mkdtempSync('/tmp/bw-relay-');
   assert.ok(!root.startsWith(LIVE_HOME));
-  const childHome = path.join(root, 'child', '.bellwether');
   const parentHome = path.join(root, 'parent', '.bellwether');
-  const remoteHome = path.join(root, 'remote', '.bellwether');
-  for (const home of [childHome, parentHome, remoteHome]) fs.mkdirSync(home, { recursive: true });
+  const childHome = path.join(root, 'child', '.bellwether');
+  for (const home of [childHome, parentHome]) fs.mkdirSync(home, { recursive: true });
+  // `parent-box` is reachable too, so a hop toward it would succeed and be seen, not fail unseen.
   const ssh = installFakeSsh(t, root, {
+    'child-box': { home: childHome, userHome: path.dirname(childHome) },
     'parent-box': { home: parentHome, userHome: path.dirname(parentHome) },
-    'remote-box': { home: remoteHome, userHome: path.dirname(remoteHome) },
   });
   const saved = { home: process.env['BELLWETHER_HOME'], socket: process.env['BELLWETHER_DAEMON_SOCKET'] };
-  process.env['BELLWETHER_HOME'] = childHome;
-  process.env['BELLWETHER_DAEMON_SOCKET'] = path.join(childHome, 'daemon.sock');
+  const local = here === 'parent' ? parentHome : childHome;
+  process.env['BELLWETHER_HOME'] = local;
+  process.env['BELLWETHER_DAEMON_SOCKET'] = path.join(local, 'daemon.sock');
   const closers: (() => Promise<void> | void)[] = [];
   t.after(async () => {
     for (const close of closers.reverse()) await close();
-    await stopDaemonsUnder(root);
+    await ssh.drop();
+    await stopDaemonsUnder(root, childHome);
     process.env['BELLWETHER_HOME'] = saved.home;
     process.env['BELLWETHER_DAEMON_SOCKET'] = saved.socket;
     fs.rmSync(root, { recursive: true, force: true });
   });
-  return { root, childHome, parentHome, remoteHome, ssh, logs: [], closers };
+  return { root, parentHome, childHome, ssh, logs: [], closers };
 }
 
 function childRecord(id: string, host: string): ChildRecord {
@@ -87,21 +92,30 @@ function childRecord(id: string, host: string): ChildRecord {
 }
 
 /** The parent's machine holds the parent and a record of the child on `child-box`. */
-function parentHolds(w: World, childId: string): void {
+function parentHolds(w: World, childId: string, extra: Partial<ChildRecord> = {}): void {
   inHome(w.parentHome, () => {
-    saveParent(emptyParent('claude-code', 'the-parent', '/work', { paneId: 'w1:p1' }));
-    upsertChild(PARENT_ID, childRecord(childId, 'child-box'));
+    if (!readParent(PARENT_ID)) saveParent(emptyParent('claude-code', 'the-parent', '/work', { paneId: 'w1:p1' }));
+    upsertChild(PARENT_ID, { ...childRecord(childId, 'child-box'), ...extra });
   });
 }
 
-function relayRecord(childId: string, parentHost = 'parent-box'): RelayRecord {
-  return { schema: RELAY_SCHEMA, childId, name: `child-${childId}`, kind: 'claude', parentId: PARENT_ID, parentHost, registeredAt: new Date().toISOString() };
+function relayRecord(childId: string): RelayRecord {
+  return { schema: RELAY_SCHEMA, childId, name: `child-${childId}`, kind: 'claude', parentId: PARENT_ID, registeredAt: new Date().toISOString() };
+}
+
+/** The child's machine holds the relay record a spawn's `relay-register` writes there. */
+function childHolds(w: World, childId: string): void {
+  inHome(w.childHome, () => saveRelayRecord(relayRecord(childId)));
 }
 
 function spoolOf(home: string, parentId: string): SpoolReport[] {
   const file = inHome(home, () => spoolPath(parentId));
   if (!fs.existsSync(file)) return [];
   return fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line) as SpoolReport);
+}
+
+function waitingOn(home: string) {
+  return inHome(home, () => listForwards());
 }
 
 /** A session service that must never be reached: the relay answers first, or the test says so. */
@@ -116,9 +130,25 @@ function stubService(): ParentService {
   };
 }
 
-async function childDaemon(w: World, relayOptions: ConstructorParameters<typeof Relay>[0] = {}, extra: { idleMs?: number; idleCheckMs?: number } = {}): Promise<Daemon> {
-  const relay = new Relay({ initialDelayMs: 50, maxDelayMs: 200, hopTimeoutMs: 20_000, log: (line) => w.logs.push(line), ...relayOptions });
-  const daemon = await startDaemon({ socketPath: path.join(w.childHome, 'daemon.sock'), home: w.childHome, factory: () => stubService(), relay, log: (line) => w.logs.push(line), ...extra });
+const machines = async (label: string) => ({ id: label, label, target: label, session: 'default', enabled: true });
+
+function links(w: World, options: Partial<ConstructorParameters<typeof RelayLinks>[0]> = {}): RelayLinks {
+  return new RelayLinks({ resolve: machines, initialDelayMs: 50, maxDelayMs: 200, readTimeoutMs: 10_000, log: (line) => w.logs.push(line), ...options });
+}
+
+/** The parent's daemon, in this process, which dials out to every host its children run on. */
+async function parentDaemon(w: World, relayLinks = links(w)): Promise<{ daemon: Daemon; links: RelayLinks }> {
+  const daemon = await startDaemon({ socketPath: path.join(w.parentHome, 'daemon.sock'), home: w.parentHome, factory: () => stubService(), links: relayLinks, log: (line) => w.logs.push(line) });
+  w.closers.push(() => daemon.close());
+  return { daemon, links: relayLinks };
+}
+
+/** The child's daemon, in this process, for a case that runs on the child's machine. */
+async function childDaemon(w: World): Promise<Daemon> {
+  const outbox = new RelayOutbox({ ackWaitMs: 200, log: (line) => w.logs.push(line) });
+  // No machine resolver at all: this daemon holds no remote child, and must never dial anything.
+  const noLinks = links(w, { resolve: async (label) => { throw new Error(`the child's daemon tried to resolve ${label}`); } });
+  const daemon = await startDaemon({ socketPath: path.join(w.childHome, 'daemon.sock'), home: w.childHome, factory: () => stubService(), relayOutbox: outbox, links: noLinks, log: (line) => w.logs.push(line) });
   w.closers.push(() => daemon.close());
   return daemon;
 }
@@ -133,6 +163,24 @@ async function childClient(w: World, childId: string): Promise<DaemonClient> {
   return client;
 }
 
+/** The child reports from its own machine, through that machine's daemon, as `parent_report` does. */
+function childReports(w: World, childId: string, status: string, text: string): Promise<{ code: number; stdout: string; stderr: string }> {
+  const env = { ...process.env, BELLWETHER_HOME: w.childHome, BELLWETHER_DAEMON_SOCKET: path.join(w.childHome, 'daemon.sock') };
+  return new Promise((resolve) => {
+    execFile(process.execPath, ['--disable-warning=ExperimentalWarning', CLI, 'report', '--child', childId, '--status', status, '--text', text], { env, encoding: 'utf8' }, (error, stdout, stderr) => {
+      resolve({ code: error ? (typeof (error as { code?: unknown }).code === 'number' ? ((error as { code: number }).code) : 1) : 0, stdout, stderr });
+    });
+  });
+}
+
+/** `bellwether doctor` on the parent's machine, with herdr pointed at nothing. */
+function doctor(w: World): Promise<string> {
+  const env = { ...process.env, BELLWETHER_HOME: w.parentHome, BELLWETHER_DAEMON_SOCKET: path.join(w.parentHome, 'daemon.sock'), HERDR_SOCKET_PATH: path.join(w.root, 'no-herdr.sock') };
+  return new Promise((resolve) => {
+    execFile(process.execPath, ['--disable-warning=ExperimentalWarning', CLI, 'doctor'], { env, encoding: 'utf8' }, (_error, stdout) => resolve(stdout));
+  });
+}
+
 async function until(check: () => boolean, what: string, timeoutMs = 20_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!check()) {
@@ -141,161 +189,207 @@ async function until(check: () => boolean, what: string, timeoutMs = 20_000): Pr
   }
 }
 
-test('a report for a child this machine holds is served here and never forwarded', async (t) => {
-  const w = world(t);
-  const daemon = await childDaemon(w);
-  // This machine holds the parent, and a stale relay record names the same child.
-  saveParent(emptyParent('claude-code', 'the-parent', '/work'));
-  upsertChild(PARENT_ID, childRecord('c-local', 'local'));
-  saveRelayRecord(relayRecord('c-local'));
-  const client = await childClient(w, 'c-local');
-  const text = await client.tool('parent_report', { status: 'done', text: 'served here' });
-  assert.equal(text, 'the session service ran parent_report', 'the local session tool served it');
-  assert.deepEqual(w.ssh.calls(), [], 'nothing went over ssh');
-  assert.deepEqual(listForwards(), [], 'nothing waits in the relay outbox');
-});
+function connected(relayLinks: RelayLinks, host = 'child-box'): boolean {
+  return relayLinks.state(host)?.status === 'connected';
+}
 
-test('a report for a child of a parent on another machine is forwarded once, with the exact flags', async (t) => {
+test('a report written on the child while the parent is connected is delivered once, and the child never dials out', async (t) => {
   const w = world(t);
-  parentHolds(w, 'c-remote');
-  saveRelayRecord(relayRecord('c-remote'));
-  const daemon = await childDaemon(w);
-  const client = await childClient(w, 'c-remote');
-  // Quotes, a line break and leading dashes: the shell on the far side must hand them over unchanged.
+  parentHolds(w, 'c-live');
+  childHolds(w, 'c-live');
+  const { links: relayLinks } = await parentDaemon(w);
+  await until(() => connected(relayLinks), 'the parent to connect to child-box');
+
   const body = `--not-a-flag it's "done"\nsecond line $HOME \`id\``;
-  const text = await client.tool('parent_report', { status: 'done', text: body });
-  assert.match(text, /Reported done to the parent on machine parent-box/);
-
-  const calls = w.ssh.calls();
-  assert.equal(calls.length, 1, 'one ssh hop');
-  assert.deepEqual(calls[0]?.slice(0, 6), ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', '-T', 'parent-box']);
-  const [remote, ...more] = w.ssh.remoteCalls();
-  assert.equal(more.length, 0);
-  assert.equal(remote?.target, 'parent-box');
-  const receipt = remote?.argv[6] ?? '';
-  assert.match(receipt, /^rp-[0-9a-f]{16}$/);
-  assert.deepEqual(remote?.argv, ['report', '--parent', PARENT_ID, '--child', 'c-remote', '--receipt', receipt, '--status', 'done', '--text', body]);
+  const posted = await childReports(w, 'c-live', 'done', body);
+  assert.equal(posted.code, 0, posted.stderr);
+  assert.match(posted.stdout, /Reported done to the parent on another machine, as child-c-live/);
 
   const landed = spoolOf(w.parentHome, PARENT_ID);
   assert.equal(landed.length, 1);
-  assert.equal(landed[0]?.receipt, receipt);
   assert.equal(landed[0]?.text, body);
-  assert.equal(landed[0]?.childId, 'c-remote');
-  assert.equal(landed[0]?.childName, 'child-c-remote', 'the name comes from the parent machine\'s record');
-  assert.deepEqual(listForwards(), []);
-  assert.ok(w.logs.some((line) => line.includes('forwarding report') && line.includes('parent-box')), 'the log names the host');
+  assert.equal(landed[0]?.childId, 'c-live');
+  assert.equal(landed[0]?.childName, 'child-c-live', "the name comes from the parent machine's record");
+  assert.match(landed[0]?.receipt ?? '', /^rp-[0-9a-f]{16}$/);
+  assert.deepEqual(waitingOn(w.childHome), [], 'the child acknowledged it and cleared its outbox');
+
+  assert.deepEqual([...new Set(w.ssh.targets())], ['child-box'], 'every ssh call went from the parent to the child');
+  assert.deepEqual(w.ssh.remoteCalls().map((call) => [call.target, call.argv[0]]), [['child-box', 'relay-bridge']], 'one bridge, nothing run on the parent');
+  assert.equal(w.ssh.calls().length, 1, 'one connection carried it');
+  assert.ok(w.logs.some((line) => line.includes('connected to machine child-box')), w.logs.join('\n'));
 });
 
-test('a relay child whose pane id matches a local child is still forwarded, by its child id', async (t) => {
+test('a report written while the connection is down is delivered once on reconnect, and doctor says so', async (t) => {
   const w = world(t);
-  parentHolds(w, 'c-shared');
-  saveRelayRecord(relayRecord('c-shared'));
-  // A local parent on the child's machine has a child in the same pane id.
-  saveParent(emptyParent('pi', 'local-parent', '/work'));
-  upsertChild('pi-local-parent', childRecord('c-other', 'local'));
-  await childDaemon(w);
-  const client = await childClient(w, 'c-shared');
-  assert.match(await client.tool('parent_report', { status: 'done', text: 'mine' }), /parent-box/);
-  assert.equal(spoolOf(w.childHome, 'pi-local-parent').length, 0, 'the local child got nothing');
-  assert.equal(spoolOf(w.parentHome, PARENT_ID)[0]?.childId, 'c-shared');
-});
+  parentHolds(w, 'c-down');
+  childHolds(w, 'c-down');
+  const { links: relayLinks } = await parentDaemon(w);
+  await until(() => connected(relayLinks), 'the first connection');
+  assert.match(await doctor(w), /ok\s+relay child-box: connected/);
 
-test('a failed hop spools the report, retries with backoff, and the receiver keeps one copy', async (t) => {
-  const w = world(t);
-  parentHolds(w, 'c-flaky');
-  saveRelayRecord(relayRecord('c-flaky'));
-  // Refused outright, then delivered with the connection dropped before the exit status, then fine.
-  w.ssh.plan(['refuse', 'drop', 'ok']);
-  const daemon = await childDaemon(w);
-  const client = await childClient(w, 'c-flaky');
+  w.ssh.plan(Array.from({ length: 10_000 }, () => 'refuse' as const));
+  assert.equal(await w.ssh.drop(), 1, 'the one open connection was cut');
+  await until(() => relayLinks.state('child-box')?.status === 'reconnecting', 'the link to say reconnecting');
+  await until(() => /refused/.test(relayLinks.state('child-box')?.lastError ?? ''), 'a refused reconnect');
+  const down = await doctor(w);
+  assert.match(down, /fail\s+relay child-box: reconnecting/);
+  assert.match(down, /Connection refused/);
 
-  const text = await client.tool('parent_report', { status: 'progress', text: 'halfway there' });
-  assert.match(text, /could not reach machine parent-box yet/);
-  assert.match(text, /retries it with backoff/);
-  const record = readRelayRecord('c-flaky');
-  assert.equal(record?.unforwarded, 1, 'the child record says a report waits');
-  assert.match(record?.lastForwardError ?? '', /parent-box.*255/);
-  assert.ok(w.logs.some((line) => /forwarding report rp-\w+ to parent-box failed/.test(line)), w.logs.join('\n'));
-
-  await until(() => listForwards().length === 0, 'the relay outbox to empty');
-  assert.equal(w.ssh.calls().length, 3, 'refused, dropped, then delivered');
-  assert.equal(w.ssh.remoteCalls().length, 2, 'the far side ran twice');
-  const landed = spoolOf(w.parentHome, PARENT_ID);
-  assert.equal(landed.length, 1, 'the retry after the dropped connection was a duplicate, accepted once');
-  assert.equal(landed[0]?.text, 'halfway there');
-  const settled = readRelayRecord('c-flaky');
-  assert.equal(settled?.unforwarded, undefined);
-  assert.equal(settled?.lastForwardError, undefined);
-  assert.ok(settled?.lastForwardedAt);
-});
-
-test('a daemon restarted with a report still waiting forwards it, and stays up until it does', async (t) => {
-  const w = world(t);
-  parentHolds(w, 'c-wait');
-  saveRelayRecord(relayRecord('c-wait'));
-  w.ssh.plan(['refuse', 'refuse', 'refuse', 'refuse', 'refuse', 'refuse', 'refuse', 'refuse', 'refuse', 'refuse']);
-  const first = await childDaemon(w, { initialDelayMs: 60_000 });
-  const client = await childClient(w, 'c-wait');
-  await client.tool('parent_report', { status: 'done', text: 'kept across a restart' });
-  await client.close();
-  await first.close();
-  assert.equal(listForwards().length, 1, 'the report is on disk');
+  const posted = await childReports(w, 'c-down', 'progress', 'written while nobody listened');
+  assert.equal(posted.code, 0, posted.stderr);
+  assert.match(posted.stdout, /saved as rp-[0-9a-f]{16}/);
+  assert.match(posted.stdout, /collects it when it connects/);
+  assert.equal(waitingOn(w.childHome).length, 1, 'the report waits on the child machine');
+  assert.deepEqual(spoolOf(w.parentHome, PARENT_ID), []);
 
   w.ssh.plan([]);
-  const second = await childDaemon(w, {}, { idleMs: 1, idleCheckMs: 10 });
-  await until(() => listForwards().length === 0, 'the restarted daemon to forward it');
-  assert.equal(spoolOf(w.parentHome, PARENT_ID).length, 1);
-  await until(() => second.closed, 'the idle daemon to close once nothing waits');
+  await until(() => spoolOf(w.parentHome, PARENT_ID).length === 1, 'the report to arrive after the reconnect');
+  await until(() => connected(relayLinks), 'the link to say connected');
+  await until(() => waitingOn(w.childHome).length === 0, 'the child outbox to empty');
+  assert.equal(spoolOf(w.parentHome, PARENT_ID)[0]?.text, 'written while nobody listened');
+  const up = await doctor(w);
+  assert.match(up, /ok\s+relay child-box: connected/);
+  assert.match(up, /last drain/);
+  assert.ok(relayLinks.state('child-box')?.lastDrainAt, 'the drain is on the state');
+  assert.ok(w.logs.some((line) => /lost machine child-box/.test(line)), w.logs.join('\n'));
+  assert.ok(!w.ssh.targets().includes('parent-box'), 'the child never dialled the parent');
+  await delay(200);
+  assert.equal(spoolOf(w.parentHome, PARENT_ID).length, 1, 'no second copy arrived later');
 });
 
-test('the receiving daemon accepts a duplicate receipt once', async (t) => {
+test('a report the parent accepted but never acknowledged arrives again on reconnect and is accepted once', async (t) => {
   const w = world(t);
   parentHolds(w, 'c-dup');
+  childHolds(w, 'c-dup');
+  // The parent wrote it, and the connection died before the acknowledgement reached the child.
+  const receipt = 'rp-0123456789abcdef';
+  const at = new Date().toISOString();
+  inHome(w.childHome, () => saveForward({ receipt, childId: 'c-dup', parentId: PARENT_ID, status: 'done', text: 'once only', at }));
+  inHome(w.parentHome, () => fs.mkdirSync(path.dirname(spoolPath(PARENT_ID)), { recursive: true }));
+  fs.appendFileSync(inHome(w.parentHome, () => spoolPath(PARENT_ID)), `${JSON.stringify({ parentId: PARENT_ID, childId: 'c-dup', childName: 'child-c-dup', paneId: 'w1:p5', status: 'done', text: 'once only', receipt, at, seq: 1 })}\n`);
+
+  const { links: relayLinks } = await parentDaemon(w);
+  await until(() => waitingOn(w.childHome).length === 0, 'the child to hear the acknowledgement');
+  assert.ok(connected(relayLinks));
+  assert.deepEqual(spoolOf(w.parentHome, PARENT_ID).map((entry) => entry.receipt), [receipt], 'one copy');
+  assert.ok(w.logs.some((line) => line.includes(`${receipt}`) && line.includes('already accepted')), w.logs.join('\n'));
+});
+
+test('the receiving daemon accepts a duplicate receipt once from bellwether report', async (t) => {
+  const w = world(t);
+  parentHolds(w, 'c-dup2');
   const env = { ...process.env, BELLWETHER_HOME: w.parentHome, BELLWETHER_DAEMON_SOCKET: path.join(w.parentHome, 'daemon.sock') };
-  const run = () => spawnSync(process.execPath, ['--disable-warning=ExperimentalWarning', CLI, 'report', '--parent', PARENT_ID, '--child', 'c-dup', '--receipt', 'rp-0123456789abcdef', '--status', 'done', '--text', 'once only'], { env, encoding: 'utf8' });
+  const run = () => spawnSync(process.execPath, ['--disable-warning=ExperimentalWarning', CLI, 'report', '--parent', PARENT_ID, '--child', 'c-dup2', '--receipt', 'rp-0123456789abcdef', '--status', 'done', '--text', 'once only'], { env, encoding: 'utf8' });
   const first = run();
   assert.equal(first.status, 0, first.stderr);
   assert.match(first.stdout, /Reported done/);
   const second = run();
   assert.equal(second.status, 0, second.stderr);
   assert.match(second.stdout, /already received/);
-  const landed = spoolOf(w.parentHome, PARENT_ID);
-  assert.deepEqual(landed.map((entry) => [entry.receipt, entry.text]), [['rp-0123456789abcdef', 'once only']]);
+  assert.deepEqual(spoolOf(w.parentHome, PARENT_ID).map((entry) => [entry.receipt, entry.text]), [['rp-0123456789abcdef', 'once only']]);
+  await stopDaemonsUnder(w.root, w.parentHome);
 });
 
-test('the receiving daemon refuses a child its parent does not hold, and the sender stops retrying', async (t) => {
-  const w = world(t);
-  inHome(w.parentHome, () => saveParent(emptyParent('claude-code', 'the-parent', '/work')));
-  saveRelayRecord(relayRecord('c-stranger'));
-  const daemon = await childDaemon(w);
-  const client = await childClient(w, 'c-stranger');
-  const text = await client.tool('parent_report', { status: 'done', text: 'who am I' });
-  assert.match(text, /refused report/);
-  assert.match(text, /holds no child c-stranger/);
+test("the child's daemon keeps a report for a remote parent on disk and runs no ssh at all", async (t) => {
+  const w = world(t, 'child');
+  saveRelayRecord(relayRecord('c-quiet'));
+  await childDaemon(w);
+  const client = await childClient(w, 'c-quiet');
+  const text = await client.tool('parent_report', { status: 'done', text: 'kept here' });
+  assert.match(text, /saved as rp-[0-9a-f]{16}/);
+  assert.match(text, /Do not report it again/);
   await delay(300);
-  assert.equal(w.ssh.calls().length, 1, 'a refusal is not retried');
-  const [kept] = listForwards();
-  assert.ok(kept?.refused, 'the refused report stays on disk');
-  assert.deepEqual(spoolOf(w.parentHome, PARENT_ID), []);
+  assert.deepEqual(w.ssh.calls(), [], 'the child machine ran no ssh');
+  const [entry, ...more] = listForwards();
+  assert.equal(more.length, 0);
+  assert.equal(entry?.text, 'kept here');
+  assert.equal(entry?.parentId, PARENT_ID);
+  assert.equal(readRelayRecord('c-quiet')?.unforwarded, 1, 'the relay record counts it');
+  assert.equal(fs.statSync(path.join(relayOutboxDir(), `${entry?.receipt}.json`)).mode & 0o777, 0o600);
+  assert.equal(fs.statSync(relayOutboxDir()).mode & 0o777, 0o700);
+  assert.equal(fs.statSync(relayChildPath('c-quiet')).mode & 0o777, 0o600);
 });
 
-test('a relay record that names no host is refused, naming the record', async (t) => {
-  const w = world(t);
-  saveRelayRecord(relayRecord('c-nohost', ''));
-  const daemon = await childDaemon(w);
-  const client = await childClient(w, 'c-nohost');
-  await assert.rejects(client.tool('parent_report', { status: 'done', text: 'x' }), (error: Error) => {
-    assert.ok(error.message.includes(relayChildPath('c-nohost')), error.message);
-    assert.match(error.message, /names no remote host/);
-    return true;
-  });
+test('a report for a child this machine holds is served here and never spooled for a remote parent', async (t) => {
+  const w = world(t, 'child');
+  await childDaemon(w);
+  // This machine holds the parent, and a stale relay record names the same child.
+  saveParent(emptyParent('claude-code', 'the-parent', '/work'));
+  upsertChild(PARENT_ID, childRecord('c-local', 'local'));
+  saveRelayRecord(relayRecord('c-local'));
+  const client = await childClient(w, 'c-local');
+  assert.equal(await client.tool('parent_report', { status: 'done', text: 'served here' }), 'the session service ran parent_report');
   assert.deepEqual(w.ssh.calls(), []);
   assert.deepEqual(listForwards(), []);
 });
 
-test('a spawn on another machine registers the child there and starts it with that machine\'s MCP config', async (t) => {
+test('a relay child whose pane id matches a local child is still kept for its remote parent, by its child id', async (t) => {
+  const w = world(t, 'child');
+  saveRelayRecord(relayRecord('c-shared'));
+  saveParent(emptyParent('pi', 'local-parent', '/work'));
+  upsertChild('pi-local-parent', childRecord('c-other', 'local'));
+  await childDaemon(w);
+  const client = await childClient(w, 'c-shared');
+  assert.match(await client.tool('parent_report', { status: 'done', text: 'mine' }), /saved as/);
+  assert.equal(spoolOf(w.childHome, 'pi-local-parent').length, 0, 'the local child got nothing');
+  assert.equal(listForwards()[0]?.childId, 'c-shared');
+});
+
+test('agent_read for a remote child reads through the open connection, and says plainly when the host is unreachable', async (t) => {
   const w = world(t);
-  fs.writeFileSync(configPath(), JSON.stringify({ sshTarget: 'parent-box' }));
+  const session = '7f3c2a10-aaaa-bbbb-cccc-000000000001';
+  const cwd = '/work/far';
+  const transcriptDir = path.join(path.dirname(w.childHome), '.claude', 'projects', claudeProjectDir(cwd));
+  fs.mkdirSync(transcriptDir, { recursive: true });
+  fs.writeFileSync(path.join(transcriptDir, `${session}.jsonl`), `${JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'the remote answer' }] } })}\n`);
+  parentHolds(w, 'c-read', { cwd, session: { kind: 'id', value: session }, lastReport: { status: 'done', text: 'the reported answer', at: new Date().toISOString(), seq: 1 } });
+  childHolds(w, 'c-read');
+
+  const { links: relayLinks } = await parentDaemon(w);
+  await until(() => connected(relayLinks), 'the connection');
+  const hops = w.ssh.calls().length;
+  const client = new HerdrClient({ socketPath: path.join(w.root, 'no-herdr.sock') });
+  const remote = remoteOps(machines, {}, relayLinks);
+  const ctx = { client, clientFor: async () => client, parentId: PARENT_ID, watcher: new Watcher({ client, parentId: PARENT_ID, onEntries: () => {} }), remote };
+
+  assert.equal((await runBellwetherTool(ctx, 'agent_read', { child: 'c-read' })).trim(), 'the remote answer');
+  assert.equal(w.ssh.calls().length, hops, 'no new ssh hop: the read went over the open connection');
+  assert.ok(!w.ssh.remoteCalls().some((call) => call.argv[0] !== 'relay-bridge'), 'nothing but the bridge ran on the child machine');
+
+  w.ssh.plan(Array.from({ length: 10_000 }, () => 'refuse' as const));
+  await w.ssh.drop();
+  await until(() => relayLinks.state('child-box')?.status === 'reconnecting', 'the link to drop');
+  const fallback = await runBellwetherTool(ctx, 'agent_read', { child: 'c-read' });
+  assert.match(fallback, /machine child-box is unreachable/);
+  assert.match(fallback, /reconnecting/);
+  assert.match(fallback, /the reported answer/);
+});
+
+test('an unreachable host shows in agent_list, and the inactivity notice says the parent is not hearing from it', async (t) => {
+  const w = world(t);
+  w.ssh.plan(Array.from({ length: 10_000 }, () => 'refuse' as const));
+  const quiet = new Date(Date.now() - 10 * 60_000).toISOString();
+  parentHolds(w, 'c-far', { lastStatus: 'idle', statusChangedAt: quiet, lastBusyAt: quiet, lastActivityAt: quiet, inactiveMs: 60_000 } as Partial<ChildRecord>);
+  const { links: relayLinks } = await parentDaemon(w);
+  await until(() => /refused/.test(relayLinks.state('child-box')?.lastError ?? ''), 'a refused connection');
+
+  const client = new HerdrClient({ socketPath: path.join(w.root, 'no-herdr.sock') });
+  const entries: string[] = [];
+  const watcher = new Watcher({ client, clientFor: async () => client, parentId: PARENT_ID, onEntries: (list) => entries.push(...list.map((entry) => `${entry.event}: ${entry.text}`)), tickMs: 20, relayState: (host) => relayLinks.state(host) });
+  const ctx = { client, clientFor: async () => client, parentId: PARENT_ID, watcher, remote: remoteOps(machines, {}, relayLinks), relayState: (host: string) => relayLinks.state(host) };
+  const listing = await runBellwetherTool(ctx, 'agent_list', {});
+  assert.match(listing, /child-box \(not heard from: reconnecting/);
+
+  watcher.start();
+  t.after(() => watcher.stop());
+  await until(() => entries.some((entry) => entry.startsWith('inactive:')), 'the inactivity notice');
+  const notice = entries.find((entry) => entry.startsWith('inactive:')) ?? '';
+  assert.match(notice, /Bellwether is not hearing from machine child-box/);
+  assert.match(notice, /Connection refused/);
+});
+
+test("a spawn on another machine registers the child there and starts it with that machine's MCP config", async (t) => {
+  const w = world(t);
   const parent = saveParent(emptyParent('claude-code', 'spawner', '/work', { workspaceId: 'w1' }));
   let herdr: Awaited<ReturnType<typeof startFakeHerdr>> | undefined;
   herdr = await startFakeHerdr({
@@ -305,23 +399,22 @@ test('a spawn on another machine registers the child there and starts it with th
     },
   });
   t.after(() => herdr?.stop());
-  const ops = remoteOps(async (label) => ({ id: label, label, target: label, session: 'default', enabled: true }));
-  const { child, reportWarning } = await spawnChild(new HerdrClient({ socketPath: herdr.socketPath }), parent, { kind: 'claude', name: 'far-away', host: 'remote-box', startupTimeoutMs: 2_000, redrawMs: 10 }, undefined, { registerRemote: (entry) => ops.register(parent, entry) });
+  const ops = remoteOps(machines);
+  const { child, reportWarning } = await spawnChild(new HerdrClient({ socketPath: herdr.socketPath }), parent, { kind: 'claude', name: 'far-away', host: 'child-box', startupTimeoutMs: 2_000, redrawMs: 10 }, undefined, { registerRemote: (entry) => ops.register(parent, entry) });
   assert.equal(reportWarning, undefined);
 
   const [remote] = w.ssh.remoteCalls();
-  assert.equal(remote?.target, 'remote-box');
-  assert.deepEqual(remote?.argv, ['relay-register', '--child', child.id, '--name', 'far-away', '--kind', 'claude', '--parent', parent.id, '--parent-host', 'parent-box']);
-  const record = inHome(w.remoteHome, () => readRelayRecord(child.id));
-  assert.equal(record?.parentHost, 'parent-box');
+  assert.equal(remote?.target, 'child-box');
+  assert.deepEqual(remote?.argv, ['relay-register', '--child', child.id, '--name', 'far-away', '--kind', 'claude', '--parent', parent.id], 'no parent address: the child never dials back');
+  const record = inHome(w.childHome, () => readRelayRecord(child.id));
   assert.equal(record?.parentId, parent.id);
+  assert.equal((record as unknown as Record<string, unknown>)['parentHost'], undefined);
   const start = herdr.requests.find((request) => request.method === 'agent.start');
   const args = (start?.params['args'] as string[]) ?? [];
   const mcp = args.find((arg) => arg.startsWith('--mcp-config='))?.slice('--mcp-config='.length) ?? '';
-  assert.ok(mcp.startsWith(path.join(w.remoteHome, 'mcp')), `the config is the remote machine's: ${mcp}`);
-  assert.ok(!fs.existsSync(path.join(w.childHome, 'mcp')), 'none was written on the parent machine');
-  // The registry of record stays on the parent's machine.
-  assert.equal(readParent(parent.id)?.children[0]?.host, 'remote-box');
+  assert.ok(mcp.startsWith(path.join(w.childHome, 'mcp')), `the config is the remote machine's: ${mcp}`);
+  assert.ok(!fs.existsSync(path.join(w.parentHome, 'mcp')), 'none was written on the parent machine');
+  assert.equal(readParent(parent.id)?.children[0]?.host, 'child-box');
 });
 
 test('a spawn on another machine whose registration fails still starts, and says the child cannot report', async (t) => {
@@ -330,47 +423,9 @@ test('a spawn on another machine whose registration fails still starts, and says
   const parent = saveParent(emptyParent('pi', 'spawner-fail', '/work'));
   const herdr = await startFakeHerdr();
   t.after(() => herdr.stop());
-  const ops = remoteOps(async (label) => ({ id: label, label, target: label, session: 'default', enabled: true }));
-  const { reportWarning } = await spawnChild(new HerdrClient({ socketPath: herdr.socketPath }), parent, { kind: 'pi', name: 'unregistered', host: 'remote-box' }, undefined, { registerRemote: (entry) => ops.register(parent, entry) });
-  assert.match(reportWarning ?? '', /could not be registered on machine remote-box.*cannot call parent_report.*255/);
-});
-
-test('agent_read for a child on another machine reads its transcript over ssh, and falls back to its last report', async (t) => {
-  const w = world(t);
-  const session = '7f3c2a10-aaaa-bbbb-cccc-000000000001';
-  const cwd = '/work/far';
-  const transcriptDir = path.join(path.dirname(w.remoteHome), '.claude', 'projects', claudeProjectDir(cwd));
-  fs.mkdirSync(transcriptDir, { recursive: true });
-  fs.writeFileSync(path.join(transcriptDir, `${session}.jsonl`), `${JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'the remote answer' }] } })}\n`);
-
-  const parent = saveParent(emptyParent('claude-code', 'reader', '/work'));
-  const exited = { ...childRecord('c-read', 'remote-box'), cwd, session: { kind: 'id', value: session }, exitedAt: new Date().toISOString(), lastReport: { status: 'done' as const, text: 'the reported answer', at: new Date().toISOString(), seq: 1 } };
-  upsertChild(parent.id, exited);
-  const client = new HerdrClient({ socketPath: path.join(w.root, 'no-herdr.sock') });
-  const remote = remoteOps(async (label) => ({ id: label, label, target: label, session: 'default', enabled: true }));
-  const ctx = { client, clientFor: async () => client, parentId: parent.id, watcher: new Watcher({ client, parentId: parent.id, onEntries: () => {} }), remote };
-
-  assert.equal((await runBellwetherTool(ctx, 'agent_read', { child: 'c-read' })).trim(), 'the remote answer');
-  assert.deepEqual(w.ssh.remoteCalls()[0]?.argv, ['last-message', '--harness', 'claude-code', '--session', session, '--cwd', cwd]);
-
-  w.ssh.plan(['refuse']);
-  const fallback = await runBellwetherTool(ctx, 'agent_read', { child: 'c-read' });
-  assert.match(fallback, /could not be read/);
-  assert.match(fallback, /the reported answer/);
-});
-
-test('the relay outbox and records are private to the operator', async (t) => {
-  const w = world(t);
-  parentHolds(w, 'c-mode');
-  saveRelayRecord(relayRecord('c-mode'));
-  w.ssh.plan(['refuse']);
-  const daemon = await childDaemon(w, { initialDelayMs: 60_000 });
-  const client = await childClient(w, 'c-mode');
-  await client.tool('parent_report', { status: 'done', text: 'secret' });
-  const [entry] = fs.readdirSync(relayOutboxDir());
-  assert.equal(fs.statSync(path.join(relayOutboxDir(), entry ?? '')).mode & 0o777, 0o600);
-  assert.equal(fs.statSync(relayChildPath('c-mode')).mode & 0o777, 0o600);
-  assert.equal(fs.statSync(relayOutboxDir()).mode & 0o777, 0o700);
+  const ops = remoteOps(machines);
+  const { reportWarning } = await spawnChild(new HerdrClient({ socketPath: herdr.socketPath }), parent, { kind: 'pi', name: 'unregistered', host: 'child-box' }, undefined, { registerRemote: (entry) => ops.register(parent, entry) });
+  assert.match(reportWarning ?? '', /could not be registered on machine child-box.*cannot call parent_report.*255/);
 });
 
 /** A fake herdr whose new pane goes idle after the start, so a Claude Code spawn gets past its dialog wait. */
@@ -388,25 +443,22 @@ async function idleHerdr(t: test.TestContext, respond?: FakeHerdrOptions['respon
   return herdr;
 }
 
-const profiles = async (label: string) => ({ id: label, label, target: label, session: 'default', enabled: true });
-
 function startArgs(herdr: Awaited<ReturnType<typeof startFakeHerdr>>): string[] {
   return (herdr.requests.find((request) => request.method === 'agent.start')?.params['args'] as string[]) ?? [];
 }
 
 test('a spawn on another machine copies the brief there over ssh, and points the child at that copy', async (t) => {
   const w = world(t);
-  fs.writeFileSync(configPath(), JSON.stringify({ sshTarget: 'parent-box' }));
   const parent = saveParent(emptyParent('claude-code', 'brief-sender', '/work', { workspaceId: 'w1' }));
   const herdr = await idleHerdr(t);
-  const ops = remoteOps(profiles);
+  const ops = remoteOps(machines);
   const brief = 'Line one of the task.\nLine two, with a \'quote\' and $HOME left alone.\n';
-  const { child } = await spawnChild(new HerdrClient({ socketPath: herdr.socketPath }), parent, { kind: 'claude', name: 'briefed', host: 'remote-box', prompt: brief, startupTimeoutMs: 2_000, redrawMs: 10 }, undefined, { registerRemote: (entry, text) => ops.register(parent, entry, text) });
+  const { child } = await spawnChild(new HerdrClient({ socketPath: herdr.socketPath }), parent, { kind: 'claude', name: 'briefed', host: 'child-box', prompt: brief, startupTimeoutMs: 2_000, redrawMs: 10 }, undefined, { registerRemote: (entry, text) => ops.register(parent, entry, text) });
 
-  const remoteBrief = path.join(w.remoteHome, 'prompts', `${child.id}.md`);
+  const remoteBrief = path.join(w.childHome, 'prompts', `${child.id}.md`);
   assert.equal(fs.readFileSync(remoteBrief, 'utf8'), brief, 'the brief arrived whole on the child\'s machine');
   assert.equal(fs.statSync(remoteBrief).mode & 0o777, 0o600);
-  assert.ok(!fs.existsSync(path.join(w.childHome, 'prompts', `${child.id}.md`)), 'no brief was left on the parent\'s machine');
+  assert.ok(!fs.existsSync(path.join(w.parentHome, 'prompts', `${child.id}.md`)), 'no brief was left on the parent\'s machine');
   assert.ok(startArgs(herdr).includes(`@${remoteBrief}`), `the child is pointed at the copy that exists where it runs: ${startArgs(herdr).join(' ')}`);
   // The brief never rode on a command line, on either machine.
   for (const argv of w.ssh.calls()) assert.ok(!argv.join(' ').includes('Line one of the task'));
@@ -416,8 +468,8 @@ test('a spawn on another machine copies the brief there over ssh, and points the
   // The child's exit takes the copy with it.
   await ops.cleanup(child);
   assert.ok(!fs.existsSync(remoteBrief));
-  assert.ok(!fs.existsSync(path.join(w.remoteHome, 'mcp', `${child.id}.json`)));
-  assert.ok(inHome(w.remoteHome, () => readRelayRecord(child.id)), 'the relay record stays for a report still in flight');
+  assert.ok(!fs.existsSync(path.join(w.childHome, 'mcp', `${child.id}.json`)));
+  assert.ok(inHome(w.childHome, () => readRelayRecord(child.id)), 'the relay record stays for a report still in flight');
 });
 
 test('a spawn on another machine whose brief cannot be copied fails, with no tab and no record', async (t) => {
@@ -425,30 +477,29 @@ test('a spawn on another machine whose brief cannot be copied fails, with no tab
   w.ssh.plan(['refuse']);
   const parent = saveParent(emptyParent('claude-code', 'brief-lost', '/work', { workspaceId: 'w1' }));
   const herdr = await idleHerdr(t);
-  const ops = remoteOps(profiles);
+  const ops = remoteOps(machines);
   await assert.rejects(
-    spawnChild(new HerdrClient({ socketPath: herdr.socketPath }), parent, { kind: 'claude', name: 'mute', host: 'remote-box', prompt: 'do the thing', startupTimeoutMs: 2_000, redrawMs: 10 }, undefined, { registerRemote: (entry, text) => ops.register(parent, entry, text) }),
-    /mute was not started on machine remote-box, because its brief could not be copied there: ssh remote-box exited with 255/,
+    spawnChild(new HerdrClient({ socketPath: herdr.socketPath }), parent, { kind: 'claude', name: 'mute', host: 'child-box', prompt: 'do the thing', startupTimeoutMs: 2_000, redrawMs: 10 }, undefined, { registerRemote: (entry, text) => ops.register(parent, entry, text) }),
+    /mute was not started on machine child-box, because its brief could not be copied there: ssh child-box exited with 255/,
   );
   assert.equal(herdr.requests.filter((request) => request.method === 'tab.create').length, 0, 'no tab was opened');
   assert.equal(herdr.requests.filter((request) => request.method === 'agent.start').length, 0);
   assert.deepEqual(readParent(parent.id)?.children, [], 'the record went with the spawn');
-  assert.ok(!fs.existsSync(path.join(w.childHome, 'prompts')) || fs.readdirSync(path.join(w.childHome, 'prompts')).length === 0);
+  assert.ok(!fs.existsSync(path.join(w.parentHome, 'prompts')) || fs.readdirSync(path.join(w.parentHome, 'prompts')).length === 0);
 });
 
 test('a spawn that fails after its brief was copied removes the copy on the child\'s machine', async (t) => {
   const w = world(t);
-  fs.writeFileSync(configPath(), JSON.stringify({ sshTarget: 'parent-box' }));
   const parent = saveParent(emptyParent('pi', 'start-fails', '/work', { workspaceId: 'w1' }));
   const herdr = await idleHerdr(t, (request) => (request.method === 'agent.start' ? { error: { code: 'agent_start_failed', message: 'no such agent kind' } } : undefined));
-  const ops = remoteOps(profiles);
+  const ops = remoteOps(machines);
   await assert.rejects(
-    spawnChild(new HerdrClient({ socketPath: herdr.socketPath }), parent, { kind: 'pi', name: 'never-ran', host: 'remote-box', prompt: 'a task' }, undefined, { registerRemote: (entry, text) => ops.register(parent, entry, text), cleanupRemote: (entry) => ops.cleanup(entry) }),
+    spawnChild(new HerdrClient({ socketPath: herdr.socketPath }), parent, { kind: 'pi', name: 'never-ran', host: 'child-box', prompt: 'a task' }, undefined, { registerRemote: (entry, text) => ops.register(parent, entry, text), cleanupRemote: (entry) => ops.cleanup(entry) }),
     /no such agent kind/,
   );
   const [registered] = w.ssh.remoteCalls();
   const childId = registered?.argv[registered.argv.indexOf('--child') + 1] ?? '';
   assert.ok(childId);
   assert.ok(w.ssh.remoteCalls().some((call) => call.argv[0] === 'relay-cleanup' && call.argv.includes(childId)));
-  assert.ok(!fs.existsSync(path.join(w.remoteHome, 'prompts', `${childId}.md`)), 'the copied brief is gone');
+  assert.ok(!fs.existsSync(path.join(w.childHome, 'prompts', `${childId}.md`)), 'the copied brief is gone');
 });

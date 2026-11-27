@@ -68,7 +68,7 @@ export function relayChildPath(childId: string): string {
   return path.join(relayDir(), 'children', `${slug(childId)}.json`);
 }
 
-/** Reports waiting to reach another machine, one file each, named by receipt. */
+/** Reports waiting for a parent's daemon on another machine to collect them, one file each, named by receipt. */
 export function relayOutboxDir(): string {
   return path.join(relayDir(), 'outbox');
 }
@@ -77,7 +77,7 @@ export function relayOutboxPath(receipt: string): string {
   return path.join(relayOutboxDir(), `${slug(receipt)}.json`);
 }
 
-/** The machine settings an operator may write by hand. */
-export function configPath(): string {
-  return path.join(bellwetherHome(), 'config.json');
+/** What a parent's daemon learnt about each remote host it connects to: the last drain, the last error. */
+export function relayHostsPath(): string {
+  return path.join(relayDir(), 'hosts.json');
 }

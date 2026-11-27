@@ -10,6 +10,7 @@ import { Watcher } from '../core/watcher.ts';
 import { runBellwetherTool, type ToolContext } from '../integrations/tools.ts';
 import type { CallerIdentity, OutboxEntry } from '../core/types.ts';
 import type { ParentHello } from './protocol.ts';
+import type { RelayLinks } from './relay-links.ts';
 
 export interface ParentService {
   /** Run one Bellwether tool for a client, and return its text. `caller` says who asked. */
@@ -25,10 +26,15 @@ export interface ParentService {
   stop(): void;
 }
 
-export type ServiceFactory = (parent: ParentHello, id: string) => ParentService;
+/** What the daemon lends every parent service: the connections to remote hosts it holds. */
+export interface ServiceDeps {
+  links?: RelayLinks;
+}
+
+export type ServiceFactory = (parent: ParentHello, id: string, deps: ServiceDeps) => ParentService;
 
 /** The herdr-backed service, one per parent session. */
-export function createHerdrService(parent: ParentHello, id: string): ParentService {
+export function createHerdrService(parent: ParentHello, id: string, deps: ServiceDeps = {}): ParentService {
   const existing = readParent(id);
   const record = existing ?? saveParent(emptyParent(parent.harness, parent.session, parent.cwd, { host: parent.host, paneId: parent.paneId, workspaceId: parent.workspaceId, depth: parent.depth }));
   if (!existing) saveParent(record);
@@ -37,9 +43,11 @@ export function createHerdrService(parent: ParentHello, id: string): ParentServi
   // One client per herdr host, shared by the tools and the watcher, so a
   // machine's bridge is dialled per request and its profile looked up once.
   const clientFor = machineClients(client);
-  const remote = remoteOps();
-  const watcher = new Watcher({ client, clientFor, parentId: record.id, onEntries: (entries) => handler?.(entries), cleanupRemote: (child) => remote.cleanup(child) });
-  const context: ToolContext = { client, clientFor, parentId: record.id, watcher, remote };
+  const remote = remoteOps(undefined, {}, deps.links);
+  const relayState = deps.links ? (host: string) => deps.links?.state(host) : undefined;
+  const watcher = new Watcher({ client, clientFor, parentId: record.id, onEntries: (entries) => handler?.(entries), cleanupRemote: (child) => remote.cleanup(child), relayState });
+  // A remote child's reports and reads both go over the connection the daemon holds to its machine.
+  const context: ToolContext = { client, clientFor, parentId: record.id, watcher, remote, relayState };
   const paneWatches = new Set<{ close: () => void }>();
   watcher.start();
   return {

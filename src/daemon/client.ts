@@ -8,7 +8,8 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { BELLWETHER_VERSION } from '../core/version.ts';
-import { DAEMON_PROTOCOL, MAX_DAEMON_FRAME_BYTES, formatRequest, type DaemonReply, type ParentHello, type ReportRequest } from './protocol.ts';
+import { DAEMON_PROTOCOL, MAX_DAEMON_FRAME_BYTES, formatRequest, type DaemonReply, type ParentHello, type RelayHostState, type ReportRequest } from './protocol.ts';
+import { readLock } from './lock.ts';
 import { canConnect } from './server.ts';
 import type { OutboxEntry } from '../core/types.ts';
 
@@ -460,6 +461,9 @@ async function waitForSocket(socketPath: string): Promise<void> {
   throw new Error(`the daemon did not answer on ${socketPath}`);
 }
 
+/** The exit code `bellwether report` uses for a report its daemon refused, which a retry cannot fix. */
+export const REFUSED_EXIT = 65;
+
 /** The daemon took the report and refused it, which no retry changes. */
 export class ReportRefused extends Error {
   constructor(message: string) {
@@ -533,6 +537,28 @@ function askOnce(socketPath: string, line: string, timeoutMs: number): Promise<D
     });
     socket.once('connect', () => socket.write(line));
   });
+}
+
+/**
+ * Make sure this install's daemon answers on a socket: drain one that speaks
+ * an older protocol, and start one when none answers. `bellwether
+ * relay-bridge` runs it before it joins a parent's connection to the socket.
+ */
+export async function ensureDaemon(home: string, socketPath: string, entry?: string): Promise<void> {
+  if (await canConnect(socketPath)) {
+    const lock = readLock(home);
+    if (!lock || lock.protocol >= DAEMON_PROTOCOL) return;
+    await drainSocket(socketPath);
+  }
+  await startDaemonProcess(home, socketPath, entry);
+}
+
+/** The state of every connection the daemon on a socket holds to a remote host. */
+export async function relayStatus(socketPath: string, timeoutMs = START_TIMEOUT_MS): Promise<RelayHostState[]> {
+  const reply = await askOnce(socketPath, formatRequest({ type: 'relay-status', id: 's1' }), timeoutMs);
+  if (reply.type === 'relay-status') return reply.hosts;
+  if (reply.type === 'error') throw new Error(`${reply.code}: ${reply.message}`);
+  throw new Error(`the daemon answered ${reply.type} to a relay status request`);
 }
 
 /**

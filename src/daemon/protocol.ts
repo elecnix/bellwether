@@ -1,12 +1,20 @@
 // The daemon protocol: one request per line, JSON, on a local socket. The
 // version travels in every hello, so a client newer than a running daemon can
 // ask it to drain and start the new one.
-import type { CallerIdentity, Harness, OutboxEntry, ReportStatus } from '../core/types.ts';
+import type { CallerIdentity, Harness, OutboxEntry, RelayHostState, ReportStatus } from '../core/types.ts';
+
+export type { RelayHostState, RelayLinkStatus } from '../core/types.ts';
 
 // 2: a call carries the caller identity, and parent_report routes by it.
 // 3: a report request, which needs no hello, so `bellwether report` can post
-//    a report carried from another machine.
-export const DAEMON_PROTOCOL = 3;
+//    a report from a shell.
+// 4: the relay turns round. A parent's daemon connects to a child machine's
+//    daemon over SSH, through `bellwether relay-bridge`, and subscribes to the
+//    reports that wait there for its parents (relay-subscribe). It
+//    acknowledges each one (relay-ack), reads a transcript over the same
+//    connection (relay-read), and `bellwether doctor` asks it for the state of
+//    every connection (relay-status). A child's machine never connects out.
+export const DAEMON_PROTOCOL = 4;
 
 /** The largest line a daemon or client will read, matching the herdr client. */
 export const MAX_DAEMON_FRAME_BYTES = 4 * 1024 * 1024;
@@ -73,7 +81,8 @@ export interface WatchRequest {
 
 /**
  * Post one report without a session. The daemon routes it by its own records:
- * into a parent it holds, or on to the parent's machine for a relay child.
+ * into a parent it holds, or into the relay outbox for a parent on another
+ * machine, whose daemon collects it.
  */
 export interface ReportRequest {
   type: 'report';
@@ -88,7 +97,41 @@ export interface ReportRequest {
   };
 }
 
-export type DaemonRequest = HelloRequest | CallRequest | ReceiptRequest | ByeRequest | DrainRequest | WatchRequest | ReportRequest;
+/**
+ * From a parent's daemon on another machine: send every report that waits
+ * here for these parents, then each new one as it is written. A second
+ * subscribe on the same connection replaces the list and sends the waiting
+ * reports again, which is how the parent asks for a fresh drain.
+ */
+export interface RelaySubscribeRequest {
+  type: 'relay-subscribe';
+  protocol: number;
+  parentIds: string[];
+}
+
+/** The parent's daemon took a report, or refused it for good. Either way it is not sent again. */
+export interface RelayAckRequest {
+  type: 'relay-ack';
+  receipt: string;
+  refused?: string;
+}
+
+/** Read a harness session's last assistant message from this machine's transcript. */
+export interface RelayReadRequest {
+  type: 'relay-read';
+  id: string;
+  harness: string;
+  session: string;
+  cwd?: string;
+}
+
+/** The state of every connection this daemon holds to another machine. */
+export interface RelayStatusRequest {
+  type: 'relay-status';
+  id: string;
+}
+
+export type DaemonRequest = HelloRequest | CallRequest | ReceiptRequest | ByeRequest | DrainRequest | WatchRequest | ReportRequest | RelaySubscribeRequest | RelayAckRequest | RelayReadRequest | RelayStatusRequest;
 
 export interface HelloReply {
   type: 'hello';
@@ -130,7 +173,46 @@ export interface StatusPush {
   status: string;
 }
 
-export type DaemonReply = HelloReply | ResultReply | EventsPush | ErrorReply | ClosedReply | StatusPush;
+/** The answer to a relay-subscribe: the waiting reports follow, then relay-drained. */
+export interface RelayHelloReply {
+  type: 'relay-hello';
+  protocol: number;
+  pid: number;
+  /** How many reports wait for the subscribed parents. */
+  waiting: number;
+}
+
+/** One report for a subscribed parent. */
+export interface RelayReportPush {
+  type: 'relay-report';
+  report: RelayReport;
+}
+
+/** Every report that waited when the subscribe arrived has been sent. */
+export interface RelayDrainedPush {
+  type: 'relay-drained';
+  sent: number;
+}
+
+/** The answer to relay-status. */
+export interface RelayStatusReply {
+  type: 'relay-status';
+  id: string;
+  hosts: RelayHostState[];
+}
+
+export type DaemonReply = HelloReply | ResultReply | EventsPush | ErrorReply | ClosedReply | StatusPush | RelayHelloReply | RelayReportPush | RelayDrainedPush | RelayStatusReply;
+
+/** A report as it crosses from a child's machine to its parent's. The receipt makes it unique. */
+export interface RelayReport {
+  receipt: string;
+  childId: string;
+  parentId: string;
+  status: ReportStatus;
+  text: string;
+  at: string;
+}
+
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -184,6 +266,31 @@ export function parseRequest(line: string): DaemonRequest {
       const parentId = text(report['parentId']);
       const receipt = text(report['receipt']);
       return { type: 'report', id, protocol, report: { childId, status, text: body, ...(parentId ? { parentId } : {}), ...(receipt ? { receipt } : {}) } };
+    }
+    case 'relay-subscribe': {
+      const protocol = value['protocol'];
+      if (typeof protocol !== 'number' || protocol !== DAEMON_PROTOCOL) throw new ProtocolError('protocol_mismatch', `the relay subscribe spoke protocol ${String(protocol)}`);
+      const parentIds = Array.isArray(value['parentIds']) ? value['parentIds'].filter((entry): entry is string => typeof entry === 'string' && entry.length > 0) : [];
+      return { type: 'relay-subscribe', protocol, parentIds };
+    }
+    case 'relay-ack': {
+      const receipt = text(value['receipt']);
+      if (!receipt) throw new ProtocolError('invalid_ack', 'a relay acknowledgement needs a receipt');
+      const refused = text(value['refused']);
+      return refused ? { type: 'relay-ack', receipt, refused } : { type: 'relay-ack', receipt };
+    }
+    case 'relay-read': {
+      const id = text(value['id']);
+      const harness = text(value['harness']);
+      const session = text(value['session']);
+      if (!id || !harness || !session) throw new ProtocolError('invalid_read', 'a relay read needs an id, a harness and a session');
+      const cwd = text(value['cwd']);
+      return cwd ? { type: 'relay-read', id, harness, session, cwd } : { type: 'relay-read', id, harness, session };
+    }
+    case 'relay-status': {
+      const id = text(value['id']);
+      if (!id) throw new ProtocolError('invalid_status', 'a relay status request needs an id');
+      return { type: 'relay-status', id };
     }
     case 'watch': {
       const paneId = text(value['paneId']);

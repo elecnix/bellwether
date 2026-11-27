@@ -14,7 +14,7 @@ import { RETIRE_TOOL, realRetireOps, requestRetirement, type RetireOps } from '.
 import type { RemoteOps } from '../core/remote.ts';
 import { lastAssistantMessage } from '../core/transcript.ts';
 import type { Watcher } from '../core/watcher.ts';
-import type { CallerIdentity, ChildRecord, ReportStatus } from '../core/types.ts';
+import type { CallerIdentity, ChildRecord, RelayHostState, ReportStatus } from '../core/types.ts';
 
 export interface ToolContext {
   /** The parent's own herdr. */
@@ -25,8 +25,10 @@ export interface ToolContext {
   watcher: Watcher;
   /** git, gh and the process table, for the retirement request. Tests pass a fake. */
   retireOps?: RetireOps;
-  /** SSH to a child's machine: registering it there, and reading its transcript. */
+  /** A child's machine: registering it there over SSH, and reading its transcript over the daemon's connection. */
   remote?: RemoteOps;
+  /** How the daemon's connection to a remote host stands, so a list can say which hosts it is not hearing from. */
+  relayState?: (host: string) => RelayHostState | undefined;
 }
 
 function clientFor(ctx: ToolContext, host: string): Promise<HerdrClient> {
@@ -34,7 +36,7 @@ function clientFor(ctx: ToolContext, host: string): Promise<HerdrClient> {
   return host === LOCAL_HOST ? Promise.resolve(ctx.client) : Promise.reject(new Error(`This session cannot reach herdr machine ${host}.`));
 }
 
-const MACHINE_DESCRIPTION = 'A saved herdr machine, by label or id as `herdr machine list` shows it. Omit it for this machine. A claude or pi child on another machine is registered there over SSH, and that machine\'s Bellwether daemon carries its parent_report back to this one, so the machine needs Bellwether installed.';
+const MACHINE_DESCRIPTION = 'A saved herdr machine, by label or id as `herdr machine list` shows it. Omit it for this machine. A claude or pi child on another machine is registered there over SSH, and this machine\'s Bellwether daemon keeps an SSH connection open to it to collect its parent_report and read its transcript, so the machine needs Bellwether installed. That machine never connects back.';
 
 export interface ToolDefinition {
   name: string;
@@ -172,12 +174,22 @@ function resolve(record: ReturnType<typeof readParent>, child: string): ChildRec
   return record ? childById(record, child) : undefined;
 }
 
-function describeChild(child: ChildRecord, watcher: Watcher): string {
+/** A child's host, with a warning when the daemon is not hearing from that machine. */
+function hostColumn(child: ChildRecord, relayState: ToolContext['relayState']): string {
+  const host = hostOf(child);
+  if (host === LOCAL_HOST || !relayState) return host;
+  const state = relayState(host);
+  if (!state) return child.exitedAt ? host : `${host} (no connection)`;
+  if (state.status === 'connected') return host;
+  return `${host} (not heard from: ${state.status}${state.lastError ? `, ${state.lastError}` : ''})`;
+}
+
+function describeChild(child: ChildRecord, watcher: Watcher, relayState?: ToolContext['relayState']): string {
   const unread = watcher.outboxEntries().filter((entry) => !entry.read && entry.childId === child.id).length;
   const age = Math.max(0, Math.round((Date.now() - Date.parse(child.startedAt)) / 1000));
   const retire = child.retireOutcome === 'removed' ? ', retired' : child.retireOutcome === 'refused' ? ', retirement refused' : child.retireRequestedAt ? ', retirement requested' : '';
   const state = `${child.exitedAt ? `exited${child.exitCode === undefined ? '' : ` (${child.exitCode})`}` : child.lastStatus}${retire}`;
-  return `${child.name}\t${child.kind}\t${state}\t${age}s\t${hostOf(child)}\t${child.paneId}\tunread ${unread}\t${child.cwd ?? ''}`;
+  return `${child.name}\t${child.kind}\t${state}\t${age}s\t${hostColumn(child, relayState)}\t${child.paneId}\tunread ${unread}\t${child.cwd ?? ''}`;
 }
 
 /**
@@ -269,7 +281,7 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
   if (name === 'agent_list') {
     if (!record.children.length) return 'No children yet. Start one with agent_spawn.';
     const header = 'name\tkind\tstate\tage\thost\tpane\tunread\tcwd';
-    return [header, ...record.children.map((child) => describeChild(child, ctx.watcher))].join('\n');
+    return [header, ...record.children.map((child) => describeChild(child, ctx.watcher, ctx.relayState))].join('\n');
   }
 
   const target = optionalString(args['child']);
@@ -330,8 +342,9 @@ function remoteCleanup(ctx: ToolContext): ((child: ChildRecord) => Promise<void>
 
 /**
  * Read a child on another machine. Its transcript sits on that machine's disk,
- * so the read goes over the same SSH hop as its reports and works after the
- * child exits, while the transcript is still there. When the hop fails, the
+ * so the read goes over the connection the daemon holds to that machine for
+ * its reports, and works after the child exits, while the transcript is still
+ * there. When the hop fails, the
  * last report the child sent is what this machine holds, and then the screen,
  * which only a live child has.
  */

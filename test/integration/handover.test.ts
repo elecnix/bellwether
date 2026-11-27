@@ -10,12 +10,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
-import { DaemonClient, daemonSessions, handOverDaemon } from '../../src/daemon/client.ts';
+import { pathToFileURL } from 'node:url';
+import { DaemonClient, daemonSessions, ensureDaemon, handOverDaemon } from '../../src/daemon/client.ts';
 import { isAlive, readLock } from '../../src/daemon/lock.ts';
 import { DAEMON_PROTOCOL } from '../../src/daemon/protocol.ts';
 import { startDaemon, type ParentService } from '../../src/daemon/server.ts';
 import { describeUpgrade, gatherUpgrade } from '../../src/daemon/upgrade-status.ts';
 import { emptyParent, listParents, saveParent } from '../../src/core/registry.ts';
+import { PI_EXTENSION_ENV, piExtensionEntry, standDown } from '../../src/core/pi-extension.ts';
 import { BELLWETHER_VERSION } from '../../src/core/version.ts';
 import type { ChildRecord } from '../../src/core/types.ts';
 import { daemonsUnder, stopDaemonsUnder } from '../fixtures/daemons.ts';
@@ -210,4 +212,37 @@ test('a hand-over goes ahead after a crash on either side', async (t) => {
   const healed = describeUpgrade(await gatherUpgrade(machine.home, machine.socket));
   assert.deepEqual(healed.leftovers, []);
   assert.equal(healed.state, 'finished', healed.lines.join('\n'));
+});
+
+test('a child an older daemon starts runs that daemon\'s adapter and keeps it, until relay-bridge from the newer install hands it over', async (t) => {
+  const machine = space(t);
+  const old = makeInstall(machine.root, 'old-install', OLD_VERSION, DAEMON_PROTOCOL - 1);
+  const oldModule = await old.client();
+  machine.track(await oldModule.DaemonClient.connect(parent('old-parent', machine.herdr), { home: machine.home, socketPath: machine.socket }));
+  const oldDaemonPid = readLock(machine.home)?.pid;
+  assert.equal(readLock(machine.home)?.version, OLD_VERSION);
+
+  // That daemon starts a pi child with -e naming the extension of the install the daemon runs from,
+  // whatever newer copy pi's settings hold. The newer copy sees the variable and the -e, and stands down.
+  const oldPi = (await import(pathToFileURL(path.join(old.root, 'src', 'core', 'pi-extension.ts')).href)) as typeof import('../../src/core/pi-extension.ts');
+  const childExtension = oldPi.piExtensionEntry();
+  assert.ok(childExtension.startsWith(old.root), childExtension);
+  assert.equal(standDown(piExtensionEntry(), { [PI_EXTENSION_ENV]: childExtension }, ['pi', '-e', childExtension]), true);
+
+  // So the child's client is the older install's, and it keeps the daemon: no child of that daemon hands it over.
+  const childSession = machine.track(await oldModule.DaemonClient.connect(parent('child-session', machine.herdr), { home: machine.home, socketPath: machine.socket }));
+  assert.equal(childSession.pid, oldDaemonPid);
+  assert.equal(readLock(machine.home)?.pid, oldDaemonPid);
+
+  // Doctor on the newer install says what the upgrade waits for, and what hands it over now.
+  const waiting = describeUpgrade(await gatherUpgrade(machine.home, machine.socket));
+  assert.equal(waiting.state, 'in-progress');
+  assert.match(waiting.lines.join('\n'), /upgrade: in progress, because the daemon runs an older release\. A child that daemon starts runs the daemon's own adapter and never hands it over\. Run bellwether relay-bridge < \/dev\/null from this install to hand it over now; it ends no session\./);
+
+  // What `bellwether relay-bridge` runs first, from the newer install: the hand-over, with the child still connected.
+  await ensureDaemon(machine.home, machine.socket);
+  const after = readLock(machine.home);
+  assert.equal(after?.version, BELLWETHER_VERSION);
+  assert.notEqual(after?.pid, oldDaemonPid);
+  await until(async () => (childSession.pid === after?.pid && (await childSession.tool('agent_list', {}).catch(() => undefined)) ? true : undefined), 'the child to reach the new daemon');
 });

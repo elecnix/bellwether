@@ -2,11 +2,11 @@
 
 Bellwether reaches a machine through three installs: the `bellwether` command, the Pi extension and the Claude Code plugin. Each one updates on its own. None needs a restart.
 
-A session that starts after the upgrade runs the new code, while a session that started before it keeps working until it ends on its own, so nobody has to coordinate the switch across a busy machine. The upgrade finishes itself.
+A session you start by hand after the upgrade runs the new code and hands the daemon over to it. A session that started earlier keeps working until it ends, so nobody has to coordinate the switch across a busy machine. On a machine where a daemon starts every session, nothing moves the daemon until you run one command, given in step 4.
 
 ## What you run on each machine
 
-1. `brew upgrade bellwether` where the machine uses the tap. Without Homebrew, run `npm install -g @elecnix/bellwether`. On a machine you reach by SSH, `command -v brew` tells you which one applies.
+1. `brew upgrade bellwether` where the machine uses the tap. Without Homebrew, run `npm install -g @elecnix/bellwether`. On an SSH machine, a login shell finds both commands: `ssh host 'bash -lc "command -v brew bellwether"'`. You can also give the absolute path, such as `/opt/homebrew/bin/brew`. A plain `ssh host command -v brew` runs without the login shell's `PATH`. On a Mac, Homebrew adds `/opt/homebrew/bin` only in that login shell, so the plain probe finds neither `brew` nor `bellwether` on a machine that has both.
 2. `pi install npm:@elecnix/bellwether` for the Pi extension, which Homebrew doesn't touch. When `pi list` also shows Bellwether at a checkout or another directory, the install adds the npm package beside that entry and leaves it there. Remove the old entry first, then install:
 
    ```sh
@@ -17,23 +17,32 @@ A session that starts after the upgrade runs the new code, while a session that 
 
    Give `pi remove` the source exactly as `pi list` prints it, and run it from `~/.pi/agent`. pi's settings hold a relative source relative to that directory, but `pi remove` resolves it against the working directory, so from anywhere else it answers `No matching package found`. Order matters because a session started by hand loads every copy its settings list, and pi exits at startup when two extensions register the same tool. With the old entry removed first, a session that starts before the install ends runs without Bellwether tools, where the other order leaves a moment in which a new session doesn't start at all.
 3. `claude plugin marketplace update elecnix-plugins`, then `claude plugin update bellwether@elecnix-plugins`. The marketplace installs the plugin from this repository's default branch, not from npm.
-4. Start your next session as you would any other.
+4. Start your next session by hand, as you would any other, and it hands the daemon over. On a machine where nobody starts a session by hand, because a parent's daemon starts every one, run the new install's `bellwether relay-bridge < /dev/null` instead. It hands the daemon over, then connects briefly. It exits when its input closes. Over SSH, give its absolute path or run it through `bash -lc`, as in step 1.
 
-Leave the sessions that are already open alone.
+Leave the sessions that are already open alone. Then run `bellwether doctor` from the new install, and check that its `versions:` line shows the daemon on the new release.
 
 ## What happens next
 
-One daemon runs per machine, and the newest install on that machine sets the code it runs.
+One daemon runs per machine. Any client from a newer install hands it over on connecting, so the install that connects newest sets the daemon's code. Each of these is such a client:
 
-The first session that starts from the new install finds the old daemon and hands it over in three steps:
+- a Pi or Claude Code session you start by hand, which loads the extension or the plugin from its install
+- `bellwether relay-bridge`, which a parent's daemon on another machine runs over SSH, and which you can run yourself
+- `bellwether report`, which a child without an adapter runs to report
+- a client that doesn't find a daemon at all, which starts one from its own install
+
+Children that a daemon starts never hand that daemon over. The daemon gives each child the adapter from its own install: a pi child gets `-e` naming that install's extension, and a newer copy in pi's settings registers nothing. A Claude Code child's MCP config runs that install's channel server. So the child's adapter is never newer than the daemon's install. It loads whatever files sit at that install's path when the child starts. A daemon running from a directory with a version in its name, such as a Claude Code plugin cache, keeps giving its children that version after every install on the machine has moved on.
+
+The first client from the new install finds the old daemon and hands it over in three steps:
 
 - It asks the old daemon to drain. The old daemon stops taking connections, answers the calls it is running, a spawn halfway through included, and exits.
-- It starts a daemon from the new install. The registry, the outboxes and the relay outbox live on disk, so the new daemon picks up every child, every unread event and every report that waits for a parent on another machine.
+- Then a daemon starts from the new install. The registry, the outboxes and the relay outbox live on disk, so the new daemon picks up every child, every unread event and every report that waits for a parent on another machine.
 - Each open session reconnects to the new daemon within a second. The new daemon serves every protocol back to the last change that broke an older session, so an older session's tools keep working. Those tools run in the new daemon, so even an older session gets the fixes that live there.
 
-An older session keeps the adapter it loaded when it started: the Pi extension or the Claude Code channel server. A live session can't swap its adapter. When the session ends on its own, its next start loads the new one.
+An older session keeps the adapter it loaded when it started: the Pi extension or the Claude Code channel server. A live session can't swap its adapter. When the session ends, its next start loads the new one. A session that a daemon started ends only when its parent stops or restarts it.
 
-A machine can run sessions from two installs at once, such as a checkout and a package. The newer release always keeps the daemon, so the two never take turns replacing it.
+A daemon can run from none of the three installs. A Claude Code session that started from an older plugin cache can have started the daemon from that cache, and the daemon keeps running from there after the plugin updates. The `versions:` line in `bellwether doctor` gives the running daemon's version and its entry point. An entry point under `~/.claude/plugins/cache/` with an older version in its path is such a daemon. `bellwether relay-bridge < /dev/null` from the new install replaces it.
+
+Sessions from two installs can run at once on one machine, such as a checkout and a package. The newer release always keeps the daemon, so the two never take turns replacing it.
 
 On a machine you reach by SSH, the upgrade works the same way. When a parent's daemon connects, `bellwether relay-bridge` runs from that machine's install and hands over that machine's daemon if it is older.
 
@@ -62,7 +71,7 @@ Claude Code asks for the list again when the server says it changed. The pi exte
 Its last daemon line says one of five things:
 
 - `upgrade: finished` when every session's adapter runs the daemon's build, or an older release that the daemon still serves. The daemon must also be running and accepting calls, with its hand-over done and every crash leftover gone. The line gives the daemon's build. `describeUpgrade` in `src/daemon/upgrade-status.ts` holds this definition.
-- `upgrade: in progress` with the reason, such as an older daemon or a session on the daemon's version but another commit. You don't need to restart anything. The upgrade finishes as those sessions end.
+- `upgrade: in progress` with the reason, such as an older daemon or a session on the daemon's version but another commit, and what the upgrade waits for. You don't need to restart anything. For an older daemon, the line says that the daemon's own children never hand it over, and gives `bellwether relay-bridge < /dev/null` to run from this install. For a session on another build, it waits for that session to end, which for a session a daemon started means its parent stops or restarts it. For a hand-over under way, it waits up to 90 s.
 - `upgrade: not known to be finished` when doctor can't compare builds: the daemon didn't list its sessions, or the daemon or a session doesn't report its commit.
 - `upgrade: this install ... is older than the daemon` when another install on the machine started a newer daemon. This install's sessions keep working on the daemon's code, without the tools named on the pairing line. Update this install when convenient.
 - `upgrade: nothing to finish` when no daemon runs

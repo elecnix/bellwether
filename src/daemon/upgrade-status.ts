@@ -225,6 +225,8 @@ export function describeUpgrade(input: UpgradeInput): UpgradeReport {
   const leftovers: string[] = [];
   const olderSessions: string[] = [];
   const pending: string[] = [];
+  // What the upgrade waits for, one sentence per kind of reason, in the order the reasons arise.
+  const waits = new Set<string>();
   const unknown: string[] = [];
 
   const sessions = input.sessions && 'sessions' in input.sessions ? input.sessions : undefined;
@@ -236,7 +238,10 @@ export function describeUpgrade(input: UpgradeInput): UpgradeReport {
   lines.push(versions.line);
 
   if (running) {
-    if (versions.decision?.kind === 'replace') pending.push('the daemon runs an older release');
+    if (versions.decision?.kind === 'replace') {
+      pending.push('the daemon runs an older release');
+      waits.add("A child that daemon starts runs the daemon's own adapter and never hands it over. Run bellwether relay-bridge < /dev/null from this install to hand it over now; it ends no session.");
+    }
     if (daemonProtocol !== undefined) {
       const features = sessions?.daemon.features;
       lines.push(...describePairing(input.installed, { protocol: daemonProtocol, ...(daemonVersion ? { version: daemonVersion } : {}), ...(features ? { features } : {}) }));
@@ -244,6 +249,7 @@ export function describeUpgrade(input: UpgradeInput): UpgradeReport {
     if (sessions?.daemon.draining) {
       lines.push(info('daemon: handing over; it takes no new call and exits once its calls in flight answer'));
       pending.push('the daemon is draining');
+      waits.add('A hand-over under way finishes within 90 s.');
     }
   }
 
@@ -266,6 +272,7 @@ export function describeUpgrade(input: UpgradeInput): UpgradeReport {
     if (input.marker.alive && input.marker.ageMs < 30_000) {
       lines.push(info(`hand-over: pid ${input.marker.pid} is starting or handing over the daemon now`));
       pending.push(`pid ${input.marker.pid} is starting the daemon`);
+      waits.add('A hand-over under way finishes within 90 s.');
     } else {
       lines.push(info(`marker: daemon.starting from pid ${input.marker.pid}, which ${input.marker.alive ? 'stopped refreshing it' : 'no longer runs'}; the next client to start a daemon takes it over`));
       leftovers.push(`a daemon.starting marker from pid ${input.marker.pid}`);
@@ -315,6 +322,8 @@ export function describeUpgrade(input: UpgradeInput): UpgradeReport {
         unknownBuild.push(first.parentId);
       }
     }
+    if (otherBuild.length) waits.add('A session keeps the adapter it started with until it ends, and a session a daemon started ends only when its parent stops or restarts it. When the daemon is the build to replace, run bellwether drain.');
+    if (newerSessions.length) waits.add("A session started by hand from the newer adapter's install hands the daemon over, and so does bellwether relay-bridge < /dev/null from it.");
     if (otherBuild.length) pending.push(`${plural(otherBuild.length, 'session')} ${otherBuild.length === 1 ? 'runs' : 'run'} another build than the daemon's (${otherBuild.join(', ')})`);
     if (newerSessions.length) pending.push(`${plural(newerSessions.length, 'session')} ${newerSessions.length === 1 ? 'runs' : 'run'} a newer adapter than the daemon (${newerSessions.join(', ')})`);
     if (unknownBuild.length) unknown.push(`${plural(unknownBuild.length, 'session')} on the daemon's version cannot be compared by commit (${unknownBuild.join(', ')})`);
@@ -322,14 +331,17 @@ export function describeUpgrade(input: UpgradeInput): UpgradeReport {
     unknown.push('the daemon did not answer a request for its sessions');
   }
 
-  if (leftovers.length) pending.push(`${plural(leftovers.length, 'leftover')} from a stopped process`);
+  if (leftovers.length) {
+    pending.push(`${plural(leftovers.length, 'leftover')} from a stopped process`);
+    waits.add('The next daemon to start removes what a stopped process left.');
+  }
   const state: UpgradeState = pending.length ? 'in-progress' : unknown.length ? 'unknown' : versions.newer ? 'behind' : running ? 'finished' : 'idle';
   const daemonBuild = namesCommit(sessions?.daemon.build) ? ` build ${sessions?.daemon.build}` : '';
   if (state === 'finished') lines.push(ok(`upgrade: finished; every connected session runs the daemon's build, ${daemonVersion}${daemonBuild}${olderSessions.length ? `, or an older release it serves (${olderSessions.length})` : ''}`));
   else if (state === 'behind') lines.push(info(`upgrade: this install, ${input.installed.version}, is older than the daemon, ${daemonVersion ?? 'unknown'}. Its sessions keep working on the daemon's code, without what the pairing line names. Update this install when convenient.`));
   else if (state === 'idle') lines.push(ok(`upgrade: nothing to finish; no daemon runs, and the next session starts ${input.installed.version} or whichever install it runs`));
   else if (state === 'unknown') lines.push(info(`upgrade: not known to be finished, because ${unknown.join('; ')}.`));
-  else lines.push(info(`upgrade: in progress, because ${pending.join('; ')}. Nothing needs a restart: it finishes as sessions end on their own.`));
+  else lines.push(info(`upgrade: in progress, because ${pending.join('; ')}. ${[...waits].join(' ')}`));
   return { lines, state, leftovers, olderSessions };
 }
 

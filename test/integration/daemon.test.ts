@@ -237,3 +237,76 @@ test('a hello with another protocol is refused and names the daemon protocol', a
   await daemon.close();
   space.cleanup();
 });
+
+/** A daemon from an older release: it refuses a newer hello and closes on drain. */
+async function olderDaemon(socketPath: string, protocol: number): Promise<{ drained: () => boolean; close: () => Promise<void> }> {
+  let drained = false;
+  const open = new Set<net.Socket>();
+  const server = net.createServer((socket) => {
+    open.add(socket);
+    socket.on('close', () => open.delete(socket));
+    let buffer = '';
+    socket.on('data', (chunk) => {
+      buffer += chunk.toString('utf8');
+      for (let index = buffer.indexOf('\n'); index >= 0; index = buffer.indexOf('\n')) {
+        const request = JSON.parse(buffer.slice(0, index)) as { type: string };
+        buffer = buffer.slice(index + 1);
+        if (request.type === 'hello') socket.write(`${JSON.stringify({ type: 'error', code: 'protocol_mismatch', message: 'the client spoke another protocol', protocol })}\n`);
+        if (request.type === 'drain') {
+          drained = true;
+          socket.end(`${JSON.stringify({ type: 'closed' })}\n`);
+          server.close();
+        }
+      }
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(socketPath, resolve));
+  return {
+    drained: () => drained,
+    close: () =>
+      new Promise((resolve) => {
+        for (const socket of open) socket.destroy();
+        if (!server.listening) return resolve();
+        server.close(() => resolve());
+      }),
+  };
+}
+
+test('a client newer than the running daemon drains it and starts its own', async () => {
+  const space = workspace();
+  const old = await olderDaemon(space.socket, DAEMON_PROTOCOL - 1);
+  // The replacement comes up in-process once the old one is gone; the entry the
+  // client would spawn does nothing, so no detached daemon outlives the case.
+  const entry = path.join(space.home, 'noop.mjs');
+  fs.writeFileSync(entry, '');
+  const fake = fakeFactory();
+  let replacement: Awaited<ReturnType<typeof startDaemon>> | undefined;
+  const watcher = setInterval(() => {
+    if (old.drained() && !replacement && !fs.existsSync(space.socket)) {
+      void startDaemon({ socketPath: space.socket, factory: fake.factory }).then((started) => (replacement = started));
+    }
+  }, 10);
+  try {
+    const client = await DaemonClient.connect(parent(), { home: space.home, entry });
+    assert.equal(old.drained(), true, 'the older daemon was asked to drain');
+    assert.equal(client.pid, replacement?.pid);
+    await client.close();
+  } finally {
+    clearInterval(watcher);
+    await old.close();
+    await replacement?.close();
+    space.cleanup();
+  }
+});
+
+test('a client older than the running daemon leaves it alone and says so', async () => {
+  const space = workspace();
+  const newer = await olderDaemon(space.socket, DAEMON_PROTOCOL + 1);
+  try {
+    await assert.rejects(DaemonClient.connect(parent(), { home: space.home, spawn: false }), /newer than this client/);
+    assert.equal(newer.drained(), false);
+  } finally {
+    await newer.close();
+    space.cleanup();
+  }
+});

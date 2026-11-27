@@ -3,7 +3,8 @@
 // ask it to drain and start the new one.
 import type { CallerIdentity, Harness, OutboxEntry } from '../core/types.ts';
 
-export const DAEMON_PROTOCOL = 1;
+// 2: a call carries the caller identity, and parent_report routes by it.
+export const DAEMON_PROTOCOL = 2;
 
 /** The largest line a daemon or client will read, matching the herdr client. */
 export const MAX_DAEMON_FRAME_BYTES = 4 * 1024 * 1024;

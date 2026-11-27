@@ -44,6 +44,17 @@ export function daemonEnv(env: NodeJS.ProcessEnv, home: string): NodeJS.ProcessE
   return next;
 }
 
+/** A daemon that speaks another protocol, and the one it speaks. */
+class ProtocolMismatch extends Error {
+  readonly daemonProtocol: number | undefined;
+
+  constructor(message: string, daemonProtocol: number | undefined) {
+    super(`protocol_mismatch: ${message}`);
+    this.daemonProtocol = daemonProtocol;
+    this.name = 'ProtocolMismatch';
+  }
+}
+
 /** The daemon socket a client uses when none is given: the one under its home. */
 export function defaultDaemonSocket(home: string): string {
   return path.join(home, 'daemon.sock');
@@ -189,11 +200,23 @@ export class DaemonClient {
     this.waiting.clear();
   }
 
-  /** Connect, starting a daemon when nothing answers and spawning is allowed. */
+  /**
+   * Connect, starting a daemon when nothing answers and spawning is allowed.
+   * A daemon from an older release is drained first, so the newer protocol
+   * takes over; a newer daemon is left running, and the error says to update.
+   */
   private async establish(): Promise<{ parentId: string; pid: number }> {
     try {
       return await this.handshake();
     } catch (error) {
+      if (error instanceof ProtocolMismatch) {
+        if (error.daemonProtocol === undefined || error.daemonProtocol > DAEMON_PROTOCOL) {
+          throw new Error(`the running daemon speaks protocol ${error.daemonProtocol ?? 'unknown'}, newer than this client's ${DAEMON_PROTOCOL}. Update this Bellwether install.`);
+        }
+        this.log(`draining the daemon on protocol ${error.daemonProtocol}, older than ${DAEMON_PROTOCOL}`);
+        const replaced = await this.drainOlder();
+        if (replaced) return replaced;
+      }
       if (!this.spawnAllowed) throw error;
       await this.startDaemon();
       return this.handshake();
@@ -220,6 +243,7 @@ export class DaemonClient {
     const reply = await this.ask(connection, formatRequest(hello));
     if (reply.type === 'error') {
       connection.socket.destroy();
+      if (reply.code === 'protocol_mismatch') throw new ProtocolMismatch(reply.message, reply.protocol);
       throw new Error(`${reply.code}: ${reply.message}`);
     }
     if (reply.type !== 'hello') {
@@ -231,6 +255,31 @@ export class DaemonClient {
     for (const entry of reply.pending) this.received.set(entry.receipt, entry);
     if (reply.pending.length) for (const handler of this.handlers) handler(reply.pending);
     return { parentId: reply.parentId, pid: reply.pid };
+  }
+
+  /**
+   * Ask an older daemon to drain, and wait until its socket stops answering,
+   * or answers with this protocol because another client started the new daemon first.
+   */
+  private async drainOlder(): Promise<{ parentId: string; pid: number } | undefined> {
+    const connection = await this.open();
+    await new Promise<void>((resolve) => {
+      connection.socket.once('close', () => resolve());
+      connection.socket.write(formatRequest({ type: 'drain' }));
+      setTimeout(() => resolve(), START_TIMEOUT_MS).unref?.();
+    });
+    connection.socket.destroy();
+    const deadline = Date.now() + START_TIMEOUT_MS;
+    while (await canConnect(this.socketPath)) {
+      try {
+        return await this.handshake();
+      } catch (error) {
+        if (!(error instanceof ProtocolMismatch)) throw error;
+      }
+      if (Date.now() > deadline) throw new Error(`the daemon on ${this.socketPath} did not drain within ${START_TIMEOUT_MS} ms`);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    return undefined;
   }
 
   private open(): Promise<Connection> {

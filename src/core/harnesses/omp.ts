@@ -36,6 +36,9 @@ import type { HarnessEntry, HerdrRequester } from './types.ts';
  */
 export const OMP_SKIP_SETUP = 'OMP_SKIP_SETUP';
 
+/** Why an omp child on another machine is refused, with the issue that tracks the gap. */
+const OMP_REMOTE_REFUSAL = 'an omp child runs on this machine only for now: a child on another machine gets no extra environment, so OMP_SKIP_SETUP never reaches it and omp would stop at its first-run setup wizard (elecnix/bellwether#96)';
+
 /** The provider and model an omp session file says it starts on: its first `model_change`, as `provider/id`. */
 export function ompSessionModel(file: string): ModelPair | undefined {
   let content: string;
@@ -99,7 +102,7 @@ export const omp: HarnessEntry = {
     ];
   },
   async preflight({ name, host, herdr }) {
-    if (host !== LOCAL_HOST) throw new Error(`${name} was not started: an omp child runs on this machine only for now, because the variable that keeps omp's setup wizard from holding the brief is not yet carried to another machine. Omit machine.`);
+    if (host !== LOCAL_HOST) throw new Error(`${name} was not started: ${OMP_REMOTE_REFUSAL}. Omit machine.`);
     await requireOmpIntegration(herdr, name, host);
   },
   session: { from: 'herdr', kind: 'path' },
@@ -111,7 +114,7 @@ export const omp: HarnessEntry = {
       if (!fs.existsSync(entry)) throw new Error(`Bellwether cannot start an omp child: its pi extension ${entry} does not exist, so the child would have no Bellwether tools. Reinstall @elecnix/bellwether on this machine.`);
       return { piExtension: entry, env: { [OMP_SKIP_SETUP]: '1' } };
     },
-    remoteRefusal: "an omp child runs on this machine only for now, because the variable that keeps omp's setup wizard from holding the brief is not yet carried to another machine",
+    remoteRefusal: OMP_REMOTE_REFUSAL,
   },
   conversation: {
     // herdr's omp integration reports the session file's path; an id comes only from a session omp does not save.

@@ -40,7 +40,7 @@ Each kind has the same three bullets, so a reader can line up two kinds. The bul
 ### `omp`
 
 - **Can:** report, request retirement, request depth, and start and message children of its own within its depth ceiling.
-- **Cannot:** start until you run `herdr integration install omp`, since only that integration reports the child's state and session file to herdr. It cannot run on another machine yet, because the setting that skips omp's setup wizard reaches only a local tab. It cannot move, because `agent_move` finds only pi and Claude Code session files.
+- **Cannot:** start until you run `herdr integration install omp`, since only that integration reports the child's state and session file to herdr. It cannot run on another machine yet, because a child there doesn't get extra environment variables, so `OMP_SKIP_SETUP` never reaches it ([#96](https://github.com/elecnix/bellwether/issues/96)). It cannot move, because `agent_move` finds only pi and Claude Code session files.
 - **How:** the same Bellwether pi extension, passed with `-e`. omp runs pi extensions, and its extension API has every call this one makes. The extension stores this child's id, and the tab sets `OMP_SKIP_SETUP`, so omp's setup wizard doesn't block the brief. Bellwether answers no omp dialog.
 
 ### `codex` and `cline`

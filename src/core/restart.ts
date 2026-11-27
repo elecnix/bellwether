@@ -357,7 +357,7 @@ async function restartChildLocked(client: HerdrClient, parentId: string, childId
   try {
     // The same start files a spawn and a resume give it: a Claude Code
     // child's own MCP configuration, and the extension a pi child loads.
-    const { mcpConfigFile, piExtension } = await childStartFiles(child, undefined, undefined, hooks.piExtension);
+    const { mcpConfigFile, claudeSettingsFile, piExtension } = await childStartFiles(child, undefined, undefined, hooks.piExtension);
     // Closing the old tab closed a workspace Bellwether made for the child
     // when it was the last tab there, so the child gets a new one of its own.
     const placement = await returnPlacement(client, child, workspaceId);
@@ -381,7 +381,7 @@ async function restartChildLocked(client: HerdrClient, parentId: string, childId
       // The watch opens before the start: the dialog appears with the harness.
       startup = await watchStartup(client, newPane, undefined, { timeoutMs, redrawMs: hooks.redrawMs });
     }
-    const harnessArgs = childArgs(child.kind, { kind: child.kind, name: child.name, model: launch.harnessModel, provider: launch.provider, args: resume }, { mcpConfigFile, piExtension });
+    const harnessArgs = childArgs(child.kind, { kind: child.kind, name: child.name, model: launch.harnessModel, provider: launch.provider, args: resume }, { mcpConfigFile, claudeSettingsFile, piExtension });
     await startHarness(client, { name: child.name, kind: child.kind, paneId: newPane, args: harnessArgs, ...(launch.route && launch.config ? { launch: routeLaunch(launch.config, launch.route, child.kind, harnessArgs) } : {}) });
     if (startup) {
       await startup.answer();

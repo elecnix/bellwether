@@ -12,7 +12,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { HerdrClient } from '../../src/core/herdr-client.ts';
 import { LOCAL_HOST } from '../../src/core/machine.ts';
-import { bellwetherHome } from '../../src/core/paths.ts';
+import { bellwetherHome, claudeSettingsPath } from '../../src/core/paths.ts';
 import { emptyParent, readParent, saveParent, upsertChild } from '../../src/core/registry.ts';
 import { hostName } from '../../src/core/spawn.ts';
 import { Watcher } from '../../src/core/watcher.ts';
@@ -132,7 +132,7 @@ test('via a route starts the launcher in front of claude, on the default tier, a
   assert.equal(started.agent, 'claude');
   const brief = path.join(bellwetherHome(), 'prompts', `${record.id}.md`);
   const mcp = path.join(bellwetherHome(), 'mcp', `${record.id}.json`);
-  assert.deepEqual(started.args, [`--mcp-config=${mcp}`, '--dangerously-load-development-channels=server:bellwether', `@${brief}`]);
+  assert.deepEqual(started.args, [`--mcp-config=${mcp}`, `--settings=${claudeSettingsPath(record.id)}`, '--dangerously-load-development-channels=server:bellwether', `@${brief}`]);
   assert.equal(calls(r.fake, 'agent.start').length, 0, 'herdr never started a bare claude');
   assert.deepEqual(calls(r.fake, 'agent.rename').map((request) => request.params), [{ target: record.paneId, name: 'routed' }]);
   // The startup dialog was answered, as for a bare claude child.

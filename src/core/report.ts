@@ -190,25 +190,29 @@ export function isReportStatus(value: unknown): value is ReportStatus {
 
 /**
  * The call a pi child's own extension makes when pi opens or closes a dialog,
- * on pi's ui_prompt_start and ui_prompt_end events. It is not a tool any model
- * sees: the extension sends it, routed by the caller's identity like
- * parent_report, and the parent's watcher reads the prompt from the record.
+ * on pi's ui_prompt_start and ui_prompt_end events, and a Claude Code child's
+ * Notification hook makes when a dialog opens, with `source: claude-code`. It
+ * is not a tool any model sees: the child sends it, routed by the caller's
+ * identity like parent_report, and the parent's watcher reads the prompt from
+ * the record.
  */
 export const PROMPT_NOTICE = 'child_prompt';
 
 /** Record or clear the dialog the calling child waits on. */
-export function notePromptForCaller(caller: CallerIdentity, notice: { open: boolean; title?: string; kind?: string }): string {
+export function notePromptForCaller(caller: CallerIdentity, notice: { open: boolean; title?: string; kind?: string; source?: 'pi' | 'claude-code' }): string {
   const found = childOfCaller(caller);
   if (!found) throw new Error(`${PROMPT_NOTICE} came from ${caller.paneId ? `pane ${caller.paneId}` : 'no pane'}, where no Bellwether child on this machine runs.`);
   const { parent, child } = found;
+  const source = notice.source ?? 'pi';
   updateChild(parent.id, child.id, (entry) => {
     if (!notice.open) {
-      if (entry.prompt?.source === 'pi') delete entry.prompt;
+      if (entry.prompt?.source === source) delete entry.prompt;
       return;
     }
     const kind = notice.kind?.trim() || undefined;
-    const line = clipLine(notice.title?.trim() || `a pi ${kind ?? 'dialog'} prompt with no title`);
-    entry.prompt = { line, source: 'pi', ...(kind ? { kind } : {}), since: entry.prompt?.source === 'pi' ? entry.prompt.since : new Date().toISOString() };
+    const harness = source === 'pi' ? 'pi' : 'Claude Code';
+    const line = clipLine(notice.title?.trim() || `a ${harness} ${kind ?? 'dialog'} prompt with no title`);
+    entry.prompt = { line, source, ...(kind ? { kind } : {}), since: entry.prompt?.source === source ? entry.prompt.since : new Date().toISOString() };
   });
   return notice.open ? `Recorded that ${child.name} waits on a dialog.` : `Recorded that ${child.name} no longer waits on a dialog.`;
 }

@@ -36,6 +36,15 @@ export function mcpConfigPath(childId: string): string {
   return path.join(mcpDir(), `${slug(childId)}.json`);
 }
 
+/** Each Claude Code child's own settings, passed with --settings, which hold its Notification hook. */
+export function claudeSettingsDir(): string {
+  return path.join(bellwetherHome(), 'claude-settings');
+}
+
+export function claudeSettingsPath(childId: string): string {
+  return path.join(claudeSettingsDir(), `${slug(childId)}.json`);
+}
+
 /** One registry file per parent session, so a resumed parent reads the same file. */
 export function parentId(harness: string, session: string): string {
   return `${harness}-${slug(session)}`;

@@ -89,10 +89,20 @@ For the same child, a newer event replaces an older unread one, except for a rep
 
 A `blocked` event names the dialog in one line of at most 100 characters, such as `Bash command: Do you want to proceed?`, so a parent can tell a trust question from a permission question. `agent_read` shows the whole screen. Bellwether never answers the dialog: approving a permission question is the operator's decision. To answer it, the parent sends keys with `agent_send`, or a person types in the pane.
 
-herdr reports `idle` for a harness that waits on a dialog it never reported, so Bellwether checks two sources before it sends `idle`:
+herdr reports `idle` for a harness that waits on a dialog it never reported, so Bellwether checks three sources before it sends `idle`:
 
 - A pi child's own Bellwether extension tells the daemon when pi opens and closes a dialog, from pi's `ui_prompt_start` and `ui_prompt_end` events, which pi 0.84.4 added. That covers any dialog an extension raises through `ctx.ui`.
-- For any other harness, the watcher reads the screen once before it sends `idle`. It recognizes a selection list with a marked option, or a y/n question, near the bottom of the screen.
+- A Claude Code child starts with settings of its own, passed with `--settings`, that add one `Notification` hook. Claude Code runs it for a permission dialog (`permission_prompt`) and for an MCP server's form or link (`elicitation_dialog`, `elicitation_url_dialog`), about 6 s after the dialog opens if nobody answered it first. The hook tells the daemon, and the `blocked` event carries Claude Code's own line, such as `Claude needs your permission to use Bash`. The record keeps the dialog open until herdr reports the child working again, or leaving `blocked`. The settings add to the operator's `~/.claude/settings.json` without editing it, and since the hook doesn't print a decision, the dialog waits for the operator.
+- When neither source has named a dialog, the watcher reads the screen once before it sends `idle`. It recognizes a selection list with a marked option, or a y/n question, near the bottom of the screen.
+
+The screen check has four limits:
+
+- It misses a dialog with no marked option, such as a free-text box.
+- It reads the screen once per turn, so it misses a dialog that opens after `idle` went out. The Claude Code hook reports that one.
+- A dialog it found counts as open until herdr reports a new status, even after someone answers it.
+- A finished answer that ends in a y/n question reads as a dialog.
+
+A child on another machine has neither the pi notice nor the hook, because each reaches only the daemon on the child's own machine, so its dialogs come from the screen.
 
 A child that answers its dialog and works on stays in the same turn. Closing the dialog doesn't send an event, and the parent gets one `idle` event when the turn ends.
 

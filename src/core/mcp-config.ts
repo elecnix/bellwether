@@ -8,6 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { removeBrief } from './brief.ts';
+import { removeClaudeSettings } from './claude-hooks.ts';
 import { mcpConfigPath, mcpDir } from './paths.ts';
 
 /** The name the child's channel flag loads, `server:bellwether`. */
@@ -46,8 +47,9 @@ export function removeMcpConfig(childId: string): void {
   fs.rmSync(mcpConfigPath(childId), { force: true });
 }
 
-/** Remove every file a spawn wrote for a child: its brief and its MCP configuration. */
+/** Remove every file a spawn wrote for a child: its brief, its MCP configuration and its Claude Code settings. */
 export function removeChildFiles(childId: string): void {
   removeBrief(childId);
   removeMcpConfig(childId);
+  removeClaudeSettings(childId);
 }

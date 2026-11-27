@@ -50,9 +50,33 @@ A machine is in one of three states: `connecting`, `connected` or `reconnecting`
 
 After a child there exits, the daemon keeps a connection open to that machine until it has drained the machine once. Across a daemon restart, the last drain of each machine stays in `~/.bellwether/relay/hosts.json`.
 
+## Errors from the child's machine
+
+The parent's daemon runs `bellwether relay-register`, `relay-cleanup`, `relay-bridge` and the `move-*` commands on the child's machine over SSH. When one fails, the error quotes the line that machine meant as its error, plus at most two lines of context after it. Node.js crashes place stack frames and a version banner around that line, so the daemon takes the first match in this order:
+
+1. the line a `bellwether` command prints for its own failure, `bellwether <command>: …`;
+2. the line Node prints for the thrown error, such as `Error: …` or `TypeError: …`;
+3. the first line that is not a stack frame, a `Node.js v…` banner or a source excerpt.
+
+Each failure's full output goes to `~/.bellwether/logs/ssh/`, and the daemon keeps the newest 20 files. When the error left lines out, it gives that file's path.
+
+Upgrade advice appears only when the far end shows a release difference:
+
+- a daemon protocol mismatch;
+- an argument or a command the far end refused, which a known release brought;
+- no `bellwether` at all.
+
+Where the far end lacks something, the message specifies the release that brought it. If this machine runs a build from before that release, the message tells the operator to install that same build on the far end, because npm doesn't have it yet.
+
+If the far machine already has that release, SSH reached another copy, one earlier on the non-interactive `PATH`.
+
+On either machine, a failing `bellwether` command prints `bellwether <command>: <message>` and exits non-zero. Add `--debug`, or set `BELLWETHER_DEBUG=1`, to see the stack trace.
+
 ## Reports that do not arrive
 
-When registration fails for a child with no brief, the child still starts, and herdr status still follows it. The spawn's reply says why the child can't report. A pi spawn fails instead, because without that machine's extension path the child would have no tools.
+When registration fails for a child with no brief, the child still starts, and herdr status still follows it. The spawn's reply says why the child can't report.
+
+A pi spawn fails instead, because without that machine's extension path the child would have no tools.
 
 Outages leave each new report in the relay outbox on the child's machine. A new connection starts by sending the reports that wait for its parents, so a report from an outage arrives once the parent's daemon reconnects. Under `~/.bellwether/relay/children/`, the relay record counts waiting reports as `unforwarded`, and `bellwether doctor` on the child's machine counts them too.
 

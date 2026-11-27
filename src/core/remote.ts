@@ -80,11 +80,8 @@ export function remoteOps(resolve: MachineResolver = resolveMachine, options: Ss
       const profile = await resolve(child.host);
       const withBrief = brief !== undefined;
       const result = await runRemoteBellwether(profile.target, registerFlags(parent, child, withBrief), { ...options, ...(withBrief ? { input: brief } : {}) });
-      if (result.code !== 0) {
-        // An older bellwether there cannot take the brief.
-        const upgrade = /unknown argument --brief-stdin/.test(result.stderr) ? ` Upgrade @elecnix/bellwether on ${profile.target}.` : '';
-        throw new Error(`${describeFailure(profile.target, result)}${upgrade}`);
-      }
+      // The far end's own error leads, with the release that brings what it lacked when that is the cause.
+      if (result.code !== 0) throw new Error(describeFailure(profile.target, result));
       const registration = parseRegistration(profile.target, result.stdout, child.kind);
       if (withBrief && !registration.brief) throw new Error(`bellwether relay-register on ${profile.target}, ${installedThere(registration)}, wrote no brief. Upgrade @elecnix/bellwether on that machine.`);
       return registration;

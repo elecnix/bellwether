@@ -94,7 +94,7 @@ export function childCeiling(session: ParentRecord, asked: number | undefined, c
 
 /** The sentence a spawn that would go too deep fails with. */
 export function tooDeep(session: ParentRecord, ceiling: number, name: string): string {
-  const base = `Bellwether is ${ceiling} levels deep already, so ${name} would go one level too far.`;
+  const base = `Bellwether is ${ceiling} level${ceiling === 1 ? '' : 's'} deep already, so ${name} would go one level too far.`;
   if (session.depth === 0) return `${base} Raise max_depth on the spawn if that is what you want.`;
   return `${base} Ask your parent for more with ${REQUEST_DEPTH_TOOL}, naming the work that needs it. ${ALTERNATIVES}`;
 }

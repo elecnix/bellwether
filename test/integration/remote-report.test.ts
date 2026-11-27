@@ -460,8 +460,9 @@ test('a far end that fails before it answers the relay names its error line and 
   await until(() => relayLinks.state('child-box')?.status === 'reconnecting', 'the link to fail');
   const error = relayLinks.state('child-box')?.lastError ?? '';
   assert.match(error, /Error: invalid_hello: the parent needs a session, cwd, host and herdr socket/);
-  assert.match(error, /Update @elecnix\/bellwether on machine child-box/);
+  assert.match(error, /relay-bridge came with Bellwether 0\.1\.5, and the bellwether that ssh runs on child-box is older/);
   assert.doesNotMatch(error, /at async/, 'stack frames are not the message');
+  assert.doesNotMatch(error, /Node\.js v/);
 });
 
 test('a report for a child this machine holds is served here and never spooled for a remote parent', async (t) => {

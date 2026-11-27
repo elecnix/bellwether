@@ -18,7 +18,7 @@ import path from 'node:path';
 import { LOCAL_HOST, hostOf, resolveMachine, type MachineResolver } from '../core/machine.ts';
 import { relayHostsPath } from '../core/paths.ts';
 import { listParents } from '../core/registry.ts';
-import { NO_BELLWETHER_EXIT, relayBridgeArgv } from '../core/ssh.ts';
+import { farErrorLine, relayBridgeArgv, releaseAdvice } from '../core/ssh.ts';
 import type { ChildRecord } from '../core/types.ts';
 import { DAEMON_PROTOCOL, MAX_DAEMON_FRAME_BYTES, formatRequest, type DaemonReply, type RelayHostState, type RelayReport } from './protocol.ts';
 
@@ -307,17 +307,10 @@ export class RelayLinks {
   }
 
   private why(link: Link, target: string, code: number | null, signal: NodeJS.Signals | null): string {
-    const lines = link.stderr.trim().split('\n').map((line) => line.trim()).filter(Boolean);
-    // A Node program that throws prints its stack after the error line, so the last lines are frames, not the reason.
-    const thrown = lines.find((line) => /^[A-Za-z]*Error\b.*:/.test(line));
-    const detail = link.farError ?? thrown ?? lines.slice(-3).join(' / ');
-    let hint = '';
-    if (code === NO_BELLWETHER_EXIT) hint = ' Install @elecnix/bellwether on that machine.';
-    else if (!link.farError && thrown && !link.answered && code !== 255) {
-      // The bellwether there ran and failed before it spoke the relay: most likely a version from before relay-bridge.
-      hint = ` The bellwether command on machine ${link.host} failed before it answered the relay; if it predates relay-bridge, Update @elecnix/bellwether on machine ${link.host}.`;
-    }
-    return `ssh ${target} ${code === null ? `ended on ${signal ?? 'a signal'}` : `exited with ${code}`}${detail ? `: ${detail}` : ''}${hint}`;
+    // A Node program that throws prints its stack after the error line, so the far end's own error line leads, never the last frames.
+    const detail = link.farError ?? farErrorLine(link.stderr);
+    const advice = link.farError || code === 255 || code === null ? undefined : releaseAdvice(link.host, { code, stdout: '', stderr: link.stderr, command: ['relay-bridge'] });
+    return `ssh ${target} ${code === null ? `ended on ${signal ?? 'a signal'}` : `exited with ${code}`}${detail ? `: ${detail}` : ''}${advice ? ` ${advice}` : ''}`;
   }
 
   /** A connection ended or never started: say so, and try again after the backoff. */

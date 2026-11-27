@@ -1,8 +1,9 @@
 /* Copied, not linked: this file is a copy of report-page.css from the
-   visual-style agent skill. scripts/build-site.ts pastes this copy into every
-   page, so a change to the skill's version reaches the site only when someone
-   copies it here, and a rebuild alone changes nothing. Change the skill first,
-   then copy its file over this one below this comment.
+   visual-style agent skill. The site builds from this copy:
+   scripts/build-site.ts pastes it into every page, so the site shows a change
+   to the skill only after someone copies it here, and a rebuild alone changes
+   nothing. Change the skill first, then copy its file over this one, below
+   this comment.
    -------------------------------------------------------------------------- */
 /* report-page.css: the style for a plan, report or design page Nicolas reads
    in Chrome, such as ~/design/ci-rebuild-plan.html. Paste it into the page's

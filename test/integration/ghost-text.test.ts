@@ -17,7 +17,7 @@ import { Watcher } from '../../src/core/watcher.ts';
 import type { ChildRecord, OutboxEntry } from '../../src/core/types.ts';
 import { runBellwetherTool, type ToolContext } from '../../src/integrations/tools.ts';
 import { startFakeHerdr, type FakeHerdr, type RecordedRequest } from '../fixtures/fake-herdr.ts';
-import { CLAUDE_DRAFT, CLAUDE_EMPTY, CLAUDE_GHOST, CLAUDE_GHOST_QUESTION, CODEX_GHOST, SUGGESTION, TRUST_FAINT_ACCEPT, TYPED, paneReadAnswer } from '../fixtures/ghost-screens.ts';
+import { CLAUDE_DRAFT, CLAUDE_EMPTY, CLAUDE_GHOST, CLAUDE_GHOST_QUESTION, CODEX_GHOST, PERMISSION_DIMMED, SUGGESTION, TRUST_FAINT_ACCEPT, TYPED, paneReadAnswer } from '../fixtures/ghost-screens.ts';
 
 const PANE = 'w1:p1';
 const INPUT = /send_keys|send_text|send_input|^pane\.run$|^agent\.prompt$/;
@@ -118,6 +118,14 @@ test('an idle child whose box suggests a yes-or-no question goes idle, not block
   assert.equal(event.event, 'idle', `the suggestion was reported as a dialog: ${event.text}`);
   assert.ok(!event.text.includes('Ship the example release'), event.text);
   assert.equal(readParent(r.ctx.parentId)?.children[0]?.prompt, undefined);
+  assertNoInput(r);
+});
+
+test('a dialog that dims its unselected options, which herdr calls idle, is published as blocked with its name', async (t) => {
+  const r = await rig(t, new Pane('working', PERMISSION_DIMMED));
+  const event = await idleEvent(r);
+  assert.equal(event.event, 'blocked', `a parent was never told its child waits on a dialog: ${event.text}`);
+  assert.match(event.text, /blocked on a dialog after .*: Bash command: Do you want to proceed\?/);
   assertNoInput(r);
 });
 

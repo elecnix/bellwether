@@ -23,6 +23,8 @@
 // the dialog, so it is never read as the chosen option (issue #160). A block
 // with the marker on two options is not guessed at: the start fails by name.
 import type { HerdrClient, Subscription } from './herdr-client.ts';
+import type { ModalView } from './modal.ts';
+import { BLANK_SCREEN, type Screen } from './screen.ts';
 import type { DialogDecision } from './types.ts';
 
 /** A startup dialog's id within its harness's set, such as `trust`. */
@@ -185,7 +187,7 @@ export function dialogPath(screen: string): string | undefined {
 }
 
 /** The label among `accept` that the dialog lists as an option, or the first one. */
-function chosenLabel(screen: string, accept: KnownDialog['accept'], shows: RegExp): string {
+function chosenLabel(screen: ModalView, accept: KnownDialog['accept'], shows: RegExp): string {
   const labels = typeof accept === 'string' ? [accept] : accept;
   const options = optionBlock(screen, shows)?.options ?? [];
   return labels.find((label) => options.some((option) => option.label.startsWith(label))) ?? labels[0] ?? '';
@@ -255,8 +257,10 @@ function drawn(line: string): Drawn | undefined {
  *
  * Undefined when the screen shows no such block.
  */
-export function optionBlock(screen: string, shows: RegExp): OptionBlock | undefined {
-  const lines = screen.split('\n');
+export function optionBlock(screen: ModalView, shows: RegExp): OptionBlock | undefined {
+  const { plain, content } = views(screen);
+  const lines = plain.split('\n');
+  const solid = content.split('\n');
   const anchor = lines.findLastIndex((line) => shows.test(line));
   if (anchor < 0) return undefined;
   let start = -1;
@@ -276,11 +280,13 @@ export function optionBlock(screen: string, shows: RegExp): OptionBlock | undefi
   for (let index = first; index < lines.length; index += 1) {
     const line = drawn(lines[index] ?? '');
     if (!line) break;
+    // A marker counts only when it is solid: a faint one is a suggestion.
+    const selected = line.marked && drawn(solid[index] ?? '')?.marked === true;
     if (line.column === column) {
       const number = NUMBERED.exec(line.text);
-      options.push({ line: index, label: line.text.slice(number?.[0].length ?? 0).trim(), ...(number?.[1] ? { digit: number[1] } : {}), selected: line.marked });
+      options.push({ line: index, label: line.text.slice(number?.[0].length ?? 0).trim(), ...(number?.[1] ? { digit: number[1] } : {}), selected });
     } else if (line.marked || line.column < column) break;
-    if (line.marked) marked.push(line.shown);
+    if (selected) marked.push(line.shown);
   }
   return options.length >= 2 ? { options, marked } : undefined;
 }
@@ -305,10 +311,15 @@ export class StartupDialogRefused extends Error {
  * happens while a dialog is still drawing, and when the block has the marker
  * on two options, where any key would be a guess.
  */
-export function answerKey(screen: string, wanted: string, shows: RegExp): string | undefined {
+export function answerKey(screen: ModalView, wanted: string, shows: RegExp): string | undefined {
   const block = optionBlock(screen, shows);
   if (!block || block.marked.length > 1) return undefined;
   return block.options.find((option) => option.label.startsWith(wanted))?.digit ?? keyToward(screen, wanted, shows);
+}
+
+/** Both views of a screen; a bare string is both. */
+function views(screen: ModalView): { plain: string; content: string } {
+  return typeof screen === 'string' ? { plain: screen, content: screen } : screen;
 }
 
 /** Whether a key from answerKey confirms the option, rather than moving toward it. */
@@ -321,10 +332,13 @@ export function confirms(key: string): boolean {
  * `wanted`, or Enter once it is selected. Undefined when the block lacks the
  * option or a single selection.
  */
-export function keyToward(screen: string, wanted: string, shows: RegExp): 'Enter' | 'Up' | 'Down' | undefined {
+export function keyToward(screen: ModalView, wanted: string, shows: RegExp): 'Enter' | 'Up' | 'Down' | undefined {
   const block = optionBlock(screen, shows);
   if (!block || block.marked.length !== 1) return undefined;
   // An option, not any line that mentions the label: a dialog's own text can hold a word such as "No".
+  // The option may be drawn faint, as a dialog dims the options it has not
+  // selected, but `selected` needs a solid marker (optionBlock): a faint marker
+  // is a suggestion, and Enter on it would answer a question nobody chose.
   const target = block.options.find((option) => option.label.startsWith(wanted));
   const selected = block.options.find((option) => option.selected);
   if (!target || !selected) return undefined;
@@ -333,7 +347,7 @@ export function keyToward(screen: string, wanted: string, shows: RegExp): 'Enter
 }
 
 /** The option the selection marker is on, for an error message. */
-function selectedOption(screen: string, shows: RegExp): string | undefined {
+function selectedOption(screen: ModalView, shows: RegExp): string | undefined {
   const block = optionBlock(screen, shows);
   return block?.marked.length === 1 ? block.options.find((option) => option.selected)?.label || undefined : undefined;
 }
@@ -433,6 +447,7 @@ export async function watchStartup(client: HerdrClient, paneId: string, signal?:
       const deadline = Date.now() + timeoutMs;
       const answered: StartupDialog[] = [];
       let screen = '';
+      let read: Screen = BLANK_SCREEN;
       let dialog: StartupDialog | undefined;
       let unknown: { question: string; reads: number } | undefined;
       /** The marked lines of an ambiguous block, and how many reads in a row have shown them. */
@@ -446,9 +461,11 @@ export async function watchStartup(client: HerdrClient, paneId: string, signal?:
         // pre-answers the folder-trust and development-channel questions would retire
         // this read, as would `channelsEnabled` with `allowedChannelPlugins` in managed
         // settings for the channel question (docs/probes.md, section 7).
-        // A faint line is a suggestion the harness drew, never an option it offers, so
-        // the dialog is read from the screen's content.
-        screen = (await client.paneRead({ paneId, source: 'visible', lines: 40 }).then((read) => read.content).catch(() => screen));
+        // Whether a question is up is decided on every line, faint or not, and
+        // only then which option answers it: answerKey presses Enter only on a
+        // solid selection marker, so a faint line never counts as an answer.
+        read = await client.paneRead({ paneId, source: 'visible', lines: 40 }).catch(() => read);
+        screen = read.plain;
         // A dialog that grants a permission is never answered, and herdr can
         // read the pane as idle while it waits, so it is checked first.
         const refused = detectRefused(screen, set);
@@ -461,7 +478,7 @@ export async function watchStartup(client: HerdrClient, paneId: string, signal?:
           // guess. A redraw caught halfway can show two for one read, so the
           // start fails once the same block holds for a few reads, and no key
           // goes out meanwhile.
-          const marked = known ? (optionBlock(screen, known.shows)?.marked ?? []) : [];
+          const marked = known ? (optionBlock(read, known.shows)?.marked ?? []) : [];
           if (known && marked.length > 1) {
             const seen = marked.join('\n');
             ambiguous = { marked: seen, reads: ambiguous?.marked === seen ? ambiguous.reads + 1 : 1 };
@@ -471,7 +488,7 @@ export async function watchStartup(client: HerdrClient, paneId: string, signal?:
           }
           ambiguous = undefined;
           const wanted = known ? chosenLabel(screen, known.accept, known.shows) : '';
-          const key = known ? answerKey(screen, wanted, known.shows) : undefined;
+          const key = known ? answerKey(read, wanted, known.shows) : undefined;
           if (key) {
             // TODO(api): keys typed into the pane answer a question no API reaches. A
             // documented way to pre-answer Claude Code's development-channel and
@@ -516,7 +533,7 @@ export async function watchStartup(client: HerdrClient, paneId: string, signal?:
         await nextStatus(status === 'blocked' ? redrawMs : Math.max(0, deadline - Date.now()));
       }
       if (controller.signal.aborted) throw new Error(`the spawn was cancelled while ${set.harness} in pane ${paneId} was starting`);
-      throw timeoutError(set, paneId, timeoutMs, dialog, status, screen);
+      throw timeoutError(set, paneId, timeoutMs, dialog, status, screen, read);
     },
     close() {
       subscription.close();
@@ -537,12 +554,12 @@ function ambiguousError(set: StartupDialogSet, paneId: string, dialog: KnownDial
   return new StartupDialogAmbiguous(`${set.harness} in pane ${paneId} showed ${dialog.name} with the selection marker on ${marked.length} of its options, ${lines}, so Bellwether pressed nothing rather than guess which one is chosen. The screen:\n${tail}`, dialog.id);
 }
 
-function timeoutError(set: StartupDialogSet, paneId: string, timeoutMs: number, dialog: StartupDialog | undefined, status: string, screen: string): StartupDialogTimeout {
+function timeoutError(set: StartupDialogSet, paneId: string, timeoutMs: number, dialog: StartupDialog | undefined, status: string, screen: string, view: ModalView = screen): StartupDialogTimeout {
   const seconds = Math.round(timeoutMs / 1000);
   const tail = screen.trim().split('\n').slice(-12).join('\n');
   const known = set.dialogs.find((entry) => entry.id === dialog);
   if (dialog) {
-    const selected = known ? selectedOption(screen, known.shows) : undefined;
+    const selected = known ? selectedOption(view, known.shows) : undefined;
     const where = selected ? `with "${selected}" selected` : 'with no option selected';
     return new StartupDialogTimeout(`${set.harness} in pane ${paneId} was still on ${dialogName(dialog, set)}, ${where}, when the spawn timed out after ${seconds} s. The screen:\n${tail}`, dialog);
   }

@@ -372,7 +372,7 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
         // TODO(api): herdr's status does not name the dialog that holds a
         // pane, and a harness may record nothing of such a dialog. A status that
         // named the dialog, or a harness event for it, would retire this read.
-        const screen = entry.startup?.refuse?.length ? (await client.paneRead({ paneId: tab.paneId, source: 'visible', lines: 40 }, signal).catch(() => BLANK_SCREEN)).content : '';
+        const screen = entry.startup?.refuse?.length ? (await client.paneRead({ paneId: tab.paneId, source: 'visible', lines: 40 }, signal).catch(() => BLANK_SCREEN)).plain : '';
         const refused = entry.startup && screen ? detectRefused(screen, entry.startup) : undefined;
         const tail = `The brief stays at ${briefFile} for inspection, and the pane is closed.`;
         if (refused) throw new StartupDialogRefused(`${child.name} was not started: ${entry.startup?.harness} stopped on ${refused.name}, which Bellwether never answers: ${refused.why} ${tail}`, refused.id);

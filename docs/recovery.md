@@ -29,7 +29,7 @@ One JSON line goes to `~/.bellwether/restart.log`. It records what it stopped an
 
 A parent session restarts from its own record, which stores its session id, its working directory and its pane. The daemon closes that pane only when herdr reports the same session id there. When herdr reports another session or another harness in it, the daemon refuses and leaves it open. A session that is itself a child restarts as that child, under its child id.
 
-Pi sessions restart with the file under `~/.pi/agent/sessions` passed to `--session`. Claude Code sessions restart with `--resume` and the `plugin:bellwether@bellwether` channel flag, the one the install guide starts a parent with, so the new process loads Bellwether again. The daemon sends the accepting key to the channel question in the new pane.
+Pi sessions restart with the file under `~/.pi/agent/sessions` passed to `--session`. Claude Code sessions restart with `--resume` and the `plugin:bellwether@elecnix-plugins` channel flag, the one the install guide starts a parent with, so the new process loads Bellwether again. The daemon sends the accepting key to the channel question in the new pane.
 
 The daemon refuses to restart a live agent missing from every registry. It closes only a pane it can identify from a registry, and it never starts a second copy of a running session.
 

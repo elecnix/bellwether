@@ -12,6 +12,7 @@ import test from 'node:test';
 import { HerdrClient } from '../../src/core/herdr-client.ts';
 import { LOCAL_HOST } from '../../src/core/machine.ts';
 import { bellwetherHome, parentId as registryId } from '../../src/core/paths.ts';
+import { PI_EXTENSION_ENV, piExtensionEntry } from '../../src/core/pi-extension.ts';
 import { emptyParent, readParent, saveParent, upsertChild } from '../../src/core/registry.ts';
 import { hostName } from '../../src/core/spawn.ts';
 import { Watcher } from '../../src/core/watcher.ts';
@@ -305,7 +306,7 @@ test('a session restarting itself closes its own pane after its turn and reopens
   assert.equal(started.params['pane_id'], newPane);
   const args = started.params['args'] as string[];
   assert.deepEqual(args.slice(args.indexOf('--resume'), args.indexOf('--resume') + 2), ['--resume', 'parent-session'], 'the harness command carries the same session');
-  assert.ok(args.includes('--dangerously-load-development-channels=plugin:bellwether@bellwether'), `the restarted session loads the Bellwether channel: ${JSON.stringify(args)}`);
+  assert.ok(args.includes('--dangerously-load-development-channels=plugin:bellwether@elecnix-plugins'), `the restarted session loads the Bellwether channel: ${JSON.stringify(args)}`);
   assert.equal(rig.world.panes.get(newPane)?.screen?.includes('Loading development channels'), false, 'the daemon answered the channel question');
   assert.equal(rig.world.panes.get(newPane)?.agent_session?.value, 'parent-session');
   const created = calls(rig.fake, 'tab.create')[0]?.params;
@@ -348,6 +349,24 @@ test('a session that is itself a child restarts as that child, under its child i
   assert.notEqual(child?.paneId, 'w1:p3');
   assert.equal((calls(rig.fake, 'tab.create')[0]?.params['env'] as Record<string, string>)['BELLWETHER_CHILD'], 'child-worker');
   assert.equal(readParent(nested)?.paneId, child?.paneId, 'the session\'s own record follows it');
+});
+
+test('a pi child restarts with the extension and the provider and model it was spawned with', async (t) => {
+  isolate(t, 'bellwether-restart-');
+  const rig = await herdr(t);
+  const id = parent('restart-pi-child');
+  const session = '/sessions/2026-11-27T00-00-00_pi-child.jsonl';
+  upsertChild(id, worker({ kind: 'pi', harness: 'pi', session: { kind: 'path', value: session }, model: { provider: 'openrouter', id: 'cheap-model', source: 'parent' } }));
+  rig.world.add({ pane_id: 'w1:p3', tab_id: 'w1:t3', agent: 'pi', name: 'worker', agent_status: 'idle', agent_session: { agent: 'pi', kind: 'path', source: 'herdr:pi', value: session } });
+
+  const text = await context(id, rig).tool('agent_restart', { target: 'worker' });
+  assert.match(text, /Restarted worker \(child child-worker\): closed pane w1:p3, started pi/);
+  const extension = piExtensionEntry();
+  const args = lastStart(rig.fake).params['args'] as string[];
+  assert.deepEqual(args, ['--provider', 'openrouter', '--model', 'cheap-model', '-e', extension, '--session', session], 'the same launch a spawn gives a pi child, on its own session');
+  const env = calls(rig.fake, 'tab.create')[0]?.params['env'] as Record<string, string>;
+  assert.equal(env[PI_EXTENSION_ENV], extension);
+  assert.equal(env['BELLWETHER_CHILD'], 'child-worker');
 });
 
 test('a target with no recorded session is refused, naming the record', async (t) => {

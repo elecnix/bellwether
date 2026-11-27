@@ -27,7 +27,7 @@ import { childOfCaller } from './report.ts';
 import { listParents, mutateParent, readParent, updateChild } from './registry.ts';
 import { resumeArgs, sessionOf, type HarnessSession } from './resume.ts';
 import { clearRetirement } from './retire.ts';
-import { STARTUP_HOLD_MS, STARTUP_TIMEOUT_MS, childArgs, childEnv, childMcpConfig, herdrLink, hostName, startWithRetry } from './spawn.ts';
+import { STARTUP_HOLD_MS, STARTUP_TIMEOUT_MS, childArgs, childEnv, childStartFiles, herdrLink, hostName, startWithRetry } from './spawn.ts';
 import { watchStartup, type StartupWatch } from './startup-dialogs.ts';
 import { resolveTranscript, sessionFrom } from './transcript.ts';
 import type { CallerIdentity, ChildRecord, ChildSession, ParentRecord } from './types.ts';
@@ -86,6 +86,8 @@ export interface RestartHooks {
   /** Aborted when the session's service stops. It ends a wait; an act that began runs to the end. */
   signal?: AbortSignal;
   log?: (message: string) => void;
+  /** The pi extension a restarted pi child loads. Defaults to the packaged one; tests pass their own. */
+  piExtension?: () => string;
   /** Forget the watcher's stale measurements for a child whose pane changed. */
   reset?: (childId: string) => void;
 }
@@ -340,8 +342,10 @@ async function restartChildLocked(client: HerdrClient, parentId: string, childId
   let newTab: string | undefined;
   let startup: StartupWatch | undefined;
   try {
-    const mcpConfigFile = childMcpConfig(child);
-    const tab = await client.tabCreate({ workspaceId, cwd: child.cwd, label: child.name, env: childEnv(parent, child), focus: false });
+    // The same start files a spawn and a resume give it: a Claude Code
+    // child's own MCP configuration, and the extension a pi child loads.
+    const { mcpConfigFile, piExtension } = await childStartFiles(child, undefined, undefined, hooks.piExtension);
+    const tab = await client.tabCreate({ workspaceId, cwd: child.cwd, label: child.name, env: childEnv(parent, child, piExtension), focus: false });
     newTab = tab.tabId ?? tab.paneId;
     if (!tab.paneId) throw new Error('herdr created no pane for the restarted tab');
     newPane = tab.paneId;
@@ -358,7 +362,7 @@ async function restartChildLocked(client: HerdrClient, parentId: string, childId
       // The watch opens before the start: the dialog appears with the harness.
       startup = await watchStartup(client, newPane, undefined, { timeoutMs, redrawMs: hooks.redrawMs });
     }
-    await startWithRetry(client, { name: child.name, kind: child.kind, paneId: newPane, args: childArgs(child.kind, { kind: child.kind, name: child.name, args: resume }, undefined, mcpConfigFile) });
+    await startWithRetry(client, { name: child.name, kind: child.kind, paneId: newPane, args: childArgs(child.kind, { kind: child.kind, name: child.name, ...(child.model ? { provider: child.model.provider, model: child.model.id } : {}), args: resume }, { mcpConfigFile, piExtension }) });
     if (startup) {
       await startup.answer();
       startup.close();
@@ -444,7 +448,7 @@ function sessionAsChild(paneId: string | undefined): { parent: ParentRecord; chi
  * which Claude Code loads only under the development-channel flag. A restart
  * carries it, or the new process would come back without Bellwether.
  */
-export const PARENT_CHANNEL_ARG = '--dangerously-load-development-channels=plugin:bellwether@bellwether';
+export const PARENT_CHANNEL_ARG = '--dangerously-load-development-channels=plugin:bellwether@elecnix-plugins';
 
 /**
  * Restart a parent session in place: close the pane its record names, then

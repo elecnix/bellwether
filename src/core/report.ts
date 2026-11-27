@@ -20,6 +20,12 @@ export function childFromEnv(): string | undefined {
   return process.env['BELLWETHER_CHILD'];
 }
 
+/** The ceiling the spawn put in this session's environment, when it put one. */
+export function maxDepthFromEnv(): number | undefined {
+  const value = Number.parseInt(process.env['BELLWETHER_MAX_DEPTH'] ?? '', 10);
+  return Number.isFinite(value) ? value : undefined;
+}
+
 export function depthFromEnv(): number {
   const value = Number.parseInt(process.env['BELLWETHER_DEPTH'] ?? '0', 10);
   return Number.isFinite(value) ? value : 0;

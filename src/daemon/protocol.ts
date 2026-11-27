@@ -63,6 +63,8 @@ export interface ParentHello {
   herdrSocket: string;
   /** The child id a spawn handed this session, when it is a Bellwether child. */
   childId?: string;
+  /** The ceiling the spawn put in the session's environment. Added without a protocol bump. */
+  maxDepth?: number;
 }
 
 export interface HelloRequest {
@@ -416,12 +418,13 @@ function parseHello(value: Record<string, unknown>): HelloRequest {
   if (!session || !cwd || !host || !herdrSocket) throw new ProtocolError('invalid_hello', 'the parent needs a session, cwd, host and herdr socket');
   const depth = typeof parent['depth'] === 'number' && Number.isFinite(parent['depth']) ? parent['depth'] : 0;
   const optional = (key: string): string | undefined => (typeof parent[key] === 'string' && parent[key] ? (parent[key] as string) : undefined);
+  const maxDepth = typeof parent['maxDepth'] === 'number' && Number.isInteger(parent['maxDepth']) ? parent['maxDepth'] : undefined;
   return {
     type: 'hello',
     protocol,
     client: text(value['client']) || 'unknown',
     ...(text(value['build']) ? { build: text(value['build']) } : {}),
-    parent: { harness, session, cwd, host, depth, herdrSocket, paneId: optional('paneId'), workspaceId: optional('workspaceId'), childId: optional('childId') },
+    parent: { harness, session, cwd, host, depth, herdrSocket, paneId: optional('paneId'), workspaceId: optional('workspaceId'), childId: optional('childId'), ...(maxDepth === undefined ? {} : { maxDepth }) },
   };
 }
 

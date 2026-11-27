@@ -16,6 +16,7 @@ import { DaemonClient } from '../../daemon/client.ts';
 import { resolveSocketPath } from '../../core/herdr-client.ts';
 import { hostName } from '../../core/spawn.ts';
 import { childLabel } from '../../core/label.ts';
+import { maxDepthFromEnv } from '../../core/report.ts';
 import { byEventTime, lateNote } from '../../core/notice.ts';
 import type { OutboxEntry } from '../../core/types.ts';
 import { BELLWETHER_VERSION } from '../../core/version.ts';
@@ -36,6 +37,7 @@ const pane = process.env['HERDR_PANE_ID'];
 const workspace = process.env['HERDR_WORKSPACE_ID'];
 const cwd = process.env['CLAUDE_PROJECT_DIR'] ?? process.cwd();
 const depth = Number.parseInt(process.env['BELLWETHER_DEPTH'] ?? '0', 10) || 0;
+const maxDepth = maxDepthFromEnv();
 
 /** The value after a flag, in the `--child <id>` or `--child=<id>` form. */
 function argument(argv: string[], flag: string): string | undefined {
@@ -249,6 +251,7 @@ ready = (async () => {
       depth,
       herdrSocket: resolveSocketPath(),
       childId,
+      ...(maxDepth === undefined ? {} : { maxDepth }),
     }, { log });
     daemon.onEvents((entries) => schedule(entries));
   } catch (error) {

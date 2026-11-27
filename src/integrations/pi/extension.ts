@@ -13,7 +13,7 @@ import { standDown } from '../../core/pi-extension.ts';
 import { hostName } from '../../core/spawn.ts';
 import { childLabel } from '../../core/label.ts';
 import { byEventTime, lateNote } from '../../core/notice.ts';
-import { PROMPT_NOTICE } from '../../core/report.ts';
+import { PROMPT_NOTICE, maxDepthFromEnv } from '../../core/report.ts';
 import type { OutboxEntry } from '../../core/types.ts';
 import { toolsFor } from '../tools.ts';
 
@@ -164,6 +164,7 @@ export default function bellwether(pi: PiApi): void {
         depth: depthFromEnv(),
         herdrSocket: resolveSocketPath(),
         childId: process.env['BELLWETHER_CHILD'],
+        ...(maxDepthFromEnv() === undefined ? {} : { maxDepth: maxDepthFromEnv() }),
       }, { log: (message) => console.error('[bellwether]', message) });
       // A previous pi process for this session may have delivered an event
       // and died before its receipt reached the daemon.

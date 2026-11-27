@@ -67,6 +67,9 @@ export async function adoptPane(client: HerdrClient, parent: ParentRecord, optio
     lastStatus: pane.agentStatus,
     statusChangedAt: now,
     completionSeq: pane.completionSeq,
+    // The turns the pane finished before this parent adopted it are not news.
+    // The first event is the end of the next turn, as for a spawned child.
+    ...(pane.completionSeq === undefined ? {} : { turnNotified: { paneId: pane.paneId, seq: pane.completionSeq } }),
     session: pane.agentSessionId ? { kind: pane.agentSessionId.includes('/') ? 'path' : 'id', value: pane.agentSessionId } : undefined,
     transcript: found?.path,
     transcriptMissing: found?.missing,

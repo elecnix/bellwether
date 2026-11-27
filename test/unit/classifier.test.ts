@@ -3,7 +3,8 @@
 // driven by a hand-picked clock and nothing waits on a timer.
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { DEFAULT_LIMITS, advance, initialState, isReady, markReported } from '../../src/core/classifier.ts';
+import { DEFAULT_LIMITS, advance, initialState, isReady, markReported, seedFor } from '../../src/core/classifier.ts';
+import type { ChildRecord } from '../../src/core/types.ts';
 
 const limits = { ...DEFAULT_LIMITS };
 
@@ -67,6 +68,38 @@ test('a report for the turn suppresses that turn idle event', () => {
   const ready = advance(initialState('working', 0), { status: 'idle', completionSeq: 1 }, 0, limits).state;
   const reported = markReported(ready, 10);
   assert.equal(advance(reported, { status: 'idle', completionSeq: 1 }, limits.idleMs * 2, limits).event, undefined);
+});
+
+test('a final report made while its turn runs covers that turn once it ends', () => {
+  const working = advance(initialState('working', 0), { status: 'working', completionSeq: 4 }, 0, limits).state;
+  const reported = markReported(working, 5);
+  assert.equal(reported.reportPending, true);
+  const ended = advance(reported, { status: 'idle', completionSeq: 5 }, 10, limits);
+  assert.equal(ended.state.reportedFor, 5);
+  assert.equal(ended.state.reportPending, undefined);
+  assert.equal(advance(ended.state, { status: 'idle', completionSeq: 5 }, 10 + limits.idleMs * 2, limits).event, undefined);
+  // The next turn is news again.
+  const next = advance(advance(ended.state, { status: 'working', completionSeq: 5 }, 20 + limits.idleMs * 2, limits).state, { status: 'idle', completionSeq: 6 }, 30 + limits.idleMs * 2, limits).state;
+  assert.equal(advance(next, { status: 'idle', completionSeq: 6 }, 30 + limits.idleMs * 4, limits).event, 'idle');
+});
+
+test('a progress report covers no turn, so the turn still ends in one idle event', () => {
+  const working = advance(initialState('working', 0), { status: 'working', completionSeq: 4 }, 0, limits).state;
+  const reported = markReported(working, 5, false);
+  assert.equal(reported.reportPending, undefined);
+  const ended = advance(reported, { status: 'idle', completionSeq: 5 }, 10, limits).state;
+  assert.equal(advance(ended, { status: 'idle', completionSeq: 5 }, 10 + limits.idleMs, limits).event, 'idle');
+});
+
+test('a child seeded from its record does not announce the turn the parent already heard about', () => {
+  const at = new Date(0).toISOString();
+  const child: ChildRecord = { id: 'c1', name: 'c1', kind: 'pi', harness: 'pi', paneId: 'w1:p1', host: 'local', startedAt: at, lastStatus: 'idle', statusChangedAt: at, lastBusyAt: at, depth: 1, completionSeq: 9, turnNotified: { paneId: 'w1:p1', seq: 9 } };
+  const seeded = seedFor(child, 0);
+  assert.equal(advance(seeded, { status: 'idle', completionSeq: 9 }, limits.idleMs * 2, limits).event, undefined);
+  // A turn that ended while no watcher ran is still news.
+  assert.equal(advance(seedFor({ ...child, completionSeq: 10 }, 0), { status: 'idle', completionSeq: 10 }, limits.idleMs * 2, limits).event, 'idle');
+  // A notified turn from another pane says nothing about this one.
+  assert.equal(advance(seedFor({ ...child, turnNotified: { paneId: 'w1:p0', seq: 9 } }, 0), { status: 'idle', completionSeq: 9 }, limits.idleMs * 2, limits).event, 'idle');
 });
 
 test('a status change into idle without a completionSeq still fires', () => {

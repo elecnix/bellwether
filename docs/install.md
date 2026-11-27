@@ -14,6 +14,10 @@ npx -y @elecnix/bellwether doctor
 
 `pi install npm:@elecnix/bellwether` adds the extension, and Pi loads it at the next session start. When `pi list` shows Bellwether at a local checkout instead of the npm package, Pi keeps loading that checkout until you run the install command again.
 
+This install is for a parent session. A pi child needs nothing in the host's pi settings. `agent_spawn` starts the child with `-e` pointing at the extension inside the installed package, so the child gets its tools on any machine with Bellwether installed. If the host's pi settings also list Bellwether, that copy registers nothing in the child, so each tool appears once.
+
+An older copy in pi's settings has no such guard, and pi exits at startup when two extensions register the same tool. While pi's settings list one, a pi spawn refuses to start, and its error says to run `pi install npm:@elecnix/bellwether`.
+
 ## Plugin and channel
 
 The plugin runs Bellwether's MCP server and declares it a channel, which carries child events.
@@ -52,6 +56,6 @@ Then start Claude Code with `plugin:bellwether@elecnix-plugins` after the flag, 
 bellwether doctor
 ```
 
-Doctor lists the herdr socket, whether the herdr API answers, the Pi extension, the MCP entry point, the daemon, and every registered parent with its children. It fails when the Pi extension path doesn't resolve or the MCP entry lacks its executable bit.
+Doctor lists the herdr socket, whether the herdr API answers, the Pi extension, the MCP entry point, the daemon, and every registered parent with its children. It fails when the Pi extension path doesn't resolve or the MCP entry lacks its executable bit. It also fails on a Bellwether copy in pi's settings that predates the guard against a second copy. A pi child would exit at startup there.
 
 From version 0.1.5, doctor also prints the installed version and protocol and compares them with the running daemon's. From that version, `bellwether --version` prints the installed version alone.

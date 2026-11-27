@@ -19,6 +19,7 @@ import { describeUpgrade, gatherUpgrade } from './daemon/upgrade-status.ts';
 import { DaemonClient, REFUSED_EXIT, ReportRefused, drainDaemon, ensureDaemon, postReport, relayStatus } from './daemon/client.ts';
 import { readMemory } from './daemon/relay-links.ts';
 import type { RelayHostState } from './daemon/protocol.ts';
+import { guardlessPiCopies, resolvePiExtension } from './core/pi-extension.ts';
 import { describeDaemonEntry, readLock } from './daemon/lock.ts';
 import { DAEMON_PROTOCOL } from './daemon/protocol.ts';
 import { BELLWETHER_VERSION } from './core/version.ts';
@@ -157,6 +158,11 @@ function checkPackaging(): number {
       bad('pi extension', `${entry} does not exist`);
       failures += 1;
     }
+  }
+  // A pi child starts with -e beside whatever pi's settings load, and pi exits on a duplicate tool.
+  for (const copy of guardlessPiCopies()) {
+    bad('pi settings', `${copy} predates the guard against a second copy, so a pi child would exit at startup. Run pi install npm:@elecnix/bellwether.`);
+    failures += 1;
   }
 
   const declared = manifest.bin?.['bellwether-mcp'];
@@ -377,17 +383,20 @@ async function report(argv: string[]): Promise<number> {
  * a file that exists here. The record names the parent, and no address for
  * it: this machine never connects to the parent's, whose daemon connects here
  * to collect reports. It prints the record path, the brief and, for a Claude
- * Code child, the MCP config the child starts with, as one JSON line.
+ * Code child, the MCP config the child starts with, or for a pi child, the
+ * extension it loads, as one JSON line.
  */
 function relayRegister(argv: string[]): number {
   const values = exactFlags(argv, ['child', 'name', 'kind', 'parent', 'cwd', 'brief-stdin']);
   const childId = values['child'];
   const parentId = values['parent'];
   if (!childId || !parentId) throw new Error('relay-register needs --child and --parent');
+  // A pi child loads this machine's own extension, so a missing one fails here, before anything is written.
+  const piExtension = values['kind'] === 'pi' ? resolvePiExtension() : undefined;
   const brief = values['brief-stdin'] === 'yes' ? writeBrief(childId, fs.readFileSync(0, 'utf8')) : undefined;
   saveRelayRecord({ schema: RELAY_SCHEMA, childId, name: values['name'] ?? childId, kind: values['kind'] ?? 'other', parentId, ...(values['cwd'] ? { cwd: values['cwd'] } : {}), registeredAt: new Date().toISOString() });
   const mcpConfig = values['kind'] === 'claude' ? writeMcpConfig(childId) : undefined;
-  console.log(JSON.stringify({ record: relayChildPath(childId), ...(brief ? { brief } : {}), ...(mcpConfig ? { mcpConfig } : {}) }));
+  console.log(JSON.stringify({ record: relayChildPath(childId), ...(brief ? { brief } : {}), ...(mcpConfig ? { mcpConfig } : {}), ...(piExtension ? { piExtension } : {}) }));
   return 0;
 }
 

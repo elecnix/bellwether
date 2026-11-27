@@ -4,8 +4,10 @@
 // through pi.sendMessage, and the receipt id in the message marks the event
 // read once the model context contains it.
 import os from 'node:os';
+import { fileURLToPath } from 'node:url';
 import { DaemonClient } from '../../daemon/client.ts';
 import { resolveSocketPath } from '../../core/herdr-client.ts';
+import { standDown } from '../../core/pi-extension.ts';
 import { hostName } from '../../core/spawn.ts';
 import { childLabel } from '../../core/label.ts';
 import type { OutboxEntry } from '../../core/types.ts';
@@ -14,6 +16,8 @@ import { toolsFor } from '../tools.ts';
 // The parts of pi's ExtensionAPI this extension uses.
 interface PiContext {
   isIdle(): boolean;
+  /** The model the session runs on now. It changes with /model, so it is read at each call. */
+  model?: { provider: string; id: string };
   sessionManager: { getSessionId(): string; getCwd(): string; getSessionName?(): string | undefined };
 }
 interface ToolResult {
@@ -52,6 +56,10 @@ function compose(entries: OutboxEntry[]): string {
 }
 
 export default function bellwether(pi: PiApi): void {
+  // A spawn starts a pi child with -e naming one copy of this extension. A
+  // host that also installed Bellwether as a pi package loads a second copy,
+  // which registers nothing, so each tool and handler exists once.
+  if (standDown(fileURLToPath(import.meta.url))) return;
   let daemon: DaemonClient | undefined;
   let burst: NodeJS.Timeout | undefined;
   let pending: OutboxEntry[] = [];
@@ -124,11 +132,12 @@ export default function bellwether(pi: PiApi): void {
       label: tool.name.replace(/_/g, ' '),
       description: tool.description,
       parameters: tool.schema,
-      async execute(_id, args, signal) {
+      async execute(_id, args, signal, _onUpdate, ctx) {
         if (!daemon) return result('Bellwether is not running: the daemon did not start for this session.');
         if (signal?.aborted) return result('Cancelled.');
         try {
-          return result(await daemon.tool(tool.name, args));
+          const model = ctx?.model?.provider && ctx.model.id ? { provider: ctx.model.provider, id: ctx.model.id } : undefined;
+          return result(await daemon.tool(tool.name, args, model));
         } catch (error) {
           return result((error as Error).message);
         }

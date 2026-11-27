@@ -26,6 +26,8 @@ function isolatedEnv(): NodeJS.ProcessEnv {
   }
   env['BELLWETHER_HOME'] = path.join(scratch, 'home');
   env['HERDR_SOCKET_PATH'] = path.join(scratch, 'no-herdr.sock');
+  // The operator's pi settings may load an older Bellwether, which a pi spawn refuses.
+  env['PI_CODING_AGENT_DIR'] = path.join(scratch, 'pi-agent');
   return env;
 }
 
@@ -108,6 +110,21 @@ test('Node loads every pi extension the installed package declares', () => {
     );
     assert.equal(run.status, 0, `${entry} did not load: ${run.stderr}`);
   }
+});
+
+test('the installed relay-register names the pi extension the installed package declares', () => {
+  const manifest = JSON.parse(fs.readFileSync(path.join(installed, 'package.json'), 'utf8')) as { pi?: { extensions?: string[] } };
+  const declared = (manifest.pi?.extensions ?? []).map((entry) => fs.realpathSync(path.resolve(installed, entry)));
+  const run = spawnSync(
+    bin('bellwether'),
+    ['relay-register', '--child', 'c-pi', '--name', 'far-pi', '--kind', 'pi', '--parent', 'pi-parent'],
+    { env: isolatedEnv(), encoding: 'utf8' },
+  );
+  assert.equal(run.status, 0, run.stderr);
+  const printed = JSON.parse(run.stdout.trim().split('\n').pop() ?? '{}') as { piExtension?: string };
+  assert.ok(printed.piExtension, `relay-register printed no pi extension: ${run.stdout}`);
+  assert.ok(fs.existsSync(printed.piExtension), `${printed.piExtension} does not exist`);
+  assert.ok(declared.includes(fs.realpathSync(printed.piExtension)), `${printed.piExtension} is not one of ${declared.join(', ')}`);
 });
 
 test('the installed MCP server starts its daemon, reports ready and exits when stdin closes', async () => {

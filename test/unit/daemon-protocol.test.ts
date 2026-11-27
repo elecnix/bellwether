@@ -31,6 +31,13 @@ test('a call carries the identity of the session that made it', () => {
   assert.deepEqual(parsed, { type: 'call', id: 'c2', tool: 'parent_report', args: {}, caller: { childId: 'kid-1', paneId: 'w1:p4' } });
 });
 
+test('a call carries the provider and model the calling session runs on, only as a pair', () => {
+  const parsed = parseRequest(JSON.stringify({ type: 'call', id: 'c3', tool: 'agent_spawn', args: {}, caller: { paneId: 'w1:p4', model: { provider: 'acme-cloud', id: 'acme-large' } } }));
+  assert.deepEqual(parsed, { type: 'call', id: 'c3', tool: 'agent_spawn', args: {}, caller: { paneId: 'w1:p4', model: { provider: 'acme-cloud', id: 'acme-large' } } });
+  const half = parseRequest(JSON.stringify({ type: 'call', id: 'c4', tool: 'agent_spawn', args: {}, caller: { paneId: 'w1:p4', model: { id: 'acme-large' } } }));
+  assert.deepEqual(half, { type: 'call', id: 'c4', tool: 'agent_spawn', args: {}, caller: { paneId: 'w1:p4' } });
+});
+
 test('a hello keeps the child id a spawned session names', () => {
   const parsed = parseRequest(JSON.stringify({ ...hello, parent: { ...hello.parent, childId: 'kid-1' } }));
   assert.equal(parsed.type === 'hello' ? parsed.parent.childId : undefined, 'kid-1');

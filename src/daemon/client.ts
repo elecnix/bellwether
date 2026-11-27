@@ -12,7 +12,7 @@ import { DAEMON_PROTOCOL, MAX_DAEMON_FRAME_BYTES, formatRequest, type DaemonRepl
 import { isAlive, readLock } from './lock.ts';
 import { HANDOVER_TIMEOUT_MS, decideHandOver, type DaemonIdentity } from './handover.ts';
 import { canConnect } from './server.ts';
-import type { OutboxEntry } from '../core/types.ts';
+import type { ModelPair, OutboxEntry } from '../core/types.ts';
 
 const DEFAULT_TIMEOUT_MS = 60_000;
 const START_TIMEOUT_MS = 10_000;
@@ -161,13 +161,14 @@ export class DaemonClient {
     return () => this.handlers.delete(handler);
   }
 
-  async tool(name: string, args: Record<string, unknown>): Promise<string> {
+  /** Run a tool. `model` is the provider and model the session runs on now, when its harness says. */
+  async tool(name: string, args: Record<string, unknown>, model?: ModelPair): Promise<string> {
     if (this.stopped) throw new Error('the daemon client is closed');
     await this.ensure();
     const id = `c${++this.sequence}`;
     // The caller identity travels with every call, so the daemon routes by its
     // own records whichever client process asked.
-    const caller = { ...(this.parent.paneId ? { paneId: this.parent.paneId } : {}), ...(this.parent.childId ? { childId: this.parent.childId } : {}) };
+    const caller = { ...(this.parent.paneId ? { paneId: this.parent.paneId } : {}), ...(this.parent.childId ? { childId: this.parent.childId } : {}), ...(model ? { model } : {}) };
     const line = formatRequest({ type: 'call', id, tool: name, args, caller });
     return new Promise<string>((resolve, reject) => {
       // A hand-over can outlast the usual timeout, because the old daemon finishes its calls first.

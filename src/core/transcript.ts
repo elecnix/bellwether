@@ -122,6 +122,36 @@ export function sessionFrom(agentSession: unknown): ChildSession | undefined {
   return { kind: typeof kind === 'string' && kind ? kind : value.includes('/') ? 'path' : 'id', value };
 }
 
+/** The name herdr reports for an agent, when it differs from the one the parent gave. */
+export function agentNameOf(agent: Record<string, unknown>, given: string): string | undefined {
+  const name = agent['name'];
+  return typeof name === 'string' && name && name !== given ? name : undefined;
+}
+
+/**
+ * The provider and model a pi session file says it runs on: its first
+ * model_change entry, which pi writes when the session starts. Undefined when
+ * the file is missing or names none yet.
+ */
+export function piSessionModel(file: string): { provider: string; id: string } | undefined {
+  let content: string;
+  try {
+    content = fs.readFileSync(file, 'utf8');
+  } catch {
+    return undefined;
+  }
+  for (const line of content.split('\n')) {
+    if (!line.includes('"model_change"')) continue;
+    try {
+      const entry = JSON.parse(line) as Record<string, unknown>;
+      if (entry['type'] === 'model_change' && typeof entry['provider'] === 'string' && typeof entry['modelId'] === 'string') return { provider: entry['provider'], id: entry['modelId'] };
+    } catch {
+      // A line cut short by a write in progress is not the entry.
+    }
+  }
+  return undefined;
+}
+
 /** The session value herdr reports for a pane, whatever shape it takes. */
 export function sessionValueFrom(agentSession: unknown): string | undefined {
   if (typeof agentSession === 'string') return agentSession;

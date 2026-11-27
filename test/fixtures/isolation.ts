@@ -30,9 +30,11 @@ export const ISOLATION_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'bellwether-
 
 process.env['BELLWETHER_HOME'] = path.join(ISOLATION_ROOT, 'home');
 process.env['BELLWETHER_DAEMON_SOCKET'] = path.join(ISOLATION_ROOT, 'home', 'daemon.sock');
+// pi's agent directory holds the operator's pi settings, which a pi spawn reads.
+process.env['PI_CODING_AGENT_DIR'] = path.join(ISOLATION_ROOT, 'pi-agent');
 // The operator may run the suite from inside a Bellwether child. Its identity
 // must not leak into the cases or the processes they start.
-for (const key of ['BELLWETHER_PARENT', 'BELLWETHER_CHILD', 'BELLWETHER_CHILD_NAME', 'BELLWETHER_DEPTH', 'BELLWETHER_HARNESS']) delete process.env[key];
+for (const key of ['BELLWETHER_PARENT', 'BELLWETHER_CHILD', 'BELLWETHER_CHILD_NAME', 'BELLWETHER_DEPTH', 'BELLWETHER_HARNESS', 'BELLWETHER_PI_EXTENSION']) delete process.env[key];
 
 /** The path a net call names, in any of its argument shapes. */
 function socketPath(args: unknown[]): string | undefined {

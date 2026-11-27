@@ -19,6 +19,7 @@ Each report moves through the following steps. Step one runs over SSH from the p
 1. Before the child's tab opens, the parent's daemon runs `bellwether relay-register` on the child's machine. On that machine, the command writes a relay record that lists the child and the parent id, plus the MCP config for a Claude Code child. That record leaves out any address for the parent's machine.
 
    - From standard input, the command reads the child's brief, so the brief never appears on a command line. It writes the brief to that machine's `~/.bellwether/prompts/<child id>.md` with mode 0600, and the harness gets an `@` reference to that copy.
+   - For a pi child, the command prints the path of that machine's pi extension, which the child loads with `-e`.
    - If the copy fails, the spawn fails before any tab opens, so no child starts without its task. When the child exits, when `agent_stop` closes it, or when its spawn fails, `bellwether relay-cleanup` removes the brief and the MCP config on that machine.
 
 2. For each machine that runs one of its children, the parent's daemon keeps one SSH connection open. At the far end, `bellwether relay-bridge` joins the connection to the machine's daemon socket and starts that daemon if none runs. Over the connection, the parent's daemon subscribes to the reports that wait there for its parents.
@@ -48,10 +49,12 @@ After a child there exits, the daemon keeps a connection open to that machine un
 
 ## Reports that do not arrive
 
-When registration fails for a child with no brief, the child still starts, and herdr status still follows it. The spawn's reply says why the child can't report.
+When registration fails for a child with no brief, the child still starts, and herdr status still follows it. The spawn's reply says why the child can't report. A pi spawn fails instead, because without that machine's extension path the child would have no tools.
 
 Outages leave each new report in the relay outbox on the child's machine. A new connection starts by sending the reports that wait for its parents, so a report from an outage arrives once the parent's daemon reconnects. Under `~/.bellwether/relay/children/`, the relay record counts waiting reports as `unforwarded`, and `bellwether doctor` on the child's machine counts them too.
 
 Refusals from the parent's daemon are final. A refused report stays on disk, marked `refused`, and the child's machine doesn't send it again.
 
 Each report crosses to the parent's machine as one line of the daemon protocol, and that line can't exceed 4 MiB. On the child's machine, the daemon refuses a longer report before it saves it. Its error message tells the child to report a shorter summary and leave the rest in a file.
+
+An older Bellwether may have saved a longer report already. When a parent's daemon connects, the child's daemon marks that report `refused` and leaves it on disk, and the reports after it still arrive.

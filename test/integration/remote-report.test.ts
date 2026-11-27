@@ -15,6 +15,7 @@ import test from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import { HerdrClient } from '../../src/core/herdr-client.ts';
 import { relayChildPath, relayOutboxDir, spoolPath } from '../../src/core/paths.ts';
+import { PI_EXTENSION_ENV, piExtensionEntry } from '../../src/core/pi-extension.ts';
 import { emptyParent, readParent, saveParent, upsertChild } from '../../src/core/registry.ts';
 import { RELAY_SCHEMA, listForwards, readRelayRecord, saveForward, saveRelayRecord, type RelayRecord } from '../../src/core/relay-records.ts';
 import { remoteOps } from '../../src/core/remote.ts';
@@ -22,7 +23,8 @@ import { spawnChild } from '../../src/core/spawn.ts';
 import { claudeProjectDir } from '../../src/core/transcript.ts';
 import type { ChildRecord, SpoolReport } from '../../src/core/types.ts';
 import { Watcher } from '../../src/core/watcher.ts';
-import { DaemonClient } from '../../src/daemon/client.ts';
+import { DaemonClient, postReport } from '../../src/daemon/client.ts';
+import { DAEMON_PROTOCOL, MAX_DAEMON_FRAME_BYTES, formatReply, formatRequest } from '../../src/daemon/protocol.ts';
 import { RelayOutbox } from '../../src/daemon/relay.ts';
 import { RelayLinks } from '../../src/daemon/relay-links.ts';
 import { startDaemon, type Daemon, type ParentService } from '../../src/daemon/server.ts';
@@ -327,6 +329,73 @@ test('a report too long for one relay line is refused on the child machine, and 
   assert.match(fits, /saved as/);
 });
 
+/** How many times the parent's daemon has dialled the child's machine. */
+function dials(w: World): number {
+  return w.ssh.targets().filter((target) => target === 'child-box').length;
+}
+
+test('a report that fits the child\'s request but escapes past one relay line does not make the parent reconnect in a loop', async (t) => {
+  const w = world(t);
+  parentHolds(w, 'c-edge');
+  childHolds(w, 'c-edge');
+  const { links: relayLinks } = await parentDaemon(w);
+  await until(() => connected(relayLinks), 'the connection');
+
+  // Quotes double when JSON encodes them. Pick the most that still fit the request the child's
+  // daemon reads, so the same text, with the receipt, parent and time added, overflows one relay line.
+  const request = (text: string) => formatRequest({ type: 'report', id: 'r1', protocol: DAEMON_PROTOCOL, report: { childId: 'c-edge', status: 'done', text } }).length;
+  const overhead = request('');
+  const text = '"'.repeat(Math.floor((MAX_DAEMON_FRAME_BYTES - overhead) / 2));
+  assert.ok(request(text) <= MAX_DAEMON_FRAME_BYTES, 'the child\'s daemon accepts the request');
+  const relayLine = formatReply({ type: 'relay-report', report: { receipt: 'rp-0123456789abcdef', childId: 'c-edge', parentId: PARENT_ID, status: 'done', text, at: new Date().toISOString() } }).length;
+  assert.ok(relayLine > MAX_DAEMON_FRAME_BYTES, `the relay line is ${relayLine}, over ${MAX_DAEMON_FRAME_BYTES}`);
+
+  const outcome = postReport({ childId: 'c-edge', status: 'done', text }, { home: w.childHome, socketPath: path.join(w.childHome, 'daemon.sock'), spawn: false }).then(
+    (posted): { posted?: string; refused?: string } => ({ posted: posted.text }),
+    (error: Error): { posted?: string; refused?: string } => ({ refused: error.message }),
+  );
+  // Long enough for several reconnects at a 50 to 200 ms backoff.
+  await delay(2_000);
+  assert.equal(dials(w), 1, `the parent dialled the child's machine ${dials(w)} times: the connection was cut and the same report came back`);
+  assert.ok(connected(relayLinks), 'the one connection is still up');
+  assert.ok(!w.logs.some((line) => /lost machine child-box/.test(line)), w.logs.filter((line) => /lost/.test(line)).join('\n'));
+
+  const result = await outcome;
+  assert.match(result.refused ?? '', /too long to cross to the parent's machine/, JSON.stringify(result).slice(0, 300));
+  assert.deepEqual(waitingOn(w.childHome), [], 'nothing was kept to be sent again');
+  assert.deepEqual(spoolOf(w.parentHome, PARENT_ID), []);
+});
+
+test('an over-long report already waiting on the child machine is set aside as refused, not sent on every reconnect', async (t) => {
+  const w = world(t);
+  parentHolds(w, 'c-old');
+  childHolds(w, 'c-old');
+  // As an older Bellwether, or anything that wrote the outbox without the size check, would leave it.
+  const receipt = 'rp-00000000000000aa';
+  inHome(w.childHome, () => saveForward({ receipt, childId: 'c-old', parentId: PARENT_ID, status: 'done', text: '"'.repeat(2_500_000), at: new Date().toISOString() }));
+  inHome(w.childHome, () => saveForward({ receipt: 'rp-00000000000000bb', childId: 'c-old', parentId: PARENT_ID, status: 'progress', text: 'the one after it', at: new Date(Date.now() + 1).toISOString() }));
+
+  const { links: relayLinks } = await parentDaemon(w);
+  await delay(2_500);
+  assert.equal(dials(w), 1, `the parent dialled the child's machine ${dials(w)} times: the over-long report cut each connection and came back on the next`);
+  assert.ok(connected(relayLinks));
+  await until(() => spoolOf(w.parentHome, PARENT_ID).length === 1, 'the report after it to arrive');
+  assert.equal(spoolOf(w.parentHome, PARENT_ID)[0]?.text, 'the one after it', 'the report behind it is not held up');
+  const kept = waitingOn(w.childHome).find((entry) => entry.receipt === receipt) ?? inHome(w.childHome, () => listForwards()).find((entry) => entry.receipt === receipt);
+  assert.match(kept?.refused ?? '', /too long to cross/, 'it stays on disk, marked refused');
+});
+
+test('a far end that answers with something other than the relay protocol says which machine to update', async (t) => {
+  const w = world(t);
+  parentHolds(w, 'c-stale');
+  // What 0.1.4 does with a command it does not know: print its usage and exit 1.
+  const stale = path.join(w.root, 'stale-ssh');
+  fs.writeFileSync(stale, '#!/bin/sh\necho "Usage: bellwether <daemon|drain|spawn|watch|list|read|send|stop|report|parents|doctor|version>"\nexit 1\n', { mode: 0o755 });
+  const { links: relayLinks } = await parentDaemon(w, links(w, { ssh: stale }));
+  await until(() => relayLinks.state('child-box')?.status === 'reconnecting', 'the link to fail');
+  assert.match(relayLinks.state('child-box')?.lastError ?? '', /does not speak the relay protocol.*Update @elecnix\/bellwether on machine child-box/);
+});
+
 test('a report for a child this machine holds is served here and never spooled for a remote parent', async (t) => {
   const w = world(t, 'child');
   await childDaemon(w);
@@ -438,11 +507,40 @@ test('a spawn on another machine whose registration fails still starts, and says
   const w = world(t);
   w.ssh.plan(['refuse']);
   const parent = saveParent(emptyParent('pi', 'spawner-fail', '/work'));
+  const herdr = await idleHerdr(t);
+  const ops = remoteOps(machines);
+  const { reportWarning } = await spawnChild(new HerdrClient({ socketPath: herdr.socketPath }), parent, { kind: 'claude', name: 'unregistered', host: 'child-box', startupTimeoutMs: 2_000, redrawMs: 10 }, undefined, { registerRemote: (entry) => ops.register(parent, entry) });
+  assert.match(reportWarning ?? '', /could not be registered on machine child-box.*cannot call parent_report.*255/);
+});
+
+test('a pi spawn on another machine starts with the extension that machine resolves', async (t) => {
+  const w = world(t);
+  const parent = saveParent(emptyParent('pi', 'pi-spawner', '/work', { workspaceId: 'w1' }));
   const herdr = await startFakeHerdr();
   t.after(() => herdr.stop());
   const ops = remoteOps(machines);
-  const { reportWarning } = await spawnChild(new HerdrClient({ socketPath: herdr.socketPath }), parent, { kind: 'pi', name: 'unregistered', host: 'child-box' }, undefined, { registerRemote: (entry) => ops.register(parent, entry) });
-  assert.match(reportWarning ?? '', /could not be registered on machine child-box.*cannot call parent_report.*255/);
+  const { child, reportWarning } = await spawnChild(new HerdrClient({ socketPath: herdr.socketPath }), parent, { kind: 'pi', name: 'far-pi', host: 'child-box', prompt: 'report back' }, undefined, { registerRemote: (entry, text) => ops.register(parent, entry, text) });
+  assert.equal(reportWarning, undefined);
+  assert.deepEqual(w.ssh.remoteCalls()[0]?.argv.slice(0, 6), ['relay-register', '--child', child.id, '--name', 'far-pi', '--kind']);
+  // The fake machine runs this checkout's CLI, so its package resolves the same file.
+  assert.deepEqual(startArgs(herdr).slice(0, 2), ['-e', piExtensionEntry()]);
+  const create = herdr.requests.find((request) => request.method === 'tab.create');
+  assert.equal((create?.params['env'] as Record<string, string>)[PI_EXTENSION_ENV], piExtensionEntry());
+});
+
+test('a pi spawn on another machine whose registration fails starts nothing, since no extension path is known', async (t) => {
+  const w = world(t);
+  w.ssh.plan(['refuse']);
+  const parent = saveParent(emptyParent('pi', 'pi-spawner-fail', '/work'));
+  const herdr = await startFakeHerdr();
+  t.after(() => herdr.stop());
+  const ops = remoteOps(machines);
+  await assert.rejects(
+    spawnChild(new HerdrClient({ socketPath: herdr.socketPath }), parent, { kind: 'pi', name: 'unregistered', host: 'child-box' }, undefined, { registerRemote: (entry) => ops.register(parent, entry) }),
+    /child-box.*pi extension.*255/s,
+  );
+  assert.deepEqual(readParent(parent.id)?.children, []);
+  assert.equal(herdr.requests.some((request) => request.method === 'tab.create'), false);
 });
 
 /** A fake herdr whose new pane goes idle after the start, so a Claude Code spawn gets past its dialog wait. */

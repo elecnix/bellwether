@@ -58,6 +58,21 @@ The daemon serves its own protocol and the one before it. A session two protocol
 
 A parent's machine and a child's machine each run their own install. Protocol 4 changed the relay between them. A machine still on a 0.1.x release from before protocol 4 can't take part until it updates. Until then, `bellwether doctor` on the parent's machine shows that machine as `reconnecting`, with the error from the far end.
 
+## A build npm hasn't published
+
+To run a commit ahead of the next release, build its tarball and install that. Don't install from a git URL. `npm install -g github:elecnix/bellwether#main` fails on an empty prefix: npm builds the clone with config from the global prefix, so the build finds no `tsgo` and exits 127.
+
+Over an existing install, the same command stops earlier with `ENOTEMPTY` on the installed package's directory, and leaves that package as it was. Running `npm uninstall -g` first doesn't help. [#57](https://github.com/elecnix/bellwether/issues/57) has the details.
+
+```sh
+git clone --depth 1 https://github.com/elecnix/bellwether.git && cd bellwether
+npm ci && npm run build && npm install -g "$(npm pack --silent)"
+```
+
+A release installs from the npm registry and doesn't need this. It installs over the version already there, with no uninstall first.
+
+A build like this has the version number of the release it follows. A daemon with that same number doesn't hand over to it, so run `bellwether drain` after the install to start the build's daemon.
+
 ## If it goes wrong
 
 `bellwether drain` stops the running daemon once its calls finish, whatever its version. Each open session then reconnects and starts a daemon from its own install. The daemon that comes back is the one from the first session to reconnect.

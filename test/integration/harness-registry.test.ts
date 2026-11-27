@@ -110,9 +110,9 @@ test('a harness whose child could not report is refused before the record, the b
   assert.deepEqual(fs.existsSync(prompts) ? fs.readdirSync(prompts) : [], []);
 });
 
-test('codex and cline are declared and refused until their entries give a child its own server', async (t) => {
+test('cline is declared and refused until its entry gives a child its own server', async (t) => {
   const space = await room(t);
-  for (const kind of ['codex', 'cline']) {
+  for (const kind of ['cline']) {
     const entry = harnessFor(kind);
     assert.equal(entry?.reports.via, 'none');
     await assert.rejects(spawnChild(space.client, readParent(space.parentId)!, { kind, name: `${kind}-child`, prompt: 'x' }), new RegExp(`${kind}-child was not started: Bellwether does not give a ${kind} child its own Bellwether server yet`));

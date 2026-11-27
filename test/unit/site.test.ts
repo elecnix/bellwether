@@ -21,6 +21,7 @@ test('the site has one HTML file per page, in reading order, and nothing else', 
     'docs/routes.md',
     'docs/harnesses.md',
     'docs/opencode.md',
+    'docs/codex.md',
     'docs/upgrading.md',
     'docs/releasing.md',
   ]);

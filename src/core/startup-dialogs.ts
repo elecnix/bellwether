@@ -28,9 +28,16 @@ export interface StartupDialogSet {
   dialogs: readonly { id: StartupDialog; name: string; shows: RegExp; accept: string }[];
   /** The dialog that comes last, after which the child is at its prompt. */
   last?: StartupDialog;
+  /**
+   * Dialogs the spawn never answers, because they grant a permission rather
+   * than ask a startup question. One on screen fails the start at once, by
+   * name, with what the person has to do.
+   */
+  refuse?: readonly { id: StartupDialog; name: string; shows: RegExp; why: string }[];
 }
 
-const SELECTED = /^\s*[❯>]\s/;
+// Claude Code marks the selected option with ❯, and Codex with ›.
+const SELECTED = /^\s*[❯›>]\s/u;
 
 /** Claude Code's two: the folder-trust question, and the development-channel confirmation. */
 export const CLAUDE_STARTUP: StartupDialogSet = {
@@ -52,6 +59,21 @@ const READY = new Set(['idle', 'working', 'done']);
 
 export function detectDialog(screen: string, set: StartupDialogSet = CLAUDE_STARTUP): StartupDialog | undefined {
   return set.dialogs.find((dialog) => dialog.shows.test(screen))?.id;
+}
+
+/** A dialog on screen that the spawn refuses to answer, or undefined. */
+export function detectRefused(screen: string, set: StartupDialogSet): NonNullable<StartupDialogSet['refuse']>[number] | undefined {
+  return set.refuse?.find((dialog) => dialog.shows.test(screen));
+}
+
+/** A start that stopped on a dialog Bellwether never answers. */
+export class StartupDialogRefused extends Error {
+  readonly dialog: StartupDialog;
+  constructor(message: string, dialog: StartupDialog) {
+    super(message);
+    this.name = 'StartupDialogRefused';
+    this.dialog = dialog;
+  }
 }
 
 /**
@@ -150,6 +172,10 @@ export async function watchStartup(client: HerdrClient, paneId: string, signal?:
         // this read, as would `channelsEnabled` with `allowedChannelPlugins` in managed
         // settings for the channel question (docs/probes.md, section 7).
         screen = await client.paneRead({ paneId, source: 'visible', lines: 40 }).catch(() => screen);
+        // A dialog that grants a permission is never answered, and herdr can
+        // read the pane as idle while it waits, so it is checked first.
+        const refused = detectRefused(screen, set);
+        if (refused) throw new StartupDialogRefused(`${set.harness} in pane ${paneId} stopped on ${refused.name}, which Bellwether never answers: ${refused.why}`, refused.id);
         dialog = detectDialog(screen, set);
         if (dialog) {
           const wanted = set.dialogs.find((entry) => entry.id === dialog)?.accept ?? '';

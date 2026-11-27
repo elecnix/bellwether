@@ -10,6 +10,8 @@ export async function promptChild(herdr: HerdrClient, child: Pick<ChildRecord, '
     return `Prompted ${child.name}.`;
   } catch (error) {
     if (error instanceof HerdrApiError && child.lastStatus === 'blocked') {
+      // Pane feature: herdr refused the parent's prompt, so the parent sees the
+      // dialog that blocks the child and chooses the keys that answer it.
       const dialog = await herdr.paneRead({ paneId: child.paneId, source: 'detection', lines: 30 }).catch(() => '');
       return `herdr refused the prompt because ${child.name} is blocked. The dialog:\n${dialog.trim()}\n\nReply with agent_send keys, for example ["enter"] or ["down","enter"].`;
     }

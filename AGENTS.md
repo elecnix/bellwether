@@ -29,8 +29,9 @@ src/daemon/        the daemon: protocol, server, client, lock, relay, parent ser
 src/integrations/  the tool list, shared by both adapters, with pi/ and claude/
 bin/               the bellwether command and MCP server, run from the sources in a checkout
 dist/              the compiled JavaScript that npm publishes, built by `npm run build`
-scripts/           the release script and the phase 0 probe scripts
+scripts/           the release script, the site build and the phase 0 probe scripts
 docs/              user topics, probe results and test briefs
+site/              the documentation site's page template and stylesheet
 test/unit/         tier 1
 test/integration/  tier 2: a fake herdr socket and the daemon
 test/lab/          tier 3: a real isolated herdr server
@@ -46,6 +47,8 @@ npm test               # tier 1 unit, then tier 2 and 3 integration
 npm run doctor         # bellwether doctor against the live herdr
 ```
 
+The documentation site on GitHub Pages comes from `README.md` and the topic files under `docs/`. `npm run site` writes it to `_site/`, and the `pages` workflow deploys it from `main`. A new topic file reaches the site once it has an entry in `PAGES` in `scripts/build-site.ts`.
+
 Prose in Markdown files runs through Vale. The rules are the `ai-tells`, `ai-tells-experimental` and `noslop` packs. Read `/Users/nicolas/.agents/skills/vale-prose-rules/SKILL.md` before writing docs, a pull request body or a ticket.
 
 ## Rules that are not style
@@ -60,6 +63,7 @@ Prose in Markdown files runs through Vale. The rules are the `ai-tells`, `ai-tel
 - **Answer Claude Code's startup dialogs for the person.** Each Claude Code child opens on the development-channel confirmation, because Claude Code loads a `server:` channel only under `--dangerously-load-development-channels`, and that flag always asks. A folder Claude Code has not seen also asks the folder-trust question. The spawn answers both, saying yes to the trust question for any folder, because the operator approves every spawn by default. It moves the selection toward the accepting option and sends Enter only once the screen shows that option selected. A dialog still on screen after 30 s fails the spawn, with an error that specifies the dialog. While the spawn answers, `startingUntil` on the child record stops the watcher from reporting the child. When a resumed session shows a startup dialog later, the watcher answers it and does not publish a `blocked` event.
 - **The daemon is the reaper.** A child asks the daemon to retire it with `request_retirement`, which records the intent and doesn't remove anything. The watcher cleans up once herdr reports the pane gone, through `src/core/retire.ts`. It refuses unless the worktree is clean and not a main worktree, the default branch or a settled pull request holds its work, and no process works inside it. Never add a separate reaper process, a timer or a witness for it. A child Bellwether adopted, a child on another host, and any main worktree are out of bounds.
 - **The parent dials out, and the child waits.** The parent's daemon keeps the registry of record. For each machine that runs one of its children, it keeps one SSH connection open. That connection runs `bellwether relay-bridge` there and subscribes the daemon to the reports that wait in that machine's relay outbox. A child's daemon writes each such report to disk. It hands the report to a connected parent's daemon, and it deletes its copy only once that daemon acknowledges it. The parent's daemon accepts each receipt once. After a lost connection, it retries with backoff. `bellwether doctor`, the log, `agent_list` and the inactivity notice all show the state it keeps for each machine. `agent_read` for a remote child goes over the same connection. Never add a connection from the child's machine to the parent's. Use the operator's SSH configuration as it stands, and don't write anything under `~/.ssh`.
+- **Use an API before the pane.** When herdr, the harness or its files offer the state Bellwether needs, such as a status event or a transcript, read it there. Reading a pane, or typing into one, is a last resort, because a pane is a rendering of state rather than the state itself, and what it accepts depends on which program holds the foreground. Showing a person a child's screen, as `agent_read` does, is a feature. Reading the screen as evidence for a decision the daemon makes, or typing into a pane when no parent asked, is a fallback. Put a `TODO(api):` comment above each fallback, and in it specify the API, or the change to an API, that would retire it. Put a `Pane feature:` comment above each feature, saying who reads the screen or who asked for the keys. `test/unit/pane-fallbacks.test.ts` fails on a pane read or keystroke with neither comment.
 - **Send input only to panes this parent started.** A parent must never type into a pane it does not own.
 - **Wake the parent through its harness.** `pi.sendMessage(..., {triggerTurn: true, deliverAs: 'followUp'})` for Pi, `notifications/claude/channel` for Claude Code. Never type into the parent's own pane.
 - **A receipt marks an event read.** Sending a notification does not prove a turn started.

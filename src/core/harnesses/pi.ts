@@ -36,6 +36,8 @@ export const pi: HarnessEntry = {
     local: (_child, context) => ({ piExtension: resolvePiExtension((context.piExtension ?? piExtensionEntry)()) }),
     remote: 'piExtension',
   },
+  // The child's extension hands a parent's message to pi.sendMessage.
+  inbox: { via: 'pi-message' },
   conversation: { locate: (session) => locatePiTranscript(session), modelOf: piSessionModel },
   resume: { args: (session) => ['--session', session.value], fromTranscript: (file) => ({ value: file, kind: 'path' }) },
   classify: { status: 'herdr', dialogs: { from: 'extension' }, activity: 'transcript' },

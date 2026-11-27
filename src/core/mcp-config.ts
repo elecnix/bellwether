@@ -83,12 +83,14 @@ export function writeChildToolFiles(childId: string, cwd: string | undefined, op
 }
 
 /**
- * Remove every file a spawn wrote for a child: its brief, its MCP
+ * Remove every file a spawn wrote for a child: its briefs, its MCP
  * configuration and its Claude Code settings, and the brief an OpenCode child
- * reads in its working directory when that directory is given.
+ * reads in its working directory when that directory is given. With `briefs:
+ * false` the briefs in the prompts directory stay, for a child that exited
+ * before anything showed it read its newest one (`keepsBriefs`).
  */
-export function removeChildFiles(childId: string, cwd?: string): void {
-  removeBrief(childId);
+export function removeChildFiles(childId: string, cwd?: string, options: { briefs?: boolean } = {}): void {
+  if (options.briefs ?? true) removeBrief(childId);
   removeMcpConfig(childId);
   removeClaudeSettings(childId);
   if (cwd) removeBriefAt(workdirBriefPath(cwd, childId));

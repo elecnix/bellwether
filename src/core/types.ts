@@ -37,6 +37,20 @@ export type Harness = 'pi' | 'claude-code' | 'opencode';
  * whose value `claude --resume` takes, and `path` for Pi, whose value is the
  * session file.
  */
+/** One brief a child was started on. See `src/core/brief-history.ts`. */
+export interface ChildBrief {
+  /** 1 for the spawn's brief, then one more for each resume that brought a prompt. */
+  n: number;
+  /** The file on this machine that holds what the child was given at that start. */
+  file: string;
+  /** When the file was written. A report after this proves the child read it. */
+  at: string;
+  /** The pane that started on it. A finished turn in that pane proves the child read it. */
+  paneId?: string;
+  /** The earlier briefs this one repeats, because the record could not prove the child read them. */
+  carries?: number[];
+}
+
 export interface ChildSession {
   kind: string;
   value: string;
@@ -152,6 +166,17 @@ export interface ChildRecord {
   depthRequests?: DepthRequest[];
   /** Every raise of the ceiling: who granted it, when, how far and why. */
   depthGrants?: DepthGrant[];
+  /**
+   * Each brief the child was started on, oldest first: the spawn's prompt,
+   * then each resume's. Every one has its own file on this machine, so no
+   * resume writes over a brief the child may not have read. A record written
+   * before this field has none, and its spawn's brief, if still on disk, is
+   * `prompts/<child id>.md`. Added without a protocol bump: only the daemon
+   * reads it.
+   */
+  briefs?: ChildBrief[];
+  /** The newest messages a parent sent the child, with the path each took. */
+  messages?: ChildMessage[];
   /** The last report the child sent, and when. */
   lastReport?: { status: ReportStatus; text: string; at: string; seq: number };
   /**
@@ -290,6 +315,31 @@ export interface DepthRequest {
   decidedBy?: string;
   /** For a refusal, what the child was told. */
   refusal?: string;
+}
+
+/**
+ * One message a parent sent a child, and how it got there. `session` means
+ * the child's own Bellwether server or extension put it in the session as a
+ * message; `keystrokes` means herdr typed it into the child's pane.
+ */
+export interface ChildMessage {
+  id: string;
+  at: string;
+  path: 'session' | 'keystrokes';
+  /** For the session path: the adapter that carried it, `claude-channel` or `pi-message`. */
+  via?: string;
+  /** For keystrokes: why the session path was not taken. */
+  reason?: string;
+  /** For the session path: when the child's model received it. */
+  readAt?: string;
+  /** Why the message never reached the child's model. */
+  undelivered?: string;
+  /** The start of the text, for agent_list and the exit event. */
+  preview: string;
+  /** The whole text, kept only while a session message waits to be read, so a reconnected session can take it again. */
+  text?: string;
+  /** Who sent it, as the child reads it, kept with the text. */
+  from?: string;
 }
 
 /** One raise of a child's ceiling, for the audit trail agent_list shows. */

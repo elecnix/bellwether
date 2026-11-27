@@ -46,7 +46,7 @@ The spawn refuses each of these before it opens a tab:
 | Read its brief | Its working directory contains the brief, so no dialog interrupts the read. |
 | Spawn its own children | The same MCP server lists the parent tools, and the depth ceiling applies as it does for any child. |
 | Hear its own children | No. OpenCode has no channel that wakes a session. An OpenCode parent sees its children's events only through `agent_list` and `agent_read`. |
-| Take a message | `agent_send` types into the pane through herdr's `agent.prompt`, as it does for any harness. |
+| Take a message | `agent_send` types into the pane through herdr's `agent.prompt`, because OpenCode's MCP client takes no message from a server into the session. [tools.md](tools.md#messages-to-a-child) lists the kinds that take one in the session. |
 
 ## Status sources
 

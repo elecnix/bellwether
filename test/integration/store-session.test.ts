@@ -44,6 +44,7 @@ const entry: HarnessEntry = {
   label: 'Fake Store Agent',
   brief: { where: 'prompts', argument: sentence },
   chosenBy: 'flag',
+  inbox: { via: 'none', reason: 'fake-store-agent is a test harness with no inbound path' },
   launchArgs: ({ extra = [], files }) => [...(files.mcpConfigFile ? [`--mcp-config=${files.mcpConfigFile}`] : []), ...(files.briefFile ? [sentence(files.briefFile)] : []), ...extra],
   session: {
     from: 'store',

@@ -382,6 +382,8 @@ export const cline: HarnessEntry = {
     },
     remoteRefusal: "a cline child runs on this machine only for now, because Cline's store is read where it runs",
   },
+  // Cline has no inbound path: it loads Bellwether as an ordinary MCP server, and its MCP client takes no message from a server into the session, so a parent's message is typed into its pane.
+  inbox: { via: 'none', reason: 'Cline loads Bellwether as an ordinary MCP server, and its MCP client takes no message from a server into the session' },
   conversation: {
     locate: noTranscript('Cline'),
     lastMessage(child) {

@@ -12,6 +12,7 @@ import { runBellwetherTool, type ToolContext } from '../integrations/tools.ts';
 import type { CallerIdentity, OutboxEntry } from '../core/types.ts';
 import type { ParentHello } from './protocol.ts';
 import type { RelayLinks } from './relay-links.ts';
+import type { Inbox } from '../core/send.ts';
 
 export interface ParentService {
   /** Run one Bellwether tool for a client, and return its text. `caller` says who asked. */
@@ -32,6 +33,8 @@ export interface ServiceDeps {
   links?: RelayLinks;
   /** The daemon's log, for what a tool does that a person may need to trace, such as a move. */
   log?: (message: string) => void;
+  /** The daemon's way into a child's own session, for a parent's message. */
+  inbox?: Inbox;
 }
 
 export type ServiceFactory = (parent: ParentHello, id: string, deps: ServiceDeps) => ParentService;
@@ -67,7 +70,7 @@ export function createHerdrService(parent: ParentHello, id: string, deps: Servic
       restartJobs.set(key, running);
     },
   };
-  const context: ToolContext = { client, clientFor, parentId: record.id, watcher, remote, relayState, restart, log: deps.log };
+  const context: ToolContext = { client, clientFor, parentId: record.id, watcher, remote, relayState, restart, log: deps.log, inbox: deps.inbox };
   const paneWatches = new Set<{ close: () => void }>();
   watcher.start();
   // Finish a restart a daemon stopped part of the way through.

@@ -132,6 +132,16 @@ export type ReportPath =
     }
   | { via: 'none'; reason: string };
 
+/**
+ * How a parent's message reaches a child of this harness without typing into
+ * its pane. `claude-channel` is the child's own Bellwether MCP server, which
+ * puts the message in the session as a channel notification. `pi-message` is
+ * the child's Bellwether pi extension, which hands it to pi's sendMessage. A
+ * harness with neither says why, and its messages are typed into the pane
+ * through herdr's agent.prompt.
+ */
+export type InboxPath = { via: 'claude-channel' | 'pi-message' } | { via: 'none'; reason: string };
+
 /** Where a child's session id comes from. */
 export type SessionSource =
   /** herdr's agent_session for the pane, as an id or a path. */
@@ -212,6 +222,8 @@ export interface HarnessEntry {
   preflight?(input: PreflightInput, hooks: HarnessHooks): Promise<void>;
   session: SessionSource;
   reports: ReportPath;
+  /** How a parent's message enters the child's session, or why it is typed instead. */
+  inbox: InboxPath;
   conversation: Conversation;
   /** How the harness reopens a session. Absent for a harness Bellwether cannot resume. */
   resume?: {

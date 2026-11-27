@@ -109,6 +109,12 @@ const BASE: readonly Feature[] = [
   ...brought('request', 4, '0.1.6', {
     'relay-adopt': "`agent_adopt` takes a pane on another machine, and that machine's daemon answers who already watches it.",
   }),
+  // A child's adapter acknowledges a parent's message that entered its session, rather than its pane.
+  ...brought('request', 4, '0.1.7', {
+    'message-ack': "A parent's message enters a Claude Code, pi or omp child's session, where herdr used to type it into the pane, and the child's adapter acknowledges it.",
+    // A far daemon that predates it answers unknown_type, and the parent types the message.
+    'relay-message': "The daemon on a child's machine puts a parent's message in that child's session, where herdr used to type it into the far pane.",
+  }),
 ];
 
 /**

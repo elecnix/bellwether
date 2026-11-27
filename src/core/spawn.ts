@@ -5,7 +5,9 @@ import os from 'node:os';
 import { HerdrApiError, type HerdrClient } from './herdr-client.ts';
 import { newChildId } from './outbox.ts';
 import { briefArgument, removeBrief, writeBrief } from './brief.ts';
+import { claudeTrustsRepository } from './claude-trust.ts';
 import { removeChild, updateChild, upsertChild } from './registry.ts';
+import { watchStartup, type StartupOutcome, type StartupWatch } from './startup-dialogs.ts';
 import { resolveTranscript } from './transcript.ts';
 import type { ChildRecord, Harness, ParentRecord } from './types.ts';
 
@@ -40,7 +42,12 @@ export interface SpawnOptions {
 export interface SpawnResult {
   child: ChildRecord;
   link: string;
+  /** How the startup dialogs went, for a harness that shows them. */
+  startup?: StartupOutcome;
 }
+
+/** How long the watcher holds a new Claude Code child's events. Longer than the dialog wait. */
+const STARTUP_HOLD_MS = 45_000;
 
 /**
  * The arguments a child harness starts with. The brief is never one of them:
@@ -88,6 +95,7 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
   upsertChild(parent.id, child);
 
   let tabId: string | undefined;
+  let startup: StartupWatch | undefined;
   try {
     const briefFile = options.prompt ? writeBrief(child.id, options.prompt) : undefined;
 
@@ -106,6 +114,12 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
     child.tabId = tab.tabId;
     child.paneId = tab.paneId;
     child.workspaceId = options.workspaceId ?? parent.workspaceId;
+    // Claude Code opens on dialogs the spawn answers, so the watcher holds the
+    // child's events until then, and the status watch opens before the start.
+    if (options.kind === 'claude') {
+      child.startingUntil = new Date(Date.now() + STARTUP_HOLD_MS).toISOString();
+      startup = await watchStartup(client, tab.paneId, signal);
+    }
     upsertChild(parent.id, child);
 
     // 3. Start the harness in the tab's root pane. A tab answers tab.create
@@ -113,11 +127,28 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
     // agent_pane_busy until the shell is ready.
     await startWithRetry(client, { name: child.name, kind: options.kind, paneId: tab.paneId, args: childArgs(options.kind, options, briefFile) }, signal);
   } catch (error) {
+    startup?.close();
     await abandon(client, parent.id, child.id, tabId, hooks);
     throw error;
   }
 
-  // 4. Resolve the transcript, then hand back the child and its herdr link.
+  // 4. Answer the startup dialogs, then let the watcher read the child.
+  let outcome: StartupOutcome | undefined;
+  if (startup) {
+    try {
+      outcome = await startup.answer({ trusted: claudeTrustsRepository(options.cwd ?? parent.cwd) });
+    } catch {
+      outcome = 'timeout';
+    } finally {
+      startup.close();
+      child.startingUntil = undefined;
+      updateChild(parent.id, child.id, (entry) => {
+        delete entry.startingUntil;
+      });
+    }
+  }
+
+  // 5. Resolve the transcript, then hand back the child and its herdr link.
   // The registry is re-read rather than written from the caller's copy, which
   // would erase the child record that upsertChild just added.
   await new Promise((resolve) => setTimeout(resolve, 750));
@@ -136,7 +167,7 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
     // A missed session id only costs the transcript-based summary.
   }
 
-  return { child, link: herdrLink('pane', child.paneId) };
+  return { child, link: herdrLink('pane', child.paneId), startup: outcome };
 }
 
 /**

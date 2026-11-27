@@ -46,6 +46,13 @@ export interface ChildRecord {
   lastBusyAt: string;
   /** This child's own stuck threshold, when its spawn set one. */
   stuckMs?: number;
+  /**
+   * Set while the spawn answers the harness's startup dialogs, so the watcher
+   * does not report a blocked child the spawn is about to unblock. A time
+   * rather than a flag, so a daemon that stops mid-spawn cannot silence the
+   * child for good.
+   */
+  startingUntil?: string;
   /** Set once the child is gone, so its events stop. */
   exitedAt?: string;
   exitCode?: number;

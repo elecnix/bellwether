@@ -3,7 +3,7 @@
 // to it, pushes a child event through the outbox, and then writes the receipt
 // to a fake transcript to prove the event is marked read.
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -241,6 +241,83 @@ test('the server exits when stdin closes', async () => {
     assert.equal(await exited, 0);
   } finally {
     child.kill('SIGKILL');
+    await closeLab(room);
+  }
+});
+
+/** A real repository under the lab, with a linked worktree on branch feat. */
+function worktreeIn(root: string): string {
+  const git = (cwd: string, ...args: string[]): void => {
+    execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', '-c', 'commit.gpgsign=false', '-c', 'core.hooksPath=/dev/null', ...args], { cwd, stdio: 'ignore' });
+  };
+  const repo = path.join(root, 'repo');
+  fs.mkdirSync(repo);
+  git(repo, 'init', '-q', '-b', 'main');
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'a\n');
+  git(repo, 'add', 'a.txt');
+  git(repo, 'commit', '-q', '-m', 'a');
+  const worktree = path.join(root, 'feat');
+  git(repo, 'worktree', 'add', '-q', '-b', 'feat', worktree);
+  // A commit of its own, so the branch is not merged yet.
+  fs.writeFileSync(path.join(worktree, 'b.txt'), 'b\n');
+  git(worktree, 'add', 'b.txt');
+  git(worktree, 'commit', '-q', '-m', 'b');
+  return fs.realpathSync(worktree);
+}
+
+/** A process's working directory, from /proc or from lsof. */
+function cwdOf(pid: number): string {
+  if (fs.existsSync(`/proc/${pid}/cwd`)) return fs.readlinkSync(`/proc/${pid}/cwd`);
+  const out = execFileSync('lsof', ['-a', '-p', String(pid), '-d', 'cwd', '-Fn'], { encoding: 'utf8' });
+  return out.split('\n').find((line) => line.startsWith('n'))?.slice(1) ?? '';
+}
+
+test('a child asks to be retired through its own server, and the daemon records the intent from real git', async () => {
+  const room = lab();
+  const worktree = worktreeIn(room.root);
+  const parentRecord = emptyParent('claude-code', 'the-retiring-parent', room.cwd, { paneId: 'w1:p1' });
+  const at = new Date().toISOString();
+  parentRecord.children.push({ id: 'kid-9', name: 'finisher', kind: 'claude', harness: 'claude-code', paneId: 'w1:p8', host: 'local', origin: 'spawn', cwd: worktree, startedAt: at, lastStatus: 'idle', statusChangedAt: at, lastBusyAt: at, depth: 1 });
+  fs.mkdirSync(room.parents, { recursive: true });
+  const registry = path.join(room.parents, `${slug(parentRecord.id)}.json`);
+  fs.writeFileSync(registry, JSON.stringify(parentRecord));
+
+  const configured = mcpConfig('kid-9').mcpServers['bellwether'];
+  assert.ok(configured);
+  const client = new Client({ name: 'claude-code', version: '0.0.0' }, { capabilities: {} });
+  // The server starts in the child's worktree, as Claude Code starts it.
+  await client.connect(new StdioClientTransport({ command: configured.command, args: configured.args, cwd: worktree, env: { ...room.env, HERDR_PANE_ID: 'w1:p8' }, stderr: 'pipe' }));
+  try {
+    const listed = await client.listTools();
+    assert.ok(listed.tools.some((tool) => tool.name === 'request_retirement'), 'a child named by --child gets request_retirement');
+    const reply = (await client.callTool({ name: 'request_retirement', arguments: { reason: 'done' } })) as { content: { text: string }[]; isError?: boolean };
+    assert.equal(reply.isError, undefined, reply.content[0]?.text);
+    assert.match(reply.content[0]?.text ?? '', new RegExp(`^Retirement requested for finisher: ${worktree} on branch feat\\. Nothing has been removed\\.`));
+    assert.match(reply.content[0]?.text ?? '', /Passed now: the worktree is clean; no stash on the branch\./);
+    assert.match(reply.content[0]?.text ?? '', /Failing now: branch feat is not merged into main/);
+    const saved = JSON.parse(fs.readFileSync(registry, 'utf8')) as { children: { retireRequestedAt?: string; retireIntent?: { worktree: string; branch: string } }[] };
+    assert.ok(saved.children[0]?.retireRequestedAt);
+    assert.equal(saved.children[0]?.retireIntent?.worktree, worktree);
+    assert.ok(fs.existsSync(worktree), 'the request removes nothing');
+
+    // The daemon this child started works from its home, not from the worktree.
+    const [daemon] = daemonsUnder(room.root);
+    assert.ok(daemon, 'the channel started a daemon');
+    assert.equal(cwdOf(daemon.pid), fs.realpathSync(room.home));
+  } finally {
+    await client.close();
+    await closeLab(room);
+  }
+});
+
+test('a parent session does not get request_retirement', async () => {
+  const room = lab();
+  const { client } = await connect({ ...room.env, BELLWETHER_PARENT: parentId('claude-code', session) });
+  try {
+    const listed = await client.listTools();
+    assert.ok(!listed.tools.some((tool) => tool.name === 'request_retirement'));
+  } finally {
+    await client.close();
     await closeLab(room);
   }
 });

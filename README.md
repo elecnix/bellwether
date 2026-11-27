@@ -45,10 +45,25 @@ The inactivity threshold defaults to 5 minutes. `agent_spawn` takes `inactive_mi
 | `agent_send` | any session | prompts a child, or sends keys when herdr refuses a blocked one |
 | `agent_stop` | any session | closes a child's tab, refusing a working child unless you pass `force` |
 | `parent_report` | a child Bellwether started or resumed on this machine | sends `done`, `needs-input` or `progress` to the parent that holds the child's record |
+| `request_retirement` | a session whose environment carries `BELLWETHER_CHILD` | asks the daemon to remove the child's worktree and branch after herdr drops its pane, and doesn't remove anything itself |
 
 Bellwether sends input only to panes that belong to this parent: the ones it started, resumed or adopted.
 
 Each adapter sends its session's identity with every tool call: the herdr pane it runs in, and the child id its spawn gave it. The daemon matches that identity against the child records it keeps, so a `parent_report` reaches the parent whose registry lists the child, whichever client process made the call. Adapters read the parent from the daemon's records, never from an environment variable. When no record matches, the error gives the pane and the path of the MCP config file the spawn should have written.
+
+### Retirement
+
+A child that has finished its work calls `request_retirement`, then closes its own tab. The call runs while the child is alive, so the child hears which checks pass now. Those cover uncommitted changes, stashes on the branch, and whether its commits exist anywhere else. On the child record go `retireRequestedAt` and `retireIntent` (worktree, repository, branch, commit), and nothing on disk changes. Bellwether refuses, and leaves the record as it was, for a caller with no child record, an adopted child, a child on another machine, a detached HEAD, or a main worktree.
+
+The daemon does the cleaning. It already holds the registry, watches every pane and keeps running after each child exits, so no other process takes part. When the watcher sees the child's pane exit, it runs these steps in order, and it doesn't remove anything until each one holds:
+
+1. herdr lists neither the pane nor any pane in its tab. Otherwise the retirement waits for the next exit event.
+2. The worktree must not be a main worktree. It must also match what the child asked about, with a clean status and no stash on its branch.
+3. The default branch contains the branch, or GitHub shows a merged or closed pull request whose head is the branch's commit.
+4. No process has its working directory inside the worktree.
+5. `git worktree remove`, then `git branch -D`, then a check against git and the filesystem that neither remains.
+
+The daemon writes the outcome to the child record as `retiredAt` and `retireOutcome` (`removed` or `refused`). A refusal also gets `retireReason`, which states the failed condition and what a person would do about it. One JSON line per outcome goes to `~/.bellwether/retire.log`. `retireStage` records each removal as it completes, so a daemon that starts again finishes an unfinished retirement without repeating a step. Bellwether treats a worktree as main when its git directory is the repository itself or git lists it first. The checkout of the default branch counts too, as does any worktree named `main` or `master`. Resuming a child clears its request.
 
 ### Resume through `agent_spawn`
 

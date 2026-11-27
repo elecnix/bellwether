@@ -1,5 +1,6 @@
 // The daemon process entry point. A client starts it detached with the socket
 // path, and it exits on drain, on an idle timeout, or on a signal.
+import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { startDaemon } from './server.ts';
@@ -15,6 +16,11 @@ async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const home = process.env['BELLWETHER_HOME'] ?? path.join(os.homedir(), '.bellwether');
   const socketPath = flag(argv, '--socket') ?? process.env['BELLWETHER_DAEMON_SOCKET'] ?? path.join(home, 'daemon.sock');
+  // Whichever session starts the daemon lends it its working directory, and a
+  // child's is the worktree the daemon may later remove. Work from the home,
+  // so the daemon never counts as a process inside a worktree.
+  fs.mkdirSync(home, { recursive: true });
+  process.chdir(home);
   const idleMs = Number.parseInt(process.env['BELLWETHER_DAEMON_IDLE_MS'] ?? '', 10);
   const daemon = await startDaemon({
     socketPath,

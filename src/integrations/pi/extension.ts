@@ -9,7 +9,7 @@ import { resolveSocketPath } from '../../core/herdr-client.ts';
 import { hostName } from '../../core/spawn.ts';
 import { childLabel } from '../../core/label.ts';
 import type { OutboxEntry } from '../../core/types.ts';
-import { childTools, parentTools } from '../tools.ts';
+import { toolsFor } from '../tools.ts';
 
 // The parts of pi's ExtensionAPI this extension uses.
 interface PiContext {
@@ -117,7 +117,7 @@ export default function bellwether(pi: PiApi): void {
     if (receipts.length) daemon.receipts(receipts);
   });
 
-  const tools = process.env['BELLWETHER_PARENT'] ? [...parentTools, ...childTools] : parentTools;
+  const tools = toolsFor({ parent: process.env['BELLWETHER_PARENT'], child: process.env['BELLWETHER_CHILD'] });
   for (const tool of tools) {
     pi.registerTool({
       name: tool.name,

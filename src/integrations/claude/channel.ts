@@ -16,7 +16,7 @@ import { resolveSocketPath } from '../../core/herdr-client.ts';
 import { hostName } from '../../core/spawn.ts';
 import { childLabel } from '../../core/label.ts';
 import type { OutboxEntry } from '../../core/types.ts';
-import { childTools, parentTools } from '../tools.ts';
+import { toolsFor } from '../tools.ts';
 import { ReceiptScan, claudeConfigDir } from './transcript.ts';
 
 const log = (...args: unknown[]): void => console.error('[bellwether]', ...args);
@@ -45,9 +45,7 @@ function argument(argv: string[], flag: string): string | undefined {
 // other way may still sit in a child's pane, so it passes the id its tab
 // carries, and the daemon checks either one against the record it holds.
 const childId = argument(process.argv.slice(2), '--child') ?? process.env['BELLWETHER_CHILD'];
-const isChild = Boolean(childId || process.env['BELLWETHER_PARENT']);
-
-const tools = isChild ? [...parentTools, ...childTools] : parentTools;
+const tools = toolsFor({ parent: process.env['BELLWETHER_PARENT'], child: childId });
 
 const mcp = new Server(
   { name: 'bellwether', version: '0.1.0' },

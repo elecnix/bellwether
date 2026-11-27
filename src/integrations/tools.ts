@@ -11,6 +11,7 @@ import { adoptPane } from '../core/adopt.ts';
 import { LOCAL_HOST, hostOf, type ClientFor } from '../core/machine.ts';
 import { spawnResume } from '../core/spawn-resume.ts';
 import { promptChild } from '../core/send.ts';
+import { RETIRE_TOOL, realRetireOps, requestRetirement, type RetireOps } from '../core/retire.ts';
 import type { Watcher } from '../core/watcher.ts';
 import type { CallerIdentity, ChildRecord, ReportStatus } from '../core/types.ts';
 
@@ -21,6 +22,8 @@ export interface ToolContext {
   clientFor?: ClientFor;
   parentId: string;
   watcher: Watcher;
+  /** git, gh and the process table, for the retirement request. Tests pass a fake. */
+  retireOps?: RetireOps;
 }
 
 function clientFor(ctx: ToolContext, host: string): Promise<HerdrClient> {
@@ -135,8 +138,31 @@ export const childTools: ToolDefinition[] = [
   },
 ];
 
+/** The tool a child Bellwether spawned gets, when its environment carries BELLWETHER_CHILD. */
+export const retireTools: ToolDefinition[] = [
+  {
+    name: RETIRE_TOOL,
+    description: 'Ask to be retired once you exit: the Bellwether daemon then removes your worktree and deletes your branch, but only after your pane and tab are gone, the worktree is not a main worktree, is clean and has no stash, the branch is merged or pushed with its pull request merged or closed, and no process works inside it. The call removes nothing. It runs the checks it can run now and says which pass, records the request, and leaves the rest to the daemon. Close your tab afterwards.',
+    schema: {
+      type: 'object',
+      properties: {
+        reason: { type: 'string', description: 'Why the work is finished, kept on your record and in the retire log.' },
+      },
+    },
+  },
+];
+
+/**
+ * The tools a session gets, from its environment: every session gets the
+ * parent tools, a session with a parent also gets parent_report, and only a
+ * session with a child id gets the retirement request.
+ */
+export function toolsFor(env: { parent?: string; child?: string }): ToolDefinition[] {
+  return [...parentTools, ...(env.parent || env.child ? childTools : []), ...(env.child ? retireTools : [])];
+}
+
 export function toolSchema(name: string): Record<string, unknown> | undefined {
-  return [...parentTools, ...childTools].find((tool) => tool.name === name)?.schema;
+  return [...parentTools, ...childTools, ...retireTools].find((tool) => tool.name === name)?.schema;
 }
 
 function resolve(record: ReturnType<typeof readParent>, child: string): ChildRecord | undefined {
@@ -146,7 +172,8 @@ function resolve(record: ReturnType<typeof readParent>, child: string): ChildRec
 function describeChild(child: ChildRecord, watcher: Watcher): string {
   const unread = watcher.outboxEntries().filter((entry) => !entry.read && entry.childId === child.id).length;
   const age = Math.max(0, Math.round((Date.now() - Date.parse(child.startedAt)) / 1000));
-  const state = child.exitedAt ? `exited${child.exitCode === undefined ? '' : ` (${child.exitCode})`}` : child.lastStatus;
+  const retire = child.retireOutcome === 'removed' ? ', retired' : child.retireOutcome === 'refused' ? ', retirement refused' : child.retireRequestedAt ? ', retirement requested' : '';
+  const state = `${child.exitedAt ? `exited${child.exitCode === undefined ? '' : ` (${child.exitCode})`}` : child.lastStatus}${retire}`;
   return `${child.name}\t${child.kind}\t${state}\t${age}s\t${hostOf(child)}\t${child.paneId}\tunread ${unread}\t${child.cwd ?? ''}`;
 }
 
@@ -162,6 +189,11 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
     if (!status || !text) throw new Error('parent_report needs both status and text');
     const written = reportForCaller(caller, status, text);
     return `Reported ${status} to the parent, as ${written.childName}.`;
+  }
+
+  if (name === RETIRE_TOOL) {
+    // Routed by the caller's identity and this daemon's records, like parent_report.
+    return requestRetirement(caller, ctx.retireOps ?? realRetireOps(), optionalString(args['reason']));
   }
 
   const record = readParent(ctx.parentId);

@@ -17,6 +17,7 @@ import { resolveTranscript, sessionFrom } from './transcript.ts';
 import { removeChildFiles } from './mcp-config.ts';
 import { childLabel } from './label.ts';
 import { spoolPath } from './paths.ts';
+import { realRetireOps, reapChild, retirementPending, type RetireOps } from './retire.ts';
 import type { AgentStatus, ChildEventKind, ChildRecord, OutboxEntry, SpoolReport } from './types.ts';
 
 /** herdr's status for a pane, or the child's last known status. */
@@ -44,6 +45,11 @@ export interface WatcherOptions {
   /** How often a child with no transcript has its screen read. 0 turns it off. */
   screenPollMs?: number;
   log?: (message: string) => void;
+  /** git, gh and the process table, for the retirement cleanup. Tests pass a fake. */
+  retireOps?: RetireOps;
+  /** How many times the cleanup looks again for a process leaving the worktree, and how long it waits. */
+  retireBusyRetries?: number;
+  retireBusyDelayMs?: number;
 }
 
 export class Watcher {
@@ -55,6 +61,10 @@ export class Watcher {
   private readonly tickMs: number;
   private readonly screenPollMs: number;
   private readonly log: (message: string) => void;
+  private readonly retireOps: RetireOps;
+  private readonly retireBusy: { retries?: number; delayMs?: number };
+  /** Retirements in flight, so an exit event and a start never clean the same child at once. */
+  private readonly retiring = new Map<string, Promise<void>>();
   private readonly outbox: Outbox;
   private readonly states = new Map<string, ClassifierState>();
   private readonly screenReadAt = new Map<string, number>();
@@ -81,6 +91,8 @@ export class Watcher {
     this.tickMs = options.tickMs ?? 5_000;
     this.screenPollMs = options.screenPollMs ?? 30_000;
     this.log = options.log ?? (() => {});
+    this.retireOps = options.retireOps ?? realRetireOps();
+    this.retireBusy = { retries: options.retireBusyRetries, delayMs: options.retireBusyDelayMs };
     this.outbox = Outbox.load(this.parentId);
   }
 
@@ -94,6 +106,44 @@ export class Watcher {
     this.ticker = setInterval(() => void this.tick(), this.tickMs);
     this.ticker.unref?.();
     void this.reconcileAndSubscribe();
+    // A daemon that stopped part of the way through a retirement finishes it.
+    for (const child of readParent(this.parentId)?.children ?? []) {
+      if (child.exitedAt && retirementPending(child)) void this.retire(child.id);
+    }
+  }
+
+  /** Wait for the retirements in flight, for a test or a drain. */
+  async retirements(): Promise<void> {
+    await Promise.all([...this.retiring.values()]);
+  }
+
+  /**
+   * Clean up after a child that asked to be retired, once it has exited. The
+   * cleanup itself refuses anything still alive or out of bounds.
+   */
+  private retire(childId: string): Promise<void> {
+    const running = this.retiring.get(childId);
+    if (running) return running;
+    const job = reapChild(this.parentId, childId, {
+      ops: this.retireOps,
+      paneOrTabLive: (child) => this.paneOrTabLive(child),
+      log: this.log,
+      busyRetries: this.retireBusy.retries,
+      busyDelayMs: this.retireBusy.delayMs,
+    })
+      .then(() => undefined)
+      .catch((error: unknown) => this.log(`retirement of ${childId} failed: ${String(error)}`))
+      .finally(() => this.retiring.delete(childId));
+    this.retiring.set(childId, job);
+    return job;
+  }
+
+  /** Whether herdr still lists the child's pane, or any pane in its tab. */
+  private async paneOrTabLive(child: ChildRecord): Promise<boolean> {
+    const client = await this.clientFor(hostOf(child));
+    const result = await client.request('pane.list', {});
+    const panes = isRecord(result) && Array.isArray(result['panes']) ? (result['panes'] as Record<string, unknown>[]) : [];
+    return panes.some((pane) => (child.paneId && pane['pane_id'] === child.paneId) || (child.tabId && pane['tab_id'] === child.tabId));
   }
 
   stop(): void {
@@ -223,6 +273,7 @@ export class Watcher {
     });
     removeChildFiles(child.id);
     this.offer(child, 'exited', this.describeExit(child, code));
+    void this.retire(child.id);
   }
 
   /**

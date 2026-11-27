@@ -30,7 +30,7 @@ function ready(extra: Partial<RefusalInput> = {}): RefusalInput {
 
 test('a child with everything in place on the target is not refused', () => {
   assert.deepEqual(moveRefusals(ready()), []);
-  assert.deepEqual(moveRefusals(ready({ harness: 'pi', sourceHarness: { path: '/bin/pi', version: '1.6.1' }, targetHarness: { path: '/bin/pi', version: '1.6.1' }, recordedVersions: [], piModel: { provider: 'ollama-cloud', model: 'deepseek-v4.1-flash' }, targetModels: [{ provider: 'ollama-cloud', model: 'deepseek-v4.1-flash' }] })), []);
+  assert.deepEqual(moveRefusals(ready({ harness: 'pi', sourceHarness: { path: '/bin/pi', version: '1.6.1' }, targetHarness: { path: '/bin/pi', version: '1.6.1' }, recordedVersions: [], piModel: { provider: 'example-hosted', model: 'deepseek-v4.1-flash' }, targetModels: [{ provider: 'example-hosted', model: 'deepseek-v4.1-flash' }] })), []);
 });
 
 test('a move to another harness is refused, naming both harnesses', () => {
@@ -62,10 +62,10 @@ test('a target harness older than the version that wrote the session is refused,
 });
 
 test('a pi pair the target does not offer is refused, naming the pair and the file that would hold it', () => {
-  const pi = ready({ harness: 'pi', sourceHarness: { path: '/bin/pi', version: '1.6.1' }, targetHarness: { path: '/bin/pi', version: '1.6.1' }, recordedVersions: [], piModel: { provider: 'ollama-cloud', model: 'deepseek-v4.1-flash' }, targetModelsFile: '/home/op/.pi/agent/models.json' });
-  const [reason] = moveRefusals({ ...pi, targetModels: [{ provider: 'openrouter', model: 'deepseek-v4.1-flash' }, { provider: 'ollama-cloud', model: 'other' }] });
-  assert.match(reason ?? '', /ollama-cloud\/deepseek-v4\.1-flash/);
-  assert.match(reason ?? '', /add provider ollama-cloud with model deepseek-v4\.1-flash to \/home\/op\/\.pi\/agent\/models\.json on machine hawthorne/);
+  const pi = ready({ harness: 'pi', sourceHarness: { path: '/bin/pi', version: '1.6.1' }, targetHarness: { path: '/bin/pi', version: '1.6.1' }, recordedVersions: [], piModel: { provider: 'example-hosted', model: 'deepseek-v4.1-flash' }, targetModelsFile: '/home/op/.pi/agent/models.json' });
+  const [reason] = moveRefusals({ ...pi, targetModels: [{ provider: 'openrouter', model: 'deepseek-v4.1-flash' }, { provider: 'example-hosted', model: 'example-other' }] });
+  assert.match(reason ?? '', /example-hosted\/deepseek-v4\.1-flash/);
+  assert.match(reason ?? '', /add provider example-hosted with model deepseek-v4\.1-flash to \/home\/op\/\.pi\/agent\/models\.json on machine hawthorne/);
   assert.match(moveRefusals({ ...pi, targetModelsError: 'pi --list-models exited with 1' })[0] ?? '', /could not list pi's models/);
 });
 
@@ -146,11 +146,11 @@ test('versions compare part by part, and the newest writer wins', () => {
 });
 
 test('a session names its model and its writers', () => {
-  const pi = ['{"type":"session","version":3}', '{"type":"model_change","provider":"a","modelId":"m1"}', '{"type":"message","message":{"role":"assistant","provider":"b","model":"m2"}}'].join('\n');
-  assert.deepEqual(piModelOf(pi), { provider: 'b', model: 'm2' });
-  assert.deepEqual(piModelOf(pi.split('\n').slice(0, 2).join('\n')), { provider: 'a', model: 'm1' });
+  const pi = ['{"type":"session","version":3}', '{"type":"model_change","provider":"example-a","modelId":"example-m1"}', '{"type":"message","message":{"role":"assistant","provider":"example-b","model":"example-m2"}}'].join('\n');
+  assert.deepEqual(piModelOf(pi), { provider: 'example-b', model: 'example-m2' });
+  assert.deepEqual(piModelOf(pi.split('\n').slice(0, 2).join('\n')), { provider: 'example-a', model: 'example-m1' });
   assert.deepEqual(claudeVersionsOf('{"version":"2.1.300","x":1}\n{"version":"2.1.332"}\n{"version":"2.1.300"}').sort(), ['2.1.300', '2.1.332']);
-  assert.deepEqual(parsePiModelList('provider  model  context\nollama-cloud  deepseek-v4.1-flash  1.0M\nopenrouter  deepseek/x  1M\n'), [{ provider: 'ollama-cloud', model: 'deepseek-v4.1-flash' }, { provider: 'openrouter', model: 'deepseek/x' }]);
+  assert.deepEqual(parsePiModelList('provider  model  context\nexample-hosted  deepseek-v4.1-flash  1.0M\nopenrouter  deepseek/stub-x  1M\n'), [{ provider: 'example-hosted', model: 'deepseek-v4.1-flash' }, { provider: 'openrouter', model: 'deepseek/stub-x' }]);
 });
 
 test('a copy that reads back with other bytes, or is missing a file, fails verification', () => {

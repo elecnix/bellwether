@@ -96,10 +96,10 @@ interface Pattern {
 // Each pattern finds a value in a provider, model or tier position. A tier stands where a model
 // would, so it takes the model rule.
 const PATTERNS: Pattern[] = [
-  // provider: 'x', defaultProvider: 'x', const PARENT_PROVIDER = 'x'
-  { regex: new RegExp(String.raw`\b\w*provider\w*\s*[:=]\s*${QUOTE}${VALUE}${QUOTE}`, 'gi'), groups: [[1, 'provider']] },
-  // model: 'x', modelId: 'x', defaultModel: 'x', tier: 'x'
-  { regex: new RegExp(String.raw`\b\w*(?:model|tier)\w*\s*[:=]\s*${QUOTE}${VALUE}${QUOTE}`, 'gi'), groups: [[1, 'model']] },
+  // provider: 'x', defaultProvider: 'x', const PARENT_PROVIDER = 'x', and the JSON "provider":"x"
+  { regex: new RegExp(String.raw`\b\w*provider\w*['"]?\s*[:=]\s*${QUOTE}${VALUE}${QUOTE}`, 'gi'), groups: [[1, 'provider']] },
+  // model: 'x', modelId: 'x', defaultModel: 'x', tier: 'x', and the JSON "modelId":"x"
+  { regex: new RegExp(String.raw`\b\w*(?:model|tier)\w*['"]?\s*[:=]\s*${QUOTE}${VALUE}${QUOTE}`, 'gi'), groups: [[1, 'model']] },
   // { provider: 'x', id: 'y' }, the shape of a model on a record or a call
   { regex: new RegExp(String.raw`\bprovider\s*:\s*${QUOTE}[^'"\`]*${QUOTE}\s*,\s*id\s*:\s*${QUOTE}${VALUE}${QUOTE}`, 'gi'), groups: [[1, 'model']] },
   // model: { id: 'y' }
@@ -111,8 +111,9 @@ const PATTERNS: Pattern[] = [
   { regex: new RegExp(String.raw`provider account ${VALUE}, model ${VALUE}`, 'gi'), groups: [[1, 'provider'], [2, 'model']] },
 ];
 
-// enabledModels: ['a/b', 'c/d'] and other lists of models
-const MODEL_LIST = /\b\w*(?:models|tiers)\s*[:=]\s*\[([^\]]*)\]/gi;
+// enabledModels: ['a/b', 'c/d'] and other lists of model strings. A list of objects is left to the
+// patterns above, which read each object's keys.
+const MODEL_LIST = /\b\w*(?:models|tiers)['"]?\s*[:=]\s*\[([^\]{]*)\]/gi;
 const LIST_ITEM = new RegExp(`${QUOTE}${VALUE}${QUOTE}`, 'g');
 
 function lineOf(text: string, index: number): number {

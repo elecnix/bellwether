@@ -41,6 +41,18 @@ test('a fixture that names a private-looking provider, model or tier fails, at i
   ]);
 });
 
+test('a value under a JSON key fails, and a list of objects is read by its keys', () => {
+  const name = privateLooking();
+  const text = [
+    `const line = '{"type":"model_change","provider":"${name}","modelId":"example-m1"}';`,
+    `const offered = { targetModels: [{ provider: 'openrouter', model: 'deepseek-v4.1-flash' }, { provider: 'example-a', model: '${name}' }] };`,
+  ].join('\n');
+  assert.deepEqual(scanText(text, 'test/unit/example.test.ts').map((f) => [f.line, f.kind]), [
+    [1, 'provider'],
+    [2, 'model'],
+  ]);
+});
+
 test('synthetic prefixes, the public providers, version shapes and public model paths pass', () => {
   for (const provider of ['example-cloud', 'Fake', 'test-provider', 'stub', 'MOCK-x', 'openrouter']) assert.ok(legalProvider(provider), provider);
   for (const model of ['example-large', 'stub-model', 'haiku', 'deepseek-v4.1-flash', '4.5', 'v2', 'openrouter/deepseek-v4.1-flash', 'example-cloud/stub-model']) {

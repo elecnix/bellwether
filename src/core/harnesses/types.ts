@@ -45,6 +45,12 @@ export interface ChildFiles {
   piExtension?: string;
   /** Variables the child's tab carries beyond Bellwether's own. */
   env?: Record<string, string>;
+  /**
+   * Arguments that give the child its tools through the harness's own
+   * configuration overrides, for a harness that takes them on its launch
+   * line rather than from a file.
+   */
+  launchArgs?: string[];
 }
 
 /** What a harness's launch line is built from. */

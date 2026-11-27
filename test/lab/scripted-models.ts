@@ -1,6 +1,6 @@
-// Tier 3: the scripted model endpoints. Pi reaches the OpenAI-compatible one
-// and Claude reaches the Anthropic Messages one, so a lab run needs no real
-// model call. The stall reply is the stuck producer: the server writes the
+// Tier 3: the scripted model endpoints. Pi reaches the OpenAI-compatible one,
+// Claude reaches the Anthropic Messages one, and Codex reaches the OpenAI
+// Responses one, so a lab run needs no real model call. The stall reply is the stuck producer: the server writes the
 // headers and then holds the body until the test releases it.
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -107,6 +107,46 @@ function openAiStream(model: string, reply: ScriptedReply): string {
   return parts.join('');
 }
 
+/**
+ * The tool a Responses request offers under a name, and the namespace it sits
+ * in. Codex groups an MCP server's tools in a namespace named `mcp__<server>`.
+ */
+function responsesTool(body: Record<string, unknown> | undefined, name: string): { name: string; namespace?: string } | undefined {
+  const walk = (tools: unknown, namespace?: string): { name: string; namespace?: string } | undefined => {
+    for (const tool of Array.isArray(tools) ? (tools as Record<string, unknown>[]) : []) {
+      if (tool['type'] === 'namespace') {
+        const found = walk(tool['tools'], String(tool['name']));
+        if (found) return found;
+      } else if (tool['name'] === name) return namespace ? { name, namespace } : { name };
+    }
+    return undefined;
+  };
+  return walk(body?.['tools']);
+}
+
+/**
+ * A Responses stream. A tool reply calls the tool until the turn holds its
+ * result, then answers with the reply's text, so one reply drives a whole
+ * turn.
+ */
+function responsesStream(body: Record<string, unknown> | undefined, reply: ScriptedReply): string {
+  // Only a tool result after the latest user message answers this turn's call.
+  const input = Array.isArray(body?.['input']) ? (body['input'] as Record<string, unknown>[]) : [];
+  const lastUser = input.findLastIndex((item) => item['role'] === 'user');
+  const answered = input.slice(lastUser + 1).some((item) => item['type'] === 'function_call_output');
+  const tool = reply.tool && !answered ? responsesTool(body, reply.tool.name) : undefined;
+  const id = `resp_scripted_${Date.now()}`;
+  const item = tool
+    ? { type: 'function_call', id: `fc_${id}`, call_id: `call_${id}`, name: tool.name, ...(tool.namespace ? { namespace: tool.namespace } : {}), arguments: JSON.stringify(reply.tool?.input ?? {}), status: 'completed' }
+    : { type: 'message', id: `msg_${id}`, role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: reply.text ?? 'ok', annotations: [] }] };
+  return [
+    sse({ type: 'response.created', response: { id } }),
+    sse({ type: 'response.output_item.added', output_index: 0, item }),
+    sse({ type: 'response.output_item.done', output_index: 0, item }),
+    sse({ type: 'response.completed', response: { id, usage: { input_tokens: 100, input_tokens_details: { cached_tokens: 0 }, output_tokens: 10, output_tokens_details: { reasoning_tokens: 0 }, total_tokens: 110 } } }),
+  ].join('');
+}
+
 export async function startScriptedModels(initial: ScriptedReply = {}): Promise<ScriptedModels> {
   let current = initial;
   const stalled: http.ServerResponse[] = [];
@@ -148,6 +188,12 @@ export async function startScriptedModels(initial: ScriptedReply = {}): Promise<
         response.write(anthropic ? sse({ type: 'message_start', message: { id: 'msg_stalled', type: 'message', role: 'assistant', model: model ?? 'scripted', content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 1, output_tokens: 1 } } }) : 'data: {"choices":[{"delta":{"role":"assistant"}}]}\n\n');
         response.flushHeaders();
         stalled.push(response);
+        return;
+      }
+
+      if (path.startsWith('/v1/responses')) {
+        response.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
+        response.end(responsesStream(body, reply));
         return;
       }
 

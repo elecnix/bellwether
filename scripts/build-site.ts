@@ -31,6 +31,7 @@ export const PAGES: readonly Page[] = [
   { source: 'docs/routes.md', output: 'routes.html' },
   { source: 'docs/harnesses.md', output: 'harnesses.html' },
   { source: 'docs/opencode.md', output: 'opencode.html' },
+  { source: 'docs/codex.md', output: 'codex.html' },
   { source: 'docs/upgrading.md', output: 'upgrading.html' },
   { source: 'docs/releasing.md', output: 'releasing.html' },
 ];

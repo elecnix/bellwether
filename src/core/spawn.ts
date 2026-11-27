@@ -13,7 +13,7 @@ import { removeChildFiles } from './mcp-config.ts';
 import { argValue } from './args.ts';
 import { requireHarness, spawnRefusal, type ChildFiles, type HarnessEntry, type HarnessHooks } from './harnesses/index.ts';
 import { removeChild, updateChild, upsertChild } from './registry.ts';
-import { watchStartup, type StartupDialog, type StartupWatch } from './startup-dialogs.ts';
+import { detectRefused, StartupDialogRefused, watchStartup, type StartupDialog, type StartupWatch } from './startup-dialogs.ts';
 import { agentNameOf, sessionFrom } from './transcript.ts';
 import type { RemoteRegistration } from './remote.ts';
 import { BARE, RoutesFileError, launchLine, readRoutes, resolveRoute, routeConfig, routeLaunch, type RouteConfig, type RouteLaunch, type RoutesFile } from './routes.ts';
@@ -321,7 +321,16 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
         child.session = { kind: 'id', value: found };
         upsertChild(parent.id, child);
       } catch (error) {
-        throw new Error(`${child.name} was not started: ${(error as Error).message} The brief stays at ${briefFile} for inspection, and the pane is closed.`);
+        // herdr can read a pane as idle while the harness waits on a dialog
+        // its entry refuses, so no status says why the store stayed empty.
+        // TODO(api): herdr's status does not name the dialog that holds a
+        // pane, and a harness may record nothing of such a dialog. A status that
+        // named the dialog, or a harness event for it, would retire this read.
+        const screen = entry.startup?.refuse?.length ? await client.paneRead({ paneId: tab.paneId, source: 'visible', lines: 40 }, signal).catch(() => '') : '';
+        const refused = entry.startup && screen ? detectRefused(screen, entry.startup) : undefined;
+        const tail = `The brief stays at ${briefFile} for inspection, and the pane is closed.`;
+        if (refused) throw new StartupDialogRefused(`${child.name} was not started: ${entry.startup?.harness} stopped on ${refused.name}, which Bellwether never answers: ${refused.why} ${tail}`, refused.id);
+        throw new Error(`${child.name} was not started: ${(error as Error).message} ${tail}`);
       }
     }
   } catch (error) {

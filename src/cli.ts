@@ -5,18 +5,19 @@
 // Claude channel run, and prints one line per child event, so a supervisor can
 // read the stream instead of polling herdr.
 import fs from 'node:fs';
+import net from 'node:net';
 import path from 'node:path';
 import { HerdrClient, resolveSocketPath } from './core/herdr-client.ts';
 import { bellwetherHome } from './core/paths.ts';
 import { emptyParent, listParents, readParent, saveParent } from './core/registry.ts';
 import { isReportStatus } from './core/report.ts';
-import { RELAY_SCHEMA, saveRelayRecord } from './core/relay-records.ts';
-import { relayChildPath } from './core/paths.ts';
+import { RELAY_SCHEMA, listForwards, saveRelayRecord } from './core/relay-records.ts';
+import { relayChildPath, relayOutboxDir } from './core/paths.ts';
 import { writeBrief } from './core/brief.ts';
 import { removeChildFiles, writeMcpConfig } from './core/mcp-config.ts';
-import { REFUSED_EXIT } from './core/ssh.ts';
-import { lastAssistantMessage, resolveTranscript } from './core/transcript.ts';
-import { DaemonClient, ReportRefused, drainDaemon, postReport } from './daemon/client.ts';
+import { DaemonClient, REFUSED_EXIT, ReportRefused, drainDaemon, ensureDaemon, postReport, relayStatus } from './daemon/client.ts';
+import { readMemory } from './daemon/relay-links.ts';
+import type { RelayHostState } from './daemon/protocol.ts';
 import { describeDaemonEntry, readLock } from './daemon/lock.ts';
 import { DAEMON_PROTOCOL } from './daemon/protocol.ts';
 import { BELLWETHER_VERSION } from './core/version.ts';
@@ -194,6 +195,7 @@ async function doctor(): Promise<number> {
     console.log(`  ${describeDaemonEntry(lock, path.join(import.meta.dirname, 'daemon', `main${path.extname(import.meta.url)}`))}`);
   }
   failures += checkPackaging();
+  failures += await checkRelay(daemonLive, daemonSocket);
   const socket = resolveSocketPath();
   if (!fs.existsSync(socket)) {
     console.log(`  fail  herdr socket: ${socket} does not exist`);
@@ -235,9 +237,9 @@ async function main(): Promise<number> {
     console.log('  send   CHILD [--text TEXT | --keys KEY,...]');
     console.log('  stop   CHILD [--force]');
     console.log('  report --child ID --status done|needs-input|progress --text TEXT [--parent ID] [--receipt ID]');
-    console.log('  relay-register --child ID --name NAME --kind KIND --parent ID --parent-host SSH_TARGET [--cwd DIR] [--brief-stdin yes]');
+    console.log('  relay-register --child ID --name NAME --kind KIND --parent ID [--cwd DIR] [--brief-stdin yes]');
     console.log('  relay-cleanup --child ID                 remove the brief and MCP config relay-register wrote');
-    console.log('  last-message --harness pi|claude-code --session ID [--cwd DIR]');
+    console.log('  relay-bridge                             join stdin and stdout to this machine\'s daemon; a parent\'s daemon runs it over SSH');
     return 0;
   }
 
@@ -273,7 +275,7 @@ async function main(): Promise<number> {
   if (command === 'report') return report(rest);
   if (command === 'relay-register') return relayRegister(rest);
   if (command === 'relay-cleanup') return relayCleanup(rest);
-  if (command === 'last-message') return lastMessage(rest);
+  if (command === 'relay-bridge') return relayBridge();
 
   const { id: parentId } = parentFor(flags);
   const parent = readParent(parentId);
@@ -351,10 +353,9 @@ async function main(): Promise<number> {
 }
 
 /**
- * Post one report to this machine's daemon. The far end of a relay hop runs
- * it with every flag set; a child's own shell may leave out --child, which
- * then comes from the BELLWETHER_CHILD its tab carries. The daemon checks the
- * child, and the parent when given, against its own records.
+ * Post one report to this machine's daemon. A child's own shell may leave out
+ * --child, which then comes from the BELLWETHER_CHILD its tab carries. The
+ * daemon checks the child, and the parent when given, against its own records.
  */
 async function report(argv: string[]): Promise<number> {
   const values = exactFlags(argv, ['parent', 'child', 'receipt', 'status', 'text']);
@@ -380,17 +381,18 @@ async function report(argv: string[]): Promise<number> {
  * parent's daemon runs it here over SSH before it creates the child's tab.
  * With --brief-stdin it reads the child's brief from standard input and
  * writes it to this machine's prompts directory, so the harness is pointed at
- * a file that exists here. It prints the record path, the brief and, for a
- * Claude Code child, the MCP config the child starts with, as one JSON line.
+ * a file that exists here. The record names the parent, and no address for
+ * it: this machine never connects to the parent's, whose daemon connects here
+ * to collect reports. It prints the record path, the brief and, for a Claude
+ * Code child, the MCP config the child starts with, as one JSON line.
  */
 function relayRegister(argv: string[]): number {
-  const values = exactFlags(argv, ['child', 'name', 'kind', 'parent', 'parent-host', 'cwd', 'brief-stdin']);
+  const values = exactFlags(argv, ['child', 'name', 'kind', 'parent', 'cwd', 'brief-stdin']);
   const childId = values['child'];
   const parentId = values['parent'];
-  const parentHost = values['parent-host']?.trim();
-  if (!childId || !parentId || !parentHost) throw new Error('relay-register needs --child, --parent and --parent-host');
+  if (!childId || !parentId) throw new Error('relay-register needs --child and --parent');
   const brief = values['brief-stdin'] === 'yes' ? writeBrief(childId, fs.readFileSync(0, 'utf8')) : undefined;
-  saveRelayRecord({ schema: RELAY_SCHEMA, childId, name: values['name'] ?? childId, kind: values['kind'] ?? 'other', parentId, parentHost, ...(values['cwd'] ? { cwd: values['cwd'] } : {}), registeredAt: new Date().toISOString() });
+  saveRelayRecord({ schema: RELAY_SCHEMA, childId, name: values['name'] ?? childId, kind: values['kind'] ?? 'other', parentId, ...(values['cwd'] ? { cwd: values['cwd'] } : {}), registeredAt: new Date().toISOString() });
   const mcpConfig = values['kind'] === 'claude' ? writeMcpConfig(childId) : undefined;
   console.log(JSON.stringify({ record: relayChildPath(childId), ...(brief ? { brief } : {}), ...(mcpConfig ? { mcpConfig } : {}) }));
   return 0;
@@ -406,24 +408,79 @@ function relayCleanup(argv: string[]): number {
   return 0;
 }
 
-/** Print a harness session's last assistant message from this machine's transcript. */
-function lastMessage(argv: string[]): number {
-  const values = exactFlags(argv, ['harness', 'session', 'cwd']);
-  const harness = values['harness'];
-  const session = values['session'];
-  if (!harness || !session) throw new Error('last-message needs --harness and --session');
-  const transcript = resolveTranscript(harness, session, values['cwd']);
-  if (!transcript) {
-    console.error(`no transcript for ${harness} session ${session} on this machine`);
-    return 1;
+/**
+ * The far end of a parent's relay connection: join stdin and stdout to this
+ * machine's daemon socket, starting the daemon when none runs, and exit when
+ * either side closes. It writes nothing of its own to stdout, which belongs
+ * to the protocol.
+ */
+async function relayBridge(): Promise<number> {
+  const home = bellwetherHome();
+  const socketPath = process.env['BELLWETHER_DAEMON_SOCKET'] ?? path.join(home, 'daemon.sock');
+  await ensureDaemon(home, socketPath);
+  const socket = await new Promise<net.Socket>((resolve, reject) => {
+    const connection = net.createConnection(socketPath);
+    connection.once('error', reject);
+    connection.once('connect', () => {
+      connection.off('error', reject);
+      resolve(connection);
+    });
+  });
+  process.stdin.pipe(socket);
+  socket.pipe(process.stdout);
+  process.stdout.on('error', () => socket.destroy());
+  process.stdin.on('end', () => socket.end());
+  await new Promise<void>((resolve) => {
+    socket.on('close', () => resolve());
+    socket.on('error', (error) => {
+      console.error(`bellwether relay-bridge: ${error.message}`);
+      resolve();
+    });
+  });
+  // stdin stays open until the far side hangs up, so leave without waiting for it.
+  process.exit(0);
+}
+
+/** The doctor line for one remote host's connection. */
+export function describeRelayHost(state: RelayHostState): { ok: boolean; label: string; detail: string } {
+  const label = `relay ${state.host}`;
+  const as = state.target && state.target !== state.host ? ` as ${state.target}` : '';
+  const drain = state.lastDrainAt ? `, last drain ${state.lastDrainAt}` : ', not drained yet';
+  const children = `${state.children.length} child(ren) there`;
+  if (state.status === 'connected') return { ok: true, label, detail: `connected since ${state.since}${as}${drain}, ${children}` };
+  const next = state.nextAttemptAt ? `, next attempt ${state.nextAttemptAt}` : '';
+  const heard = state.lastConnectedAt ? `last connected ${state.lastConnectedAt}` : 'never connected';
+  return { ok: false, label, detail: `${state.status} since ${state.since}${as}, ${state.attempts} failed attempt(s)${next}, ${heard}${drain}, ${children}, not hearing from them: ${state.lastError ?? 'no attempt has finished yet'}` };
+}
+
+/**
+ * The relay, from both ends: each remote host this machine's daemon connects
+ * to, and the reports that wait on this machine for a parent elsewhere.
+ */
+async function checkRelay(daemonLive: boolean, daemonSocket: string): Promise<number> {
+  let failures = 0;
+  if (daemonLive) {
+    try {
+      for (const state of await relayStatus(daemonSocket)) {
+        const { ok: connected, label, detail } = describeRelayHost(state);
+        if (connected) ok(label, detail);
+        else {
+          bad(label, detail);
+          failures += 1;
+        }
+      }
+    } catch (error) {
+      console.log(`  info  relay: the running daemon did not report its connections (${(error as Error).message}); bellwether drain replaces it with this install's`);
+    }
+  } else {
+    for (const [host, known] of Object.entries(readMemory())) {
+      console.log(`  info  relay ${host}: no daemon runs, so no connection; last drain ${known.lastDrainAt ?? 'never'}${known.lastError ? `, last error ${known.lastError}` : ''}`);
+    }
   }
-  const text = lastAssistantMessage(transcript);
-  if (!text) {
-    console.error(`the transcript ${transcript} holds no assistant message`);
-    return 1;
-  }
-  process.stdout.write(text);
-  return 0;
+  const waiting = listForwards();
+  const refused = waiting.filter((entry) => entry.refused).length;
+  if (waiting.length) console.log(`  info  relay outbox: ${waiting.length - refused} report(s) wait for a parent's daemon to collect them${refused ? `, ${refused} refused` : ''} (${relayOutboxDir()})`);
+  return failures;
 }
 
 process.exitCode = await main();

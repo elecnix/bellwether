@@ -1,182 +1,134 @@
-// The relay: how a daemon carries a report to a parent on another machine. It
-// is part of the daemon that already runs on the child's machine, not a
-// process of its own. A report is written to the relay outbox first, then
-// sent as one SSH command that runs `bellwether report` with flags on the
-// parent's machine, which posts it to that machine's daemon. A hop that fails
-// leaves the file in place and tries again with backoff; the receipt in the
-// file makes a retry that already landed harmless.
+// The child's side of the relay: the reports a child on this machine made for
+// a parent on another machine. This daemon never connects to that machine. It
+// writes each report to the relay outbox, and the parent's daemon, which
+// connects here over SSH through `bellwether relay-bridge`, subscribes to the
+// outbox and acknowledges each report it takes. A report stays on disk until
+// that acknowledgement, so a dropped connection or a stopped daemon loses
+// nothing, and the receipt in each report makes a second delivery harmless.
 import { relayOutboxPath } from '../core/paths.ts';
-import { NO_BELLWETHER_EXIT, REFUSED_EXIT, describeFailure, runRemoteBellwether, type SshResult } from '../core/ssh.ts';
 import { listForwards, newReportReceipt, removeForward, saveForward, updateRelayRecord, type ForwardEntry, type RelayRecord } from '../core/relay-records.ts';
 import type { ReportStatus } from '../core/types.ts';
+import { MAX_DAEMON_FRAME_BYTES, formatReply, type RelayReport } from './protocol.ts';
 
-/** The longest report text a forward carries, since the whole report rides on one SSH command line. */
-export const MAX_FORWARD_TEXT_BYTES = 100_000;
-
-export interface RelayOptions {
-  /** The ssh binary. Defaults to `ssh` on PATH. */
-  ssh?: string;
+export interface RelayOutboxOptions {
   log?: (message: string) => void;
   now?: () => number;
-  /** The first retry delay. Each failure doubles it, up to maxDelayMs. */
-  initialDelayMs?: number;
-  maxDelayMs?: number;
-  /** How long one SSH hop may take. */
-  hopTimeoutMs?: number;
+  /** How long a child's report call waits for a connected parent's acknowledgement. */
+  ackWaitMs?: number;
 }
 
-/** The flags `bellwether report` takes on the parent's machine. */
-export function reportFlags(entry: Pick<ForwardEntry, 'parentId' | 'childId' | 'receipt' | 'status' | 'text'>): string[] {
-  return ['report', '--parent', entry.parentId, '--child', entry.childId, '--receipt', entry.receipt, '--status', entry.status, '--text', entry.text];
+/** One parent daemon's connection, through a bridge, and the parents it collects for. */
+export interface RelaySubscriber {
+  parentIds: Set<string>;
+  send(report: RelayReport): void;
 }
 
-export class Relay {
-  private readonly ssh: string | undefined;
+type Outcome = { refused?: string };
+
+export class RelayOutbox {
   private readonly log: (message: string) => void;
   private readonly now: () => number;
-  private readonly initialDelayMs: number;
-  private readonly maxDelayMs: number;
-  private readonly hopTimeoutMs: number;
-  private timer: NodeJS.Timeout | undefined;
-  private queue: Promise<unknown> = Promise.resolve();
-  private stopped = false;
+  private readonly ackWaitMs: number;
+  private readonly subscribers = new Set<RelaySubscriber>();
+  private readonly acks = new Map<string, (outcome: Outcome) => void>();
 
-  constructor(options: RelayOptions = {}) {
-    this.ssh = options.ssh;
+  constructor(options: RelayOutboxOptions = {}) {
     this.log = options.log ?? (() => {});
     this.now = options.now ?? (() => Date.now());
-    this.initialDelayMs = options.initialDelayMs ?? 2_000;
-    this.maxDelayMs = options.maxDelayMs ?? 5 * 60_000;
-    this.hopTimeoutMs = options.hopTimeoutMs ?? 30_000;
+    this.ackWaitMs = options.ackWaitMs ?? 5_000;
   }
 
-  /** Pick up the reports an earlier daemon left waiting. */
-  start(): void {
-    this.stopped = false;
-    const waiting = this.waiting();
-    if (waiting.length) this.log(`relay: ${waiting.length} report(s) wait to be forwarded`);
-    this.schedule();
-  }
-
-  stop(): void {
-    this.stopped = true;
-    if (this.timer) clearTimeout(this.timer);
-    this.timer = undefined;
-  }
-
-  /** Reports still to forward. A refused report waits for a person and is not counted. */
-  waiting(): ForwardEntry[] {
-    return listForwards().filter((entry) => !entry.refused);
-  }
-
-  /** Whether the daemon must stay up to keep retrying. */
-  busy(): boolean {
-    return this.waiting().length > 0;
+  /** Reports still to collect. A refused report waits for a person and is not sent again. */
+  waiting(parentIds?: Set<string>): ForwardEntry[] {
+    return listForwards().filter((entry) => !entry.refused && (!parentIds || parentIds.has(entry.parentId)));
   }
 
   /**
-   * Take a report for a relay child: spool it, then try the hop at once. The
-   * answer says whether it reached the parent or waits in the outbox; either
-   * way the report is on disk before this returns.
+   * A parent's daemon subscribed: send it every report that waits for its
+   * parents, oldest first, and each new one from now on. Returns how many it
+   * sent, and a function that ends the subscription.
    */
-  async report(record: RelayRecord, status: ReportStatus, text: string): Promise<string> {
-    if (Buffer.byteLength(text, 'utf8') > MAX_FORWARD_TEXT_BYTES) {
-      throw new Error(`parent_report text is ${Buffer.byteLength(text, 'utf8')} bytes, over the ${MAX_FORWARD_TEXT_BYTES} a report to machine ${record.parentHost} can carry on one SSH command line. Nothing was sent. Report a shorter summary, and leave the rest in a file the parent can read.`);
-    }
-    const at = new Date(this.now()).toISOString();
-    const entry: ForwardEntry = { receipt: newReportReceipt(), childId: record.childId, parentId: record.parentId, parentHost: record.parentHost, status, text, at, attempts: 0, nextAttemptAt: at };
-    saveForward(entry);
-    this.log(`relay: queued report ${entry.receipt} from child ${entry.childId} for parent ${entry.parentId} on ${entry.parentHost}`);
-    // A new report is a fresh reason to try the host now, and the older ones go first, in order.
-    for (const waiting of this.waiting()) {
-      if (waiting.parentHost === entry.parentHost && waiting.receipt !== entry.receipt) saveForward({ ...waiting, nextAttemptAt: at });
-    }
-    await this.flush();
-    const left = this.waiting().find((waiting) => waiting.receipt === entry.receipt) ?? listForwards().find((waiting) => waiting.receipt === entry.receipt);
-    if (!left) return `Reported ${status} to the parent on machine ${record.parentHost}, as ${record.name}.`;
-    if (left.refused) return `The parent's machine ${record.parentHost} refused report ${left.receipt}: ${left.refused}. It stays in ${relayOutboxPath(left.receipt)} and is not retried.`;
-    return `The report could not reach machine ${record.parentHost} yet (${left.lastError ?? 'unknown error'}). It is saved as ${left.receipt} in ${relayOutboxPath(left.receipt)}, and this machine's daemon retries it with backoff until it lands, so it is not lost. Do not report it again.`;
+  subscribe(subscriber: RelaySubscriber): { sent: number; stop: () => void } {
+    this.subscribers.add(subscriber);
+    const waiting = this.waiting(subscriber.parentIds);
+    for (const entry of waiting) subscriber.send(toReport(entry));
+    if (waiting.length) this.log(`relay: sent ${waiting.length} waiting report(s) to a parent's daemon for ${[...subscriber.parentIds].join(', ')}`);
+    return { sent: waiting.length, stop: () => this.subscribers.delete(subscriber) };
   }
 
-  /** Forward every report that is due, oldest first, one host at a time. */
-  flush(): Promise<void> {
-    const run = this.queue.then(() => this.flushNow());
-    this.queue = run.catch(() => {});
-    return run;
-  }
-
-  private async flushNow(): Promise<void> {
-    if (this.timer) clearTimeout(this.timer);
-    this.timer = undefined;
-    const blocked = new Set<string>();
-    for (const entry of this.waiting()) {
-      if (this.stopped) return;
-      // Reports from one machine to another arrive in the order they were made.
-      if (blocked.has(entry.parentHost)) continue;
-      if (Date.parse(entry.nextAttemptAt) > this.now()) {
-        blocked.add(entry.parentHost);
-        continue;
-      }
-      const ok = await this.forward(entry);
-      if (!ok) blocked.add(entry.parentHost);
-    }
-    this.schedule();
-  }
-
-  private async forward(entry: ForwardEntry): Promise<boolean> {
-    this.log(`relay: forwarding report ${entry.receipt} from child ${entry.childId} to ${entry.parentHost}, attempt ${entry.attempts + 1}`);
-    let result: SshResult;
-    try {
-      result = await runRemoteBellwether(entry.parentHost, reportFlags(entry), { ssh: this.ssh, timeoutMs: this.hopTimeoutMs });
-    } catch (error) {
-      result = { code: 1, stdout: '', stderr: (error as Error).message };
-    }
-    if (result.code === 0) {
-      removeForward(entry.receipt);
-      this.log(`relay: report ${entry.receipt} reached ${entry.parentHost}${result.stdout.trim() ? `: ${result.stdout.trim()}` : ''}`);
-      this.settleRecord(entry.childId, undefined, true);
-      return true;
-    }
-    const reason = describeFailure(entry.parentHost, result);
-    const attempts = entry.attempts + 1;
-    if (result.code === REFUSED_EXIT) {
-      saveForward({ ...entry, attempts, lastError: reason, refused: reason });
-      this.log(`relay: ${entry.parentHost} refused report ${entry.receipt}, kept in ${relayOutboxPath(entry.receipt)}: ${reason}`);
-      this.settleRecord(entry.childId, reason);
-      return true;
-    }
-    const delay = Math.min(this.maxDelayMs, this.initialDelayMs * 2 ** Math.min(attempts - 1, 20));
-    const hint = result.code === NO_BELLWETHER_EXIT ? ' Install @elecnix/bellwether on that machine.' : '';
-    saveForward({ ...entry, attempts, lastError: `${reason}${hint}`, nextAttemptAt: new Date(this.now() + delay).toISOString() });
-    this.log(`relay: forwarding report ${entry.receipt} to ${entry.parentHost} failed, retry in ${Math.round(delay / 1000)} s: ${reason}${hint}`);
-    this.settleRecord(entry.childId, `${reason}${hint}`);
+  /** Whether a parent's daemon collects for this parent right now. */
+  connected(parentId: string): boolean {
+    for (const subscriber of this.subscribers) if (subscriber.parentIds.has(parentId)) return true;
     return false;
   }
 
-  /** Say on the child's relay record how many of its reports wait, and why. */
-  private settleRecord(childId: string, error?: string, forwarded = false): void {
-    const all = listForwards().filter((entry) => entry.childId === childId);
-    updateRelayRecord(childId, (record) => {
-      if (forwarded) record.lastForwardedAt = new Date(this.now()).toISOString();
-      if (all.length === 0) {
-        delete record.unforwarded;
-        delete record.lastForwardError;
-        return;
+  /** The parent's daemon took a report, or refused it. Either way it is not sent again. */
+  ack(receipt: string, refused?: string): void {
+    const entry = listForwards().find((candidate) => candidate.receipt === receipt);
+    if (entry) {
+      if (refused) {
+        saveForward({ ...entry, refused });
+        this.log(`relay: the parent's daemon refused report ${receipt}, kept in ${relayOutboxPath(receipt)}: ${refused}`);
+      } else {
+        removeForward(receipt);
+        this.log(`relay: the parent's daemon took report ${receipt} from child ${entry.childId}`);
       }
-      record.unforwarded = all.length;
-      if (error) record.lastForwardError = error;
-    });
+      this.settleRecord(entry.childId, !refused);
+    }
+    this.acks.get(receipt)?.(refused ? { refused } : {});
+    this.acks.delete(receipt);
   }
 
-  private schedule(): void {
-    if (this.stopped) return;
-    if (this.timer) clearTimeout(this.timer);
-    this.timer = undefined;
-    const waiting = this.waiting();
-    if (!waiting.length) return;
-    const next = Math.min(...waiting.map((entry) => Date.parse(entry.nextAttemptAt)));
-    this.timer = setTimeout(() => void this.flush(), Math.max(0, next - this.now()));
-    // The timer keeps the daemon process alive, which is the point: a report
-    // that has not landed must not wait for the next client to come along.
+  /**
+   * Take a report for a relay child: write it to disk, then hand it to every
+   * connected daemon of its parent and wait a little for the acknowledgement.
+   * The answer says whether it arrived or waits; either way it is on disk.
+   */
+  async report(record: RelayRecord, status: ReportStatus, text: string): Promise<string> {
+    const entry: ForwardEntry = { receipt: newReportReceipt(), childId: record.childId, parentId: record.parentId, status, text, at: new Date(this.now()).toISOString() };
+    // The report crosses as one protocol line, and the parent's daemon cuts a connection that sends a longer one.
+    // A report kept here past that size would cut every connection it was sent on, so it is refused before it is kept.
+    const line = formatReply({ type: 'relay-report', report: toReport(entry) }).length;
+    if (line > MAX_DAEMON_FRAME_BYTES) {
+      throw new Error(`parent_report text is too long to cross to the parent's machine: as one relay line it takes ${line} characters, over the ${MAX_DAEMON_FRAME_BYTES} a line may carry. Nothing was saved. Report a shorter summary, and leave the rest in a file the parent can read with agent_read or over SSH.`);
+    }
+    saveForward(entry);
+    this.settleRecord(entry.childId, false);
+    const listeners = [...this.subscribers].filter((subscriber) => subscriber.parentIds.has(entry.parentId));
+    const saved = `saved as ${entry.receipt} in ${relayOutboxPath(entry.receipt)}`;
+    if (!listeners.length) {
+      this.log(`relay: kept report ${entry.receipt} from child ${entry.childId} for parent ${entry.parentId}, whose daemon is not connected`);
+      return `The parent runs on another machine, and its daemon is not connected to this one now. The report is ${saved}, and the parent's daemon collects it when it connects. Do not report it again.`;
+    }
+    const outcome = new Promise<Outcome | undefined>((resolve) => {
+      const timer = setTimeout(() => {
+        this.acks.delete(entry.receipt);
+        resolve(undefined);
+      }, this.ackWaitMs);
+      timer.unref?.();
+      this.acks.set(entry.receipt, (result) => {
+        clearTimeout(timer);
+        resolve(result);
+      });
+    });
+    for (const listener of listeners) listener.send(toReport(entry));
+    const result = await outcome;
+    if (!result) return `The report went to the parent's daemon, which has not acknowledged it yet. It is ${saved}, and it is sent again whenever that daemon reconnects, until it does. Do not report it again.`;
+    if (result.refused) return `The parent's daemon refused report ${entry.receipt}: ${result.refused}. It stays in ${relayOutboxPath(entry.receipt)} and is not sent again.`;
+    return `Reported ${status} to the parent on another machine, as ${record.name}.`;
   }
+
+  /** Say on the child's relay record how many of its reports wait. */
+  private settleRecord(childId: string, forwarded: boolean): void {
+    const waiting = this.waiting().filter((entry) => entry.childId === childId).length;
+    updateRelayRecord(childId, (record) => {
+      if (forwarded) record.lastForwardedAt = new Date(this.now()).toISOString();
+      if (waiting === 0) delete record.unforwarded;
+      else record.unforwarded = waiting;
+    });
+  }
+}
+
+function toReport(entry: ForwardEntry): RelayReport {
+  return { receipt: entry.receipt, childId: entry.childId, parentId: entry.parentId, status: entry.status, text: entry.text, at: entry.at };
 }

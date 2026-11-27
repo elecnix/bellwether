@@ -1,13 +1,13 @@
-// The parent's side of a child on another machine. Each call is one SSH
-// command that runs `bellwether` on the child's machine, through the target
-// herdr's saved machine profile names, so the operator's SSH configuration is
-// the only credential: register the child there before its tab opens, with
-// its brief on standard input, so that machine holds the file the harness is
-// pointed at and its daemon carries the child's reports back; remove those
-// files when the child is gone; and read its last message from the transcript
-// on that machine's disk.
+// The parent's side of a child on another machine. Registering it and
+// cleaning up after it are each one SSH command that runs `bellwether` on the
+// child's machine, through the target herdr's saved machine profile, so the
+// operator's SSH configuration is the only credential. Registration sends the
+// brief on standard input, so that machine holds the file the harness is
+// pointed at, and tells its daemon which parent the child's reports wait for.
+// The child gets no address to call back on, because the parent's daemon
+// connects to it. Reading the child's last message goes over that same
+// connection, which the daemon's relay links hold.
 import { resolveMachine, type MachineResolver } from './machine.ts';
-import { returnTarget } from './relay-records.ts';
 import { describeFailure, runRemoteBellwether, type SshOptions } from './ssh.ts';
 import type { ChildRecord, ParentRecord } from './types.ts';
 
@@ -29,8 +29,8 @@ export interface RemoteOps {
 }
 
 /** The arguments `bellwether relay-register` takes on the child's machine. */
-export function registerFlags(parent: Pick<ParentRecord, 'id'>, child: Pick<ChildRecord, 'id' | 'name' | 'kind' | 'cwd'>, parentHost: string, withBrief = false): string[] {
-  return ['relay-register', '--child', child.id, '--name', child.name, '--kind', child.kind, '--parent', parent.id, '--parent-host', parentHost, ...(child.cwd ? ['--cwd', child.cwd] : []), ...(withBrief ? ['--brief-stdin', 'yes'] : [])];
+export function registerFlags(parent: Pick<ParentRecord, 'id'>, child: Pick<ChildRecord, 'id' | 'name' | 'kind' | 'cwd'>, withBrief = false): string[] {
+  return ['relay-register', '--child', child.id, '--name', child.name, '--kind', child.kind, '--parent', parent.id, ...(child.cwd ? ['--cwd', child.cwd] : []), ...(withBrief ? ['--brief-stdin', 'yes'] : [])];
 }
 
 function parseRegistration(target: string, stdout: string): RemoteRegistration {
@@ -48,12 +48,17 @@ function parseRegistration(target: string, stdout: string): RemoteRegistration {
   return registration;
 }
 
-export function remoteOps(resolve: MachineResolver = resolveMachine, options: SshOptions = {}): RemoteOps {
+/** Reads a remote child's transcript over the connection its machine already has open. */
+export interface RemoteReader {
+  lastMessage(child: ChildRecord): Promise<string | undefined>;
+}
+
+export function remoteOps(resolve: MachineResolver = resolveMachine, options: SshOptions = {}, reader?: RemoteReader): RemoteOps {
   return {
     async register(parent, child, brief) {
       const profile = await resolve(child.host);
       const withBrief = brief !== undefined;
-      const result = await runRemoteBellwether(profile.target, registerFlags(parent, child, returnTarget(), withBrief), { ...options, ...(withBrief ? { input: brief } : {}) });
+      const result = await runRemoteBellwether(profile.target, registerFlags(parent, child, withBrief), { ...options, ...(withBrief ? { input: brief } : {}) });
       if (result.code !== 0) {
         // An older bellwether there cannot take the brief.
         const upgrade = /unknown argument --brief-stdin/.test(result.stderr) ? ` Upgrade @elecnix/bellwether on ${profile.target}.` : '';
@@ -69,13 +74,8 @@ export function remoteOps(resolve: MachineResolver = resolveMachine, options: Ss
       if (result.code !== 0) throw new Error(describeFailure(profile.target, result));
     },
     async lastMessage(child) {
-      if (!child.session?.value) return undefined;
-      const profile = await resolve(child.host);
-      const args = ['last-message', '--harness', child.harness, '--session', child.session.value, ...(child.cwd ? ['--cwd', child.cwd] : [])];
-      const result = await runRemoteBellwether(profile.target, args, options);
-      if (result.code === 0) return result.stdout.trim() ? result.stdout : undefined;
-      if (result.code === 1) return undefined;
-      throw new Error(describeFailure(profile.target, result));
+      if (!reader) throw new Error(`this session holds no connection to machine ${child.host}`);
+      return reader.lastMessage(child);
     },
   };
 }

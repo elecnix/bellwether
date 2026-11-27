@@ -1,14 +1,14 @@
 // The relay records: what a machine's daemon holds for a child whose parent
 // runs on another machine. The parent's daemon stays the registry of record;
-// this machine keeps only what it needs to carry a report there: the child id,
-// the parent id, and the SSH target of the parent's machine. A report waiting
-// for that machine sits in its own file, named by its receipt, until the hop
-// succeeds, so a daemon that stops mid-retry loses nothing.
+// this machine keeps only what it needs to hand a report over: the child id
+// and the parent id. It holds no address for the parent's machine, because it
+// never connects there: the parent's daemon connects to this one and collects
+// each report. A report waits in its own file, named by its receipt, until the
+// parent's daemon acknowledges it, so a daemon that stops loses nothing.
 import crypto from 'node:crypto';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
-import { configPath, relayChildPath, relayOutboxDir, relayOutboxPath } from './paths.ts';
+import { relayChildPath, relayOutboxDir, relayOutboxPath } from './paths.ts';
 import type { ReportStatus } from './types.ts';
 
 export const RELAY_SCHEMA = 1;
@@ -21,31 +21,23 @@ export interface RelayRecord {
   kind: string;
   /** The parent's id in its own daemon's registry. */
   parentId: string;
-  /** The SSH target of the parent's machine, as the operator's SSH configuration resolves it. */
-  parentHost: string;
   cwd?: string;
   registeredAt: string;
   /** How many of this child's reports wait in the relay outbox. Absent or 0 when none do. */
   unforwarded?: number;
-  /** Why the newest attempt failed, while any report waits. */
-  lastForwardError?: string;
-  /** When a report last reached the parent. */
+  /** When the parent's daemon last acknowledged one of its reports. */
   lastForwardedAt?: string;
 }
 
-/** One report waiting to reach the parent's machine. */
+/** One report waiting for the parent's daemon to collect it. */
 export interface ForwardEntry {
   receipt: string;
   childId: string;
   parentId: string;
-  parentHost: string;
   status: ReportStatus;
   text: string;
   at: string;
-  attempts: number;
-  nextAttemptAt: string;
-  lastError?: string;
-  /** Set when the receiving daemon refused the report, which no retry can fix. */
+  /** Set when the parent's daemon refused the report, which no resend can fix. */
   refused?: string;
 }
 
@@ -106,15 +98,4 @@ export function listForwards(): ForwardEntry[] {
     .map((file) => readJson<ForwardEntry>(path.join(relayOutboxDir(), file)))
     .filter((entry): entry is ForwardEntry => entry !== undefined && typeof entry.receipt === 'string')
     .sort((a, b) => Date.parse(a.at) - Date.parse(b.at) || a.receipt.localeCompare(b.receipt));
-}
-
-/**
- * The SSH target another machine uses to reach this one. The operator sets
- * `sshTarget` in ~/.bellwether/config.json when the host name is not what
- * their SSH configuration resolves; otherwise it is the host name.
- */
-export function returnTarget(): string {
-  const config = readJson<{ sshTarget?: unknown }>(configPath());
-  const target = typeof config?.sshTarget === 'string' ? config.sshTarget.trim() : '';
-  return target || os.hostname();
 }

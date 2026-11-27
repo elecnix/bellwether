@@ -16,7 +16,7 @@ Bellwether reaches a machine through three installs, and each one updates on its
 
 `bellwether drain` and the version line in doctor come with 0.1.5. The drain command also stops a 0.1.4 daemon.
 
-A child on another machine reports across an SSH hop, and each end runs the `bellwether` command. Update both machines before a remote child reports across a protocol change.
+A parent's daemon connects to a child on another machine over SSH, and the far end runs `bellwether relay-bridge`. Update both machines before a remote child reports across a protocol change. Protocol 4 changes the relay exchange, so a 0.1.x machine on either end can't take part until it updates. Until then, `bellwether doctor` on the parent's machine shows that machine as `reconnecting`, with the error from the far end.
 
 ## Daemon protocol changes
 

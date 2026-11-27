@@ -6,7 +6,11 @@
 // target, so two machines are two homes in one temporary root. A `bellwether`
 // shim beside it runs this checkout's CLI and records its own argv, which is
 // what the remote side of a hop actually received after the shell unquoted it.
-// Standard input passes through to the remote command.
+//
+// Standard input and output are streamed both ways for as long as the remote
+// command runs, so a one-shot command gets its standard input and a
+// long-lived `bellwether relay-bridge` works through it, and `drop()` cuts
+// every open connection the way a dead network link would.
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -24,10 +28,16 @@ export interface FakeSsh {
   dir: string;
   /** Every argv ssh received, in order. */
   calls(): string[][];
+  /** The SSH target of every call, in order. */
+  targets(): string[];
   /** Every argv the remote bellwether received, in order, with the target that ran it. */
   remoteCalls(): { target: string; argv: string[] }[];
   /** The outcomes for the next calls. Calls past the end are ok. */
   plan(steps: SshStep[]): void;
+  /** Cut every connection still open, as a dead link would: ssh exits 255. Resolves with how many it cut. */
+  drop(): Promise<number>;
+  /** How many ssh processes are still running. */
+  open(): number;
 }
 
 const CLI = path.resolve(import.meta.dirname, '../../src/cli.ts');
@@ -35,7 +45,7 @@ const CLI = path.resolve(import.meta.dirname, '../../src/cli.ts');
 const SSH_SCRIPT = `#!/usr/bin/env node
 const fs = require('node:fs');
 const path = require('node:path');
-const { spawnSync } = require('node:child_process');
+const { spawn } = require('node:child_process');
 const dir = __dirname;
 const argv = process.argv.slice(2);
 fs.appendFileSync(path.join(dir, 'ssh-calls.jsonl'), JSON.stringify(argv) + '\\n');
@@ -54,14 +64,27 @@ if (step === 'refuse') { process.stderr.write('ssh: connect to host ' + target +
 const machines = JSON.parse(fs.readFileSync(path.join(dir, 'machines.json'), 'utf8'));
 const machine = machines[target];
 if (!machine) { process.stderr.write('ssh: Could not resolve hostname ' + target + '\\n'); process.exit(255); }
-let input = '';
-try { input = fs.readFileSync(0, 'utf8'); } catch {}
 const env = { ...process.env, HOME: machine.userHome, BELLWETHER_HOME: machine.home, BELLWETHER_DAEMON_SOCKET: path.join(machine.home, 'daemon.sock'), FAKE_SSH_TARGET: target, PATH: dir + path.delimiter + process.env.PATH };
-const result = spawnSync('sh', ['-c', command], { env, input, encoding: 'utf8' });
-process.stdout.write(result.stdout || '');
-process.stderr.write(result.stderr || '');
-if (step === 'drop') { process.stderr.write('Connection to ' + target + ' closed by remote host.\\n'); process.exit(255); }
-process.exit(result.status === null ? 1 : result.status);
+const liveDir = path.join(dir, 'live');
+fs.mkdirSync(liveDir, { recursive: true });
+const liveFile = path.join(liveDir, String(process.pid));
+fs.writeFileSync(liveFile, target);
+// Its own process group, so a dropped link takes the whole remote command down with it.
+const remote = spawn('sh', ['-c', command], { env, stdio: ['pipe', 'pipe', 'pipe'], detached: true });
+process.stdin.pipe(remote.stdin);
+remote.stdin.on('error', () => {});
+remote.stdout.pipe(process.stdout);
+remote.stderr.pipe(process.stderr);
+// Writes to a pipe are asynchronous on macOS, so flush stdout before exiting or a short reply is lost.
+const finish = (code) => { try { fs.rmSync(liveFile, { force: true }); } catch {} process.stdout.write('', () => process.exit(code)); };
+process.on('SIGTERM', () => {
+  try { process.kill(-remote.pid, 'SIGKILL'); } catch {}
+  process.stderr.write('Connection to ' + target + ' closed by remote host.\\n', () => finish(255));
+});
+remote.on('close', (code) => {
+  if (step === 'drop') { process.stderr.write('Connection to ' + target + ' closed by remote host.\\n', () => finish(255)); return; }
+  finish(code === null ? 1 : code);
+});
 `;
 
 function bellwetherShim(): string {
@@ -79,11 +102,35 @@ function readLines<T>(file: string): T[] {
   }
 }
 
+function targetOf(argv: string[]): string {
+  const options = new Set(['-o', '-p', '-i', '-l', '-F']);
+  let index = 0;
+  while (index < argv.length && (argv[index] as string).startsWith('-')) index += options.has(argv[index] as string) ? 2 : 1;
+  return argv[index] ?? '';
+}
+
+function livePids(dir: string): number[] {
+  try {
+    return fs.readdirSync(path.join(dir, 'live')).map(Number).filter((pid) => Number.isInteger(pid) && pid > 0);
+  } catch {
+    return [];
+  }
+}
+
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Put a fake ssh and a bellwether shim first on PATH for the rest of the case.
  * `machines` maps an SSH target to the home it stands for.
  */
-export function installFakeSsh(t: { after: (fn: () => void) => void }, root: string, machines: Record<string, FakeMachine>): FakeSsh {
+export function installFakeSsh(t: { after: (fn: () => void | Promise<void>) => void }, root: string, machines: Record<string, FakeMachine>): FakeSsh {
   const dir = path.join(root, 'fake-bin');
   fs.mkdirSync(dir, { recursive: true });
   // The script uses require, so it must not sit under a package that says "type": "module".
@@ -93,13 +140,30 @@ export function installFakeSsh(t: { after: (fn: () => void) => void }, root: str
   fs.writeFileSync(path.join(dir, 'machines.json'), JSON.stringify(machines));
   const previous = process.env['PATH'];
   process.env['PATH'] = `${dir}${path.delimiter}${previous ?? ''}`;
-  t.after(() => {
+  const drop = async (): Promise<number> => {
+    const pids = livePids(dir).filter(alive);
+    for (const pid of pids) {
+      try {
+        process.kill(pid, 'SIGTERM');
+      } catch {
+        // It exited on its own between the listing and the signal.
+      }
+    }
+    const deadline = Date.now() + 5_000;
+    while (pids.some(alive) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 20));
+    return pids.length;
+  };
+  t.after(async () => {
+    await drop();
     process.env['PATH'] = previous;
   });
   return {
     dir,
     calls: () => readLines<string[]>(path.join(dir, 'ssh-calls.jsonl')),
+    targets: () => readLines<string[]>(path.join(dir, 'ssh-calls.jsonl')).map(targetOf),
     remoteCalls: () => readLines<{ target: string; argv: string[] }>(path.join(dir, 'bellwether-calls.jsonl')),
     plan: (steps) => fs.writeFileSync(path.join(dir, 'plan.json'), JSON.stringify(steps)),
+    drop,
+    open: () => livePids(dir).filter(alive).length,
   };
 }

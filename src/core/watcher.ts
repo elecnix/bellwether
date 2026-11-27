@@ -18,7 +18,7 @@ import { removeChildFiles } from './mcp-config.ts';
 import { childLabel } from './label.ts';
 import { spoolPath } from './paths.ts';
 import { realRetireOps, reapChild, retirementPending, type RetireOps } from './retire.ts';
-import type { AgentStatus, ChildEventKind, ChildRecord, OutboxEntry, SpoolReport } from './types.ts';
+import type { AgentStatus, ChildEventKind, ChildRecord, OutboxEntry, RelayHostState, SpoolReport } from './types.ts';
 
 /** herdr's status for a pane, or the child's last known status. */
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -52,6 +52,8 @@ export interface WatcherOptions {
   /** How many times the cleanup looks again for a process leaving the worktree, and how long it waits. */
   retireBusyRetries?: number;
   retireBusyDelayMs?: number;
+  /** How the daemon's connection to a remote child's machine stands, so a notice can say the parent is not hearing from it. */
+  relayState?: (host: string) => RelayHostState | undefined;
 }
 
 export class Watcher {
@@ -66,6 +68,7 @@ export class Watcher {
   private readonly retireOps: RetireOps;
   private readonly cleanupRemote: ((child: ChildRecord) => Promise<void>) | undefined;
   private readonly retireBusy: { retries?: number; delayMs?: number };
+  private readonly relayState: ((host: string) => RelayHostState | undefined) | undefined;
   /** Retirements in flight, so an exit event and a start never clean the same child at once. */
   private readonly retiring = new Map<string, Promise<void>>();
   private readonly outbox: Outbox;
@@ -97,6 +100,7 @@ export class Watcher {
     this.retireOps = options.retireOps ?? realRetireOps();
     this.cleanupRemote = options.cleanupRemote;
     this.retireBusy = { retries: options.retireBusyRetries, delayMs: options.retireBusyDelayMs };
+    this.relayState = options.relayState;
     this.outbox = Outbox.load(this.parentId);
   }
 
@@ -646,9 +650,23 @@ export class Watcher {
     // Measure the quiet period on the classifier's own clock. The registry's
     // lastBusyAt can be written by another process that only sees file size.
     if (event === 'stuck') return `${childLabel(child)} has been quiet for ${this.age(quietSince, now)}. Last screen lines:\n${trim(await this.screenTail(child))}`;
-    if (event === 'inactive') return `${childLabel(child)} has shown no activity for ${this.age(quietSince, now)}, and its status is ${child.lastStatus}. Last screen lines:\n${trim(await this.screenTail(child))}`;
+    if (event === 'inactive') return `${childLabel(child)} has shown no activity for ${this.age(quietSince, now)}, and its status is ${child.lastStatus}.${this.relayWarning(child)} Last screen lines:\n${trim(await this.screenTail(child))}`;
     const text = child.lastReport?.text?.trim() || (await this.lastMessage(child)) || trim(await this.screenTail(child));
     return `${childLabel(child)} went idle after ${age}:${text ? `\n${text}` : ' no message and no readable screen.'}`;
+  }
+
+  /**
+   * For a child on another machine the daemon cannot reach, one sentence that
+   * says so: its quiet may be the connection's, and a report may be waiting there.
+   */
+  private relayWarning(child: ChildRecord): string {
+    const host = hostOf(child);
+    if (host === LOCAL_HOST || !this.relayState) return '';
+    const state = this.relayState(host);
+    if (state?.status === 'connected') return '';
+    if (!state) return ` Bellwether holds no connection to machine ${host}, so it is not hearing from it.`;
+    const heard = state.lastConnectedAt ? `last connected at ${state.lastConnectedAt}` : 'never connected';
+    return ` Bellwether is not hearing from machine ${host}: it is ${state.status} (${heard})${state.lastError ? `, and the last attempt failed with ${state.lastError}` : ''}. A report the child made waits there and arrives once the connection returns.`;
   }
 
   private describeBlocked(child: ChildRecord, dialog: string): string {

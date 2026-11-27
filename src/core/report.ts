@@ -90,14 +90,14 @@ export interface ReportInput {
   text: string;
 }
 
-/** Where a report goes: into a parent this daemon holds, or across to another machine. */
+/** Where a report goes: into a parent this daemon holds, or into the relay outbox for a parent on another machine. */
 export type ReportRoute = { kind: 'local'; parent: ParentRecord; child: ChildRecord } | { kind: 'relay'; record: RelayRecord };
 
 /**
  * Decide where a report goes. A parent this daemon holds always wins, so a
- * report the local daemon can serve is never forwarded. Only a child with a
- * relay record that names the parent's machine is forwarded, and a relay
- * record without one is refused with its path.
+ * report the local daemon can serve never waits for another machine. A child
+ * with a relay record has its report kept for its parent's daemon, which
+ * connects to this machine to collect it.
  */
 export function routeReport(input: Pick<ReportInput, 'parentId' | 'childId' | 'paneId'>): ReportRoute {
   if (input.parentId) {
@@ -119,10 +119,6 @@ export function routeReport(input: Pick<ReportInput, 'parentId' | 'childId' | 'p
   if (record) {
     if (input.parentId && record.parentId !== input.parentId) {
       throw new Error(`The relay record ${relayChildPath(record.childId)} sends child ${record.childId} to parent ${record.parentId}, not ${input.parentId}, so the report was refused.`);
-    }
-    const host = typeof record.parentHost === 'string' ? record.parentHost.trim() : '';
-    if (!host || host === LOCAL_HOST) {
-      throw new Error(`The relay record ${relayChildPath(record.childId)} names no remote host for parent ${record.parentId}, so the report for child ${record.childId} was not sent anywhere.`);
     }
     return { kind: 'relay', record };
   }

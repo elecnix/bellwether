@@ -13,9 +13,6 @@ export function shellQuote(value: string): string {
 /** The exit code the remote side uses when no bellwether command is installed there. */
 export const NO_BELLWETHER_EXIT = 78;
 
-/** The exit code `bellwether report` uses for a report its daemon refused, which a retry cannot fix. */
-export const REFUSED_EXIT = 65;
-
 /**
  * The remote side: find a bellwether command, because a non-interactive SSH
  * shell often has a shorter PATH than a login shell. The arguments follow as
@@ -38,6 +35,15 @@ export function remoteBellwetherCommand(args: string[]): string {
 /** The ssh argv for one remote bellwether command. */
 export function sshArgv(target: string, args: string[]): string[] {
   return ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', '-T', target, remoteBellwetherCommand(args)];
+}
+
+/**
+ * The ssh argv for the relay connection a parent's daemon holds open to a
+ * child's machine. Keepalives make a dead link fail within a minute, rather
+ * than when the kernel gives up on it.
+ */
+export function relayBridgeArgv(target: string): string[] {
+  return ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', '-o', 'ServerAliveInterval=15', '-o', 'ServerAliveCountMax=3', '-T', target, remoteBellwetherCommand(['relay-bridge'])];
 }
 
 export interface SshResult {

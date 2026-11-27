@@ -8,7 +8,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { writeBrief } from '../../src/core/brief.ts';
 import { HerdrClient } from '../../src/core/herdr-client.ts';
-import { emptyParent, saveParent } from '../../src/core/registry.ts';
+import { emptyParent, saveParent, updateChild } from '../../src/core/registry.ts';
 import { Watcher } from '../../src/core/watcher.ts';
 import type { ChildRecord, OutboxEntry } from '../../src/core/types.ts';
 import { startFakeHerdr } from '../fixtures/fake-herdr.ts';
@@ -47,6 +47,44 @@ test('an exit names the child by its pane, and removes its brief', async () => {
     assert.deepEqual(firstLines, ['npm-publish (w74:pJ) exited.', 'npm-publish (w74:pK) exited.']);
     // A child that exits takes its brief with it.
     assert.deepEqual(briefs.filter((file) => fs.existsSync(file)), []);
+  } finally {
+    watcher.stop();
+    await herdr.stop();
+    if (previous === undefined) delete process.env['BELLWETHER_HOME'];
+    else process.env['BELLWETHER_HOME'] = previous;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('a child whose spawn is answering its dialogs produces no blocked event until the hold ends', async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'bellwether-watcher-'));
+  const previous = process.env['BELLWETHER_HOME'];
+  process.env['BELLWETHER_HOME'] = home;
+  const herdr = await startFakeHerdr();
+  const parent = emptyParent('pi', 'watcher-hold', home);
+  const now = new Date().toISOString();
+  // Started a moment ago, so the watcher keeps it although herdr lists no pane.
+  const held: ChildRecord = { ...child('cccc3333', 'worker', 'w1:p9'), startedAt: now, statusChangedAt: now, lastStatus: 'blocked', startingUntil: new Date(Date.now() + 60_000).toISOString() };
+  parent.children.push(held);
+  saveParent(parent);
+  let entries: OutboxEntry[] = [];
+  const watcher = new Watcher({
+    client: new HerdrClient({ socketPath: herdr.socketPath }),
+    parentId: parent.id,
+    onEntries: (next) => (entries = next),
+    tickMs: 20,
+    screenPollMs: 0,
+    limits: { idleMs: 10, blockedMs: 10, stuckMs: 60_000 },
+  });
+  try {
+    watcher.start();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.deepEqual(entries, []);
+    updateChild(parent.id, held.id, (entry) => {
+      delete entry.startingUntil;
+    });
+    const blocked = await until('the blocked event', () => entries.find((entry) => entry.event === 'blocked'));
+    assert.match(blocked.text, /^worker \(w1:p9\) is blocked/);
   } finally {
     watcher.stop();
     await herdr.stop();

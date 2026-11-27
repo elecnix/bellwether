@@ -315,6 +315,9 @@ export class Watcher {
     const now = this.now();
     for (const child of record.children) {
       if (child.exitedAt) continue;
+      // The spawn is answering this child's startup dialogs. Its first state
+      // is read once the spawn is done.
+      if (child.startingUntil && Date.parse(child.startingUntil) > now) continue;
       const state = this.states.get(child.id) ?? initialState(child.lastStatus, now);
       const busy = await this.childIsBusy(child, now);
       // A spawn can set its own stuck threshold, which is what the lab uses to

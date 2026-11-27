@@ -32,11 +32,21 @@ Run it again after any stop, whether a failed check, a timeout or a closed termi
 
 After the release, follow [upgrading.md](upgrading.md) on each machine.
 
+## The release pull request's description
+
+`prBody` in `scripts/release.ts` writes the description of the release pull request from three parts, in this order:
+
+1. The version it moves to, and the release before it.
+2. A list headed "What <version> adds", with one line for each entry of `src/daemon/features.ts` whose `version` is the version released. The script reads the table from the `release-<version>` worktree, so the list matches the commit it releases. Tools come first, then requests, notices and arguments. A harness entry with `since` counts as the argument `agent_spawn.kind=<kind>`, so a new harness appears in its release. A release with no such entry says so in one line.
+3. Whether the daemon protocol moves, with the steps for a protocol change when it does.
+
+Each entry in `features.ts` carries a one-sentence `summary`, and the line repeats it. `npm run check:prose` lints the description for every version the table names, so a summary that fails Vale fails the `prose` job before it can fail a release. `test/unit/release.test.ts` fails when the description for a version leaves out an entry recorded under it.
+
 ## A release that changes the daemon protocol
 
 Changing `DAEMON_PROTOCOL` in `src/daemon/protocol.ts` needs a new entry in `PROTOCOL_HISTORY` beside it. The entry says whether the change breaks the protocol before it. A daemon serves every protocol back to the newest breaking entry, so a change that only adds doesn't drop any session.
 
-`npm run release` compares the value with the published `latest`, and flags a change in the release pull request and beside the approve command. Prefer an additive change, which doesn't need a new number. A new request or tool still gets an entry in `src/daemon/features.ts`, with the protocol and release that bring it, so a newer session can name it when an older daemon refuses it.
+`npm run release` compares the value with the published `latest`, and flags a change in the release pull request and beside the approve command. Prefer an additive change, which doesn't need a new number. A new request or tool still gets an entry in `src/daemon/features.ts`, with the protocol and release that bring it and a one-sentence summary, so a newer session can name it when an older daemon refuses it and the release pull request lists it under its version.
 
 Before the person approves a release that changes the protocol, the releasing agent does this:
 

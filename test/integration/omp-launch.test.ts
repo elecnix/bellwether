@@ -217,7 +217,7 @@ test('an omp session resumes with --session and its file, and an older daemon is
   assert.deepEqual(resumeArgs('omp', { kind: 'path', value: '/tmp/s.jsonl' }), ['--session', '/tmp/s.jsonl']);
   assert.deepEqual(harnessFor('omp')?.resume?.fromTranscript?.('/tmp/s.jsonl'), { value: '/tmp/s.jsonl', kind: 'path' });
   const feature = FEATURES.find((entry) => entry.name === 'agent_spawn.kind=omp');
-  assert.deepEqual(feature, { name: 'agent_spawn.kind=omp', kind: 'argument', protocol: 4, version: '0.1.5' });
+  assert.deepEqual(feature, { name: 'agent_spawn.kind=omp', kind: 'argument', protocol: 4, version: '0.1.5', summary: 'A spawn starts a child that runs omp.' });
   assert.equal(harnessFor('omp')?.movable, false);
 });
 

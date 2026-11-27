@@ -68,7 +68,7 @@ export function describePairing(installed: { version: string; protocol: number; 
   lines.push(info(`pairing on ${where}: this install speaks protocol ${installed.protocol}, the daemon ${daemon.protocol}${daemon.version ? ` (Bellwether ${daemon.version})` : ''}; they speak ${served ? `protocol ${spoken}` : 'no common protocol, so the daemon refuses this install'}`));
   if (!served) return lines;
   const tools = missingFrom(daemon, 'tool');
-  const requests = missingFrom(daemon, 'request');
+  const requests = missingFrom(daemon).filter((feature) => feature.kind !== 'tool');
   if (tools.length) lines.push(info(`degraded on ${where}: the daemon refuses ${namedFeatures(tools)} by name; every other tool works. Upgrading the daemon there gains them, when convenient.`));
   if (requests.length) lines.push(info(`degraded on ${where}: the daemon lacks the ${namedFeatures(requests)} request${requests.length === 1 ? '' : 's'}.`));
   const extra = unknownTo(daemon);

@@ -12,7 +12,8 @@
 
 export interface Feature {
   name: string;
-  kind: 'tool' | 'request';
+  /** A tool a model calls, a request on the wire, or a notice an adapter sends as a call that no model sees. */
+  kind: 'tool' | 'request' | 'notice';
   /** The first protocol whose daemons serve it. */
   protocol: number;
   /** The first release that served it. */
@@ -28,6 +29,8 @@ export const FEATURES: readonly Feature[] = [
   // 0.1.5, protocol 4: the relay turned round, and doctor lists sessions.
   ...['relay-subscribe', 'relay-ack', 'relay-read', 'relay-status', 'sessions'].map((name) => ({ name, kind: 'request' as const, protocol: 4, version: '0.1.5' })),
   ...['agent_restart', 'agent_move'].map((name) => ({ name, kind: 'tool' as const, protocol: 4, version: '0.1.5' })),
+  // A pi child's extension reports an open dialog; an older daemon refuses it, and the extension ignores the refusal.
+  { name: 'child_prompt', kind: 'notice', protocol: 4, version: '0.1.5' },
 ];
 
 /** What a client knows of the daemon it reached. */

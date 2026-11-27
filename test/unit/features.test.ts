@@ -5,10 +5,11 @@ import test from 'node:test';
 import { FEATURES, featureNamed, missingFeatureMessage, missingFrom, serves, unknownTo } from '../../src/daemon/features.ts';
 import { refusalMessage } from '../../src/daemon/client.ts';
 import { DAEMON_PROTOCOL, MIN_CLIENT_PROTOCOL, ProtocolError, parseRequest } from '../../src/daemon/protocol.ts';
-import { toolNames } from '../../src/integrations/tools.ts';
+import { daemonCallNames, toolNames } from '../../src/integrations/tools.ts';
 
 test('every tool and every request type this install has is in the feature table', () => {
   for (const name of toolNames()) assert.equal(featureNamed(name)?.kind, 'tool', name);
+  for (const name of daemonCallNames()) assert.ok(featureNamed(name), `${name} is a call the daemon runs, so the table needs it`);
   const requests = FEATURES.filter((feature) => feature.kind === 'request').map((feature) => feature.name);
   for (const name of requests) {
     try {

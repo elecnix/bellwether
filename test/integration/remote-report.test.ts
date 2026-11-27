@@ -185,10 +185,11 @@ function doctor(w: World): Promise<string> {
   });
 }
 
-async function until(check: () => boolean, what: string, timeoutMs = 20_000): Promise<void> {
+/** Wait for `check`. A timeout names what it waited for, and `state` says what it saw instead. */
+async function until(check: () => boolean, what: string, timeoutMs = 20_000, state?: () => unknown): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!check()) {
-    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}${state ? `; last seen: ${JSON.stringify(state())}` : ''}`);
     await delay(25);
   }
 }
@@ -251,7 +252,8 @@ test('a report written while the connection is down is delivered once on reconne
   assert.deepEqual(spoolOf(w.parentHome, PARENT_ID), []);
 
   w.ssh.plan([]);
-  await until(() => spoolOf(w.parentHome, PARENT_ID).length === 1, 'the report to arrive after the reconnect');
+  const seen = () => ({ link: relayLinks.state('child-box'), waiting: waitingOn(w.childHome).length });
+  await until(() => spoolOf(w.parentHome, PARENT_ID).length === 1, 'the report to arrive after the reconnect', 20_000, seen);
   await until(() => connected(relayLinks), 'the link to say connected');
   await until(() => waitingOn(w.childHome).length === 0, 'the child outbox to empty');
   assert.equal(spoolOf(w.parentHome, PARENT_ID)[0]?.text, 'written while nobody listened');

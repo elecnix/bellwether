@@ -8,7 +8,8 @@
 //   1. The version is on npm: bump the Homebrew formula in the tap, and stop.
 //   2. The version is staged on npm: wait out `validating`, then print the
 //      `npm stage approve` command for a person to run with a one-time code.
-//   3. origin/main carries the version: build that commit and stage it.
+//   3. origin/main carries the version: build that commit, install its tarball
+//      into throwaway global prefixes as a user would, and stage it.
 //   4. An open pull request from release/<version>: merge it once CI is green.
 //   5. Nothing yet: refuse a dirty tree or a red main, run the gates in a
 //      worktree of origin/main, bump the version fields, push, open the pull
@@ -110,7 +111,7 @@ export function approvalNotice(change: ProtocolChange): string {
 
 /** The line printed once the version is on npm. */
 export function installNotice(version: string, formula: string): string {
-  return `${PACKAGE}@${version} is on npm, and ${formula}. Install it on each machine in the order docs/upgrading.md#order-on-each-machine gives.`;
+  return `${PACKAGE}@${version} is on npm, and ${formula}. Install it on each machine with the steps in docs/upgrading.md#what-you-run-on-each-machine.`;
 }
 
 export function prBody(version: string, previous: string | undefined, change: ProtocolChange | undefined): string {
@@ -120,7 +121,7 @@ export function prBody(version: string, previous: string | undefined, change: Pr
     '',
   ];
   if (change) {
-    lines.push(`The daemon protocol moves from ${change.from} to ${change.to}. A session on the new install drains the old daemon at its next call, and a session still on the old install fails its tool calls until it restarts. Before approving, follow [the steps for a protocol change](${DOCS_URL}/releasing.md#a-release-that-changes-the-daemon-protocol). [docs/upgrading.md](${DOCS_URL}/upgrading.md#daemon-protocol-changes) says what each session sees.`);
+    lines.push(`The daemon protocol moves from ${change.from} to ${change.to}. The first session on the new install hands the old daemon over, and a session still on the old install keeps working, because a daemon serves the protocol before its own. A session two protocols behind fails its tool calls until it restarts. Before approving, follow [the steps for a protocol change](${DOCS_URL}/releasing.md#a-release-that-changes-the-daemon-protocol). [docs/upgrading.md](${DOCS_URL}/upgrading.md#daemon-protocol-changes) says what each session sees.`);
   } else {
     lines.push('The daemon protocol stays the same, so a running daemon keeps serving sessions after the upgrade.');
   }
@@ -185,6 +186,7 @@ class Release {
     const manifest = JSON.parse(await readFile(path.join(tree, 'package.json'), 'utf8')) as { version?: string };
     if (manifest.version !== this.version) throw new ReleaseError(`${commit} declares ${manifest.version}, not ${this.version}`);
     const change = await this.protocolChange(tree, latest);
+    await this.verifyInstall(tree, latest);
     this.deps.log(`staging ${PACKAGE}@${this.version} from ${commit}`);
     await this.must('npx', [...NPM12, 'stage', 'publish'], { cwd: tree, inherit: true });
     const item = await this.stageItem();
@@ -251,6 +253,46 @@ class Release {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  }
+
+  /**
+   * Install the tarball this release would stage, the way a user installs it,
+   * before npm sees it: into an empty global prefix, and over the version npm
+   * serves as latest. Each install goes into a throwaway prefix, never the
+   * machine's own global tree. A global install from a git URL fails with npm
+   * 9 and 11 (#57); this proves the artifact itself installs both ways, and a
+   * second run repeats the check.
+   */
+  private async verifyInstall(tree: string, latest: string | undefined): Promise<void> {
+    const dir = await mkdtemp(path.join(tmpdir(), 'bellwether-install-'));
+    try {
+      const packed = JSON.parse(await this.must('npm', ['pack', '--json', '--pack-destination', dir], { cwd: tree })) as Array<{ filename?: string }>;
+      const filename = packed[0]?.filename;
+      if (!filename) throw new ReleaseError('npm pack printed no tarball, so the install could not be checked');
+      const tarball = path.join(dir, filename);
+      const cases: Array<{ name: string; prefix: string; before?: string }> = [{ name: 'into an empty global prefix', prefix: path.join(dir, 'empty') }];
+      if (latest) cases.push({ name: `over ${latest} already installed`, prefix: path.join(dir, 'over'), before: `${PACKAGE}@${latest}` });
+      for (const step of cases) {
+        if (step.before) await this.install(step.prefix, step.before, `the install of ${step.before} that the check ${step.name} starts from`);
+        await this.install(step.prefix, tarball, `the release tarball, installed ${step.name}`);
+        const bin = path.join(step.prefix, 'bin', 'bellwether');
+        const printed = (await this.must(bin, ['--version'])).trim();
+        if (printed !== this.version) throw new ReleaseError(`the release tarball, installed ${step.name}, prints ${printed || 'nothing'}, not ${this.version}, for bellwether --version`);
+        if (!(await this.must(bin, ['help'])).includes('relay-bridge')) throw new ReleaseError(`the release tarball, installed ${step.name}, has no relay-bridge in bellwether help`);
+        this.deps.log(`the release tarball installs ${step.name}`);
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+
+  private async install(prefix: string, spec: string, what: string): Promise<void> {
+    const result = await this.deps.run('npm', ['install', '--global', '--prefix', prefix, '--no-audit', '--no-fund', spec]);
+    if (result.code === 0) return;
+    const lines = (result.stderr || result.stdout).split('\n').map((line) => line.trim()).filter(Boolean);
+    const errors = lines.filter((line) => /^npm (ERR!|error) /.test(line) && !/(A complete log|_logs\/|^npm (ERR!|error) *$)/.test(line));
+    const why = (errors.find((line) => /: /.test(line) && !/ (code|syscall|errno|path|dest) /.test(line)) ?? errors[0] ?? lines.at(-1) ?? 'no output').replace(/^npm (ERR!|error) /, '');
+    throw new ReleaseError(`${what} failed: npm exited with ${result.code}: ${why}. Nothing was staged.`);
   }
 
   // --- git and the release pull request ----------------------------------

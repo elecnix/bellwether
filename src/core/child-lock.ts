@@ -1,6 +1,8 @@
 // One writer per child. A spawn that resumes a child holds a lock file on the
 // child's id while it decides whether the child is alive and while it brings it
 // back, so two callers resuming the same session open one tab between them.
+// agent_move and agent_restart hold the same lock, so no two of them run on
+// one child at once.
 // The lock is a file, not a map in memory, because two daemons on one machine
 // can share a Bellwether home. A lock whose process is gone, or that is older
 // than any resume can take, is stale and is taken over.

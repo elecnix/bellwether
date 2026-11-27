@@ -62,14 +62,13 @@ pi install npm:@elecnix/bellwether
 
 For Claude Code, run `claude plugin marketplace update elecnix-plugins`, then `claude plugin update bellwether@elecnix-plugins`.
 
-The background daemon keeps running the code it started with. Stop it, then restart every Pi and Claude Code session that uses Bellwether, so the next one starts a daemon from the new install:
+Then start your next session as usual. It replaces the daemon with one from the new install, and the sessions already open keep working until they end on their own:
 
 ```sh
-bellwether drain
-bellwether doctor                        # the installed and running versions should match
+bellwether doctor                        # says upgrade: finished once every session runs the new install
 ```
 
-[docs/upgrading.md](docs/upgrading.md) gives the order across machines, and what a session shows while two versions differ.
+[docs/upgrading.md](docs/upgrading.md) says what happens while two versions share a machine, and what to do if the hand-over fails.
 
 ## Parts
 
@@ -80,6 +79,7 @@ herdr reports each agent's state, and Bellwether turns those reports into events
 - [docs/tools.md](docs/tools.md): the tools a session gets, and the events a parent receives.
 - [docs/recovery.md](docs/recovery.md): resuming, restarting and retiring a child, and handling a stuck or blocked one.
 - [docs/remote-machines.md](docs/remote-machines.md): children on another machine.
+- [docs/moving.md](docs/moving.md): moving a live child to another machine and back.
 - [docs/upgrading.md](docs/upgrading.md): updating several machines and protocol changes.
 - [docs/releasing.md](docs/releasing.md): cutting a release, for maintainers.
 - [AGENTS.md](AGENTS.md): how the code fits together, for anyone changing it.

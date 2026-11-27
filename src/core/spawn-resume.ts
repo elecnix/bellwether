@@ -12,6 +12,7 @@ import { LOCAL_HOST, hostOf } from './machine.ts';
 import { readParent, updateChild } from './registry.ts';
 import { findResumable, holdsSession, resumeArgs, resumeChild, sessionOf, type HarnessSession, type ResumeOptions } from './resume.ts';
 import { herdrLink } from './spawn.ts';
+import { isMoving } from './move-plan.ts';
 import { promptChild } from './send.ts';
 import type { ChildRecord } from './types.ts';
 
@@ -83,6 +84,8 @@ export async function spawnResume(clientFor: (host: string) => Promise<HerdrClie
     }
 
     const child = record.children.find((entry) => entry.id === known.id) ?? known;
+    // A move outlasts the lock's stale age, so its record mark is checked too.
+    if (isMoving(child)) throw new Error(`${child.name} (child ${child.id}) is being moved to ${child.moving?.to === LOCAL_HOST ? 'this machine' : `machine ${child.moving?.to}`}, since ${child.moving?.since}. Wait for the move to finish, then call agent_spawn with resume again.`);
     const session = sessionOf(child);
     const holder = session ? panes.find((pane) => holdsSession(pane, session)) : undefined;
 

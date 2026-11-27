@@ -93,7 +93,7 @@ test('the fourth entry resumes with its own flag, and its kind is offered and ga
   assert.match(kind?.description ?? '', /fake-agent/);
 
   // An older daemon lacks the kind's feature, and the client refuses it by name.
-  assert.deepEqual(kindFeatures([fakeHarness]), [{ name: 'agent_spawn.kind=fake-agent', kind: 'argument', protocol: 4, version: '0.1.5' }]);
+  assert.deepEqual(kindFeatures([fakeHarness]), [{ name: 'agent_spawn.kind=fake-agent', kind: 'argument', protocol: 4, version: '0.1.5', summary: 'A spawn starts a child that runs Fake Agent.' }]);
   const older = { protocol: 4, version: '0.1.5', features: FEATURES.map((feature) => feature.name) };
   assert.equal(unservedArgument(older, 'agent_spawn', { kind: FAKE_KIND, name: 'x' }), 'agent_spawn.kind=fake-agent');
   assert.match(missingFeatureMessage('agent_spawn.kind=fake-agent', older), /^`agent_spawn\.kind=fake-agent` needs Bellwether 0\.1\.5 \(protocol 4\)/);

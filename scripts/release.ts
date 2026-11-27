@@ -25,7 +25,8 @@ import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import type { Feature } from '../src/daemon/features.ts';
 import { bylineVersion, SITE_URL } from './site-version.ts';
 
 export const PACKAGE = '@elecnix/bellwether';
@@ -144,12 +145,43 @@ export function installNotice(version: string, formula: string): string {
   return `${PACKAGE}@${version} is on npm, and ${formula}. Install it on each machine with the steps in docs/upgrading.md#what-you-run-on-each-machine.`;
 }
 
-export function prBody(version: string, previous: string | undefined, change: ProtocolChange | undefined): string {
+/** The order the release notes list each kind in, and the word each takes. */
+const KIND_ORDER: readonly Feature['kind'][] = ['tool', 'request', 'notice', 'argument'];
+
+/**
+ * One release-note line for a feature: what it is, then its summary. An
+ * argument reads as the argument of its tool, and `agent_spawn.kind=<kind>`
+ * as a kind of `agent_spawn`.
+ */
+export function featureLine(feature: Feature): string {
+  const [tool, rest] = feature.name.split(/\.(.*)/s);
+  let what = `The \`${feature.name}\` ${feature.kind}`;
+  if (feature.kind === 'argument' && rest) {
+    const [argument, value] = rest.split('=');
+    what = value ? `The \`${value}\` ${argument} of \`${tool}\`` : `The \`${argument}\` argument of \`${tool}\``;
+  }
+  return `- ${what}. ${feature.summary}`;
+}
+
+/**
+ * The release pull request's description. It lists every entry of
+ * `src/daemon/features.ts` whose version is the one released, so a feature
+ * reaches the release notes from the table that already records it.
+ */
+export function prBody(version: string, previous: string | undefined, change: ProtocolChange | undefined, features: readonly Feature[]): string {
   const since = previous ? ` since ${previous}` : '';
   const lines = [
     `\`npm run release\` moves the version in \`package.json\`, \`package-lock.json\` and \`.claude-plugin/plugin.json\` to ${version}, so the next publish includes every change merged${since}. It opened the pull request and merges it once CI passes.`,
     '',
   ];
+  const added = features
+    .filter((feature) => feature.version === version)
+    .sort((a, b) => KIND_ORDER.indexOf(a.kind) - KIND_ORDER.indexOf(b.kind));
+  if (added.length > 0) {
+    lines.push(`## What ${version} adds`, '', `\`src/daemon/features.ts\` records these under ${version}:`, '', ...added.map(featureLine), '');
+  } else {
+    lines.push(`\`src/daemon/features.ts\` doesn't record a new tool, request, notice or argument under ${version}.`, '');
+  }
   if (change) {
     // The pr-body check fails a description where too many sentences open
     // with the same word, so these vary their openings (SentenceStartRepetition).
@@ -158,6 +190,17 @@ export function prBody(version: string, previous: string | undefined, change: Pr
     lines.push('The daemon protocol stays the same, so a running daemon keeps serving sessions after the upgrade.');
   }
   return lines.join('\n') + '\n';
+}
+
+/**
+ * The feature table of the tree being released, which can be newer than the
+ * checkout running this script.
+ */
+async function treeFeatures(tree: string): Promise<readonly Feature[]> {
+  const file = path.join(tree, 'src/daemon/features.ts');
+  const loaded = (await import(pathToFileURL(file).href)) as { FEATURES?: readonly Feature[] };
+  if (!Array.isArray(loaded.FEATURES)) throw new ReleaseError(`${file} exports no FEATURES, so the release pull request cannot list what ${tree} adds`);
+  return loaded.FEATURES;
 }
 
 export async function release(options: ReleaseOptions, deps: ReleaseDeps): Promise<Outcome> {
@@ -402,7 +445,7 @@ class Release {
     }
     await this.must('git', ['push', '--quiet', '-u', 'origin', `HEAD:refs/heads/${this.branch}`], { cwd: tree });
     const change = await this.protocolChange(tree, latest);
-    const body = await this.tempFile('pr-body.md', prBody(this.version, latest, change));
+    const body = await this.tempFile('pr-body.md', prBody(this.version, latest, change, await treeFeatures(tree)));
     try {
       const url = (await this.must('gh', ['pr', 'create', '-R', REPO, '--base', 'main', '--head', this.branch, '--title', `release: ${this.version}`, '--body-file', body.file])).trim();
       this.deps.log(`opened ${url}`);

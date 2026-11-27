@@ -26,30 +26,85 @@ export interface Feature {
   protocol: number;
   /** The first release that served it. */
   version: string;
+  /**
+   * One sentence for a person reading the release notes: what the feature
+   * lets someone do. The release pull request lists it under its version,
+   * so it passes the same Vale rules as the docs.
+   */
+  summary: string;
+}
+
+/** The features one release brought on one protocol, each name with its summary. */
+function brought(kind: Feature['kind'], protocol: number, version: string, summaries: Record<string, string>): Feature[] {
+  return Object.entries(summaries).map(([name, summary]) => ({ name, kind, protocol, version, summary }));
 }
 
 const BASE: readonly Feature[] = [
   // In 0.1.3 or earlier, on protocol 2, the oldest a daemon serves.
-  ...['hello', 'call', 'receipt', 'bye', 'drain', 'watch'].map((name) => ({ name, kind: 'request' as const, protocol: 2, version: '0.1.3' })),
-  ...['agent_spawn', 'agent_adopt', 'agent_list', 'agent_read', 'agent_send', 'agent_stop', 'parent_report', 'request_retirement'].map((name) => ({ name, kind: 'tool' as const, protocol: 2, version: '0.1.3' })),
+  ...brought('request', 2, '0.1.3', {
+    hello: 'A session connects to the daemon and receives its protocol number.',
+    call: 'A session calls a tool through the daemon.',
+    receipt: 'An adapter marks an event read once it reaches the parent.',
+    bye: 'A session leaves the daemon.',
+    drain: 'The daemon stops taking connections and exits once its calls in flight answer.',
+    watch: 'A session follows the status of one pane, such as its own.',
+  }),
+  ...brought('tool', 2, '0.1.3', {
+    agent_spawn: 'A parent starts a child agent in a herdr tab.',
+    agent_adopt: 'A parent takes on an agent that already runs as its child.',
+    agent_list: 'A parent lists its children and their states.',
+    agent_read: 'A parent reads what a child shows or wrote.',
+    agent_send: 'A parent sends a message to a child.',
+    agent_stop: 'A parent stops a child.',
+    parent_report: 'A child reports to its parent.',
+    request_retirement: 'A child asks the daemon to retire it once its pane exits.',
+  }),
   // 0.1.4, protocol 3: `bellwether report` posts without a session.
-  { name: 'report', kind: 'request', protocol: 3, version: '0.1.4' },
+  ...brought('request', 3, '0.1.4', {
+    report: '`bellwether report` posts a report without a session.',
+  }),
   // 0.1.5, protocol 4: the relay turned round, and doctor lists sessions.
-  ...['relay-subscribe', 'relay-ack', 'relay-read', 'relay-status', 'sessions'].map((name) => ({ name, kind: 'request' as const, protocol: 4, version: '0.1.5' })),
-  ...['agent_restart', 'agent_move'].map((name) => ({ name, kind: 'tool' as const, protocol: 4, version: '0.1.5' })),
-  // A child at its depth ceiling asks for more, and a parent grants or refuses.
-  ...['agent_request_depth', 'agent_grant_depth'].map((name) => ({ name, kind: 'tool' as const, protocol: 4, version: '0.1.5' })),
+  ...brought('request', 4, '0.1.5', {
+    'relay-subscribe': "A parent's daemon collects the reports waiting on another machine.",
+    'relay-ack': "A parent's daemon acknowledges a report, so the other machine deletes its copy.",
+    'relay-read': "A parent's daemon reads a child on another machine over the open connection.",
+    'relay-status': '`bellwether doctor` shows the state of each relay connection.',
+    sessions: '`bellwether doctor` lists the sessions connected to the daemon.',
+  }),
+  ...brought('tool', 4, '0.1.5', {
+    agent_restart: 'A parent restarts a child, or a session restarts itself, under the same child id.',
+    agent_move: "A parent moves a child's session to another machine.",
+    // A child at its depth ceiling asks for more, and a parent grants or refuses.
+    agent_request_depth: 'A child that reached its depth ceiling requests a higher one.',
+    agent_grant_depth: 'A parent grants or refuses a request for more depth.',
+  }),
   // A pi child's extension reports an open dialog; an older daemon refuses it, and the extension ignores the refusal.
-  { name: 'child_prompt', kind: 'notice', protocol: 4, version: '0.1.5' },
+  ...brought('notice', 4, '0.1.5', {
+    child_prompt: "A pi child's extension reports an open dialog.",
+  }),
   // A Claude Code child's Notification hook names its source. An older daemon
   // would record the dialog as pi's, which only pi's own closing notice clears.
-  { name: 'child_prompt.source', kind: 'argument', protocol: 4, version: '0.1.5' },
+  ...brought('argument', 4, '0.1.5', {
+    'child_prompt.source': "A Claude Code child's Notification hook names the harness whose dialog is open.",
+  }),
   // An older daemon would start the child in the parent's workspace and say nothing.
-  ...['agent_spawn.workspace', 'agent_spawn.workspace_label'].map((name) => ({ name, kind: 'argument' as const, protocol: 4, version: '0.1.5' })),
+  ...brought('argument', 4, '0.1.5', {
+    'agent_spawn.workspace': 'A spawn starts the child in a named workspace, or in a new one.',
+    'agent_spawn.workspace_label': 'A spawn sets the label of the workspace it creates.',
+  }),
   // An older daemon would start the child bare, off the route it was asked for, and say nothing.
+  ...brought('argument', 4, '0.1.5', {
+    'agent_spawn.via': 'A spawn starts the child through a route from the routes file.',
+    'agent_spawn.key_file': "A spawn passes a key file to the route, and the record keeps only the file's path.",
+    'agent_restart.via': 'A restart starts the child again through a route from the routes file.',
+    'agent_restart.model': 'A restart starts the child again on another model.',
+    'agent_restart.key_file': 'A restart passes a key file to the route.',
+    'agent_restart.provider': 'A restart starts the child again on another provider.',
+  }),
   // 0.1.6: another program asks for the agent tree instead of reading the registry files.
-  { name: 'ancestry', kind: 'request', protocol: 4, version: '0.1.6' },
-  ...['agent_spawn.via', 'agent_spawn.key_file', 'agent_restart.via', 'agent_restart.model', 'agent_restart.key_file', 'agent_restart.provider'].map((name) => ({ name, kind: 'argument' as const, protocol: 4, version: '0.1.5' })),
+  ...brought('request', 4, '0.1.6', {
+    ancestry: "`bellwether ancestry <agent> --json` answers an agent's tree from the daemon, so another program no longer reads the registry files.",
+  }),
 ];
 
 /**
@@ -59,7 +114,7 @@ const BASE: readonly Feature[] = [
  * refuses the kind by name instead.
  */
 export function kindFeatures(entries: readonly HarnessEntry[] = harnesses()): Feature[] {
-  return entries.flatMap((entry) => (entry.since ? [{ name: `agent_spawn.kind=${entry.kind}`, kind: 'argument' as const, protocol: entry.since.protocol, version: entry.since.version }] : []));
+  return entries.flatMap((entry) => (entry.since ? [{ name: `agent_spawn.kind=${entry.kind}`, kind: 'argument' as const, protocol: entry.since.protocol, version: entry.since.version, summary: `A spawn starts a child that runs ${entry.label}.` }] : []));
 }
 
 export const FEATURES: readonly Feature[] = [...BASE, ...kindFeatures()];

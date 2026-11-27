@@ -13,7 +13,7 @@ import { emptyParent, readParent, saveParent, upsertChild } from '../../src/core
 import { Watcher } from '../../src/core/watcher.ts';
 import type { ChildRecord } from '../../src/core/types.ts';
 import { runBellwetherTool, type ToolContext } from '../../src/integrations/tools.ts';
-import { startFakeHerdr, type FakeHerdr, type RecordedRequest } from '../fixtures/fake-herdr.ts';
+import { startFakeHerdr, type FakeHerdr, type RecordedRequest, harnessStarts } from '../fixtures/fake-herdr.ts';
 import { fakeWorld, type FakeWorld } from '../fixtures/fake-world.ts';
 import { isolate } from '../fixtures/isolated.ts';
 
@@ -98,7 +98,7 @@ test('a live session gets the prompt as a message, with no tab and no new child'
       `target ${target}`,
     );
     assert.equal(calls(local.fake, 'tab.create').length, 0, 'no tab');
-    assert.equal(calls(local.fake, 'agent.start').length, 0, 'no start');
+    assert.equal(harnessStarts(local.fake).length, 0, 'no start');
   }
   assert.deepEqual(
     children(id).map((child) => [child.id, child.paneId]),
@@ -119,7 +119,7 @@ test('a retired session comes back in a tab with --resume, the same child id, an
   assert.equal(calls(local.fake, 'tab.create').length, 1, 'one tab');
   assert.equal(calls(local.fake, 'agent.prompt').length, 0, 'no message to a pane that is gone');
 
-  const args = calls(local.fake, 'agent.start')[0]?.params['args'] as string[];
+  const args = harnessStarts(local.fake)[0]?.args as string[];
   assert.deepEqual(args.slice(args.indexOf('--resume'), args.indexOf('--resume') + 2), ['--resume', 'sess-1']);
   assert.equal(
     args.some((arg) => arg.includes('Pick up where')),
@@ -155,7 +155,7 @@ test('two concurrent resumes of one retired child open one tab, and the loser sa
   assert.equal(lost.length, 1);
   assert.match(String(lost[0]?.reason), /worker \(child child-worker\) is already being brought back by another call \(process \d+/);
   assert.equal(calls(local.fake, 'tab.create').length, 1, 'one tab between them');
-  assert.equal(calls(local.fake, 'agent.start').length, 1);
+  assert.equal(harnessStarts(local.fake).length, 1);
   assert.equal(children(id).length, 1);
 
   // Once the winner is done, the same call finds the child alive and messages it.

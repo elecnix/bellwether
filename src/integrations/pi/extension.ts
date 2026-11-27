@@ -214,8 +214,9 @@ export default function bellwether(pi: PiApi): void {
         childId: process.env['BELLWETHER_CHILD'],
         ...(maxDepthFromEnv() === undefined ? {} : { maxDepth: maxDepthFromEnv() }),
         ...(process.env['BELLWETHER_PARENT'] ? { reportsTo: process.env['BELLWETHER_PARENT'] } : {}),
-        // A child takes its parent's messages through this extension.
-        ...(process.env['BELLWETHER_CHILD'] ? { accepts: ['message'] } : {}),
+        // A child takes its parent's messages through this extension, and any
+        // session takes a new tool list, such as parent_report once a parent adopts it.
+        accepts: process.env['BELLWETHER_CHILD'] ? ['message', 'tools'] : ['tools'],
       }, { log: (message) => console.error('[bellwether]', message) });
       daemon.onMessage(takeMessage);
       register(daemon.tools());

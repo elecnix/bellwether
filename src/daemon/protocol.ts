@@ -4,6 +4,7 @@
 import type { CallerIdentity, Harness, OutboxEntry, RelayHostState, ReportStatus } from '../core/types.ts';
 import type { AncestryAnswer } from '../core/ancestry.ts';
 import type { RosterChild } from '../core/roster.ts';
+import type { SessionReach } from '../core/adopted-session.ts';
 
 export type { RelayHostState, RelayLinkStatus } from '../core/types.ts';
 
@@ -54,6 +55,13 @@ export const PROTOCOL_HISTORY: readonly { protocol: number; breaks: boolean; cha
   { protocol: 3, breaks: false, change: 'the report request' },
   // The relay requests between daemons are new; nothing a session sends changed.
   { protocol: 4, breaks: false, change: 'the relay turns round' },
+  // Added on protocol 4 without a bump, because each is additive: an adapter
+  // that accepts `tools` gets a `tools` push when an adoption gives its
+  // session parent_report, a session with no child id that calls
+  // parent_report from a pane a parent on another machine adopted is routed
+  // to that parent's relay outbox, and a relay-adopt answer says whether the
+  // adopted session can report. An older peer never asks for the first, and
+  // leaves out or ignores the others.
 ];
 
 /**
@@ -112,8 +120,10 @@ export interface ParentHello {
   reportsTo?: string;
   /**
    * What the adapter takes from the daemon beyond events: `message`, a
-   * parent's message to put in this session. Added without a protocol bump;
-   * a daemon that predates it ignores the field and never pushes a message.
+   * parent's message to put in this session, and `tools`, a new tool list
+   * for a session whose tools changed while it stayed connected, such as a
+   * session a parent adopted. Each was added without a protocol bump; a
+   * daemon that predates one ignores it and never pushes it.
    */
   accepts?: string[];
 }
@@ -248,6 +258,29 @@ export type RelayMessageAnswer = { delivered: true; via: string } | { delivered:
 export interface RelayAdoptAnswer {
   childId: string;
   held: boolean;
+  /**
+   * Whether the adopted session can report, from the sessions connected to
+   * the daemon that answers: `tools` when one from that pane takes a new
+   * tool list and now offers parent_report, `older` when one is connected
+   * whose adapter predates the tool push and gains parent_report at its next
+   * hello, `none` when no Bellwether adapter from that pane is connected.
+   * Added without a protocol bump: a daemon that predates it leaves it out.
+   */
+  session?: SessionReach;
+}
+
+export type { SessionReach };
+
+/**
+ * The tools a session offers now, pushed when they change while the session
+ * stays connected: a parent adopted the session's pane, so it gains
+ * parent_report. Sent only to a session whose hello accepts `tools`. Added
+ * without a protocol bump: an older adapter never asks for it, and gets the
+ * same list in the hello of its next connection.
+ */
+export interface ToolsPush {
+  type: 'tools';
+  tools: ServedTool[];
 }
 
 /**
@@ -462,7 +495,7 @@ export interface AncestryReply {
   answer: AncestryAnswer;
 }
 
-export type DaemonReply = HelloReply | ResultReply | EventsPush | ErrorReply | ClosedReply | StatusPush | RelayHelloReply | RelayReportPush | RelayDrainedPush | RelayStatusReply | SessionsReply | AncestryReply | MessagePush;
+export type DaemonReply = HelloReply | ResultReply | EventsPush | ErrorReply | ClosedReply | StatusPush | RelayHelloReply | RelayReportPush | RelayDrainedPush | RelayStatusReply | SessionsReply | AncestryReply | MessagePush | ToolsPush;
 
 /** A report as it crosses from a child's machine to its parent's. The receipt makes it unique. */
 export interface RelayReport {

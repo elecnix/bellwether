@@ -26,6 +26,8 @@ export interface FakeHerdrOptions {
   respond?: (request: RecordedRequest) => { result: unknown } | { error: { code: string; message: string } } | undefined;
   /** Wait this long before each answer, as a busy herdr would. */
   delayMs?: number;
+  /** The status herdr reports after it detects a typed start: idle by default, or null for none. */
+  statusAfterStart?: string | null;
 }
 
 export interface FakeHerdr {
@@ -77,6 +79,70 @@ function defaultResult(request: RecordedRequest): unknown {
   }
 }
 
+/** One harness start a test asked herdr for: agent.start, or a bare launch line typed at the shell prompt. */
+export interface HarnessStartRequest {
+  request: RecordedRequest;
+  paneId: string;
+  kind: string;
+  args: string[];
+  /** How it started: herdr's agent.start, or a line typed behind `command`. */
+  via: 'agent.start' | 'typed';
+}
+
+/**
+ * Split a typed line into words, for the quoting `launchLine` writes: plain
+ * words and single-quoted words with `'\''` for a quote.
+ */
+function typedWords(line: string): string[] {
+  const words: string[] = [];
+  let word = '';
+  let started = false;
+  let quoted = false;
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line[index] as string;
+    if (quoted) {
+      if (char === "'") quoted = false;
+      else word += char;
+    } else if (char === "'") {
+      quoted = true;
+      started = true;
+    } else if (char === '\\' && index + 1 < line.length) {
+      index += 1;
+      word += line[index];
+      started = true;
+    } else if (/\s/.test(char)) {
+      if (started) words.push(word);
+      word = '';
+      started = false;
+    } else {
+      word += char;
+      started = true;
+    }
+  }
+  if (started) words.push(word);
+  return words;
+}
+
+/** The harness start a request makes, or undefined for any other request. */
+export function harnessStart(request: RecordedRequest): HarnessStartRequest | undefined {
+  const paneId = String(request.params['pane_id'] ?? '');
+  if (request.method === 'agent.start') {
+    const args = Array.isArray(request.params['args']) ? (request.params['args'] as string[]) : [];
+    return { request, paneId, kind: String(request.params['kind']), args, via: 'agent.start' };
+  }
+  if (request.method !== 'pane.send_input') return undefined;
+  const keys = Array.isArray(request.params['keys']) ? (request.params['keys'] as unknown[]) : [];
+  if (!keys.includes('Enter') || typeof request.params['text'] !== 'string') return undefined;
+  const words = typedWords(request.params['text']);
+  if (words[0] !== 'command' || !words[1]) return undefined;
+  return { request, paneId, kind: words[1] as string, args: words.slice(2), via: 'typed' };
+}
+
+/** Every harness start the fake herdr received, in order. */
+export function harnessStarts(fake: Pick<FakeHerdr, 'requests'>): HarnessStartRequest[] {
+  return fake.requests.map(harnessStart).filter((start): start is HarnessStartRequest => start !== undefined);
+}
+
 /**
  * herdr types an agent's arguments into the pane's shell, and refuses one it
  * cannot quote for that shell. A line break is the case Bellwether met.
@@ -124,8 +190,20 @@ export async function startFakeHerdr(options: FakeHerdrOptions = {}): Promise<Fa
           socket.write(`${JSON.stringify({ id: request.id, error: { code: 'invalid_request', message: invalid } })}\n`);
           continue;
         }
-        const answer = options.respond?.(request) ?? refuseUnsafeArguments(request) ?? { result: defaultResult(request) };
+        const own = options.respond?.(request);
+        const answer = own ?? refuseUnsafeArguments(request) ?? { result: defaultResult(request) };
         const reply = `${JSON.stringify({ id: request.id, ...answer })}\n`;
+        // herdr finds a harness typed at a shell prompt by its process, says
+        // so, and then reports the harness at its prompt.
+        const typed = own === undefined ? harnessStart(request) : undefined;
+        if (typed?.via === 'typed') {
+          const workspace = typed.paneId.split(':')[0];
+          const emit = (frame: unknown): void => {
+            for (const open of connections) open.write(`${JSON.stringify(frame)}\n`);
+          };
+          setTimeout(() => emit({ event: 'pane_agent_detected', data: { pane_id: typed.paneId, agent: typed.kind, workspace_id: workspace } }), 20);
+          if (options.statusAfterStart !== null) setTimeout(() => emit({ event: 'pane_agent_status_changed', data: { pane_id: typed.paneId, agent: typed.kind, workspace_id: workspace, agent_status: options.statusAfterStart ?? 'idle' } }), 40);
+        }
         if (options.delayMs) setTimeout(() => !socket.destroyed && socket.write(reply), options.delayMs);
         else socket.write(reply);
       }

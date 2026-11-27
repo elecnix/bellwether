@@ -30,7 +30,7 @@ import { claudeProjectDir } from '../../src/core/transcript.ts';
 import type { ChildRecord } from '../../src/core/types.ts';
 import { Watcher } from '../../src/core/watcher.ts';
 import { runBellwetherTool } from '../../src/integrations/tools.ts';
-import { startFakeHerdr, type FakeHerdr, type RecordedRequest } from '../fixtures/fake-herdr.ts';
+import { startFakeHerdr, type FakeHerdr, type RecordedRequest, harnessStarts, harnessStart } from '../fixtures/fake-herdr.ts';
 import { fakeWorld, type FakeWorld } from '../fixtures/fake-world.ts';
 import { installFakeSsh, type FakeSsh } from '../fixtures/fake-ssh.ts';
 import { LIVE_HOME } from '../fixtures/isolation.ts';
@@ -186,7 +186,7 @@ function record(w: World): ChildRecord | undefined {
 }
 
 function startArgs(m: Machine): string[][] {
-  return m.herdr.requests.filter((request) => request.method === 'agent.start').map((request) => request.params['args'] as string[]);
+  return harnessStarts(m.herdr).map((request) => request.args);
 }
 
 function moveLog(): Record<string, unknown>[] {
@@ -273,7 +273,7 @@ test('a Claude Code child moves to the other machine under the same id, resumes 
 });
 
 test('a resume that fails on the target rolls back: the child runs again where it started, from its own session', async (t) => {
-  const w = await world(t, { box: (_world, request) => (request.method === 'agent.start' ? { error: { code: 'agent_start_failed', message: 'claude would not start' } } : undefined) });
+  const w = await world(t, { box: (_world, request) => (harnessStart(request) !== undefined ? { error: { code: 'agent_start_failed', message: 'claude would not start' } } : undefined) });
   harness(w.here, { claude: '2.1.300' });
   harness(w.box, { claude: '2.1.332' });
   const hereCwd = dir(w.here.user, 'src', 'repo');
@@ -446,8 +446,8 @@ test('a move whose rollback also fails leaves the child stranded on the source, 
   let sourceStarts = false;
   const refuse = (where: string) => ({ error: { code: 'agent_start_failed', message: `${where} would not start claude` } });
   const w = await world(t, {
-    box: (_world, request) => (request.method === 'agent.start' ? refuse('box') : undefined),
-    here: (_world, request) => (request.method === 'agent.start' && !sourceStarts ? refuse('here') : undefined),
+    box: (_world, request) => (harnessStart(request) !== undefined ? refuse('box') : undefined),
+    here: (_world, request) => (harnessStart(request) !== undefined && !sourceStarts ? refuse('here') : undefined),
   });
   harness(w.here, { claude: '2.1.300' });
   harness(w.box, { claude: '2.1.332' });

@@ -27,6 +27,7 @@ import { emptyParent, readParent, saveParent, upsertChild } from '../../src/core
 import { runBellwetherTool } from '../../src/integrations/tools.ts';
 import type { Watcher } from '../../src/core/watcher.ts';
 import type { ChildEventKind, ChildRecord } from '../../src/core/types.ts';
+import { typedLaunchStub } from '../fixtures/typed-launch.ts';
 
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'bellwether-inactivity-'));
 process.env['BELLWETHER_HOME'] = home;
@@ -38,11 +39,11 @@ const MINUTE = 60_000;
 function fakeHerdr(): HerdrClient {
   let tabs = 0;
   const client = {
+    ...typedLaunchStub(),
     tabCreate: async () => {
       tabs += 1;
       return { tabId: `tab-${tabs}`, paneId: `w1:p${tabs}` };
     },
-    agentStart: async () => undefined,
     agentList: async () => [],
     tabClose: async () => undefined,
   };

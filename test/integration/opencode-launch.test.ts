@@ -17,7 +17,7 @@ import { spawnChild, type SpawnHooks } from '../../src/core/spawn.ts';
 import type { ChildRecord } from '../../src/core/types.ts';
 import { Watcher } from '../../src/core/watcher.ts';
 import { runBellwetherTool, type ToolContext } from '../../src/integrations/tools.ts';
-import { startFakeHerdr, type FakeHerdr } from '../fixtures/fake-herdr.ts';
+import { startFakeHerdr, type FakeHerdr, harnessStarts, harnessStart } from '../fixtures/fake-herdr.ts';
 import { fakeWorld, type FakePane, type FakeWorld } from '../fixtures/fake-world.ts';
 import { isolate } from '../fixtures/isolated.ts';
 import { addSession, openCodeStore } from '../fixtures/opencode-db.ts';
@@ -69,9 +69,9 @@ function hooks(space: Room, extra: Partial<NonNullable<SpawnHooks['harness']>> =
 }
 
 function startRequest(fake: FakeHerdr): { kind: string; args: string[] } {
-  const start = fake.requests.find((request) => request.method === 'agent.start');
+  const start = harnessStarts(fake)[0];
   assert.ok(start, 'herdr was never asked to start the agent');
-  return { kind: String(start.params['kind']), args: start.params['args'] as string[] };
+  return { kind: String(start.kind), args: start.args as string[] };
 }
 
 function tabEnv(fake: FakeHerdr): Record<string, string> {
@@ -193,7 +193,7 @@ test('on a route that runs opencode, the launcher carries the tier and OpenCode 
   assert.deepEqual(pane?.launcher, ['example-router', '--yes', '--model', 'example-deep']);
   const brief = path.join(space.cwd, '.bellwether', `brief-${child.id}.md`);
   assert.deepEqual(pane?.args, ['--standalone', '--session', child.session?.value, '--prompt', openCodeBriefLine(brief)]);
-  assert.equal(space.fake.requests.some((request) => request.method === 'agent.start'), false, 'herdr started a bare opencode');
+  assert.equal(space.fake.requests.some((request) => harnessStart(request) !== undefined), false, 'herdr started a bare opencode');
   // The tier picks the model on a route, so the child's configuration names none.
   const config = JSON.parse(fs.readFileSync(mcpConfigPath(child.id), 'utf8')) as { model?: string };
   assert.equal(config.model, undefined);

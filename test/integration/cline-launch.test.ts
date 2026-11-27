@@ -20,7 +20,7 @@ import type { SpoolReport } from '../../src/core/types.ts';
 import { Watcher } from '../../src/core/watcher.ts';
 import { runBellwetherTool, type ToolContext } from '../../src/integrations/tools.ts';
 import { addClineSession, clineStore } from '../fixtures/cline-db.ts';
-import { startFakeHerdr, type FakeHerdr } from '../fixtures/fake-herdr.ts';
+import { startFakeHerdr, type FakeHerdr, harnessStarts, harnessStart } from '../fixtures/fake-herdr.ts';
 import { fakeWorld, type FakePane, type FakeWorld } from '../fixtures/fake-world.ts';
 import { isolate } from '../fixtures/isolated.ts';
 
@@ -91,7 +91,7 @@ function spool(parentId: string): SpoolReport[] {
 
 function nothingWritten(space: Room): void {
   assert.deepEqual(readParent(space.parentId)?.children, []);
-  assert.equal(space.fake.requests.some((request) => request.method === 'tab.create' || request.method === 'agent.start'), false);
+  assert.equal(space.fake.requests.some((request) => request.method === 'tab.create' || harnessStart(request) !== undefined), false);
   const prompts = path.join(space.home, 'prompts');
   assert.deepEqual(fs.existsSync(prompts) ? fs.readdirSync(prompts) : [], []);
 }
@@ -104,9 +104,9 @@ test('the default launch starts the child in a sandbox of its own, off the hub a
   assert.ok(child, 'the spawn wrote no record');
 
   // The launch line: the model, the TUI and the brief, and no -y.
-  const start = space.fake.requests.find((request) => request.method === 'agent.start');
-  assert.equal(start?.params['kind'], 'cline');
-  assert.deepEqual(start?.params['args'], ['--model', 'example-model', '-i', `Your task is in ${promptPath(child.id)}. Read it, then do what it says.`]);
+  const start = harnessStarts(space.fake)[0];
+  assert.equal(start?.kind, 'cline');
+  assert.deepEqual(start?.args, ['--model', 'example-model', '-i', `Your task is in ${promptPath(child.id)}. Read it, then do what it says.`]);
 
   // Sandbox mode keeps the session in the child's own process, with its own data directory.
   const env = lastTabEnv(space);
@@ -197,8 +197,8 @@ test('with -y the child also runs in benchmark mode, and the reply lists the cos
   assert.equal(child.store, path.join(clineDataDir(child.id), 'db', 'sessions.db'));
   assert.equal(await runBellwetherTool(context(space), 'agent_read', { child: 'worker' }, {}), `the child answered in ${child.paneId}`);
 
-  const start = space.fake.requests.find((request) => request.method === 'agent.start');
-  assert.deepEqual(start?.params['args'], ['--model', 'example-model', '-i', `Your task is in ${promptPath(child.id)}. Read it, then do what it says.`, '-y']);
+  const start = harnessStarts(space.fake)[0];
+  assert.deepEqual(start?.args, ['--model', 'example-model', '-i', `Your task is in ${promptPath(child.id)}. Read it, then do what it says.`, '-y']);
   assert.equal(fs.readFileSync(promptPath(child.id), 'utf8'), 'report back');
   const env = lastTabEnv(space);
   assert.equal(env['CLINE_SANDBOX_DATA_DIR'], clineDataDir(child.id));

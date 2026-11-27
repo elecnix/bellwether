@@ -29,16 +29,20 @@ function child(id: string, name: string, paneId: string): ChildRecord {
   return { id, name, kind: 'claude', harness: 'claude-code', paneId, host: 'local', startedAt: long, lastStatus: 'working', statusChangedAt: long, lastBusyAt: long, depth: 1 };
 }
 
-test('an exit names the child by its pane, and removes its brief and MCP config', async () => {
+test('an exit names the child by its pane, removes its MCP config, and keeps a brief only when nothing shows the child read it', async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'bellwether-watcher-'));
   const previous = process.env['BELLWETHER_HOME'];
   process.env['BELLWETHER_HOME'] = home;
   const herdr = await startFakeHerdr();
   const parent = emptyParent('pi', 'watcher-label', home);
   // The fake herdr lists no panes, so both children count as gone.
-  parent.children.push(child('aaaa1111', 'npm-publish', 'w74:pJ'), child('bbbb2222', 'npm-publish', 'w74:pK'));
+  // aaaa1111 reported after its brief, so it read it; bbbb2222 never did (issue #132).
+  const reported = { ...child('aaaa1111', 'npm-publish', 'w74:pJ'), lastReport: { status: 'done' as const, text: 'published', at: new Date(Date.now() + 60_000).toISOString(), seq: 1 } };
+  parent.children.push(reported, child('bbbb2222', 'npm-publish', 'w74:pK'));
   saveParent(parent);
-  const briefs = parent.children.flatMap((entry) => [writeBrief(entry.id, 'the brief'), writeMcpConfig(entry.id)]);
+  const read = writeBrief('aaaa1111', 'the brief');
+  const unread = writeBrief('bbbb2222', 'the brief');
+  const configs = parent.children.map((entry) => writeMcpConfig(entry.id));
   let entries: OutboxEntry[] = [];
   const watcher = new Watcher({ client: new HerdrClient({ socketPath: herdr.socketPath }), parentId: parent.id, onEntries: (next) => (entries = next), tickMs: 60_000 });
   try {
@@ -46,8 +50,10 @@ test('an exit names the child by its pane, and removes its brief and MCP config'
     await until('two exit events', () => (entries.length === 2 ? entries : undefined));
     const firstLines = entries.map((entry) => entry.text.split('\n')[0]).sort();
     assert.deepEqual(firstLines, ['npm-publish (w74:pJ) exited.', 'npm-publish (w74:pK) exited.']);
-    // A child that exits takes its brief with it.
-    assert.deepEqual(briefs.filter((file) => fs.existsSync(file)), []);
+    // A child that exits takes its MCP config, and its brief once it has read it.
+    assert.deepEqual(configs.filter((file) => fs.existsSync(file)), []);
+    assert.equal(fs.existsSync(read), false);
+    assert.equal(fs.readFileSync(unread, 'utf8'), 'the brief', 'a brief nothing shows the child read stays for a resume');
   } finally {
     watcher.stop();
     await herdr.stop();

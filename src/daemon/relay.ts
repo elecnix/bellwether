@@ -101,8 +101,8 @@ export class RelayOutbox {
    * connected daemon of its parent and wait a little for the acknowledgement.
    * The answer says whether it arrived or waits; either way it is on disk.
    */
-  async report(record: RelayRecord, status: ReportStatus, text: string, via?: ReportVia): Promise<string> {
-    const entry: ForwardEntry = { receipt: newReportReceipt(), childId: record.childId, parentId: record.parentId, status, text, at: new Date(this.now()).toISOString(), ...(via ? { via } : {}) };
+  async report(record: RelayRecord, status: ReportStatus, text: string, path: { via?: ReportVia; toolOffered?: boolean } = {}): Promise<string> {
+    const entry: ForwardEntry = { receipt: newReportReceipt(), childId: record.childId, parentId: record.parentId, status, text, at: new Date(this.now()).toISOString(), ...(path.via ? { via: path.via } : {}), ...(path.via === 'shell' && path.toolOffered !== undefined ? { toolOffered: path.toolOffered } : {}) };
     // A report kept here past one relay line would cut every connection it was sent on, so it is refused before it is kept.
     const tooLong = overLong(entry);
     if (tooLong) throw new Error(`parent_report ${tooLong} Nothing was saved. Report a shorter summary, and leave the rest in a file the parent can read with agent_read or over SSH.`);
@@ -240,5 +240,5 @@ function overLong(entry: ForwardEntry): string | undefined {
 }
 
 function toReport(entry: ForwardEntry): RelayReport {
-  return { receipt: entry.receipt, childId: entry.childId, parentId: entry.parentId, status: entry.status, text: entry.text, at: entry.at, ...(entry.via ? { via: entry.via } : {}), ...(entry.messageRead ? { messageRead: entry.messageRead } : {}), ...(entry.restartAnswer ? { restartAnswer: entry.restartAnswer } : {}), ...(entry.retire ? { retire: entry.retire } : {}) };
+  return { receipt: entry.receipt, childId: entry.childId, parentId: entry.parentId, status: entry.status, text: entry.text, at: entry.at, ...(entry.via ? { via: entry.via } : {}), ...(entry.toolOffered !== undefined ? { toolOffered: entry.toolOffered } : {}), ...(entry.messageRead ? { messageRead: entry.messageRead } : {}), ...(entry.restartAnswer ? { restartAnswer: entry.restartAnswer } : {}), ...(entry.retire ? { retire: entry.retire } : {}) };
 }

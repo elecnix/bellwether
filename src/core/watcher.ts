@@ -1339,7 +1339,7 @@ export class Watcher {
     const child = record?.children.find((entry) => entry.id === report.childId || entry.name === report.childName);
     if (!child) return;
     updateChild(this.parentId, child.id, (entry) => {
-      entry.lastReport = { status: report.status, text: report.text, at: report.at, seq: report.seq, ...(report.via ? { via: report.via } : {}) };
+      entry.lastReport = { status: report.status, text: report.text, at: report.at, seq: report.seq, ...(report.via ? { via: report.via } : {}), ...(report.toolOffered !== undefined ? { toolOffered: report.toolOffered } : {}) };
       entry.lastBusyAt = report.at;
     });
     // A child this watcher has not evaluated yet starts from its record, so the
@@ -1348,7 +1348,7 @@ export class Watcher {
     this.states.set(child.id, markReported(this.states.get(child.id) ?? seedFor(child, now), now, report.status !== 'progress'));
     this.remember(child);
     const label = report.status === 'needs-input' ? 'needs input' : report.status;
-    const path = report.via ? `, ${reportViaLine(report.via)}` : '';
+    const path = report.via ? `, ${reportViaLine(report.via, report.toolOffered)}` : '';
     this.offer(child, 'report', `${childLabel(child)} reported ${label}${path}:\n${report.text}`, report.via);
     this.publish();
   }

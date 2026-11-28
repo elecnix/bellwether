@@ -609,6 +609,8 @@ export interface RelayReport {
   at: string;
   /** The path that sent the report: the child's tool, or the shell command. Added without a protocol bump. */
   via?: ReportVia;
+  /** For a shell report: whether a connected session of the child was offered parent_report. Added without a protocol bump. */
+  toolOffered?: boolean;
   /**
    * Set on an entry that carries no report but the read of a parent's
    * message: its id. Only a parent's daemon that sent relay-message gets one.

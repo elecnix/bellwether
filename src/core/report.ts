@@ -98,6 +98,8 @@ export interface ReportInput {
   text: string;
   /** Which path sent it: the child's parent_report tool, or the command in its shell. */
   via?: ReportVia;
+  /** For a shell report: whether a connected session of the child was offered parent_report. */
+  toolOffered?: boolean;
 }
 
 /** Where a report goes: into a parent this daemon holds, or into the relay outbox for a parent on another machine. */
@@ -181,6 +183,7 @@ export function acceptLocalReport(parent: ParentRecord, child: ChildRecord, inpu
     status: input.status,
     text: input.text,
     ...(input.via ? { via: input.via } : {}),
+    ...(input.via === 'shell' && input.toolOffered !== undefined ? { toolOffered: input.toolOffered } : {}),
     ...(input.receipt ? { receipt: input.receipt } : {}),
   });
   return { report, duplicate: false };
@@ -189,11 +192,14 @@ export function acceptLocalReport(parent: ParentRecord, child: ChildRecord, inpu
 export const REPORT_STATUSES: readonly ReportStatus[] = ['done', 'needs-input', 'progress'];
 
 /**
- * The clause that names the path a report took. A shell report is the one that
- * stood in for a missing tool, so its line says why the parent is reading it.
+ * The clause that names the path a report took. A shell report says whether a
+ * connected session of the child had the tool, because a parent that reads a
+ * report as proof of the tool needs to know the shell sent it instead.
  */
-export function reportViaLine(via: ReportVia | undefined): string {
-  if (via === 'shell') return 'sent from the shell, because this session has no parent_report';
+export function reportViaLine(via: ReportVia | undefined, toolOffered?: boolean): string {
+  if (via === 'shell' && toolOffered === true) return 'sent from the shell, although its session offers parent_report';
+  if (via === 'shell' && toolOffered === false) return 'sent from the shell, because no session of this child that offers parent_report is connected';
+  if (via === 'shell') return 'sent from the shell';
   if (via === 'tool') return 'sent through the parent_report tool';
   return 'sent before Bellwether recorded the path';
 }

@@ -460,7 +460,7 @@ function describeLastReports(children: readonly ChildRecord[]): string[] {
   return children.flatMap((child) => {
     const report = child.lastReport;
     if (!report) return [];
-    return [`${child.name}: ${report.status} at ${report.at}, ${reportViaLine(report.via)}.`];
+    return [`${child.name}: ${report.status} at ${report.at}, ${reportViaLine(report.via, report.toolOffered)}.`];
   });
 }
 

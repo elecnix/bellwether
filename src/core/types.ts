@@ -345,7 +345,7 @@ export interface ChildRecord {
   /** The newest messages a parent sent the child, with the path each took. */
   messages?: ChildMessage[];
   /** The last report the child sent, when, and the path it took. */
-  lastReport?: { status: ReportStatus; text: string; at: string; seq: number; via?: ReportVia };
+  lastReport?: { status: ReportStatus; text: string; at: string; seq: number; via?: ReportVia; toolOffered?: boolean };
   /**
    * Set when a final report arrives while its turn still runs, and cleared
    * when that turn ends, so a child that reported does not also produce an
@@ -721,6 +721,12 @@ export interface SpoolReport {
   seq: number;
   /** The path that sent this report: the child's tool, or the command in its shell. */
   via?: ReportVia;
+  /**
+   * For a shell report: whether a connected session of the child was offered
+   * parent_report when the report arrived. The daemon on the child's machine
+   * decides it, never the command.
+   */
+  toolOffered?: boolean;
   /**
    * Names this one report. A report carried from another machine keeps the
    * receipt its child's daemon gave it, so a forward that is retried after it

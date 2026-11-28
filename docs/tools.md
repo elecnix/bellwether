@@ -244,9 +244,10 @@ A busy parent gets each event at its next turn: after the tool calls in flight, 
 A report event specifies the path that sent it:
 
 - `sent through the parent_report tool` means the session called the tool.
-- `sent from the shell, because this session has no parent_report` means the child ran `bellwether report`, which proves only that it had a shell.
+- `sent from the shell, because no session of this child that offers parent_report is connected` means the child ran `bellwether report`, and no session of that child had the tool. The report proves only that the child had a shell.
+- `sent from the shell, although its session offers parent_report` means the child ran `bellwether report` while a session of it had the tool.
 
-The spool line and the child's `lastReport` keep the same path as `via`. `agent_list` prints it under `Last reports`.
+The daemon on the child's machine decides between the two shell lines from the sessions connected to it when the report arrives. The spool line and the child's `lastReport` keep the path as `via`, and a shell report keeps the daemon's finding as `toolOffered`. `agent_list` prints both under `Last reports`.
 
 Bellwether marks an event read once its own message is in front of the model. A shell read of the outbox file under `~/.bellwether/outbox/` shows the same receipts, but it leaves them unread, and the notification still arrives. That file stores the read flag, so a restarted daemon replays only the unread events.
 

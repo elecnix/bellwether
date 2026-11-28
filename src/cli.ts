@@ -19,7 +19,7 @@ import { emptyParent, listParents, readParent, saveParent } from './core/registr
 import { restartFailureLines, restartWaitLines } from './core/restart.ts';
 import { teleportLines } from './core/teleport.ts';
 import { crossingLines } from './core/recover-crossing.ts';
-import { claimUnconfirmedLines, farRecordLines } from './core/remote.ts';
+import { claimUnconfirmedLines, cleanupPendingLines, farRecordLines } from './core/remote.ts';
 import { goneSessionLines, herdrView } from './core/pane-fate.ts';
 import { PROMPT_NOTICE, isReportStatus } from './core/report.ts';
 import { HOOK_COMMAND, dialogFromHook } from './core/claude-hooks.ts';
@@ -274,6 +274,8 @@ async function doctor(): Promise<number> {
   for (const line of claimUnconfirmedLines(listParents())) console.log(`  ${line}`);
   // Each child a session here freed, and each freed agent whose record is here (issue #262).
   for (const line of peerDoctorLines()) console.log(`  ${line}`);
+  // Each exited child whose relay-cleanup failed on its machine, so its claim or files stay there (issue #258).
+  for (const line of cleanupPendingLines(listParents())) console.log(`  ${line}`);
   // A recent teleport, and a teleported child that has not read its notice (issue #226).
   for (const line of teleportLines(listParents())) console.log(`  ${line}`);
   // A crossing under way shows as one, not as an exit, and a child a crossing left on neither machine fails (issue #226).

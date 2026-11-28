@@ -220,8 +220,10 @@ WatcherExit(c) ==
   /\ UNCHANGED <<paneSession, pending, nextId, firstByPane, firstBySess, sessOfId>>
 
 \* cleanupRemote after a far child exits, watcher.ts:585, when CleanupFails let the call
-\* in the exit's step fail. It fails silently when the relay is down, which the model
-\* expresses by never taking this step.
+\* in the exit's step fail. Since #258 the watcher records the failure and runs the call
+\* again (retryCleanup), on its tick until a deadline and on each relay connection. While
+\* the relay is down the call fails again, which the model expresses by not taking this
+\* step yet; nothing forces it, so a breach in that window stays reachable.
 CleanupRemote(r) ==
   /\ r \in relay
   /\ r.adopted

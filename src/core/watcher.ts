@@ -35,6 +35,8 @@ import { removeRelayRecord } from './relay-records.ts';
 import { ClaimHeldElsewhere } from './remote.ts';
 import { releaseWorkspace } from './workspace.ts';
 import { harnessSeen, reportPending, runEnds, sessionSeen, statusSeen, stopAwaiting, tabClosed, viewOf } from './incarnation.ts';
+import { cleanupDone, cleanupExpired, cleanupLeft, cleanupSuperseded } from './cleanup-pending.ts';
+import { ChildBusyError, withChildLock } from './child-lock.ts';
 
 /** herdr's status for a pane, or the child's last known status. */
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -135,6 +137,9 @@ export class Watcher {
   /** Adoptions in doubt being asked about now, and when each may be asked again. */
   private readonly settling = new Set<string>();
   private readonly doubtRetry = new Map<string, { at: number; delay: number }>();
+  /** Cleanups that failed on another machine, and when to try again (issue #258). */
+  private readonly cleanupRetry = new Map<string, { at: number; delay: number }>();
+  private readonly cleaning = new Set<string>();
   private readonly retireBusy: { retries?: number; delayMs?: number };
   private readonly relayState: ((host: string) => RelayHostState | undefined) | undefined;
   private readonly remoteLastMessage: ((child: ChildRecord) => Promise<string | undefined>) | undefined;
@@ -612,7 +617,13 @@ export class Watcher {
     // A brief nothing shows the child read stays for the resume that hands it over (issue #132).
     removeChildFiles(child.id, hostOf(child) === LOCAL_HOST ? child.cwd : undefined, { briefs: !this.keepsBriefs(child) });
     if (hostOf(child) !== LOCAL_HOST && this.cleanupRemote) {
-      const cleanup = this.cleanupRemote(child).catch((error: unknown) => this.log(`could not remove ${child.name}'s files on machine ${hostOf(child)}: ${(error as Error).message}`));
+      const left = child;
+      const cleanup = this.cleanupRemote(child).catch((error: unknown) => {
+        const reason = (error as Error).message.trim().replace(/\.$/, '');
+        // The claim or the files stay there, and the watcher tries again (issue #258).
+        cleanupLeft(this.parentId, left.id, hostOf(left), reason, this.now());
+        this.log(`could not remove ${left.name}'s files on machine ${hostOf(left)}, and tries again: ${reason}`);
+      });
       this.remoteCleanups.set(child.id, cleanup);
       void cleanup.finally(() => {
         if (this.remoteCleanups.get(child.id) === cleanup) this.remoteCleanups.delete(child.id);
@@ -1464,6 +1475,7 @@ export class Watcher {
     const changed = [...byHost].some(([host, children]) => due(host) && this.links.get(host)?.key !== paneKey(children)) || [...this.links.keys()].some((host) => !byHost.has(host));
     for (const child of record?.children ?? []) if (child.adoptInDoubt && !child.exitedAt) void this.settleAdoption(child);
     for (const child of record?.children ?? []) if (child.claimUnconfirmed && !child.adoptInDoubt && !child.exitedAt) void this.confirmClaim(child);
+    for (const child of record?.children ?? []) if (child.cleanupPending) void this.retryCleanup(child, false);
     if (changed) {
       await this.reconcileAndSubscribe();
       return;
@@ -1479,6 +1491,68 @@ export class Watcher {
    * come back, so the record matches the pane again, and only that machine
    * can say whether it still holds the claim for this child.
    */
+  /**
+   * The relay to a machine came up: confirm the claims this parent holds
+   * there, and try once more each cleanup that failed there, expired or not.
+   */
+  relayUp(host: string): void {
+    this.confirmClaims(host);
+    for (const child of readParent(this.parentId)?.children ?? []) {
+      if (child.cleanupPending?.host !== host) continue;
+      this.cleanupRetry.delete(child.id);
+      void this.retryCleanup(child, true);
+    }
+  }
+
+  /**
+   * Run `relay-cleanup` again for a child whose exit left its claim or its
+   * files on another machine (issue #258). The tick calls it, waiting longer
+   * after each failure, up to a minute, until the deadline; a relay that comes
+   * up calls it with `force`. It holds the child's lock and reads the record
+   * again, so it never removes what a resume, a restart or a return there
+   * registered under the same id since.
+   */
+  private async retryCleanup(child: ChildRecord, force: boolean): Promise<void> {
+    const pending = child.cleanupPending;
+    if (!pending || !this.cleanupRemote || this.cleaning.has(child.id)) return;
+    if (!force) {
+      if (pending.expiredAt) return;
+      if (this.now() >= Date.parse(pending.until)) {
+        cleanupExpired(this.parentId, child.id, this.now());
+        this.log(`stopped trying to remove what ${child.name} (child ${child.id}) left on machine ${pending.host}: the deadline ${pending.until} passed; the next relay connection there tries once more`);
+        return;
+      }
+      const retry = this.cleanupRetry.get(child.id);
+      if (retry && retry.at > Date.now()) return;
+    }
+    this.cleaning.add(child.id);
+    const cleanupRemote = this.cleanupRemote;
+    try {
+      await withChildLock(child.id, `${child.name} (child ${child.id})`, 'retry relay-cleanup', async () => {
+        const current = readParent(this.parentId)?.children.find((entry) => entry.id === child.id);
+        if (!current?.cleanupPending) return;
+        if (cleanupSuperseded(current)) {
+          cleanupDone(this.parentId, child.id);
+          return;
+        }
+        // A view of the record on the machine the cleanup failed on, never stored.
+        await cleanupRemote(viewOf(current, { host: current.cleanupPending.host }));
+        cleanupDone(this.parentId, child.id);
+        this.cleanupRetry.delete(child.id);
+        this.log(`removed what child ${child.id} left on machine ${current.cleanupPending.host}`);
+      });
+    } catch (error) {
+      if (error instanceof ChildBusyError) return;
+      const retry = this.cleanupRetry.get(child.id);
+      const delay = Math.min((retry?.delay ?? 500) * 2, 60_000);
+      this.cleanupRetry.set(child.id, { at: Date.now() + delay, delay });
+      const reason = (error as Error).message.trim().replace(/\.$/, '');
+      cleanupLeft(this.parentId, child.id, pending.host, reason, this.now());
+    } finally {
+      this.cleaning.delete(child.id);
+    }
+  }
+
   confirmClaims(host: string): void {
     for (const child of readParent(this.parentId)?.children ?? []) {
       if (hostOf(child) !== host || child.exitedAt || child.adoptInDoubt || !heldByAdoption(child)) continue;

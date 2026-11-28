@@ -18,7 +18,7 @@ import { LOCAL_HOST, hostOf, knownHosts, type ClientFor } from '../core/machine.
 import { spawnResume } from '../core/spawn-resume.ts';
 import { describeBrief } from '../core/brief-delivery.ts';
 import { describeMessages, messageChild, type Inbox } from '../core/send.ts';
-import { RESTART_TOOL, runAgentRestart, type RestartHooks } from '../core/restart.ts';
+import { RESTART_DEFER_MS, RESTART_TOOL, runAgentRestart, type RestartHooks } from '../core/restart.ts';
 import { RETIRE_TOOL, goneCwdLine, realRetireOps, requestRetirement, retireLine, retireOnStop, type RetireOps } from '../core/retire.ts';
 import type { RemoteOps } from '../core/remote.ts';
 import { lastAssistantMessage } from '../core/transcript.ts';
@@ -38,6 +38,7 @@ import type { CallerIdentity, ChildRecord, RelayHostState, ReportStatus } from '
 import type { SessionReach } from '../core/adopted-session.ts';
 import { FEATURES, featureNamed, serves, type DaemonOffer, type Feature } from '../daemon/features.ts';
 import { runEnds } from '../core/incarnation.ts';
+import { cleanupLeft } from '../core/cleanup-pending.ts';
 
 export interface ToolContext {
   /** The parent's own herdr. */
@@ -860,8 +861,11 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
       try {
         await ctx.remote.cleanup(child);
       } catch (error) {
-        ctx.log?.(`agent_stop: could not remove ${child.name}'s files on machine ${hostOf(child)}: ${(error as Error).message}`);
-        return `Closed ${child.name}.${roomNote}${retireNote} Its brief, MCP config and relay record on machine ${hostOf(child)} could not be removed, and stay there until \`bellwether relay-cleanup --child ${child.id}\` runs on that machine: ${(error as Error).message}`;
+        const reason = (error as Error).message.trim().replace(/\.$/, '');
+        ctx.log?.(`agent_stop: could not remove ${child.name}'s files on machine ${hostOf(child)}, and the watcher tries again: ${reason}`);
+        // The watcher owns the retry (issue #258).
+        cleanupLeft(ctx.parentId, child.id, hostOf(child), reason, Date.now());
+        return `Closed ${child.name}.${roomNote}${retireNote} Its brief, MCP config and relay record on machine ${hostOf(child)} could not be removed: ${reason}. Bellwether tries again for ${Math.round(RESTART_DEFER_MS / 60_000)} minutes, and on each relay connection to that machine; \`bellwether relay-cleanup --child ${child.id}\` on that machine removes them by hand.`;
       }
     }
     return `Closed ${child.name}.${roomNote}${retireNote}`;

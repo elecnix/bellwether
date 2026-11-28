@@ -109,9 +109,9 @@ export function createHerdrService(parent: ParentHello, id: string, deps: Servic
   // Each time the relay to a machine comes up, confirm the claims this parent holds there by
   // adoption (issue #257). A link already up when the service starts counts as just connected.
   const stopConfirming = deps.links?.onConnected((host, fresh) => {
-    if (fresh) watcher.confirmClaims(host);
+    if (fresh) watcher.relayUp(host);
   });
-  for (const state of deps.links?.states() ?? []) if (state.status === 'connected') watcher.confirmClaims(state.host);
+  for (const state of deps.links?.states() ?? []) if (state.status === 'connected') watcher.relayUp(state.host);
   // Finish a restart a daemon stopped part of the way through.
   armPendingRestarts(client, record, restart);
   // A teleport this session asked for itself, which a stopped daemon never ran (issue #226).

@@ -347,7 +347,8 @@ export async function carryChild(deps: CarryDeps, parentId: string, request: Car
       stage = 'copied';
       await copy(bundle);
       stage = 'verified';
-      mark({ stage, files: settle.files(), target: { cwd: targetCwd, session: byPath ? { kind: 'path', value: sessionFile } : { kind: 'id', value: resumable.value } } });
+      const targetSession = byPath ? { kind: 'path', value: sessionFile } : { kind: 'id', value: resumable.value };
+      mark({ stage, files: settle.files(), target: { cwd: targetCwd, session: targetSession } });
       log(`${verb}: ${child.name} copied to ${where(target)} and verified, ${bytes} bytes`);
 
       // 3. Stop a live child, so the session is never live twice. The watcher ignores this close.
@@ -388,7 +389,15 @@ export async function carryChild(deps: CarryDeps, parentId: string, request: Car
       upsertChild(parentId, moved);
       const parent = readParent(parentId);
       if (!parent) throw new Error(`the registry for ${parentId} disappeared`);
-      const resumed = await resumeChild(targetClient, parent, { child: moved, session: { kind: byPath ? 'path' : 'id', value: moved.session?.value ?? '' } }, { registerRemote: deps.registerRemote, cleanupRemote: deps.cleanupRemote, startupTimeoutMs: deps.startupTimeoutMs, redrawMs: deps.redrawMs, ...(noticeText === undefined ? {} : { inbox: deps.inbox, from: deps.from ?? by, notice: noticeText }) });
+      // The mark names the destination's tab before the launch line goes into
+      // it. herdr reports the harness only once it loads, so a daemon that
+      // stops in between leaves a session the next one cannot see there, and
+      // would resume a second copy on the source unless it closes this tab.
+      const onTab = (tab: { paneId: string; tabId?: string }): void => {
+        stage = 'launching';
+        mark({ stage, target: { cwd: targetCwd, session: targetSession, paneId: tab.paneId, ...(tab.tabId ? { tabId: tab.tabId } : {}) } });
+      };
+      const resumed = await resumeChild(targetClient, parent, { child: moved, session: { kind: byPath ? 'path' : 'id', value: moved.session?.value ?? '' } }, { registerRemote: deps.registerRemote, cleanupRemote: deps.cleanupRemote, startupTimeoutMs: deps.startupTimeoutMs, redrawMs: deps.redrawMs, onTab, ...(noticeText === undefined ? {} : { inbox: deps.inbox, from: deps.from ?? by, notice: noticeText }) });
       started = resumed.child;
       notice = resumed.notice;
       stage = 'started';

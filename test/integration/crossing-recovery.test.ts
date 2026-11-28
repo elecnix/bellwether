@@ -28,7 +28,7 @@ import { claudeProjectDir } from '../../src/core/transcript.ts';
 import type { ChildRecord } from '../../src/core/types.ts';
 import { DaemonClient } from '../../src/daemon/client.ts';
 import type { RecordedRequest } from '../fixtures/fake-herdr.ts';
-import { harnessStarts } from '../fixtures/fake-herdr.ts';
+import { harnessStart, harnessStarts } from '../fixtures/fake-herdr.ts';
 import { claudeHere, dir, harness, twoMachines, type TwoMachines } from '../fixtures/two-machines.ts';
 
 const FIXTURE = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'fixtures', 'crossing-daemon.ts');
@@ -179,6 +179,94 @@ test('stage 2: a daemon killed after the source tab closed and before the destin
   assert.deepEqual(args?.slice(args.indexOf('--resume'), args.indexOf('--resume') + 2), ['--resume', 'sess-1'], 'it resumed its own session');
   assert.equal(fs.existsSync(boxCopy(w, boxCwd)), false, 'the copy at the destination is gone');
   assert.deepEqual(moveLog(w).map((line) => [line['outcome'], line['recovered']]), [['rolled-back', true]]);
+});
+
+test('stage 2b: a daemon killed after it typed the launch line on the destination, before herdr reported the session there, leaves one session on one machine', async (t) => {
+  // herdr on the destination takes the launch line and reports nothing yet:
+  // the harness is still loading when the daemon dies. The next daemon finds
+  // no session there and undoes the crossing, and the harness then comes up.
+  let launched: RecordedRequest | undefined;
+  const w = await twoMachines(
+    t,
+    {
+      box: (world, request) => {
+        if (!launched && harnessStart(request)) {
+          launched = request;
+          return { result: { type: 'ok' } };
+        }
+        return world.respond(request);
+      },
+    },
+    { box: (request) => launched !== undefined && request.method === 'pane.process_info' },
+  );
+  harness(w.here, { claude: '2.1.300' });
+  harness(w.box, { claude: '2.1.300' });
+  const hereCwd = dir(w.here.user, 'src', 'repo');
+  claudeHere(w, hereCwd);
+  const boxCwd = dir(w.box.user, 'repo');
+
+  const { left } = await interruptedMove(t, w, { on: 'box', methods: ['pane.process_info'] }, boxCwd);
+  const typedIn = String(launched?.params['pane_id'] ?? '');
+  assert.ok(typedIn && w.box.world.panes.has(typedIn), 'the dead daemon typed the launch line into a tab on the destination');
+  assert.equal(left.moving?.stage, 'launching', 'the mark says the launch line may have gone out');
+  assert.equal(left.moving?.target?.paneId, typedIn, 'the mark names the destination pane before the harness starts');
+
+  await startCrossingDaemon(t, w);
+  await connectParent(t, w);
+  await until('the next daemon to resume the child on the source', () => moveLog(w).some((line) => line['recovered'] === true));
+  // The destination's harness finishes loading now, in whatever pane still holds the line.
+  if (launched && w.box.world.panes.has(typedIn)) w.box.world.answer({ ...launched, params: { ...launched.params } });
+
+  const after = record(w) as ChildRecord;
+  assert.equal(after.moving, undefined);
+  assert.equal(after.host, 'local');
+  assert.equal(after.exitedAt, undefined, 'it runs again on the source');
+  assert.ok(w.here.world.panes.get(after.paneId)?.agent, 'a new pane on the source runs it');
+  assert.equal(w.box.world.panes.has(typedIn), false, "the recovery closed the destination's tab before it resumed the child on the source");
+  const running = [w.here, w.box].flatMap((m) => [...m.world.panes.values()].filter((pane) => pane.agent_session?.value === 'sess-1'));
+  assert.equal(running.length, 1, `the session runs in one place: ${running.map((pane) => pane.pane_id).join(', ')}`);
+  assert.equal(fs.existsSync(boxCopy(w, boxCwd)), false, 'the copy at the destination is gone');
+  assert.deepEqual(moveLog(w).map((line) => [line['outcome'], line['recovered']]), [['rolled-back', true]]);
+});
+
+test('stage 2b: when the destination tab the crossing typed into will not close, the next daemon changes nothing rather than start the session on the source as well', async (t) => {
+  let launched: RecordedRequest | undefined;
+  const w = await twoMachines(
+    t,
+    {
+      box: (world, request) => {
+        if (!launched && harnessStart(request)) {
+          launched = request;
+          return { result: { type: 'ok' } };
+        }
+        if (request.method === 'tab.close' || request.method === 'pane.close') return { error: { code: 'internal', message: 'herdr is busy' } };
+        return world.respond(request);
+      },
+    },
+    { box: (request) => launched !== undefined && request.method === 'pane.process_info' },
+  );
+  harness(w.here, { claude: '2.1.300' });
+  harness(w.box, { claude: '2.1.300' });
+  claudeHere(w, dir(w.here.user, 'src', 'repo'));
+  const boxCwd = dir(w.box.user, 'repo');
+
+  const { left } = await interruptedMove(t, w, { on: 'box', methods: ['pane.process_info'] }, boxCwd);
+  const typedIn = String(launched?.params['pane_id'] ?? '');
+  const startsBefore = harnessStarts(w.here.herdr).length;
+
+  const second = await startCrossingDaemon(t, w);
+  let stderr = '';
+  second.stderr?.on('data', (chunk: Buffer) => {
+    stderr += chunk.toString('utf8');
+  });
+  await connectParent(t, w);
+  await until('the next daemon to report the crossing it could not settle', () => /crossing of worker \(child child-worker\): unknown: .*did not close/.test(stderr));
+  const after = record(w) as ChildRecord;
+  assert.deepEqual(after.moving, left.moving, 'the mark stays for the next start');
+  assert.equal(harnessStarts(w.here.herdr).length, startsBefore, 'nothing started on the source');
+  assert.ok(w.box.world.panes.has(typedIn), 'the destination tab is still there');
+  assert.ok(fs.existsSync(boxCopy(w, boxCwd)), 'the copy stays for a session that may be loading there');
+  assert.deepEqual(moveLog(w), []);
 });
 
 test('stage 3: a daemon killed after the destination started the session leaves it running there; the next daemon finishes the move', async (t) => {

@@ -502,7 +502,7 @@ test('a move whose rollback also fails leaves the child stranded on the source, 
   assert.ok(stranded?.exitedAt, 'the child is recorded as not running');
   assert.equal(stranded?.moving, undefined);
   // The record says it runs on neither machine, with the resume that brings it back, until it runs again.
-  assert.equal(stranded?.crossingFailed?.stage, 'stopped');
+  assert.equal(stranded?.crossingFailed?.stage, 'launching', 'the start at the destination failed after its tab opened');
   assert.match(stranded?.crossingFailed?.reopen ?? '', /^agent_spawn with resume worker, which resumes it on this machine from /);
   assert.equal(stranded?.session?.value, 'sess-1');
   assert.equal(fs.readFileSync(source.file, 'utf8'), TRANSCRIPT, 'the session on the source is untouched');

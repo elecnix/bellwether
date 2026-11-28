@@ -15,7 +15,7 @@ import { HerdrClient } from '../../src/core/herdr-client.ts';
 import { pickMachine, type MachineProfile } from '../../src/core/machine.ts';
 import { emptyParent, readParent, saveParent, upsertChild } from '../../src/core/registry.ts';
 import { RELAY_SCHEMA, readRelayRecord, removeRelayRecord, saveRelayRecord } from '../../src/core/relay-records.ts';
-import { remoteOps } from '../../src/core/remote.ts';
+import { reclaimRemote, remoteOps } from '../../src/core/remote.ts';
 import type { ChildRecord, OutboxEntry } from '../../src/core/types.ts';
 import { Watcher } from '../../src/core/watcher.ts';
 import { DaemonClient } from '../../src/daemon/client.ts';
@@ -36,13 +36,15 @@ const LIMITS = { idleMs: 40, blockedMs: 20, stuckMs: 60_000 };
 /** The agent in pane w1:p5 on child-box, plus an empty pane w1:p4 and a watched one w1:p6. */
 class FarPane {
   status = 'idle';
+  /** While true, the harness in w1:p5 has quit and its shell holds the pane. */
+  gone = false;
   seq = 3;
   stateSeq = 1;
   fake!: FakeHerdr;
-  respond = (request: RecordedRequest): { result: unknown } | undefined => {
-    if (request.method === 'agent.get') return { result: { type: 'agent_info', agent: this.info() } };
-    if (request.method === 'agent.list') return { result: { type: 'agent_list', agents: [this.info(), this.info('w1:p6', 'watched', 'sess-other')] } };
-    if (request.method === 'session.snapshot') return { result: { type: 'session_snapshot', snapshot: { panes: [], agents: [this.info()] } } };
+  respond = (request: RecordedRequest): { result: unknown } | { error: { code: string; message: string } } | undefined => {
+    if (request.method === 'agent.get') return this.gone ? { error: { code: 'agent_not_found', message: 'no agent in pane w1:p5' } } : { result: { type: 'agent_info', agent: this.info() } };
+    if (request.method === 'agent.list') return { result: { type: 'agent_list', agents: [...(this.gone ? [] : [this.info()]), this.info('w1:p6', 'watched', 'sess-other')] } };
+    if (request.method === 'session.snapshot') return { result: { type: 'session_snapshot', snapshot: { panes: [], agents: this.gone ? [] : [this.info()] } } };
     if (request.method === 'pane.list') return { result: { type: 'pane_list', panes: [this.bare(PANE), this.bare('w1:p4'), this.bare('w1:p6')] } };
     if (request.method === 'pane.read') return { result: paneReadAnswer(request.params, 'far screen', PANE) };
     return undefined;
@@ -50,8 +52,22 @@ class FarPane {
   private bare(paneId: string): Record<string, unknown> {
     return { pane_id: paneId, workspace_id: 'w1', tab_id: `w1:t${paneId.slice(4)}`, terminal_id: `term-${paneId}`, agent_status: 'unknown' };
   }
-  private info(paneId = PANE, name = 'first-mate', session = SESSION): Record<string, unknown> {
+  private info(paneId = PANE, name = 'first-mate', session = paneId === PANE ? this.session : SESSION): Record<string, unknown> {
     return { pane_id: paneId, workspace_id: 'w1', tab_id: 'w1:t1', terminal_id: `term-${paneId}`, agent: 'claude', name, agent_status: paneId === PANE ? this.status : 'idle', agent_session: { value: session }, completion_seq: this.seq, state_change_seq: this.stateSeq, cwd: '/far/work' };
+  }
+  /** The harness quits and leaves its shell in the pane: herdr releases the agent. */
+  quit(): void {
+    this.gone = true;
+    this.fake.send({ event: 'pane_agent_detected', data: { pane_id: PANE, workspace_id: 'w1', released: true } });
+  }
+  /** The session herdr reports in w1:p5. */
+  session = SESSION;
+  /** A harness starts in the pane again, by default on the same session, and herdr detects it. */
+  resume(session = SESSION): void {
+    this.gone = false;
+    this.session = session;
+    this.seq += 1;
+    this.fake.send({ event: 'pane_agent_detected', data: { ...this.info(), agent_status: 'idle' } });
   }
   /** herdr's status event on the child's machine. */
   set(status: string, endsTurn = false): void {
@@ -133,6 +149,7 @@ async function world(t: test.TestContext, options: { farDaemon?: (socketPath: st
   saveParent(emptyParent('claude-code', 'the-parent', '/work', { paneId: 'w1:p1' }));
   const published: OutboxEntry[] = [];
   let skew = 0;
+  const remote = remoteOps(resolve, {}, links);
   const watcher = new Watcher({
     now: () => Date.now() + skew,
     client: nearClient,
@@ -142,13 +159,16 @@ async function world(t: test.TestContext, options: { farDaemon?: (socketPath: st
     tickMs: 15,
     screenPollMs: 0,
     relayState: (host) => links.state(host),
+    cleanupRemote: (record) => remote.cleanup(record),
+    reclaimRemote: (record) => reclaimRemote(remote, PARENT_ID, record),
+    childrenChanged: () => links.sync(),
     log: (line) => logs.push(`watcher: ${line}`),
     onEntries: (entries) => {
       for (const entry of entries) if (!entry.read && !published.some((seen) => seen.receipt === entry.receipt)) published.push(entry);
     },
   });
   watcher.start();
-  const ctx: ToolContext = { client: nearClient, clientFor, parentId: PARENT_ID, watcher, remote: remoteOps(resolve, {}, links), relayState: (host) => links.state(host) };
+  const ctx: ToolContext = { client: nearClient, clientFor, parentId: PARENT_ID, watcher, remote, relayState: (host) => links.state(host) };
 
   t.after(async () => {
     watcher.stop();
@@ -366,6 +386,102 @@ test('a message to an adopted child on another machine whose claim is gone there
   assert.equal(message?.path, 'keystrokes');
   assert.equal(message?.reason, why);
 });
+
+/** Every record this parent holds for the adopted pane, live or exited. */
+function recordsOfPane(): ChildRecord[] {
+  return readParent(PARENT_ID)?.children.filter((entry) => entry.paneId === PANE) ?? [];
+}
+
+test('an adopted child on another machine whose harness quits and resumes the same session in the same pane stays the same child: its claim comes back, its tools arrive and a message enters its session (issue #191)', async (t) => {
+  const w = await world(t, { accept: () => ({}) });
+  w.ctx.inbox = (parentId, record, message, options) => relayInbox(w.links, parentId, record, message, options);
+  const farHome = { home: w.childHome, socketPath: path.join(w.childHome, 'daemon.sock') };
+  await adopt(w);
+  const id = child(w)!.id;
+  await until('the watcher to subscribe on child-box', () => subscribed(w));
+  const first = await DaemonClient.connect(farClaude(w, SESSION), farHome);
+  t.after(() => first.close());
+  await until('the far session to gain parent_report', () => first.tools().some((tool) => tool.name === 'parent_report'));
+
+  // The person quits the harness, and the shell stays in the pane.
+  await first.close();
+  w.pane.quit();
+  await until('the exit', () => child(w)?.exitedAt !== undefined, 10_000, () => w.logs.slice(-5));
+  await until('the exit event', () => w.published.some((entry) => entry.childId === id && entry.event === 'exited'), 10_000);
+  assert.match(w.published.find((entry) => entry.event === 'exited')?.text ?? '', /Bellwether keeps watching pane w1:p5, and a resume of the same session there is the same child again\./);
+  await until('the claim to leave child-box', () => !inHome(w.childHome, () => readRelayRecord(id)), 10_000);
+
+  // The same session comes back in the same pane.
+  w.pane.resume();
+  await until('the same child to be live again', () => child(w)?.exitedAt === undefined, 10_000, () => w.logs.slice(-5));
+  assert.deepEqual(recordsOfPane().map((entry) => entry.id), [id], 'one record, under the child id the adoption gave it');
+  await until('the claim on child-box under the same child id', () => inHome(w.childHome, () => readRelayRecord(id))?.adopted === true, 10_000, () => w.logs.slice(-5));
+
+  const second = await DaemonClient.connect(farClaude(w, SESSION), farHome);
+  t.after(() => second.close());
+  const taken: string[] = [];
+  takeMessages(second, taken);
+  assert.ok(second.tools().some((tool) => tool.name === 'parent_report'), 'the resumed session offers parent_report from its first hello');
+  await until('the relay to hold child-box open for the child', () => w.links.state('child-box')?.status === 'connected' && (w.links.state('child-box')?.children ?? []).includes(id));
+  const reply = await runBellwetherTool(w.ctx, 'agent_send', { child: id, text: 'Pick up where you left off.' });
+  assert.match(reply, /^Delivered to first-mate's session as message m-[0-9a-f]{8}, through its Bellwether channel/, reply);
+  assert.deepEqual(taken, ['Pick up where you left off.']);
+  assert.deepEqual(typedFar(w), []);
+});
+
+test('another session started in the pane of an adopted child that quit is another agent: the child stays exited and its claim stays gone (issue #191)', async (t) => {
+  const w = await world(t);
+  await adopt(w);
+  const id = child(w)!.id;
+  await until('the watcher to subscribe on child-box', () => subscribed(w));
+  w.pane.quit();
+  await until('the exit', () => child(w)?.exitedAt !== undefined, 10_000);
+  await until('the claim to leave child-box', () => !inHome(w.childHome, () => readRelayRecord(id)), 10_000);
+
+  w.pane.resume('sess-someone-else-0003');
+  await until('the watcher to stop waiting for the pane', () => readParent(PARENT_ID)?.children.find((entry) => entry.id === id)?.awaitsResume === undefined, 10_000, () => w.logs.slice(-5));
+  assert.ok(child(w)?.exitedAt, 'the adopted child stays exited');
+  assert.equal(inHome(w.childHome, () => readRelayRecord(id)), undefined, 'no claim on child-box for the other session');
+  assert.ok(w.logs.some((line) => line.includes('now runs session sess-someone-else-0003')), w.logs.slice(-5).join('\n'));
+});
+
+test('adopting a pane again after its harness resumed the same session keeps the child id, and a far machine that holds the session under another id says which one it replaced (issue #191)', async (t) => {
+  const w = await world(t);
+  await adopt(w);
+  const id = child(w)!.id;
+  await until('the watcher to subscribe on child-box', () => subscribed(w));
+  w.pane.quit();
+  await until('the exit', () => child(w)?.exitedAt !== undefined, 10_000);
+  await until('the claim to leave child-box', () => !inHome(w.childHome, () => readRelayRecord(id)), 10_000);
+  // The parent's watcher misses the return, as when its daemon was down.
+  w.watcher.stop();
+  w.pane.resume();
+
+  const again = await adopt(w);
+  assert.match(again, new RegExp(`Adopted first-mate again, as the same child ${id}: its harness resumed session ${SESSION} in pane w1:p5\\.`), again);
+  assert.deepEqual(recordsOfPane().map((entry) => [entry.id, entry.exitedAt]), [[id, undefined]]);
+  assert.equal(inHome(w.childHome, () => readRelayRecord(id))?.adopted, true);
+
+  // Later the harness quits again, and child-box's state now holds the session under an id of its own.
+  updateExited(id);
+  inHome(w.childHome, () => {
+    removeRelayRecord(id);
+    saveRelayRecord({ schema: RELAY_SCHEMA, childId: 'c0ffee0000000191', name: 'first-mate', kind: 'claude', parentId: PARENT_ID, registeredAt: new Date().toISOString(), paneId: PANE, adopted: true, session: SESSION });
+  });
+  const replaced = await adopt(w);
+  assert.match(replaced, new RegExp(`Machine child-box holds session ${SESSION} in pane w1:p5 as child c0ffee0000000191, so that child id replaces ${id}, which stays exited\\.`), replaced);
+  const records = recordsOfPane();
+  assert.deepEqual(records.map((entry) => entry.id).sort(), [id, 'c0ffee0000000191'].sort());
+  assert.equal(records.find((entry) => entry.id === id)?.replacedBy, 'c0ffee0000000191');
+  assert.equal(records.find((entry) => entry.id === 'c0ffee0000000191')?.exitedAt, undefined);
+});
+
+/** Mark the child exited on the parent's record, as an exit the watcher no longer sees would leave it. */
+function updateExited(id: string): void {
+  const record = readParent(PARENT_ID)!;
+  const found = record.children.find((entry) => entry.id === id)!;
+  upsertChild(PARENT_ID, { ...found, exitedAt: new Date().toISOString(), harnessEnded: 'in-pane' });
+}
 
 test('a session in an adopted pane on another machine whose harness session is not the adopted one gains nothing, and its report is refused there', async (t) => {
   const w = await world(t);

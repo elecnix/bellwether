@@ -4,7 +4,7 @@
 // client of the session, and tests pass a fake in its place.
 import { HerdrClient } from '../core/herdr-client.ts';
 import { machineClients } from '../core/machine.ts';
-import { remoteOps } from '../core/remote.ts';
+import { reclaimRemote, remoteOps } from '../core/remote.ts';
 import { armPendingRestarts, type RestartHooks } from '../core/restart.ts';
 import { emptyParent, mutateParent, parentId, readParent, saveParent } from '../core/registry.ts';
 import { Watcher } from '../core/watcher.ts';
@@ -69,7 +69,7 @@ export function createHerdrService(parent: ParentHello, id: string, deps: Servic
   // While this session's own restart waits for a quiet turn end, its events
   // stay unread in the outbox: each one would start another turn (issue #188).
   let holding = false;
-  const watcher = new Watcher({ client, clientFor, parentId: record.id, onEntries: (entries) => (holding ? undefined : handler?.(entries)), cleanupRemote: (child) => remote.cleanup(child), relayState });
+  const watcher = new Watcher({ client, clientFor, parentId: record.id, onEntries: (entries) => (holding ? undefined : handler?.(entries)), cleanupRemote: (child) => remote.cleanup(child), reclaimRemote: (child) => reclaimRemote(remote, record.id, child), childrenChanged: () => deps.links?.sync(), relayState });
   // A remote child's reports and reads both go over the connection the daemon holds to its machine.
   // A restart the caller asked for runs after the tool answered, and stops
   // with the service. One act per target, so a second request joins the first.

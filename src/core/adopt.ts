@@ -8,11 +8,12 @@
 // machine's daemon to record the adoption over the relay connection it holds.
 // That daemon knows both its own parents and the claims of parents on other
 // machines, so it decides whether someone already watches the pane.
-import type { HerdrClient } from './herdr-client.ts';
+import type { HerdrClient, HerdrPane } from './herdr-client.ts';
 import { LOCAL_HOST } from './machine.ts';
 import { newChildId } from './outbox.ts';
 import { claimantOf, decideClaim, type PaneClaim } from './pane-claims.ts';
-import { upsertChild, watcherOfPane } from './registry.ts';
+import { readParent, updateChild, upsertChild, watcherOfPane } from './registry.ts';
+import { clearRetirement } from './retire.ts';
 import { herdrLink } from './spawn.ts';
 import { harnessFor } from './harnesses/index.ts';
 import type { ChildRecord, ParentRecord } from './types.ts';
@@ -42,6 +43,53 @@ export interface AdoptResult {
   session?: SessionReach;
   /** For a pane on another machine: whether the adapter connected there takes a parent's message. Absent when none is connected, or that daemon predates the answer. */
   messages?: boolean;
+  /** True when the pane's harness resumed the session of a child this parent adopted before, which comes back under its own id (issue #191). */
+  revived?: boolean;
+  /** The id of that earlier child, when the pane's machine holds the session under another id instead, which stands for it from now on. */
+  replaced?: string;
+}
+
+/** The claim that records an adopted child's pane on its machine, under the child id the parent holds. */
+export function adoptionClaim(parentId: string, child: Pick<ChildRecord, 'id' | 'name' | 'kind' | 'paneId' | 'session'>): PaneClaim {
+  return { parentId, childId: child.id, name: child.name, kind: child.kind, paneId: child.paneId, ...(child.session ? { session: child.session.value } : {}) };
+}
+
+/**
+ * The adopted child of this parent that exited from a pane whose harness now
+ * runs the same session again: the same child, which comes back under its id
+ * rather than a new one (issue #191). A pane id alone is not enough, because
+ * herdr reuses it for another agent, so the session has to match.
+ */
+export function resumableAdoption(parent: Pick<ParentRecord, 'children'>, host: string, paneId: string, session: string | undefined): ChildRecord | undefined {
+  if (!session) return undefined;
+  return parent.children.filter((child) => child.origin === 'adopt' && child.exitedAt && !child.replacedBy && (child.host ?? LOCAL_HOST) === host && child.paneId === paneId && child.session?.value === session).at(-1);
+}
+
+/**
+ * Bring an exited adopted child back, as its harness now runs in its pane
+ * again. The turns the pane finished while nobody watched are not news, so
+ * the next event is the end of the next turn, as at the adoption.
+ */
+export function backInPane(entry: ChildRecord, pane: Pick<HerdrPane, 'agentStatus' | 'completionSeq' | 'tabId' | 'workspaceId' | 'cwd'>, now = new Date().toISOString()): void {
+  delete entry.exitedAt;
+  delete entry.exitCode;
+  delete entry.reportPending;
+  delete entry.harnessEnded;
+  delete entry.tabClosedAt;
+  delete entry.awaitsResume;
+  clearRetirement(entry);
+  entry.lastStatus = pane.agentStatus;
+  entry.statusChangedAt = now;
+  entry.lastBusyAt = now;
+  entry.harnessSeenAt = now;
+  entry.resumedAt = now;
+  if (pane.tabId) entry.tabId = pane.tabId;
+  if (pane.workspaceId) entry.workspaceId = pane.workspaceId;
+  if (pane.cwd) entry.cwd = pane.cwd;
+  if (pane.completionSeq !== undefined) {
+    entry.completionSeq = pane.completionSeq;
+    entry.turnNotified = { paneId: entry.paneId, seq: pane.completionSeq };
+  }
 }
 
 /** Where a pane sits, in the words an error uses. */
@@ -70,8 +118,10 @@ export async function adoptPane(client: HerdrClient, parent: ParentRecord, optio
   if (owner && owner.parent.id === parent.id) return { child: owner.child, link: herdrLink('pane', pane.paneId), already: true };
   if (owner) throw new Error(`Pane ${pane.paneId} on ${place(host)} is already a child of ${owner.parent.id} as ${owner.child.name}, so this session cannot adopt it.`);
 
-  const name = options.name ?? pane.name ?? pane.label ?? pane.paneId;
-  let id = newChildId();
+  // The pane's harness may have resumed the session of a child this parent adopted before.
+  const earlier = resumableAdoption(parent, host, pane.paneId, pane.agentSessionId);
+  const name = options.name ?? earlier?.name ?? pane.name ?? pane.label ?? pane.paneId;
+  let id = earlier?.id ?? newChildId();
   let reach: SessionReach | undefined;
   let messages: boolean | undefined;
   if (host === LOCAL_HOST) {
@@ -93,6 +143,23 @@ export async function adoptPane(client: HerdrClient, parent: ParentRecord, optio
   }
 
   const now = new Date().toISOString();
+  const extra = { ...(reach ? { session: reach } : {}), ...(messages === undefined ? {} : { messages }) };
+  if (earlier && id === earlier.id) {
+    updateChild(parent.id, earlier.id, (entry) => {
+      backInPane(entry, pane, now);
+      entry.name = name;
+    });
+    const child = readParent(parent.id)?.children.find((entry) => entry.id === earlier.id) ?? earlier;
+    return { child, link: herdrLink('pane', child.paneId), already: false, revived: true, ...extra };
+  }
+  // The pane's machine holds the session under an id of its own, which stands for it from now on.
+  const replaced = earlier?.id;
+  if (replaced) {
+    updateChild(parent.id, replaced, (entry) => {
+      entry.replacedBy = id;
+      delete entry.awaitsResume;
+    });
+  }
   const kind = pane.agent;
   const harness = entry.harness;
   // A remote child's transcript sits on its own machine's disk.
@@ -124,5 +191,5 @@ export async function adoptPane(client: HerdrClient, parent: ParentRecord, optio
     inactiveMs: resolveInactiveMs(undefined),
   };
   upsertChild(parent.id, child);
-  return { child, link: herdrLink('pane', child.paneId), already: false, ...(reach ? { session: reach } : {}), ...(messages === undefined ? {} : { messages }) };
+  return { child, link: herdrLink('pane', child.paneId), already: false, ...extra, ...(replaced ? { replaced } : {}) };
 }

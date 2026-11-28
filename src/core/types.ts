@@ -406,6 +406,20 @@ export interface ChildRecord {
    */
   tabClosedAt?: string;
   /**
+   * For an adopted child whose harness ended and left its pane open: when.
+   * The watcher keeps watching that pane, and a harness that comes back there
+   * under the same session is the same child again, under the same id (issue
+   * #191). Cleared when it comes back, when the pane closes, or when another
+   * session takes the pane.
+   */
+  awaitsResume?: string;
+  /**
+   * For an adopted child that exited: the child id that now stands for its
+   * session, because the machine that runs it holds the session under that id
+   * rather than this one (issue #191).
+   */
+  replacedBy?: string;
+  /**
    * Set when the child asked to be retired, or its parent stopped it. The daemon cleans up once herdr
    * reports the pane gone. Every retirement field is optional, so an older
    * record loads unchanged.

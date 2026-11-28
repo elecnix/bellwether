@@ -89,6 +89,10 @@ The parent's daemon collects it over the same connection as a report from a spaw
 
 When the child's pane closes, the watcher runs `bellwether relay-cleanup` there, which removes the adoption.
 
+A harness can quit and leave its pane open, and then the child exits. `relay-cleanup` drops that claim too. Bellwether keeps watching the pane, as the exit event says. Resuming the same session there makes the same child, as after a quit and a `--resume`. Under its child id, the watcher brings it back and records the claim on that machine again. It then follows the child's status. Its session gets `parent_report` and its messages back. Another session in the pane, or the pane closing, ends the wait.
+
+Should the parent's watcher miss the return, as when its daemon was down, `agent_adopt` on the pane brings the child back under its child id, and the reply reports it. A daemon on that machine may hold the session under another child id, and that id then stands for the session. The reply gives both ids, and the old record keeps its exited status and gets `replacedBy`.
+
 ## Connection state
 
 Backoff runs from 1 second to 5 minutes when the parent's daemon retries a connection that fails or drops. The first reply on each connection gives the version and build of the child's machine, and `bellwether doctor` prints both on the `relay` line for that machine. Machines on one version number but different builds then show different lines.

@@ -26,6 +26,9 @@ import { realRetireOps, reapChild, retirementPending, type RetireOps } from './r
 import { isMoving } from './move-plan.ts';
 import type { AgentStatus, ChildEventKind, ChildMessage, ChildRecord, DialogDecision, OutboxEntry, RelayHostState, SpoolReport } from './types.ts';
 import { unreadSessionMessages } from './send.ts';
+import { backInPane } from './adopt.ts';
+import { parsePane, type HerdrPane } from './herdr-client.ts';
+import { ClaimHeldElsewhere } from './remote.ts';
 import { releaseWorkspace } from './workspace.ts';
 
 /** herdr's status for a pane, or the child's last known status. */
@@ -57,6 +60,15 @@ export interface WatcherOptions {
   retireOps?: RetireOps;
   /** Remove a child's brief and MCP config on its own machine, for a child on another one. */
   cleanupRemote?: (child: ChildRecord) => Promise<void>;
+  /**
+   * Claim an adopted child's pane again on its own machine, under its child
+   * id, once its harness came back there under the same session (issue #191).
+   * Rejects with `ClaimHeldElsewhere` when that machine holds the session
+   * under another id.
+   */
+  reclaimRemote?: (child: ChildRecord) => Promise<void>;
+  /** Hear that a child came back without an event, so the daemon's relay links hold its machine open again. */
+  childrenChanged?: () => void;
   /** How many times the cleanup looks again for a process leaving the worktree, and how long it waits. */
   retireBusyRetries?: number;
   retireBusyDelayMs?: number;
@@ -99,6 +111,10 @@ export class Watcher {
   private readonly log: (message: string) => void;
   private readonly retireOps: RetireOps;
   private readonly cleanupRemote: ((child: ChildRecord) => Promise<void>) | undefined;
+  private readonly reclaimRemote: ((child: ChildRecord) => Promise<void>) | undefined;
+  private readonly childrenChanged: (() => void) | undefined;
+  /** The cleanup on another machine that an exit started, which a child coming back waits for, so the cleanup cannot remove the claim made after it. */
+  private readonly remoteCleanups = new Map<string, Promise<void>>();
   private readonly retireBusy: { retries?: number; delayMs?: number };
   private readonly relayState: ((host: string) => RelayHostState | undefined) | undefined;
   private readonly startConfirmMs: number;
@@ -147,6 +163,8 @@ export class Watcher {
     this.log = options.log ?? (() => {});
     this.retireOps = options.retireOps ?? realRetireOps();
     this.cleanupRemote = options.cleanupRemote;
+    this.reclaimRemote = options.reclaimRemote;
+    this.childrenChanged = options.childrenChanged;
     this.retireBusy = { retries: options.retireBusyRetries, delayMs: options.retireBusyDelayMs };
     this.relayState = options.relayState;
     this.startConfirmMs = options.startConfirmMs ?? START_CONFIRM_MS;
@@ -310,7 +328,7 @@ export class Watcher {
     const signal = this.controller?.signal;
     if (!signal) return;
     const record = readParent(this.parentId);
-    const byHost = groupByHost((record?.children ?? []).filter((child) => !child.exitedAt));
+    const byHost = groupByHost((record?.children ?? []).filter(watched));
     // A host whose last child left needs no subscription.
     for (const [host, link] of this.links) {
       if (byHost.has(host)) continue;
@@ -325,7 +343,14 @@ export class Watcher {
         const client = await this.clientFor(host);
         const live = await this.livePanes(client, signal);
         const addressable: ChildRecord[] = [];
+        const awaiting: ChildRecord[] = [];
         for (const child of children) {
+          // An adopted harness that ended in its pane: the pane is watched for its return while it stays open.
+          if (child.exitedAt) {
+            if (live.has(child.paneId)) awaiting.push(child);
+            else this.stopAwaiting(child, 'its pane closed');
+            continue;
+          }
           // A child changing machines closed its old pane on purpose.
           if (isMoving(child)) continue;
           // A record written a moment ago may predate its pane. Leave it be.
@@ -338,6 +363,14 @@ export class Watcher {
         await this.ensureSubscription(host, client, addressable, signal);
         this.foundHost(host);
         await this.reconcile(client, addressable, signal);
+        // A harness that came back while no subscription watched, as when the daemon was down.
+        if (awaiting.length) {
+          const agents = await client.agentList(signal);
+          for (const child of awaiting) {
+            const agent = agents.find((pane) => pane.paneId === child.paneId);
+            if (agent?.agent) await this.comeBack(host, child, agent);
+          }
+        }
         this.retryAt.delete(host);
       } catch (error) {
         this.lostHost(host, error);
@@ -445,6 +478,60 @@ export class Watcher {
     }
   }
 
+  /** Stop watching an exited adopted child's pane for its return. */
+  private stopAwaiting(child: ChildRecord, why: string): void {
+    updateChild(this.parentId, child.id, (entry) => {
+      delete entry.awaitsResume;
+    });
+    this.log(`stopped watching pane ${child.paneId} for ${child.name}'s return: ${why}`);
+  }
+
+  /**
+   * An agent in the pane of an adopted child whose harness ended there. The
+   * same session is the same child, which comes back under its id: its claim
+   * on its machine is made again, and the watcher follows its status again.
+   * Another session in the pane is another agent, and the wait ends (issue #191).
+   */
+  private async comeBack(host: string, child: ChildRecord, seen: HerdrPane | undefined): Promise<void> {
+    let agent = seen;
+    if (!agent?.agentSessionId) {
+      try {
+        // The event did not carry the session, so herdr's agent.get answers for it.
+        agent = parsePane(await (await this.clientFor(host)).request('agent.get', { target: child.paneId }, { signal: this.controller?.signal }).then((result) => (isRecord(result) && isRecord(result['agent']) ? result['agent'] : result))) ?? agent;
+      } catch {
+        return;
+      }
+    }
+    if (!agent?.agent || !agent.agentSessionId) return;
+    if (agent.agentSessionId !== child.session?.value) {
+      this.stopAwaiting(child, `pane ${child.paneId} now runs session ${agent.agentSessionId}, not ${child.session?.value ?? 'an unrecorded one'}`);
+      return;
+    }
+    if (hostOf(child) !== LOCAL_HOST && this.reclaimRemote) {
+      await this.remoteCleanups.get(child.id);
+      try {
+        await this.reclaimRemote(child);
+      } catch (error) {
+        if (error instanceof ClaimHeldElsewhere) {
+          updateChild(this.parentId, child.id, (entry) => {
+            entry.replacedBy = error.childId;
+            delete entry.awaitsResume;
+          });
+          this.log(`${child.name} came back in pane ${child.paneId}, and ${error.message}; adopt the pane again to watch it under that id`);
+          return;
+        }
+        this.log(`${child.name} came back in pane ${child.paneId}, but its claim on machine ${host} failed: ${(error as Error).message}`);
+      }
+    }
+    const back = agent;
+    updateChild(this.parentId, child.id, (entry) => backInPane(entry, back));
+    this.reset(child.id);
+    this.log(`${child.name} came back in pane ${child.paneId} under session ${back.agentSessionId}, as the same child ${child.id}`);
+    this.childrenChanged?.();
+    this.dropLink(host);
+    void this.reconcileAndSubscribe();
+  }
+
   private markExited(child: ChildRecord, code: number | undefined, ended?: 'in-pane'): void {
     // One exit can arrive twice: the reconcile after a subscribe finds the pane
     // gone, and the pane_closed event for it lands too. agent_stop also marks
@@ -463,12 +550,16 @@ export class Watcher {
     // A child the parent never heard from never ran its task, whatever ended it.
     const beforeStart = !this.heardFrom(child);
     const harnessEnded = ended ? (beforeStart ? 'before-start' : 'in-pane') : undefined;
+    // An adopted harness that ended in its open pane may come back there, as a
+    // quit and a resume of the same session do, and it is the same child then (issue #191).
+    const awaitsResume = Boolean(harnessEnded) && child.origin === 'adopt';
     let unread: ChildMessage[] = [];
     updateChild(this.parentId, child.id, (entry) => {
       entry.exitedAt = new Date().toISOString();
       entry.exitCode = code;
       entry.lastStatus = 'unknown';
       if (harnessEnded) entry.harnessEnded = harnessEnded;
+      if (awaitsResume) entry.awaitsResume = entry.exitedAt;
       // A message in the session that the model never received is undelivered, and the exit event says so.
       unread = unreadSessionMessages(entry);
       for (const message of unread) {
@@ -481,9 +572,14 @@ export class Watcher {
     // A brief nothing shows the child read stays for the resume that hands it over (issue #132).
     removeChildFiles(child.id, hostOf(child) === LOCAL_HOST ? child.cwd : undefined, { briefs: !this.keepsBriefs(child) });
     if (hostOf(child) !== LOCAL_HOST && this.cleanupRemote) {
-      this.cleanupRemote(child).catch((error: unknown) => this.log(`could not remove ${child.name}'s files on machine ${hostOf(child)}: ${(error as Error).message}`));
+      const cleanup = this.cleanupRemote(child).catch((error: unknown) => this.log(`could not remove ${child.name}'s files on machine ${hostOf(child)}: ${(error as Error).message}`));
+      this.remoteCleanups.set(child.id, cleanup);
+      void cleanup.finally(() => {
+        if (this.remoteCleanups.get(child.id) === cleanup) this.remoteCleanups.delete(child.id);
+      });
     }
-    this.offer(child, 'exited', `${this.describeExit(child, code, beforeStart)}${unreadNote(unread)}`);
+    const watching = awaitsResume ? ` Bellwether keeps watching pane ${child.paneId}, and a resume of the same session there is the same child again.` : '';
+    this.offer(child, 'exited', `${this.describeExit(child, code, beforeStart)}${watching}${unreadNote(unread)}`);
     void this.releaseWorkspace(child);
     void this.retire(child.id);
   }
@@ -551,7 +647,9 @@ export class Watcher {
     }
     const record = readParent(this.parentId);
     // A tab close names a tab and carries no pane id, so match either.
-    const child = record?.children.find((entry) => hostOf(entry) === host && ((paneId !== undefined && entry.paneId === paneId) || (tabId !== undefined && entry.tabId === tabId)));
+    // A pane can hold a live child and an older record of one that exited there: the live one, then one awaiting its return, answers.
+    const matching = (record?.children ?? []).filter((entry) => hostOf(entry) === host && ((paneId !== undefined && entry.paneId === paneId) || (tabId !== undefined && entry.tabId === tabId)));
+    const child = matching.find((entry) => !entry.exitedAt) ?? matching.find((entry) => entry.awaitsResume) ?? matching[0];
     if (!child) return;
     if (CLOSE_EVENTS.has(event.event)) {
       // agent_move closed this pane, and the child goes on elsewhere under the same id.
@@ -561,6 +659,7 @@ export class Watcher {
         return;
       }
       const code = typeof event.data['exit_code'] === 'number' ? (event.data['exit_code'] as number) : undefined;
+      if (child.awaitsResume) this.stopAwaiting(child, 'its pane closed');
       // A harness that already ended in this pane was reported then; the tab closing says nothing new.
       if (child.exitedAt && child.harnessEnded) this.closeQuietly(child);
       else this.markExited(child, code);
@@ -604,6 +703,11 @@ export class Watcher {
       return;
     }
     if (AGENT_EVENTS.has(event.event)) {
+      // The harness of an adopted child that ended here may be back.
+      if (child.exitedAt && child.awaitsResume) {
+        if (event.data['released'] !== true) await this.comeBack(host, child, parsePane(event.data));
+        return;
+      }
       // herdr releases a pane's agent when the harness process ends and the
       // shell it ran in stays: the child is gone, though its tab is not.
       if (event.data['released'] === true) {
@@ -1223,7 +1327,7 @@ export class Watcher {
     if (this.stopped) return;
     this.tailSpool();
     const record = readParent(this.parentId);
-    const byHost = groupByHost((record?.children ?? []).filter((child) => !child.exitedAt));
+    const byHost = groupByHost((record?.children ?? []).filter(watched));
     // A new child, or one that left, changes the set of panes to watch. The
     // tick reads only the local registry, so the steady state stays at zero
     // herdr calls.
@@ -1296,6 +1400,11 @@ const AGENT_EVENTS = new Set(['pane.agent_detected', 'pane_agent_detected']);
 
 /** How often to ask herdr for a child's session when no transcript is known. */
 const TRANSCRIPT_LOOK_INTERVAL_MS = 60_000;
+
+/** A child the watcher follows: a live one, or an adopted one whose pane it watches for the harness's return. */
+function watched(child: ChildRecord): boolean {
+  return !child.exitedAt || Boolean(child.awaitsResume);
+}
 
 /** Live children grouped by the herdr host they run on. */
 function groupByHost(children: ChildRecord[]): Map<string, ChildRecord[]> {

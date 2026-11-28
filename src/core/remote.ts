@@ -15,6 +15,8 @@ import type { ChildRecord, ParentRecord } from './types.ts';
 import type { ToolSource } from './tool-source.ts';
 import type { PaneClaim } from './pane-claims.ts';
 import type { SessionReach } from './adopted-session.ts';
+import { adoptionClaim } from './adopt.ts';
+import { hostOf } from './machine.ts';
 
 /** What the child's machine wrote when it registered the child. */
 export interface RemoteRegistration {
@@ -142,4 +144,30 @@ export function remoteOps(resolve: MachineResolver = resolveMachine, options: Ss
       return reader.adopt(host, claim);
     },
   };
+}
+
+/** The machine of an adopted child holds its session under another child id, so this one cannot stand for it (issue #191). */
+export class ClaimHeldElsewhere extends Error {
+  readonly host: string;
+  readonly childId: string;
+  readonly replaced: string;
+  constructor(host: string, childId: string, replaced: string) {
+    super(`machine ${host} holds that session as child ${childId}, not ${replaced}`);
+    this.host = host;
+    this.childId = childId;
+    this.replaced = replaced;
+  }
+}
+
+/**
+ * Claim an adopted child's pane again on its machine, under the child id the
+ * parent already holds, after its harness came back there under the same
+ * session. That machine's daemon then offers the session its tools and takes
+ * its messages under that id again.
+ */
+export async function reclaimRemote(remote: RemoteOps, parentId: string, child: ChildRecord): Promise<void> {
+  const host = hostOf(child);
+  if (!remote.claim) throw new Error(`this session holds no connection to machine ${host}`);
+  const answer = await remote.claim(host, adoptionClaim(parentId, child));
+  if (answer.childId !== child.id) throw new ClaimHeldElsewhere(host, answer.childId, child.id);
 }

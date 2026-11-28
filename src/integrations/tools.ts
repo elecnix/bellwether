@@ -545,14 +545,18 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
       throw new Error(`Cannot adopt ${target} on machine ${host}: ${(error as Error).message}`);
     }
     const claim = ctx.remote?.claim?.bind(ctx.remote);
-    const { child, link, already, session: farReach, messages: farMessages } = await adoptPane(client, record, { target, host, name: optionalString(args['name']), stuckMinutes: typeof args['stuck_minutes'] === 'number' ? (args['stuck_minutes'] as number) : undefined, ...(claim ? { claim } : {}) });
+    const { child, link, already, revived, replaced, session: farReach, messages: farMessages } = await adoptPane(client, record, { target, host, name: optionalString(args['name']), stuckMinutes: typeof args['stuck_minutes'] === 'number' ? (args['stuck_minutes'] as number) : undefined, ...(claim ? { claim } : {}) });
     if (already) return `${child.name} in pane ${child.paneId} is already a child of this session.`;
     const where = host === LOCAL_HOST ? '' : ` on machine ${host}`;
     const session = child.session ? ` Its harness session is ${child.session.value}.` : '';
     const outage = host === LOCAL_HOST ? '' : ` While the connection to machine ${host} is down, agent_list shows it unreachable, not exited.`;
     const reach = host === LOCAL_HOST ? ctx.sessionReach?.(child.paneId) : farReach;
     const messages = host === LOCAL_HOST ? ctx.sessionMessages?.(child.paneId) : farMessages;
-    return [`Adopted ${child.name}, a ${child.kind} agent${where} in pane ${child.paneId}, as child ${child.id}. Bellwether watches it from now on.${session}${outage}`, adoptedReach(reach, host, messages, child.kind), `herdr link: ${link}`].join('\n');
+    // Issue #191: a harness that resumed the session of a child adopted before is that child, under its id.
+    const first = revived
+      ? `Adopted ${child.name} again, as the same child ${child.id}: its harness resumed session ${child.session?.value ?? 'unknown'} in pane ${child.paneId}. Bellwether watches it from now on.${outage}`
+      : `Adopted ${child.name}, a ${child.kind} agent${where} in pane ${child.paneId}, as child ${child.id}. Bellwether watches it from now on.${session}${outage}${replaced ? ` Machine ${host} holds session ${child.session?.value ?? 'unknown'} in pane ${child.paneId} as child ${child.id}, so that child id replaces ${replaced}, which stays exited.` : ''}`;
+    return [first, adoptedReach(reach, host, messages, child.kind), `herdr link: ${link}`].join('\n');
   }
 
   if (name === 'agent_list') {

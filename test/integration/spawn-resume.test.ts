@@ -168,6 +168,28 @@ test('two concurrent resumes of one retired child open one tab, and the loser sa
   assert.equal(calls(local.fake, 'agent.prompt').at(-1)?.params['text'], 'third');
 });
 
+// SessionOnePane in model/Claims.tla (issue #211, item 8): a parent that knows the
+// session as its child locks the child id, and one that does not locks the
+// session, so before the session lock the two never met.
+test('two parents that resume one session at once, one that knows it as its child and one that names it by id, start it in one pane', async (t) => {
+  isolate(t, 'bellwether-resume-');
+  const local = await herdr(t);
+  const knows = parent('knows');
+  const stranger = parent('stranger');
+  upsertChild(knows, worker({ exitedAt: new Date().toISOString() }));
+
+  const results = await Promise.allSettled([
+    runBellwetherTool(context(knows, local), 'agent_spawn', { resume: 'worker', prompt: 'from the parent that knows it' }),
+    runBellwetherTool(context(stranger, local), 'agent_spawn', { resume: 'sess-1', kind: 'claude', name: 'stray', cwd: '/work/repo', prompt: 'from a parent that does not' }),
+  ]);
+  const holding = [...local.world.panes.values()].filter((pane) => pane.agent_session?.value === 'sess-1').map((pane) => pane.pane_id);
+  assert.equal(holding.length, 1, `session sess-1 runs in ${holding.length} panes (${holding.join(', ')}); results: ${JSON.stringify(results.map((result) => result.status))}`);
+  assert.equal(harnessStarts(local.fake).length, 1);
+  const lost = results.filter((result): result is PromiseRejectedResult => result.status === 'rejected');
+  assert.equal(lost.length, 1, JSON.stringify(results));
+  assert.match(String(lost[0]?.reason), /Session sess-1 is already being brought back by another call \(process \d+/);
+});
+
 test('a child whose session is alive in a pane this session did not start is refused by name', async (t) => {
   isolate(t, 'bellwether-resume-');
   const local = await herdr(t);

@@ -12,6 +12,7 @@ import type { HerdrClient, HerdrPane } from './herdr-client.ts';
 import { LOCAL_HOST } from './machine.ts';
 import { newChildId } from './outbox.ts';
 import { claimantOf, decideClaim, type PaneClaim } from './pane-claims.ts';
+import { removeRelayRecord } from './relay-records.ts';
 import { readParent, updateChild, upsertChild, watcherOfPane } from './registry.ts';
 import { clearRetirement } from './retire.ts';
 import { herdrLink } from './spawn.ts';
@@ -126,8 +127,12 @@ export async function adoptPane(client: HerdrClient, parent: ParentRecord, optio
   let messages: boolean | undefined;
   if (host === LOCAL_HOST) {
     // A parent on another machine may have adopted this pane: its claim sits in this machine's relay records.
-    const decision = decideClaim({ parentId: parent.id, paneId: pane.paneId, session: pane.agentSessionId }, claimantOf(pane.paneId));
+    const holder = claimantOf(pane.paneId);
+    const decision = decideClaim({ parentId: parent.id, paneId: pane.paneId, session: pane.agentSessionId }, holder);
     if (decision.kind === 'refuse') throw new Error(`Pane ${pane.paneId} on local cannot be adopted: ${decision.reason}.`);
+    // A far claim whose session left the pane goes, as claimPane removes one,
+    // so the pane's session answers to one parent (issue #211, item 6).
+    if (decision.kind === 'take' && holder?.where === 'away') removeRelayRecord(holder.record.childId);
   } else {
     if (!options.claim) throw new Error(`This session holds no relay connection to machine ${host}, so it cannot ask that machine who watches pane ${pane.paneId}.`);
     let answer: { childId: string; held: boolean; session?: SessionReach; messages?: boolean };

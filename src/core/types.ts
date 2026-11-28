@@ -67,14 +67,17 @@ export interface DialogDecision {
  * - `missing`: a reconcile found the pane no longer listed, so no event said how it went.
  * - `harness-ended`: the harness ended and the pane stayed open on its shell.
  * - `restart`: a restart closed the pane and then failed to start the session again.
+ * - `session-changed`: herdr reported another session in an adopted child's pane, which `session` names (issue #211).
  */
 export interface PaneEnd {
   pane: string;
   /** The workspace the pane was in, which herdr may have removed with it. */
   workspaceId?: string;
-  how: 'exited' | 'closed' | 'missing' | 'harness-ended' | 'restart';
+  how: 'exited' | 'closed' | 'missing' | 'harness-ended' | 'restart' | 'session-changed';
   at: string;
   code?: number;
+  /** For `session-changed`: the session herdr reported in the pane instead. */
+  session?: string;
 }
 
 /**

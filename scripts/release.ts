@@ -77,6 +77,12 @@ export interface ProtocolChange { from: number; to: number }
 
 interface StageItem { id: string; packageName: string; version: string; status: string }
 interface PullRequest { number: number; state: 'OPEN' | 'CLOSED' | 'MERGED'; url: string }
+/**
+ * The tables on origin/main once the release commit is there, and the pull
+ * requests that commit carries since the previous release, or none when npm
+ * serves no earlier release.
+ */
+interface Shipped { tables: { features: readonly Feature[]; behaviors: readonly Behavior[] }; carried?: ReadonlySet<number> }
 
 export class ReleaseError extends Error {}
 
@@ -341,12 +347,13 @@ class Release {
       if (!commit) throw new ReleaseError(`origin/main has no commit that sets the version to ${this.version}, although the pull request merged`);
     }
 
-    await this.refuseLateUnrecorded(top, commit, latest);
+    const shipped = await this.refuseLateUnrecorded(top, commit, latest);
     const tree = await this.worktree(top, commit);
     await this.must('npm', ['ci'], { cwd: tree, inherit: true });
     const manifest = JSON.parse(await readFile(path.join(tree, 'package.json'), 'utf8')) as { version?: string };
     if (manifest.version !== this.version) throw new ReleaseError(`${commit} declares ${manifest.version}, not ${this.version}`);
     const change = await this.protocolChange(tree, latest);
+    await this.describeRelease(shipped, latest, change);
     await this.verifyInstall(tree, latest);
     this.deps.log(`staging ${PACKAGE}@${this.version} from ${commit}`);
     await this.must('npx', [...NPM12, 'stage', 'publish'], { cwd: tree, inherit: true });
@@ -603,17 +610,44 @@ class Release {
    * pull request lands, and lists every pull request from the previous
    * release commit up to the release commit, which it leaves out.
    */
-  private async refuseLateUnrecorded(top: string, commit: string, previous: string | undefined): Promise<void> {
-    if (!previous) return;
+  private async refuseLateUnrecorded(top: string, commit: string, previous: string | undefined): Promise<Shipped> {
     const main = (await this.must('git', ['rev-parse', 'origin/main'], { cwd: top })).trim();
     const tree = await this.worktree(top, main);
     const tables = await this.treeTables(tree);
+    if (!previous) return { tables };
     const base = await this.releaseBase(tree, previous);
     await this.refuseNotesUnderPublished(tree, base, previous);
     const merged = await this.mergedBetween(tree, base, `${commit}^`);
     const missing = unrecorded(this.version, merged, tables.features, tables.behaviors);
     if (missing.length > 0) throw new ReleaseError(lateMessage(this.version, commit, missing));
     this.deps.log(`each of the ${merged.length} pull requests in the release commit ${commit.slice(0, 7)} has a note or entry under ${this.version} on origin/main, or the ${NO_ENTRY_LABEL} label`);
+    return { tables, carried: new Set(merged.map((pr) => pr.number)) };
+  }
+
+  /**
+   * Write the release pull request's description again from the tables on
+   * origin/main, the ones the late check just read (issue #265). The run
+   * composed the first description before the gates, and a note or a
+   * FEATURES entry that merged while they ran ships in the release without
+   * reaching it. An entry that names a pull request the release commit does
+   * not carry stays out, because it belongs to the next release.
+   */
+  private async describeRelease(shipped: Shipped, previous: string | undefined, change: ProtocolChange | undefined): Promise<void> {
+    const pr = await this.findPr(REPO, this.branch);
+    if (!pr) {
+      this.deps.log(`no pull request lists ${this.branch} as its head, so no description lists what ${this.version} ships`);
+      return;
+    }
+    const carried = shipped.carried;
+    const inRelease = (entry: { prs?: readonly number[] }) => !carried || (entry.prs ?? []).every((number) => carried.has(number));
+    const text = prBody(this.version, previous, change, shipped.tables.features.filter(inRelease), shipped.tables.behaviors.filter(inRelease));
+    const body = await this.tempFile('pr-body.md', text);
+    try {
+      await this.must('gh', ['pr', 'edit', String(pr.number), '-R', REPO, '--body-file', body.file]);
+    } finally {
+      await body.remove();
+    }
+    this.deps.log(`${pr.url} lists what ${this.version} ships, from origin/main`);
   }
 
   /** The commit in the tree's history that set package.json to `previous`. */

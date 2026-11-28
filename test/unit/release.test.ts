@@ -291,7 +291,7 @@ test('a merged release with nothing staged goes straight to stage publish', asyn
   const h = await harness({ mainVersion: '0.1.4' });
   const outcome = await release({ version: '0.1.4' }, h.deps);
   assert.equal(outcome.state, 'awaiting-approval');
-  assert.ok(!h.calls.some((call) => call.startsWith('gh pr')));
+  assert.ok(!h.calls.some((call) => /^gh pr (create|merge)/.test(call)), 'a merged release opens and merges no pull request');
   assert.ok(h.calls.some((call) => call.startsWith('git worktree add --detach')));
 });
 

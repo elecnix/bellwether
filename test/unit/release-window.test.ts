@@ -129,3 +129,44 @@ test('a note under a published version that names a pull request no commit on ma
   assert.equal(run.staged, false, `release-notes/0.2.0/ghost.md names #999, which no commit on main carries, and 0.3.0 staged. Log:\n${run.logs.join('\n')}`);
   assert.match(run.error ?? '', /release-notes\/0\.2\.0\/ghost\.md/);
 });
+
+// The release pull request's description (issue #265). The run composes it before the gates, and GitHub
+// squash-merges the release branch onto main as it stands at the merge, so a note or a FEATURES entry that
+// merges during the gates ships in the release. The description has to list it too.
+const LATE = 'Bellwether now does a thing that merged while the gates ran.\n';
+const FEATURE_LATE = "export const FEATURES = [{ name: 'example_late', kind: 'tool', protocol: 3, version: '0.2.0', summary: 'A parent asks for an example.', prs: [11] }];\n";
+
+test('a note and a feature that merge while the gates run reach the release pull request description', async (t) => {
+  const w = await world(t);
+  await w.merge('Add A (#10)', { 'a.txt': 'a\n', 'release-notes/0.2.0/a.md': NOTE });
+  const run = await w.release('0.2.0', {
+    duringGates: () => w.merge('Add B (#11)', { 'b.txt': 'b\n', 'release-notes/0.2.0/b.md': LATE, 'src/daemon/features.ts': FEATURE_LATE }),
+  });
+  assert.equal(run.staged, true, run.error);
+  const body = run.description ?? '';
+  assert.match(body, /^- Bellwether now does something a person reads about\. \(#10\)$/m, body);
+  assert.match(body, /^- Bellwether now does a thing that merged while the gates ran\. \(#11\)$/m, `the note #11 merged during the gates is in the release, and the description leaves it out:\n${body}`);
+  assert.match(body, /^- The `example_late` tool\. A parent asks for an example\.$/m, `the FEATURES entry #11 merged during the gates is in the release, and the description leaves it out:\n${body}`);
+  assert.doesNotMatch(body, /doesn't record a new tool/, body);
+});
+
+test('a note filed after the release commit for a pull request it carries reaches the description on the next run', async (t) => {
+  const w = await world(t);
+  const first = await w.release('0.2.0', { duringGates: () => w.merge('Add B (#11)', { 'b.txt': 'b\n' }) });
+  assert.deepEqual(first.missing, [11], first.error);
+  await w.merge('Note for B (#12)', { 'release-notes/0.2.0/b.md': `---\nprs: [11]\n---\n${LATE}` }, [NO_ENTRY_LABEL]);
+  const second = await w.release('0.2.0');
+  assert.equal(second.staged, true, second.error);
+  assert.match(second.description ?? '', /^- Bellwether now does a thing that merged while the gates ran\. \(#11\)$/m, second.description);
+});
+
+test('a note under the version for a pull request that merged after the release commit stays out of the description', async (t) => {
+  const w = await world(t);
+  await w.merge('Add A (#10)', { 'a.txt': 'a\n', 'release-notes/0.2.0/a.md': NOTE });
+  const run = await w.release('0.2.0', {
+    afterRelease: () => w.merge('Add C (#13)', { 'c.txt': 'c\n', 'release-notes/0.2.0/c.md': 'Bellwether now does a thing the release does not carry.\n' }),
+  });
+  assert.equal(run.staged, true, run.error);
+  assert.match(run.description ?? '', /\(#10\)$/m, run.description);
+  assert.doesNotMatch(run.description ?? '', /does not carry/, `#13 merged after the release commit, and the description lists its note:\n${run.description}`);
+});

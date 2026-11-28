@@ -472,7 +472,7 @@ function describeChild(child: ChildRecord, watcher: Watcher, relayState?: ToolCo
   const unread = watcher.outboxEntries().filter((entry) => !entry.read && entry.childId === child.id).length;
   const age = Math.max(0, Math.round((Date.now() - Date.parse(child.startedAt)) / 1000));
   const restart = child.restartRequestedAt ? ', restart pending' : '';
-  const retire = child.retireOutcome === 'removed' ? ', retired' : child.retireOutcome === 'refused' ? ', retirement refused' : child.retireRequestedAt ? ', retirement requested' : '';
+  const retire = child.retireOutcome === 'removed' ? ', retired' : child.retireOutcome === 'partial' ? ', retired in part' : child.retireOutcome === 'refused' ? ', retirement refused' : child.retireRequestedAt ? ', retirement requested' : '';
   const away = child.exitedAt ? undefined : watcher.unreachable(hostOf(child));
   const live = away ? `unreachable since ${away.since} (last seen ${child.lastStatus})` : child.lastStatus;
   // A child that is crossing to another machine is unreachable, not exited (issue #219 was the same confusion for a far claim).

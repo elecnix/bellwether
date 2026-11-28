@@ -173,9 +173,12 @@ test("a moved child's request_retirement reaches its parent's daemon, and the wo
     entry.exitedAt = new Date().toISOString();
   });
   const result = await reapChild(PARENT_ID, 'c-moved', { ops: git, paneOrTabLive: async () => false, busyRetries: 0 });
-  assert.deepEqual(result, { outcome: 'removed' });
+  // The worktree the child runs in on child-box stays, so the outcome is partial, never removed (issue #273).
+  assert.equal(result.outcome, 'partial');
+  assert.ok(result.outcome === 'partial' && result.reason.includes(FAR_CWD), JSON.stringify(result));
   assert.deepEqual(git.calls, [`worktree remove ${LEFT}`, `branch -D feat-x`]);
-  assert.equal(childOf('c-moved')?.retireOutcome, 'removed');
+  assert.equal(childOf('c-moved')?.retireOutcome, 'partial');
+  assert.deepEqual(childOf('c-moved')?.retireIntent?.far, [{ host: 'child-box', worktree: FAR_CWD, runs: true }]);
 });
 
 /** The worktree a child left on the middle machine of a chain, where the parent's daemon cannot take a proof. */
@@ -206,9 +209,10 @@ test("a child that moved twice, from the parent's machine to mid-box and on to c
     entry.exitedAt = new Date().toISOString();
   });
   const result = await reapChild(PARENT_ID, 'c-twice', { ops: git, paneOrTabLive: async () => false, busyRetries: 0 });
-  assert.equal(result.outcome, 'removed');
+  assert.equal(result.outcome, 'partial', 'the worktrees on mid-box and child-box stay (issue #273)');
   assert.deepEqual(git.calls, [`worktree remove ${LEFT}`, `branch -D feat-x`]);
   const after = childOf('c-twice');
+  assert.deepEqual(after?.retireIntent?.far?.map((item) => item.host), ['child-box', 'mid-box']);
   assert.deepEqual(after?.departures?.map((entry) => entry.host), ['mid-box'], 'the retired place leaves the list, and the one on mid-box stays for its own machine');
   assert.equal(after?.movedFrom?.host, 'mid-box');
 });

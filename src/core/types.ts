@@ -602,8 +602,15 @@ export interface ChildRecord {
   retireStage?: 'worktree-removed' | 'branch-deleted';
   /** When the cleanup finished, whichever way. */
   retiredAt?: string;
-  retireOutcome?: 'removed' | 'refused';
-  /** For a refusal: the condition that failed, and what a person would do about it. */
+  /**
+   * `removed` only when nothing the record knows of stays in place. `partial`
+   * when the worktree the intent names was removed, but another one stays: a
+   * worktree on a machine this daemon cannot take a proof on, or one the child
+   * left here that failed its proofs (issue #273). The named worktree is gone
+   * after either.
+   */
+  retireOutcome?: 'removed' | 'partial' | 'refused';
+  /** For a refusal: the condition that failed, and what a person would do about it. For a partial retirement: what stays. */
   retireReason?: string;
   /**
    * For a removal: the proof that the work exists elsewhere, such as the
@@ -749,6 +756,20 @@ export interface RetireIntent {
   movedAway?: string;
   /** The other worktrees the child left on this machine by earlier moves, retired after this one (issue #241). */
   left?: LeftWorktree[];
+  /**
+   * The worktrees the child has on other machines, where this daemon cannot
+   * take a proof, as the cleanup found them when it finished. Each one stays
+   * in place, and the outcome is then `partial` (issue #273).
+   */
+  far?: FarWorktree[];
+}
+
+/** A worktree a child has on a machine other than the parent's: the one it runs in, or one it left there by a move. */
+export interface FarWorktree {
+  host: string;
+  worktree: string;
+  /** Set for the worktree the child runs in there, rather than one it left. */
+  runs?: true;
 }
 
 /** The registry layout this code writes. Version 2 added the child host. */

@@ -22,7 +22,7 @@ import { LOCAL_HOST, hostOf } from './machine.ts';
 import { bellwetherHome } from './paths.ts';
 import { childOfCaller } from './report.ts';
 import { listParents, readParent, updateChild } from './registry.ts';
-import type { CallerIdentity, ChildRecord, LeftWorktree, ParentRecord, RetireIntent } from './types.ts';
+import type { CallerIdentity, ChildRecord, FarWorktree, LeftWorktree, ParentRecord, RetireIntent } from './types.ts';
 
 /** What git says about the worktree a path sits in. */
 export interface WorktreeFacts {
@@ -128,19 +128,35 @@ function leftHere(child: ChildRecord): string[] {
 }
 
 /**
+ * The worktrees a child has on machines other than this one, which this
+ * daemon cannot take a proof on: the one it runs in on another machine, then
+ * each one it left on a machine other than this one. An adopted child has
+ * none that Bellwether answers for.
+ */
+export function farWorktrees(child: ChildRecord, runsOn: string | undefined = hostOf(child) === LOCAL_HOST ? undefined : hostOf(child)): FarWorktree[] {
+  if (child.origin === 'adopt') return [];
+  return [
+    ...(runsOn && child.cwd ? [{ host: runsOn, worktree: child.cwd, runs: true as const }] : []),
+    ...departuresOf(child)
+      .filter((entry) => entry.host !== LOCAL_HOST && entry.cwd)
+      .map((entry) => ({ host: entry.host, worktree: entry.cwd as string })),
+  ];
+}
+
+/** `a`, `a and b`, or `a, b and c`. */
+function listed(items: string[]): string {
+  return items.length === 1 ? (items[0] as string) : `${items.slice(0, -1).join(', ')} and ${items.at(-1)}`;
+}
+
+/**
  * One sentence on the worktrees this daemon cannot see, or '' when there are
  * none: the one the child runs in on another machine, and each one it left on
  * a machine other than this one. Each is named with its machine.
  */
 function farTail(child: ChildRecord, parentId: string, runsOn?: string): string {
-  const far = [
-    ...(runsOn && child.cwd ? [`your worktree on ${runsOn}, ${child.cwd}`] : []),
-    ...departuresOf(child)
-      .filter((entry) => entry.host !== LOCAL_HOST && entry.cwd)
-      .map((entry) => `the one you left on ${entry.host}, ${entry.cwd}`),
-  ];
+  const far = farWorktrees(child, runsOn).map((item) => (item.runs ? `your worktree on ${item.host}, ${item.worktree}` : `the one you left on ${item.host}, ${item.worktree}`));
   if (!far.length) return '';
-  const list = far.length === 1 ? (far[0] as string) : `${far.slice(0, -1).join(', ')} and ${far.at(-1)}`;
+  const list = listed(far);
   const them = far.length === 1 ? 'it' : 'each one';
   return ` ${list.charAt(0).toUpperCase()}${list.slice(1)} ${far.length === 1 ? 'stays' : 'stay'} in place: the daemon of parent ${parentId} cannot take a proof on another machine. Remove ${them} by hand on its machine once its work is safe.`;
 }
@@ -303,6 +319,11 @@ export async function workChecks(ops: Pick<RetireOps, 'dirty' | 'stashes' | 'saf
   return { passed, failing };
 }
 
+/** Whether retirement removed the worktree the intent names, whatever else stayed in place. */
+export function retiredItsWorktree(child: ChildRecord): boolean {
+  return child.retireOutcome === 'removed' || child.retireOutcome === 'partial';
+}
+
 /** Drop every retirement field, for a child that is brought back. */
 export function clearRetirement(child: ChildRecord): void {
   delete child.retireRequestedAt;
@@ -322,7 +343,7 @@ export const STOP_REASON = 'agent_stop by the parent';
  * undefined while it exists or once retirement removed it.
  */
 export function goneCwdLine(child: ChildRecord, ops: Pick<RetireOps, 'dirExists'>): string | undefined {
-  if (!child.cwd || hostOf(child) !== LOCAL_HOST || child.retireOutcome === 'removed') return undefined;
+  if (!child.cwd || hostOf(child) !== LOCAL_HOST || retiredItsWorktree(child)) return undefined;
   if (ops.dirExists(child.cwd)) return undefined;
   const effect = child.exitedAt ? 'A resume has nowhere to start it.' : "A harness that starts each command there, as pi does, now fails every shell command; the child's Bellwether tools still work, so it can still call parent_report, and agent_stop still closes it.";
   return `${child.name}'s working directory ${child.cwd} no longer exists. ${effect}`;
@@ -334,12 +355,14 @@ export function retireLine(child: ChildRecord): string | undefined {
   if (!intent) return undefined;
   const plain = (reason: string): string => reason.replace(/^condition \d \([^)]*\): /, '').replace(/^out of bounds: /, '');
   const left = intent.left ?? [];
-  if (child.retireOutcome === 'removed' || child.retireOutcome === 'refused') {
+  if (child.retireOutcome) {
     // Each worktree the child left here by an earlier move has its own outcome (issue #241).
     const earlier = left.map((item) =>
       item.outcome === 'removed' ? ` Also removed worktree ${item.worktree} and branch ${item.branch}, which it left on this machine by an earlier move.` : item.outcome === 'refused' ? ` Left worktree ${item.worktree}, which it left on this machine by an earlier move, in place, because ${plain(item.refusal ?? '')}` : '',
     );
-    if (child.retireOutcome === 'removed') return `Retired: removed worktree ${intent.worktree} and branch ${intent.branch}${child.retireProof ? `, because ${child.retireProof}` : ''}.${earlier.join('')}`;
+    const removed = `removed worktree ${intent.worktree} and branch ${intent.branch}${child.retireProof ? `, because ${child.retireProof}` : ''}.${earlier.join('')}`;
+    if (child.retireOutcome === 'removed') return `Retired: ${removed}`;
+    if (child.retireOutcome === 'partial') return `Retired in part: ${removed}${intent.far?.length ? ` ${farLine(intent.far)}` : ''}`;
     const unproved = child.retireReason?.startsWith('condition 3');
     return `Retirement left worktree ${intent.worktree} and branch ${intent.branch} in place, because ${unproved ? 'Bellwether could not prove the work merged: ' : ''}${plain(child.retireReason ?? '')}${earlier.join('')}`;
   }
@@ -389,18 +412,17 @@ export async function retireOnStop(parentId: string, child: ChildRecord, ops: Re
  * One sentence for the parent on the worktrees a stopped child has on other
  * machines, or undefined when it has none: the one it runs in, and each one it
  * left on a machine other than this one. This daemon cannot take a proof there.
+ * A partial outcome already names them, from the record, so it gets none.
  */
 export function farWorktreesLine(child: ChildRecord): string | undefined {
-  if (child.origin === 'adopt') return undefined;
-  const runsOn = hostOf(child) === LOCAL_HOST ? undefined : hostOf(child);
-  const far = [
-    ...(runsOn && child.cwd ? [`${child.cwd} on ${runsOn}`] : []),
-    ...departuresOf(child)
-      .filter((entry) => entry.host !== LOCAL_HOST && entry.cwd)
-      .map((entry) => `${entry.cwd} on ${entry.host}, which it left by a move`),
-  ];
+  if (child.retireOutcome === 'partial') return undefined;
+  return farLine(farWorktrees(child));
+}
+
+/** The sentence that names worktrees on other machines, which stay in place. */
+function farLine(far: FarWorktree[]): string | undefined {
   if (!far.length) return undefined;
-  const list = far.length === 1 ? (far[0] as string) : `${far.slice(0, -1).join(', ')} and ${far.at(-1)}`;
+  const list = listed(far.map((item) => `${item.worktree} on ${item.host} (${item.runs ? 'where it ran' : 'which it left by a move'})`));
   return `Its worktree${far.length === 1 ? '' : 's'} ${list} ${far.length === 1 ? 'stays' : 'stay'} in place, because this daemon cannot take retirement's proofs on another machine. Remove ${far.length === 1 ? 'it' : 'each one'} by hand there once its work is safe.`;
 }
 
@@ -419,7 +441,7 @@ export interface ReapDeps {
   busyDelayMs?: number;
 }
 
-export type ReapResult = { outcome: 'removed' | 'refused'; reason?: string } | { outcome: 'pending'; reason: string } | { outcome: 'skipped' };
+export type ReapResult = { outcome: 'removed' } | { outcome: 'partial' | 'refused'; reason: string } | { outcome: 'pending'; reason: string } | { outcome: 'skipped' };
 
 /**
  * The daemon's cleanup for one child that asked to be retired. It runs after
@@ -523,15 +545,20 @@ async function reapLocked(parentId: string, childId: string, deps: ReapDeps, log
     }
   }
   if (first.outcome === 'refused') return refuse(first.reason);
-  if (intent.movedAway) {
-    updateChild(parentId, child.id, (entry) => {
-      dropDeparture(entry, LOCAL_HOST, intent.worktree);
-    });
-  }
-  finish(parentId, child, 'removed', undefined, first.proof);
-  log(`retire ${child.name}: removed ${intent.worktree} and branch ${intent.branch}${first.proof ? `, because ${first.proof}` : ''}`);
-  if (refusals.length) return { outcome: 'refused', reason: `removed ${intent.worktree}, and left in place ${refusals.join('; ')}` };
-  return { outcome: 'removed' };
+  let far: FarWorktree[] = [];
+  updateChild(parentId, child.id, (entry) => {
+    if (intent.movedAway) dropDeparture(entry, LOCAL_HOST, intent.worktree);
+    // Read from the record as it stands now: each worktree it names on another
+    // machine stays, because this daemon cannot take a proof there (issue #273).
+    far = farWorktrees(entry);
+    if (far.length && entry.retireIntent) entry.retireIntent.far = far;
+  });
+  const stays = [...refusals, ...far.map((item) => `${item.worktree} on ${item.host}, where this daemon cannot take a proof`)];
+  // The record says removed only when nothing it knows of stays in place.
+  const reason = stays.length ? `removed ${intent.worktree}, and left in place ${stays.join('; ')}` : undefined;
+  finish(parentId, child, stays.length ? 'partial' : 'removed', reason, first.proof, far.length ? { stays: far } : {});
+  log(`retire ${child.name}: removed ${intent.worktree} and branch ${intent.branch}${first.proof ? `, because ${first.proof}` : ''}${reason ? `; left in place ${stays.join('; ')}` : ''}`);
+  return reason ? { outcome: 'partial', reason } : { outcome: 'removed' };
 }
 
 type WorktreeTarget = Pick<LeftWorktree, 'worktree' | 'repo' | 'branch' | 'defaultBranch' | 'stage'>;
@@ -637,7 +664,7 @@ function describeStanding(standing: { parent: ParentRecord; child: ChildRecord }
 }
 
 /** Record the outcome on the child record first, then append the log line. */
-function finish(parentId: string, child: ChildRecord, outcome: 'removed' | 'refused', reason?: string, proof?: string): void {
+function finish(parentId: string, child: ChildRecord, outcome: 'removed' | 'partial' | 'refused', reason?: string, proof?: string, extra: Record<string, unknown> = {}): void {
   const at = new Date().toISOString();
   updateChild(parentId, child.id, (entry) => {
     entry.retiredAt = at;
@@ -647,7 +674,7 @@ function finish(parentId: string, child: ChildRecord, outcome: 'removed' | 'refu
     if (proof) entry.retireProof = proof;
     else delete entry.retireProof;
   });
-  appendRetireLog({ at, parent: parentId, child: child.id, name: child.name, outcome, worktree: child.retireIntent?.worktree, branch: child.retireIntent?.branch, ...(reason ? { reason } : {}), ...(proof ? { proof } : {}) });
+  appendRetireLog({ at, parent: parentId, child: child.id, name: child.name, outcome, worktree: child.retireIntent?.worktree, branch: child.retireIntent?.branch, ...(reason ? { reason } : {}), ...(proof ? { proof } : {}), ...extra });
 }
 
 /** One line in retire.log. A line with `left` is about a worktree the child left here by an earlier move (issue #241). */

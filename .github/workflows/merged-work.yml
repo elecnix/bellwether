@@ -1,0 +1,36 @@
+name: merged-work
+
+# A pull request whose tree came from an older checkout deletes the work that
+# merged after that tree, and CI passes because the deleted tests went too
+# (issue #296). This check fails a pull request that deletes a release note or
+# removes a FEATURES entry against its merge base, unless a person applied the
+# removes-merged-work label. `labeled` and `unlabeled` run it again when the
+# label changes.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+permissions:
+  contents: read
+
+jobs:
+  merged-work:
+    name: merged-work
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # The pull request's own head, not GitHub's test merge, with the history
+      # that holds its merge base with the base branch.
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444  # v5.0.0
+        with:
+          node-version: 22
+      - name: no merged work goes missing
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        run: npm run check:merged-work -- --base "origin/$BASE_REF" --head HEAD

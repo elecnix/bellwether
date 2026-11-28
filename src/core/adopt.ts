@@ -46,6 +46,8 @@ export interface AdoptResult {
   messages?: boolean;
   /** True when the pane's harness resumed the session of a child this parent adopted before, which comes back under its own id (issue #191). */
   revived?: boolean;
+  /** The pane that ran the revived child's session before, when it is another pane. */
+  from?: string;
   /** The id of that earlier child, when the pane's machine holds the session under another id instead, which stands for it from now on. */
   replaced?: string;
 }
@@ -56,14 +58,18 @@ export function adoptionClaim(parentId: string, child: Pick<ChildRecord, 'id' | 
 }
 
 /**
- * The adopted child of this parent that exited from a pane whose harness now
- * runs the same session again: the same child, which comes back under its id
- * rather than a new one (issue #191). A pane id alone is not enough, because
- * herdr reuses it for another agent, so the session has to match.
+ * The child this parent adopted before on the session a pane now runs: the
+ * same child, which comes back under its id rather than a new one (issue
+ * #191). A pane id alone is not enough, because herdr reuses it for another
+ * agent, so the session has to match. The pane need not: a session resumed by
+ * hand in another pane is still that child (issue #211, item 7). A record in
+ * that pane wins, then an exited one, then one that still shows the session
+ * live in another pane, which herdr has just contradicted.
  */
 export function resumableAdoption(parent: Pick<ParentRecord, 'children'>, host: string, paneId: string, session: string | undefined): ChildRecord | undefined {
   if (!session) return undefined;
-  return parent.children.filter((child) => child.origin === 'adopt' && child.exitedAt && !child.replacedBy && (child.host ?? LOCAL_HOST) === host && child.paneId === paneId && child.session?.value === session).at(-1);
+  const same = parent.children.filter((child) => child.origin === 'adopt' && !child.replacedBy && (child.host ?? LOCAL_HOST) === host && child.session?.value === session);
+  return same.filter((child) => child.paneId === paneId && child.exitedAt).at(-1) ?? same.filter((child) => child.exitedAt).at(-1) ?? same.filter((child) => child.paneId !== paneId).at(-1);
 }
 
 /**
@@ -150,12 +156,15 @@ export async function adoptPane(client: HerdrClient, parent: ParentRecord, optio
   const now = new Date().toISOString();
   const extra = { ...(reach ? { session: reach } : {}), ...(messages === undefined ? {} : { messages }) };
   if (earlier && id === earlier.id) {
+    const from = earlier.paneId !== pane.paneId ? earlier.paneId : undefined;
     updateChild(parent.id, earlier.id, (entry) => {
+      // The session runs in this pane now, wherever it ran before.
+      entry.paneId = pane.paneId;
       backInPane(entry, pane, now);
       entry.name = name;
     });
     const child = readParent(parent.id)?.children.find((entry) => entry.id === earlier.id) ?? earlier;
-    return { child, link: herdrLink('pane', child.paneId), already: false, revived: true, ...extra };
+    return { child, link: herdrLink('pane', child.paneId), already: false, revived: true, ...(from ? { from } : {}), ...extra };
   }
   // The pane's machine holds the session under an id of its own, which stands for it from now on.
   const replaced = earlier?.id;

@@ -13,7 +13,7 @@ Passing `kind` with a session id that none of this parent's children ran starts 
 
 Bellwether refuses a live agent that isn't a child, a harness with no resume flag, a retired child whose session it never recorded, and a target that doesn't match anything. Each refusal says what to pass instead.
 
-A second call for the same child can't open a second tab. A lock file per child under `~/.bellwether/locks/` fails that call at once, naming the process that holds the lock. Bellwether takes over a lock whose process has exited or that is older than five minutes.
+A second call for the same child can't open a second tab. A lock file per child under `~/.bellwether/locks/` fails that call at once, naming the process that holds the lock. Each resume also locks the session itself, so two parents can't start one session in two panes either: one that knows the session as its child, and one that names it by its id. Bellwether takes over a lock whose process has exited or that is older than five minutes.
 
 To resume a Claude Code child by hand, run `claude --resume <session id>`. The registry keeps the session id and the transcript path after the child exits.
 

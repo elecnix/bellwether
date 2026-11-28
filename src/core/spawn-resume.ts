@@ -82,10 +82,15 @@ export async function spawnResume(clientFor: (host: string) => Promise<HerdrClie
   const known = findResumable(first, request.target);
   const host = known ? hostOf(known) : (request.host ?? LOCAL_HOST);
   const client = await clientFor(host);
-  const key = known ? known.id : `session-${path.basename(request.target, '.jsonl')}`;
+  const key = known ? known.id : sessionLockKey(request.target);
   const label = known ? `${known.name} (child ${known.id})` : `Session ${request.target}`;
+  // A second lock on the session itself: another parent may know the same
+  // session as a child of its own, or not at all, and its child lock is
+  // another file, so without this both would start the session (issue #211, item 8).
+  const knownSession = known ? sessionOf(known) : undefined;
+  const sessionLocked = <T>(work: () => Promise<T>): Promise<T> => (knownSession ? withChildLock(sessionLockKey(knownSession.value), `Session ${knownSession.value}`, `resume of ${request.target}`, work) : work());
 
-  return withChildLock(key, label, `resume of ${request.target}`, async () => {
+  return withChildLock(key, label, `resume of ${request.target}`, () => sessionLocked(async () => {
     // Read the registry again under the lock: a caller that held it before
     // this one may have just brought the child back.
     const record = readParent(parentId) ?? first;
@@ -162,5 +167,10 @@ export async function spawnResume(clientFor: (host: string) => Promise<HerdrClie
     }
     const resumed = await resumeChild(client, record, { child }, options, signal);
     return { action: 'resumed', child: resumed.child, session: resumed.session, link: resumed.link, corrected, ...(resumed.brief ? { brief: resumed.brief } : {}), ...(resumed.briefNote ? { briefNote: resumed.briefNote } : {}) };
-  });
+  }));
+}
+
+/** The lock one session takes on this machine, whichever parent resumes it and whether it names a session id or a transcript path. */
+export function sessionLockKey(session: string): string {
+  return `session-${path.basename(session, '.jsonl')}`;
 }

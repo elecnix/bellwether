@@ -240,8 +240,29 @@ async function typeInto(input: MessageInput, id: string, at: string, reason: str
       const dialog = shownScreen(await herdr.paneRead({ paneId: child.paneId, source: 'detection', lines: 30 }).catch(() => BLANK_SCREEN));
       return { message: refused, text: `herdr refused the prompt because ${child.name} is blocked. The dialog:\n${dialog}\n\nReply with agent_send keys, for example ["enter"] or ["down","enter"].` };
     }
-    throw error;
+    throw promptFailed(parentId, child, message, error as Error);
   }
+}
+
+/** Socket errors raised before a connection opens, so herdr never received the request. */
+const NOT_REACHED = new Set(['ENOENT', 'ECONNREFUSED', 'EACCES']);
+
+/**
+ * A failed agent.prompt, put on the record before the caller hears of it
+ * (issue #234). An error never leaves the record silent: a request that never
+ * reached herdr is recorded as undelivered, and one that left is recorded as
+ * possibly typed, because herdr may have typed the text before the timeout
+ * or the error came back. The error says which, so the caller knows whether
+ * sending again could type the message twice.
+ */
+function promptFailed(parentId: string, child: ChildRecord, message: ChildMessage, error: Error): Error {
+  const why = error.message.replace(/[.\s]+$/, '');
+  if (NOT_REACHED.has(String((error as NodeJS.ErrnoException).code))) {
+    remember(parentId, child.id, { ...message, undelivered: `herdr was not reachable, so nothing was typed: ${why}` });
+    return new Error(`herdr was not reachable, so nothing was typed into ${child.name}'s pane: ${why}. Message ${message.id} is on the record as never delivered, and sending it again enters it once.`);
+  }
+  remember(parentId, child.id, { ...message, typedInDoubt: why });
+  return new Error(`herdr may have typed message ${message.id} into ${child.name}'s pane: its agent.prompt failed after the request left, with ${why}. The record keeps the message, and agent_list shows it. Read the pane with agent_read before you send it again, because a second agent_send could type it into the pane twice.`);
 }
 
 /** The session messages a child never read, which a reconnected session takes again. */
@@ -253,7 +274,7 @@ export function unreadSessionMessages(child: Pick<ChildRecord, 'messages'>): Chi
 export function describeMessages(child: Pick<ChildRecord, 'name' | 'messages'>): string[] {
   return (child.messages ?? []).slice(-3).map((message) => {
     const path = message.path === 'session' ? `into its session through ${VIA_LABEL[message.via ?? ''] ?? 'its adapter (waiting for it to take the message)'}` : `typed into its pane, because ${message.reason ?? 'no reason was recorded'}`;
-    const state = message.undelivered ? `never delivered: ${message.undelivered}` : message.relayInDoubt && !message.readAt ? `not known whether its machine pushed it, because ${message.relayInDoubt.replace(/[.\s]+$/, '')}; Bellwether asks again once the relay is back` : message.path === 'keystrokes' ? 'typed; Bellwether cannot tell when the model read it' : message.readAt ? `read at ${message.readAt}` : 'not read yet';
+    const state = message.undelivered ? `never delivered: ${message.undelivered}` : message.typedInDoubt ? `not known whether herdr typed it, because its agent.prompt failed with ${message.typedInDoubt}; read its pane with agent_read before you send it again` : message.relayInDoubt && !message.readAt ? `not known whether its machine pushed it, because ${message.relayInDoubt.replace(/[.\s]+$/, '')}; Bellwether asks again once the relay is back` : message.path === 'keystrokes' ? 'typed; Bellwether cannot tell when the model read it' : message.readAt ? `read at ${message.readAt}` : 'not read yet';
     return `${child.name}: message ${message.id} at ${message.at}, ${path}; ${state}. "${message.preview}"`;
   });
 }

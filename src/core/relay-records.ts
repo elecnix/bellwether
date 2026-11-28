@@ -62,6 +62,12 @@ export interface RelayRecord {
    * machine prints a line for it while it waits, and for a refusal.
    */
   retireRequest?: { at: string; receipt: string; refused?: string };
+  /**
+   * A teleport the child asked for here, which waits in the relay outbox for
+   * the parent's daemon that holds its record (issue #226). It goes once that
+   * daemon takes the request, and `bellwether doctor` here shows it until then.
+   */
+  teleportRequest?: { at: string; receipt: string; machine?: string; refused?: string };
 }
 
 /** One report waiting for the parent's daemon to collect it. */
@@ -88,6 +94,8 @@ export interface ForwardEntry {
    * for input, for a parent's daemon that predates the field.
    */
   retire?: { reason?: string };
+  /** Set on an entry that asks the parent's daemon to teleport the child once its turn ends (issue #226). */
+  teleport?: { machine?: string; cwd?: string; reason?: string };
 }
 
 /** A receipt that names one report, so a retried forward is accepted once. */
@@ -181,6 +189,23 @@ export function retireWaitLines(records: RelayRecord[] = listRelayRecords()): st
     const who = `${record.name} (child ${record.childId})`;
     if (wait.refused) lines.push(`fail  retirement: ${who} asked at ${wait.at} to be retired, and the daemon of parent ${record.parentId}, which holds its record, refused the request: ${wait.refused}. It stays in ${relayOutboxPath(wait.receipt)}; retire the child from the parent's machine with agent_stop.`);
     else lines.push(`warn  retirement: ${who} asked at ${wait.at} to be retired. This machine does not hold its record: the daemon of parent ${record.parentId} on another machine does, and has not taken the request yet. It waits in ${relayOutboxPath(wait.receipt)} until that daemon connects here, and the child is retired then.`);
+  }
+  return lines;
+}
+
+/**
+ * The `bellwether doctor` lines for each teleport a child on this machine
+ * asked for that its parent's daemon has not taken, or refused (issue #226).
+ */
+export function teleportWaitLines(records: RelayRecord[] = listRelayRecords()): string[] {
+  const lines: string[] = [];
+  for (const record of records) {
+    const wait = record.teleportRequest;
+    if (!wait) continue;
+    const who = `${record.name} (child ${record.childId})`;
+    const whereTo = wait.machine ? ` to machine ${wait.machine}` : '';
+    if (wait.refused) lines.push(`fail  teleport: ${who} asked at ${wait.at} to be teleported${whereTo}, and the daemon of parent ${record.parentId}, which holds its record, refused the request: ${wait.refused}. It stays in ${relayOutboxPath(wait.receipt)} and does not go again.`);
+    else lines.push(`warn  teleport: ${who} asked at ${wait.at} to be teleported${whereTo}. This machine does not hold its record: the daemon of parent ${record.parentId} on another machine does, and has not taken the request yet. It waits in ${relayOutboxPath(wait.receipt)} until that daemon connects here.`);
   }
   return lines;
 }

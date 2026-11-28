@@ -3,11 +3,12 @@
 // adapters used to run in-process; the daemon now runs it once for every
 // client of the session, and tests pass a fake in its place.
 import { HerdrClient } from '../core/herdr-client.ts';
-import { knownHosts, machineClients } from '../core/machine.ts';
+import { LOCAL_HOST, hostOf, knownHosts, machineClients } from '../core/machine.ts';
+import type { ChildRecord } from '../core/types.ts';
 import { reclaimRemote, remoteOps } from '../core/remote.ts';
 import { armPendingRestarts, type RestartHooks } from '../core/restart.ts';
 import { recoverCrossings } from '../core/recover-crossing.ts';
-import { armPendingTeleports } from '../core/teleport.ts';
+import { armPendingTeleports, armTeleportFor } from '../core/teleport.ts';
 import { moveEndpoints } from '../core/move-endpoint.ts';
 import { emptyParent, mutateParent, parentId, readParent, saveParent } from '../core/registry.ts';
 import { Watcher } from '../core/watcher.ts';
@@ -37,6 +38,8 @@ export interface ParentService {
   roster?(named: string[]): RosterChild[] | undefined;
   /** Clean up after a child that asked to be retired and has exited, as its exit would (issue #227). */
   retire?(childId: string): void;
+  /** Start the wait for a teleport a child on another machine asked for, which the record now holds (issue #226). */
+  teleport?(childId: string): void;
   /** Report one pane's status changes, and stop when the returned function runs. */
   watchPane(paneId: string, handler: (status: string) => void): () => void;
   stop(): void;
@@ -105,6 +108,9 @@ export function createHerdrService(parent: ParentHello, id: string, deps: Servic
   // Finish a restart a daemon stopped part of the way through.
   armPendingRestarts(client, record, restart);
   // A teleport this session asked for itself, which a stopped daemon never ran (issue #226).
+  const teleportDeps = { clientFor, endpointFor: moveEndpoints(), knownHosts: () => knownHosts(), registerFor: (parentId: string) => (child: ChildRecord, brief?: string) => remote.register({ id: parentId }, child, brief), cleanupRemote: (child: ChildRecord) => remote.cleanup(child), log: deps.log, ...(deps.inbox ? { inbox: deps.inbox } : {}), from: 'Bellwether, at your own request' };
+  // And one a child of this parent on another machine asked for over the relay: its own session is on that machine's daemon.
+  for (const child of readParent(record.id)?.children ?? []) if (child.teleportRequest && hostOf(child) !== LOCAL_HOST) armTeleportFor(teleportDeps, record.id, child.id, restart);
   armPendingTeleports({ clientFor, endpointFor: moveEndpoints(), knownHosts: () => knownHosts(), registerFor: (parentId) => (child, brief) => remote.register({ id: parentId }, child, brief), cleanupRemote: (child) => remote.cleanup(child), log: deps.log, ...(deps.inbox ? { inbox: deps.inbox } : {}), from: 'Bellwether, at your own request' }, record, restart);
   // Finish or undo a move or a teleport a stopped daemon left half done (issue #226).
   void recoverCrossings({ clientFor, endpointFor: moveEndpoints(), knownHosts: () => knownHosts(), registerRemote: (child, brief) => remote.register({ id: record.id }, child, brief), cleanupRemote: (child) => remote.cleanup(child), log: deps.log }, record.id).then((done) => {
@@ -139,6 +145,9 @@ export function createHerdrService(parent: ParentHello, id: string, deps: Servic
     },
     retire: (childId) => {
       void watcher.childStopped(childId);
+    },
+    teleport: (childId) => {
+      armTeleportFor(teleportDeps, record.id, childId, restart);
     },
     watchPane: (paneId, handler) => {
       const controller = new AbortController();

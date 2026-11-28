@@ -21,7 +21,7 @@ import { goneSessionLines, herdrView } from './core/pane-fate.ts';
 import { PROMPT_NOTICE, isReportStatus } from './core/report.ts';
 import { HOOK_COMMAND, dialogFromHook } from './core/claude-hooks.ts';
 import { farChildFiles, hostName } from './core/spawn.ts';
-import { RELAY_SCHEMA, listForwards, readRelayRecord, removeRelayRecord, retireWaitLines, saveRelayRecord, updateRelayRecord } from './core/relay-records.ts';
+import { RELAY_SCHEMA, listForwards, readRelayRecord, removeRelayRecord, retireWaitLines, saveRelayRecord, teleportWaitLines, updateRelayRecord } from './core/relay-records.ts';
 import { relayChildPath, relayOutboxDir } from './core/paths.ts';
 import { removeBriefAt, writeBrief, writeBriefIn } from './core/brief.ts';
 import { removeChildFiles } from './core/mcp-config.ts';
@@ -911,7 +911,10 @@ async function checkRelay(daemonLive: boolean, daemonSocket: string): Promise<nu
   // Each retirement a child here asked for, which the parent's daemon that holds its record has not taken (issue #227).
   const retirements = retireWaitLines();
   for (const line of retirements) console.log(`  ${line}`);
-  return failures + retirements.filter((line) => line.startsWith('fail')).length;
+  // Each teleport a child here asked for, which the parent's daemon that holds its record has not taken (issue #226).
+  const teleports = teleportWaitLines();
+  for (const line of teleports) console.log(`  ${line}`);
+  return failures + [...retirements, ...teleports].filter((line) => line.startsWith('fail')).length;
 }
 
 /**

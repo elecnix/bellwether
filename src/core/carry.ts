@@ -22,6 +22,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { withChildLock } from './child-lock.ts';
+import { recordDeparture } from './departures.ts';
 import { harnessFor } from './harnesses/index.ts';
 import { missingIntegration } from './herdr-integration.ts';
 import { LOCAL_HOST, hostOf, type ClientFor } from './machine.ts';
@@ -451,7 +452,7 @@ export async function carryChild(deps: CarryDeps, parentId: string, request: Car
     const doneAt = new Date().toISOString();
     updateChild(parentId, child.id, (record) => {
       delete record.moving;
-      record.movedFrom = { host: source, at: doneAt, ...(child.cwd ? { cwd: child.cwd } : {}) };
+      recordDeparture(record, { host: source, at: doneAt, ...(child.cwd ? { cwd: child.cwd } : {}), verb, ...(request.reason ? { reason: request.reason } : {}) });
     });
     const outcome = policy.outcome(notice);
     const untold = notice && !notice.delivery.takenAt ? (notice.notTaken ?? notice.delivery.unanswered ?? 'Bellwether did not see its model read it and begin a turn on it') : undefined;

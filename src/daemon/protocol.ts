@@ -278,6 +278,21 @@ export interface RelayAdoptRequest {
 }
 
 /**
+ * From a parent's daemon on another machine, each time its relay comes up:
+ * does the child it started here still hold its pane (issue #298)? The
+ * answer is a result whose text is the JSON of `StartedHold`. Added without a
+ * protocol bump: a daemon that predates it answers unknown_type, and the
+ * parent leaves the child as it is.
+ */
+export interface RelayConfirmRequest {
+  type: 'relay-confirm';
+  id: string;
+  parentId: string;
+  childId: string;
+  paneId: string;
+}
+
+/**
  * From a parent's daemon on another machine: put a parent's message in the
  * session of a child this machine holds a relay record for. The answer is a
  * result whose text is the JSON of `RelayMessageAnswer`. Added without a
@@ -480,7 +495,7 @@ export interface ResumeRequest {
   label?: string;
 }
 
-export type DaemonRequest = HelloRequest | CallRequest | ReceiptRequest | ByeRequest | DrainRequest | WatchRequest | ReportRequest | RelaySubscribeRequest | RelayAckRequest | RelayReadRequest | RelayAdoptRequest | RelayStatusRequest | SessionsRequest | AncestryRequest | MessageAckRequest | RelayMessageRequest | RelayRestartRequest | RelayRetireRequest | ResumeRequest | RelayFreeRequest;
+export type DaemonRequest = HelloRequest | CallRequest | ReceiptRequest | ByeRequest | DrainRequest | WatchRequest | ReportRequest | RelaySubscribeRequest | RelayAckRequest | RelayReadRequest | RelayAdoptRequest | RelayConfirmRequest | RelayStatusRequest | SessionsRequest | AncestryRequest | MessageAckRequest | RelayMessageRequest | RelayRestartRequest | RelayRetireRequest | ResumeRequest | RelayFreeRequest;
 
 export interface HelloReply {
   type: 'hello';
@@ -794,6 +809,14 @@ export function parseRequest(line: string): DaemonRequest {
       const name = text(value['name']) || paneId;
       const session = text(value['session']);
       return { type: 'relay-adopt', id, parentId, childId, name, kind, paneId, ...(session ? { session } : {}) };
+    }
+    case 'relay-confirm': {
+      const id = text(value['id']);
+      const parentId = text(value['parentId']);
+      const childId = text(value['childId']);
+      const paneId = text(value['paneId']);
+      if (!id || !parentId || !childId || !paneId) throw new ProtocolError('invalid_confirm', 'a relay confirm needs an id, a parent id, a child id and a pane');
+      return { type: 'relay-confirm', id, parentId, childId, paneId };
     }
     case 'relay-message':
     case 'relay-message-again': {

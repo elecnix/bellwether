@@ -13,7 +13,7 @@ import { DAEMON_PROTOCOL, MAX_DAEMON_FRAME_BYTES, MIN_CLIENT_PROTOCOL, ProtocolE
 import { DRAIN_GRACE_MS, drainDecision } from './handover.ts';
 import { BELLWETHER_BUILD_ID, BELLWETHER_VERSION } from '../core/version.ts';
 import { listParents, mutateParent, readParent } from '../core/registry.ts';
-import { HerdrClient } from '../core/herdr-client.ts';
+import { HerdrApiError, HerdrClient, parsePane } from '../core/herdr-client.ts';
 import { resumeSession } from '../core/session-resume.ts';
 import { ancestry } from '../core/ancestry.ts';
 import { PRUNE_DELAY_MS, PRUNE_EVERY_MS, pruneState } from '../core/hygiene.ts';
@@ -27,7 +27,7 @@ import { departuresOf } from '../core/departures.ts';
 import { LOCAL_HOST, hostOf, knownHosts } from '../core/machine.ts';
 import { acceptLocalReport, isReportStatus, localParentOf, routeReport, type ReportInput } from '../core/report.ts';
 import { readRelayRecord, updateRelayRecord } from '../core/relay-records.ts';
-import { childLeft, childSaidHello, claimPane } from '../core/pane-claims.ts';
+import { childLeft, childSaidHello, claimPane, startedHold } from '../core/pane-claims.ts';
 import { adoptedInboxGap, adoptedParentOf, type SessionReach } from '../core/adopted-session.ts';
 import { lastAssistantMessage } from '../core/transcript.ts';
 import { harnessFor, resolveTranscript } from '../core/harnesses/index.ts';
@@ -1056,6 +1056,23 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
         }
         return;
       }
+      if (request.type === 'relay-confirm') {
+        // A parent on another machine asks, once its relay is back, whether the child it started here still holds its pane (issue #298).
+        const answer = await startedHold(request, async (socketPath, paneId) => {
+          try {
+            const result = await new HerdrClient({ socketPath }).request('agent.get', { target: paneId });
+            const agent = typeof result === 'object' && result !== null && 'agent' in result ? (result as { agent: unknown }).agent : result;
+            const pane = parsePane(agent);
+            return pane?.agentSessionId ? { session: pane.agentSessionId } : {};
+          } catch (error) {
+            if (error instanceof HerdrApiError && (error.code === 'agent_not_found' || error.code === 'pane_not_found')) return 'gone';
+            throw error;
+          }
+        });
+        log(`relay-confirm: child ${request.childId} of ${request.parentId} in pane ${request.paneId}: ${answer.state}${'reason' in answer ? `, ${answer.reason}` : ''}`);
+        reply({ type: 'result', id: request.id, text: JSON.stringify(answer) });
+        return;
+      }
       if (request.type === 'relay-message' || request.type === 'relay-message-again') {
         // A parent's daemon on another machine, for a child this machine holds a relay record for.
         const answer = await relayMessage(request);
@@ -1128,7 +1145,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
           delete parentRecord.disconnectedAt;
         });
         // A child a parent on another machine started holds the pane it says hello from while it stays connected (issue #244).
-        if (hello.childId && hello.paneId) childSaidHello(socket, hello.childId, hello.paneId);
+        if (hello.childId && hello.paneId) childSaidHello(socket, hello.childId, hello.paneId, { session: hello.session, herdrSocket: hello.herdrSocket });
         // A brew upgrade with no hand-over leaves the daemon running, so each child's hello checks its own files again.
         if (hello.childId) repairTools(hello.childId);
         const set = subscribers.get(session.parentId) ?? new Set<net.Socket>();

@@ -35,7 +35,8 @@ import { DAEMON_ENTRY, lockPath, readLock } from './daemon/lock.ts';
 import { BELLWETHER_BUILD, BELLWETHER_BUILD_ID, BELLWETHER_VERSION, describeBuild } from './core/version.ts';
 import { canConnect, daemonIsLive, startDaemon } from './daemon/server.ts';
 import type { ChildRecord, OutboxEntry } from './core/types.ts';
-import { LOCAL_HOST, hostOf, knownHosts } from './core/machine.ts';
+import { LOCAL_HOST, hostOf, knownHosts, machineClients } from './core/machine.ts';
+import { describeIntegrations, integrationOf, listIntegrations } from './core/herdr-integration.ts';
 import { MOVE_CHECK_BUDGET_MS, MOVE_CHECK_CALL_MS, MOVE_VERBS, RemoteTimeoutError, moveEndpoints, serveMoveVerb, type MoveVerb } from './core/move-endpoint.ts';
 import { describePiModels, moveRefusals, pairLabel, type MovableHarness, type ModelPair } from './core/move-plan.ts';
 import type { ProbeResult } from './core/session-state.ts';
@@ -239,7 +240,7 @@ async function doctor(): Promise<number> {
   const routeLines = describeRoutes(() => readRoutes(), listParents().flatMap((parent) => parent.children).filter((child) => !child.exitedAt));
   for (const line of routeLines) console.log(`  ${line}`);
   failures += routeLines.filter((line) => line.startsWith('fail')).length;
-  await checkMoves();
+  await checkMoves(socket);
   return failures;
 }
 
@@ -278,6 +279,9 @@ function within<T>(work: Promise<T>, signal: AbortSignal, budgetMs: number): Pro
   ]);
 }
 
+/** The herdr integrations doctor reports for each machine: the ones the movable harnesses need for their sessions. */
+const INTEGRATION_TARGETS = ['claude', 'pi'].map((kind) => integrationOf(harnessFor(kind))).filter((target): target is string => Boolean(target));
+
 /**
  * Why doctor could not read a machine for the move check. A timeout is only
  * that: the machine did not answer within doctor's bound, which agent_move,
@@ -298,7 +302,7 @@ function unreadMachine(failure: Error | undefined): string {
  * cannot take a child only refuses a move to it. The whole check runs within
  * MOVE_CHECK_BUDGET_MS.
  */
-async function checkMoves(): Promise<void> {
+async function checkMoves(herdrSocket: string): Promise<void> {
   const budgetMs = MOVE_CHECK_BUDGET_MS;
   const signal = AbortSignal.timeout(budgetMs);
   let hosts: string[];
@@ -311,8 +315,20 @@ async function checkMoves(): Promise<void> {
   const children = listParents().flatMap((parent) => parent.children).filter((child): child is ChildRecord & { harness: MovableHarness } => !child.exitedAt && harnessNamed(child.harness)?.movable === true);
   const endpointFor = moveEndpoints(undefined, { timeoutMs: MOVE_CHECK_CALL_MS, signal });
   const probes = new Map<string, ProbeResult | Error>();
-  await Promise.all(
-    hosts.map(async (host) => {
+  // herdr's integrations on each machine, from the integration.list call a move makes there, beside the probe.
+  const clientFor = machineClients(new HerdrClient({ socketPath: herdrSocket }));
+  const integrations = new Map<string, Map<string, string> | Error>();
+  const readIntegrations = async (host: string): Promise<void> => {
+    try {
+      const client = await within(clientFor(host), signal, budgetMs);
+      const requester = { request: (method: string, params?: Record<string, unknown>) => client.request(method, params, { signal, timeoutMs: MOVE_CHECK_CALL_MS }) };
+      integrations.set(host, await within(listIntegrations(requester), signal, budgetMs));
+    } catch (error) {
+      integrations.set(host, error instanceof Error ? error : new Error(String(error)));
+    }
+  };
+  await Promise.all([
+    ...hosts.map(async (host) => {
       const piSessions = children.filter((child) => hostOf(child) === host && child.harness === 'pi' && child.session?.value).map((child) => child.session?.value as string);
       try {
         probes.set(host, await within(endpointFor(host).probe({ piModels: true, piSessions }), signal, budgetMs));
@@ -320,7 +336,8 @@ async function checkMoves(): Promise<void> {
         probes.set(host, error instanceof Error ? error : new Error(String(error)));
       }
     }),
-  );
+    ...hosts.map(readIntegrations),
+  ]);
   for (const host of hosts) {
     const probe = probes.get(host);
     if (!probe || probe instanceof Error) {
@@ -328,7 +345,8 @@ async function checkMoves(): Promise<void> {
       continue;
     }
     const models = describePiModels(probe.piModels, probe.piModelsError);
-    console.log(`  info  move ${machineLabel(host)} (${probe.hostname}): ${harnessLine(probe, 'claude-code')}, ${harnessLine(probe, 'pi')}, ${models}, bellwether ${probe.bellwether}`);
+    const herdrSays = describeIntegrations(integrations.get(host) ?? new Error('not read'), INTEGRATION_TARGETS, host);
+    console.log(`  info  move ${machineLabel(host)} (${probe.hostname}): ${harnessLine(probe, 'claude-code')}, ${harnessLine(probe, 'pi')}, ${models}, ${herdrSays}, bellwether ${probe.bellwether}`);
   }
   for (const child of children) {
     const source = hostOf(child);

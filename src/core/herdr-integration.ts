@@ -37,14 +37,37 @@ export function integrationWorks(states: Map<string, string>, target: string): b
  * because Bellwether names a cause only when herdr confirms it.
  */
 export async function missingIntegration(herdr: HerdrRequester | undefined, entry: Pick<HarnessEntry, 'session'> | undefined): Promise<string | undefined> {
-  const source = entry?.session;
-  const target = source?.from === 'herdr' ? source.integration : undefined;
+  const target = integrationOf(entry);
   if (!target || !herdr) return undefined;
   try {
     return integrationWorks(await listIntegrations(herdr), target) ? undefined : target;
   } catch {
     return undefined;
   }
+}
+
+/** The integration a harness needs herdr to have for its sessions, or undefined for a harness that keeps them elsewhere. */
+export function integrationOf(entry: Pick<HarnessEntry, 'session'> | undefined): string | undefined {
+  const source = entry?.session;
+  return source?.from === 'herdr' ? source.integration : undefined;
+}
+
+/**
+ * How doctor words the integrations a machine's herdr has, one per target:
+ * present, missing with the command that installs it, or a state Bellwether
+ * does not know in herdr's own word. When herdr did not answer, all of them
+ * are unknown, because doctor reports only what herdr confirms.
+ */
+export function describeIntegrations(states: Map<string, string> | Error, targets: string[], host: string | undefined): string {
+  if (states instanceof Error) return `herdr integrations unknown (${states.message})`;
+  return targets
+    .map((target) => {
+      const state = states.get(target) ?? 'not_installed';
+      if (WORKING.has(state)) return `herdr ${target} integration present${state === 'current' ? '' : ` (${state})`}`;
+      if (state === 'not_installed') return `herdr ${target} integration missing (run \`herdr integration install ${target}\` on ${machineWords(host)})`;
+      return `herdr ${target} integration ${state}, as herdr reports it`;
+    })
+    .join(', ');
 }
 
 function machineWords(host: string | undefined): string {

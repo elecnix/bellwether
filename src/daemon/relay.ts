@@ -7,6 +7,7 @@
 // nothing, and the receipt in each report makes a second delivery harmless.
 import { relayOutboxPath } from '../core/paths.ts';
 import { listForwards, newReportReceipt, readRelayRecord, removeForward, removeRelayRecord, saveForward, updateRelayRecord, type ForwardEntry, type RelayRecord } from '../core/relay-records.ts';
+import type { RelayRestartAnswer } from '../core/restart.ts';
 import type { ReportStatus } from '../core/types.ts';
 import { MAX_DAEMON_FRAME_BYTES, formatReply, type RelayReport } from './protocol.ts';
 
@@ -137,11 +138,26 @@ export class RelayOutbox {
     this.log(`relay: kept the read of message ${messageId} by child ${record.childId} for parent ${record.parentId}${listeners.length ? ', and sent it' : ', whose daemon is not connected'}`);
   }
 
+  /**
+   * A restart this daemon did for a parent's daemon on another machine
+   * finished. Its answer also went to the request, but a connection that
+   * ended before then lost it, so the answer waits here as a report does,
+   * until that daemon acknowledges it (issue #211).
+   */
+  restartAnswer(record: RelayRecord, requestId: string, answer: RelayRestartAnswer): void {
+    const entry: ForwardEntry = { receipt: newReportReceipt(), childId: record.childId, parentId: record.parentId, status: 'progress', text: '', at: new Date(this.now()).toISOString(), restartAnswer: { requestId, answer } };
+    saveForward(entry);
+    this.settleRecord(entry.childId, false);
+    const listeners = [...this.subscribers].filter((subscriber) => subscriber.parentIds.has(entry.parentId));
+    for (const listener of listeners) listener.send(toReport(entry));
+    this.log(`relay: kept the answer of restart ${requestId} of child ${record.childId} for parent ${record.parentId}${listeners.length ? ', and sent it' : ', whose daemon is not connected'}`);
+  }
+
   /** Say on the child's relay record how many of its reports wait, and remove the record of a gone child once none does. */
   private settleRecord(childId: string, forwarded: boolean): void {
     const pending = this.waiting().filter((entry) => entry.childId === childId);
-    // A read waits like a report, but it is not one, so the count a person sees leaves it out.
-    const waiting = pending.filter((entry) => !entry.messageRead).length;
+    // A read or a restart answer waits like a report, but it is not one, so the count a person sees leaves it out.
+    const waiting = pending.filter((entry) => !entry.messageRead && !entry.restartAnswer).length;
     if (pending.length === 0 && readRelayRecord(childId)?.retiredAt) {
       removeRelayRecord(childId);
       this.log(`relay: removed the record of child ${childId}, which is gone and has no report left to collect`);
@@ -167,5 +183,5 @@ function overLong(entry: ForwardEntry): string | undefined {
 }
 
 function toReport(entry: ForwardEntry): RelayReport {
-  return { receipt: entry.receipt, childId: entry.childId, parentId: entry.parentId, status: entry.status, text: entry.text, at: entry.at, ...(entry.messageRead ? { messageRead: entry.messageRead } : {}) };
+  return { receipt: entry.receipt, childId: entry.childId, parentId: entry.parentId, status: entry.status, text: entry.text, at: entry.at, ...(entry.messageRead ? { messageRead: entry.messageRead } : {}), ...(entry.restartAnswer ? { restartAnswer: entry.restartAnswer } : {}) };
 }

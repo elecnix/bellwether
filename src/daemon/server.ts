@@ -22,7 +22,7 @@ import { RelayLinks, relayInbox } from './relay-links.ts';
 import { LOCAL_HOST, hostOf } from '../core/machine.ts';
 import { acceptLocalReport, isReportStatus, localParentOf, routeReport, type ReportInput } from '../core/report.ts';
 import { readRelayRecord, updateRelayRecord } from '../core/relay-records.ts';
-import { restartForRelay, type RelayRestartAnswer } from '../core/restart.ts';
+import { learnRelayRestart, restartForRelay, type RelayRestartAnswer } from '../core/restart.ts';
 import { claimPane } from '../core/pane-claims.ts';
 import { adoptedInboxGap, adoptedParentOf, type SessionReach } from '../core/adopted-session.ts';
 import { lastAssistantMessage } from '../core/transcript.ts';
@@ -583,6 +583,11 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
     if (route.kind !== 'local') return { refused: `this machine holds no parent ${report.parentId} with child ${report.childId}` };
     // A report the child left on the machine it moved away from still counts.
     if (hostOf(route.child) !== host && route.child.movedFrom?.host !== host) return { refused: `child ${report.childId} runs on machine ${hostOf(route.child)}, not ${host}` };
+    if (report.restartAnswer) {
+      // Not a report: the answer of a restart this daemon asked for there, kept after a lost connection.
+      log(learnRelayRestart(route.parent.id, route.child.id, host, report.restartAnswer.requestId, report.restartAnswer.answer, { log }));
+      return {};
+    }
     if (report.messageRead) {
       // Not a report: the child's model read a message this daemon sent over the relay.
       let readAt: string | undefined;
@@ -761,6 +766,9 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
           answer = { restarted: false, reason: `the restart there failed before it closed anything: ${(error as Error).message}` };
         }
         log(`relay-restart of child ${request.childId} for ${request.parentId}: ${answer.restarted ? `closed ${answer.outcome.oldPane}, opened ${answer.outcome.newPane}` : answer.reason}`);
+        // Kept as well, for a parent's daemon whose connection ends before this reply reaches it (issue #211).
+        const kept = request.requestId ? readRelayRecord(request.childId) : undefined;
+        if (request.requestId && kept && kept.parentId === request.parentId) outbox.restartAnswer(kept, request.requestId, answer);
         reply({ type: 'result', id: request.id, text: JSON.stringify(answer) });
         return;
       }

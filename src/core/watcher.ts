@@ -353,7 +353,7 @@ export class Watcher {
           }
           // A child changing machines closed its old pane on purpose, and a
           // restart closing it has yet to name the new one.
-          if (isMoving(child) || closingNow(child)) continue;
+          if (isMoving(child) || closingNow(child) || child.restartInDoubt) continue;
           // A record written a moment ago may predate its pane. Leave it be.
           if (!child.paneId || Date.now() - Date.parse(child.startedAt) < 15_000 || live.has(child.paneId)) {
             if (child.paneId) addressable.push(child);
@@ -658,7 +658,7 @@ export class Watcher {
     if (CLOSE_EVENTS.has(event.event)) {
       // agent_move closed this pane, and the child goes on elsewhere under the
       // same id; or agent_restart closed it, and the child goes on in a new tab.
-      if (isMoving(child) || closingNow(child)) {
+      if (isMoving(child) || closingNow(child) || child.restartInDoubt) {
         this.dropLink(host);
         void this.reconcileAndSubscribe();
         return;
@@ -716,7 +716,7 @@ export class Watcher {
       // herdr releases a pane's agent when the harness process ends and the
       // shell it ran in stays: the child is gone, though its tab is not.
       if (event.data['released'] === true) {
-        if (!child.exitedAt && !isMoving(child) && !closingNow(child)) {
+        if (!child.exitedAt && !isMoving(child) && !closingNow(child) && !child.restartInDoubt) {
           this.markExited(child, undefined, 'in-pane');
           this.dropLink(host);
           void this.reconcileAndSubscribe();
@@ -878,8 +878,9 @@ export class Watcher {
         this.states.delete(child.id);
         continue;
       }
-      // A child changing machines is read again once it runs on the new one.
-      if (isMoving(child)) {
+      // A child changing machines is read again once it runs on the new one,
+      // and a child whose restart answer was lost, once that answer arrives.
+      if (isMoving(child) || child.restartInDoubt) {
         this.states.delete(child.id);
         continue;
       }

@@ -9,6 +9,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { relayChildPath, relayChildrenDir, relayOutboxDir, relayOutboxPath } from './paths.ts';
+import type { RelayRestartAnswer } from './restart.ts';
 import type { ReportStatus } from './types.ts';
 
 export const RELAY_SCHEMA = 1;
@@ -61,6 +62,8 @@ export interface ForwardEntry {
   refused?: string;
   /** Set on an entry that carries no report but the read of a parent's message: its id. */
   messageRead?: string;
+  /** Set on an entry that carries no report but the answer of a relay restart, kept until the parent's daemon takes it (issue #211). */
+  restartAnswer?: { requestId: string; answer: RelayRestartAnswer };
 }
 
 /** A receipt that names one report, so a retried forward is accepted once. */

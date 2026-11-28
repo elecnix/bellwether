@@ -16,7 +16,8 @@ import path from 'node:path';
 import test from 'node:test';
 import { HerdrClient } from '../../src/core/herdr-client.ts';
 import { pickMachine, type MachineProfile } from '../../src/core/machine.ts';
-import { emptyParent, readParent, saveParent, upsertChild } from '../../src/core/registry.ts';
+import { emptyParent, listParents, readParent, saveParent, updateChild, upsertChild } from '../../src/core/registry.ts';
+import { restartWaitLines } from '../../src/core/restart.ts';
 import { RELAY_SCHEMA, saveRelayRecord } from '../../src/core/relay-records.ts';
 import { remoteOps } from '../../src/core/remote.ts';
 import { claudeProjectDir } from '../../src/core/transcript.ts';
@@ -76,6 +77,7 @@ interface Room {
   links: RelayLinks;
   parent: DaemonClient;
   transcript: string;
+  ssh: ReturnType<typeof installFakeSsh>;
 }
 
 interface RoomOptions {
@@ -155,7 +157,7 @@ async function room(t: test.TestContext, options: RoomOptions = {}): Promise<Roo
   });
   links.sync();
   await until('the relay to child-box', () => links.state('child-box')?.status === 'connected');
-  return { childHome, far, world, links, parent, transcript };
+  return { childHome, far, world, links, parent, transcript, ssh };
 }
 
 async function until<T>(what: string, check: () => T | undefined | false, timeoutMs = 20_000): Promise<T> {
@@ -286,4 +288,56 @@ test('a session that is not on the child machine is refused by name, and nothing
   const before = child();
   await assert.rejects(space.parent.tool('agent_restart', { target: NAME }), new RegExp(`first-mate runs on machine child-box, and it was not restarted: session ${SESSION} is not on that machine: Claude Code has not written `));
   unchanged(space, before);
+});
+
+function parentRestartLog(): Record<string, unknown>[] {
+  const file = path.join(process.env['BELLWETHER_HOME'] as string, 'restart.log');
+  return fs.existsSync(file) ? fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line) as Record<string, unknown>) : [];
+}
+
+// Issue #211, item 4: the relay drops after the far side closed the old tab.
+// The far daemon finishes the restart, and its answer is lost with the
+// connection. The parent must not claim an outcome it has not seen: its reply
+// says it does not know, and it learns the outcome from the far side when the
+// connection returns.
+test('a restart whose relay drops before the answer says the outcome is unknown, and the parent learns it from the far side on reconnect', async (t) => {
+  const space = await room(t);
+  let dropped: Promise<number> | undefined;
+  const answer = space.world.answer.bind(space.world);
+  space.world.answer = (request) => {
+    const result = answer(request);
+    if (request.method === 'tab.close' && request.params['tab_id'] === TAB && !dropped) dropped = space.ssh.drop();
+    return result;
+  };
+
+  const outcome = await space.parent.tool('agent_restart', { target: NAME }).then((text) => `ok: ${text}`, (error: Error) => `refused: ${error.message}`);
+  await dropped;
+  assert.doesNotMatch(outcome, /it was not restarted/, 'the parent did not see the outcome, so it must not assert one');
+  assert.match(outcome, /does not know whether/);
+  assert.equal(parentRestartLog().at(-1)?.['outcome'], 'unknown');
+
+  const record = await until('the parent to learn the outcome from child-box', () => {
+    const now = child();
+    return now.restartInDoubt === undefined && now.paneId !== PANE ? now : undefined;
+  });
+  assert.equal(space.world.panes.get(record.paneId)?.agent_session?.value, SESSION, `the record names ${record.paneId}, where the session runs`);
+  assert.equal(record.restartFailed, undefined);
+  assert.equal(record.id, CHILD_ID);
+  assert.equal(parentRestartLog().at(-1)?.['outcome'], 'restarted');
+  assert.equal(parentRestartLog().at(-1)?.['learned'], true);
+});
+
+// While the outcome is unknown, a second restart could start a second copy of
+// the session there, so it is refused, and doctor says what the record waits for.
+test('a child whose restart outcome is unknown is refused a second restart, and doctor names the doubt', async (t) => {
+  const space = await room(t);
+  const at = new Date().toISOString();
+  updateChild(PARENT_ID, CHILD_ID, (entry) => {
+    entry.restartInDoubt = { host: 'child-box', requestId: 'rs-example', at, oldPane: PANE, oldTab: TAB, error: 'the connection to machine child-box ended: example', launch: {} };
+  });
+
+  await assert.rejects(space.parent.tool('agent_restart', { target: NAME }), /the outcome of the last restart of first-mate on machine child-box is unknown since .*, so a second restart could start the session twice/);
+  assert.equal(calls(space.far, 'tab.create').length, 0, 'nothing opened there');
+  const lines = restartWaitLines(listParents());
+  assert.ok(lines.some((line) => /^warn  restart: first-mate \(child child-far of claude-code-the-parent\) on machine child-box: the answer to its restart at .* was lost with the connection, so the outcome is unknown/.test(line)), JSON.stringify(lines));
 });

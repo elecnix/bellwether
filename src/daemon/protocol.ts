@@ -6,7 +6,7 @@ import type { CallerIdentity, Harness, OutboxEntry, RelayHostState, ReportStatus
 import type { AncestryAnswer } from '../core/ancestry.ts';
 import type { RosterChild } from '../core/roster.ts';
 import type { SessionReach } from '../core/adopted-session.ts';
-import type { RelayRestartChild } from '../core/restart.ts';
+import type { RelayRestartAnswer, RelayRestartChild } from '../core/restart.ts';
 
 export type { RelayHostState, RelayLinkStatus } from '../core/types.ts';
 
@@ -36,6 +36,11 @@ export type { RelayHostState, RelayLinkStatus } from '../core/types.ts';
 //    child's pane, opens a new tab and resumes the same session under the same
 //    child id. A far daemon that predates it answers unknown_type, and the
 //    parent refuses the restart by name, with the release that brings it.
+//    Later, without a bump: a relay-restart that names a requestId has its
+//    answer kept in the relay outbox too, as a relay report that names
+//    `restartAnswer`, so a parent's daemon whose connection ended before the
+//    answer learns the outcome when it reconnects. A parent's daemon that
+//    sends no requestId gets no such report.
 //
 // Change the wire additively: a new request type, or a new optional field,
 // needs no bump, because a daemon answers a request it does not know with
@@ -292,6 +297,12 @@ export interface RelayRestartRequest {
   herdrSession?: string;
   /** How long to wait for a turn under way to end before refusing, in milliseconds. */
   waitTimeoutMs?: number;
+  /**
+   * Names the request, so the daemon here also keeps its answer in the relay
+   * outbox, where the parent's daemon collects it after a lost connection
+   * (issue #211). Without it, the answer goes only to the request.
+   */
+  requestId?: string;
 }
 
 /** The text of a relay-message result: the child's session took it, through which adapter, or why not. */
@@ -578,6 +589,12 @@ export interface RelayReport {
    * message: its id. Only a parent's daemon that sent relay-message gets one.
    */
   messageRead?: string;
+  /**
+   * Set on an entry that carries no report but the answer of a relay restart
+   * whose request named a `requestId`. The parent's daemon takes it when the
+   * answer to the request itself was lost with the connection (issue #211).
+   */
+  restartAnswer?: { requestId: string; answer: RelayRestartAnswer };
 }
 
 
@@ -697,7 +714,8 @@ export function parseRequest(line: string): DaemonRequest {
       const parsed: RelayRestartChild = { name, kind, harness, paneId, depth, session: { kind: sessionKind, value: text(session['value']) }, ...optional('tabId'), ...optional('workspaceId'), ...optional('workspaceLabel'), ...optional('cwd'), ...(child['ownsWorkspace'] === true ? { ownsWorkspace: true } : {}), ...maxDepth, ...reads, ...launch };
       const herdrSession = text(value['herdrSession']);
       const waitTimeoutMs = typeof value['waitTimeoutMs'] === 'number' && value['waitTimeoutMs'] > 0 ? { waitTimeoutMs: value['waitTimeoutMs'] } : {};
-      return { type: 'relay-restart', id, parentId, childId, child: parsed, ...(herdrSession ? { herdrSession } : {}), ...waitTimeoutMs };
+      const requestId = text(value['requestId']);
+      return { type: 'relay-restart', id, parentId, childId, child: parsed, ...(herdrSession ? { herdrSession } : {}), ...waitTimeoutMs, ...(requestId ? { requestId } : {}) };
     }
     case 'relay-status': {
       const id = text(value['id']);

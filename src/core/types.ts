@@ -82,6 +82,21 @@ export interface PaneEnd {
  * again, so the session is gone. It stays on the record until the session
  * returns, for `bellwether doctor` and, for a child, for its parent's event.
  */
+/** A restart on another machine whose answer was lost with its connection (issue #211). */
+export interface RestartInDoubt {
+  host: string;
+  /** The id the request carried, which the far side's kept answer names. */
+  requestId: string;
+  at: string;
+  /** The pane and tab the child ran in there before the restart. */
+  oldPane: string;
+  oldTab?: string;
+  /** How the connection ended. */
+  error: string;
+  /** What the restart starts the child on, which the record takes once the answer says it came back. */
+  launch: { route?: ChildRoute; harnessModel?: string; provider?: string };
+}
+
 export interface RestartFailure {
   at: string;
   /** The pane the session last ran in, now closed. */
@@ -366,6 +381,14 @@ export interface ChildRecord {
    * leaves a record the watcher checks against herdr once the time passes.
    */
   closing?: { pane: string; tab?: string; until: string };
+  /**
+   * Set when a restart of a child on another machine sent its request and the
+   * connection ended before the answer came back (issue #211). The far side
+   * may have closed the old pane and started the session in a new one, so
+   * the record claims neither. The far daemon keeps its answer in the relay
+   * outbox, and this daemon takes it from there when the connection returns.
+   */
+  restartInDoubt?: RestartInDoubt;
   /** This child's inactivity threshold in milliseconds. Set at spawn; the default when absent. */
   inactiveMs?: number;
   /** The quiet period whose inactive event already went out, as an ISO time. Survives a restart. */

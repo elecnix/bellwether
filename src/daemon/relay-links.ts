@@ -25,7 +25,7 @@ import { featureNamed } from './features.ts';
 import { BRIEF_SESSION_WAIT_MS, type InboxAnswer, type InboxOptions } from '../core/send.ts';
 import type { PaneClaim } from '../core/pane-claims.ts';
 import { STARTUP_TIMEOUT_MS } from '../core/spawn.ts';
-import type { RelayRestartAnswer, RelayRestartAsk } from '../core/restart.ts';
+import { RelayAnswerLost, type RelayRestartAnswer, type RelayRestartAsk } from '../core/restart.ts';
 
 export interface RelayLinksOptions {
   /** Turns a child's herdr machine into its SSH target. Defaults to herdr's saved machines. */
@@ -254,7 +254,7 @@ export class RelayLinks {
       return await new Promise<string>((resolve, reject) => {
         const timer = setTimeout(() => {
           link.reads.delete(id);
-          reject(new Error(`machine ${host} did not answer ${type === 'relay-read' ? 'a read' : type === 'relay-adopt' ? 'an adoption' : type === 'relay-restart' ? 'a restart' : 'a message'} within ${timeoutMs} ms`));
+          reject(new RelayAnswerLost(`machine ${host} did not answer ${type === 'relay-read' ? 'a read' : type === 'relay-adopt' ? 'an adoption' : type === 'relay-restart' ? 'a restart' : 'a message'} within ${timeoutMs} ms`));
         }, timeoutMs);
         timer.unref?.();
         link.reads.set(id, { type, resolve, reject, timer });
@@ -383,7 +383,7 @@ export class RelayLinks {
     this.stopHeartbeat(link);
     for (const read of link.reads.values()) {
       clearTimeout(read.timer);
-      read.reject(new Error(`the connection to machine ${link.host} ended: ${reason}`));
+      read.reject(new RelayAnswerLost(`the connection to machine ${link.host} ended: ${reason}`));
     }
     link.reads.clear();
     if (link.closing || this.stopped) return;
@@ -548,7 +548,7 @@ export class RelayLinks {
     link.timer = undefined;
     for (const read of link.reads.values()) {
       clearTimeout(read.timer);
-      read.reject(new Error(`the connection to machine ${link.host} closed: ${reason}`));
+      read.reject(new RelayAnswerLost(`the connection to machine ${link.host} closed: ${reason}`));
     }
     link.reads.clear();
     for (const waiter of [...link.waiters]) waiter();

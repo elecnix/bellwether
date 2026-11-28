@@ -33,6 +33,18 @@ Bellwether checks every condition below before it changes anything on either mac
 - a child that has exited
 - a child with no recorded session. When herdr on the child's machine lacks its integration for the harness, the refusal says so, and gives the `herdr integration install` command to run there before you spawn the child again.
 - a child that another resume or move holds. The lock file under `~/.bellwether/locks/` is the same one a resume takes.
+- a child that would leave work behind on the source, unless the call passes `accept_loss`. [Work left behind](#work-left-behind) says what counts.
+
+## Work left behind
+
+A session crosses to the other machine, but its processes and worktrees remain on the source. The source machine checks two things before the move changes anything. Each item it finds appears in the refusal.
+
+- **A background job.** Every process that the child's tab starts has the child's id in its environment. That covers the pane's shell, the harness and its servers, all of which belong to the child. A move happens only between turns, so any shell the harness started that still runs is a background job, such as a gate suite or a `gh monitor` watch. So does a program the harness started more than a minute after its own start, such as the `gh monitor` that a pi extension runs, because the harness starts its servers as the session opens. A watch never finishes on its own, so a move always cuts it. Processes outside the harness's tree also count when they hold the id. Closing the tab ends every job, and the session on the target would then wait for a result that never arrives. The refusal gives each job's process id and command line.
+- **A worktree with work that exists only there.** Checked directories are the child's working directory and each directory that the transcript shows the session working in. Claude Code records a working directory on each transcript entry, and each tool call's input holds paths. Bellwether skips output that a tool printed back. It checks each linked worktree among them, but not a main worktree or one where another live child stands. Retirement's checks judge each worktree. Such a worktree passes when it has no uncommitted path and no stash on its branch, and when a merge, a push or a merged pull request covers that branch. A detached HEAD counts as unproven, as it does for retirement.
+
+Bellwether refuses too when it cannot tell, which happens if herdr does not report the pane's shell and foreground process, or if Bellwether on the source predates this check.
+
+To move anyway, pass `accept_loss`, or `--accept-loss` to `bellwether move`. With that flag, the reply lists what the move left behind, and the `moved` line in `move.log` keeps the same list under `leftBehind`. Bellwether never changes a worktree or stops a job during a move.
 
 ## Order of operations
 

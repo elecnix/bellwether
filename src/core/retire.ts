@@ -126,14 +126,7 @@ export async function requestRetirement(caller: CallerIdentity, ops: RetireOps, 
   if (facts.main) throw new RetireRefused(mainRefusal(facts.worktree, facts.main));
   if (!facts.branch) throw new RetireRefused(`${facts.worktree} has no branch checked out (detached HEAD at ${facts.head.slice(0, 12)}), so Bellwether cannot tell whether its work is safe. Check out a branch, then ask again. Nothing was written.`);
 
-  const passed: string[] = [];
-  const failing: string[] = [];
-  const dirty = await ops.dirty(facts.worktree);
-  (dirty.length ? failing : passed).push(dirty.length ? `the worktree has ${dirty.length} uncommitted path(s): ${dirty.slice(0, 5).join(', ')}` : 'the worktree is clean');
-  const stashes = await ops.stashes(facts.repo, facts.branch);
-  (stashes.length ? failing : passed).push(stashes.length ? `${stashes.length} stash entr${stashes.length === 1 ? 'y' : 'ies'} on ${facts.branch}` : 'no stash on the branch');
-  const safety = await ops.safety({ repo: facts.repo, worktree: facts.worktree, branch: facts.branch, defaultBranch: facts.defaultBranch });
-  (safety.safe ? passed : failing).push(safety.how);
+  const { passed, failing } = await workChecks(ops, { ...facts, branch: facts.branch });
   const others = liveChildrenIn(facts.worktree, child.id);
   (others.length ? failing : passed).push(others.length ? `${describeStanding(others)} in it, and the daemon never removes a directory a live child stands in` : 'no other live child stands in it');
 
@@ -152,6 +145,25 @@ export async function requestRetirement(caller: CallerIdentity, ops: RetireOps, 
   lines.push('After your pane is gone, the daemon checks again that the pane and tab are gone, that the worktree is not a main worktree, is clean and has no stash, that the work is safe, and that no process works inside it. Only then does it remove the worktree and delete the branch.');
   lines.push('Leave the worktree in place: you stand in it, and your harness needs it for every command until your tab closes. Close your tab to finish.');
   return lines.join('\n');
+}
+
+/**
+ * Whether a worktree's work exists anywhere but in it: the worktree is clean,
+ * its branch has no stash, and the branch is merged, pushed, or the head of a
+ * merged pull request. Retirement asks this before it removes a worktree, and
+ * a move asks it before it leaves one behind (issue #224), so both judge a
+ * worktree the same way.
+ */
+export async function workChecks(ops: Pick<RetireOps, 'dirty' | 'stashes' | 'safety'>, facts: WorktreeFacts & { branch: string }): Promise<{ passed: string[]; failing: string[] }> {
+  const passed: string[] = [];
+  const failing: string[] = [];
+  const dirty = await ops.dirty(facts.worktree);
+  (dirty.length ? failing : passed).push(dirty.length ? `the worktree has ${dirty.length} uncommitted path(s): ${dirty.slice(0, 5).join(', ')}` : 'the worktree is clean');
+  const stashes = await ops.stashes(facts.repo, facts.branch);
+  (stashes.length ? failing : passed).push(stashes.length ? `${stashes.length} stash entr${stashes.length === 1 ? 'y' : 'ies'} on ${facts.branch}` : 'no stash on the branch');
+  const safety = await ops.safety({ repo: facts.repo, worktree: facts.worktree, branch: facts.branch, defaultBranch: facts.defaultBranch });
+  (safety.safe ? passed : failing).push(safety.how);
+  return { passed, failing };
 }
 
 /** Drop every retirement field, for a child that is brought back. */

@@ -548,7 +548,7 @@ async function main(argv: string[]): Promise<number> {
     } else if (command === 'move') {
       const child = positional[0];
       if (!child) throw new Error('move needs a child');
-      console.log(await daemon.tool('agent_move', { child, machine: str(flags, 'machine'), cwd: str(flags, 'cwd'), reason: str(flags, 'reason') }));
+      console.log(await daemon.tool('agent_move', { child, machine: str(flags, 'machine'), cwd: str(flags, 'cwd'), reason: str(flags, 'reason'), ...(flags['accept-loss'] === true ? { accept_loss: true } : {}) }));
     } else if (command === 'stop') {
       const child = positional[0];
       if (!child) throw new Error('stop needs a child');

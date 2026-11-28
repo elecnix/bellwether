@@ -55,6 +55,13 @@ export interface RelayRecord {
    * pushed twice (issue #218).
    */
   pushed?: { id: string; via: string }[];
+  /**
+   * A retirement the child asked for here, which waits in the relay outbox
+   * for the parent's daemon, the one that holds its record (issue #227). It
+   * goes once that daemon takes the request. `bellwether doctor` on this
+   * machine prints a line for it while it waits, and for a refusal.
+   */
+  retireRequest?: { at: string; receipt: string; refused?: string };
 }
 
 /** One report waiting for the parent's daemon to collect it. */
@@ -71,6 +78,12 @@ export interface ForwardEntry {
   messageRead?: string;
   /** Set on an entry that carries no report but the answer of a relay restart, kept until the parent's daemon takes it (issue #211). */
   restartAnswer?: { requestId: string; answer: RelayRestartAnswer };
+  /**
+   * Set on an entry that asks the parent's daemon to retire the child, with
+   * the child's reason (issue #227). Its status and text read as a request
+   * for input, for a parent's daemon that predates the field.
+   */
+  retire?: { reason?: string };
 }
 
 /** A receipt that names one report, so a retried forward is accepted once. */
@@ -148,4 +161,22 @@ export function listForwards(): ForwardEntry[] {
     .map((file) => readJson<ForwardEntry>(path.join(relayOutboxDir(), file)))
     .filter((entry): entry is ForwardEntry => entry !== undefined && typeof entry.receipt === 'string')
     .sort((a, b) => Date.parse(a.at) - Date.parse(b.at) || a.receipt.localeCompare(b.receipt));
+}
+
+/**
+ * The `bellwether doctor` lines for each retirement a child on this machine
+ * asked for that its parent's daemon has not taken, or refused (issue #227).
+ * The child may close its pane meanwhile: the request waits on disk, and the
+ * parent's daemon retires the child when it takes it.
+ */
+export function retireWaitLines(records: RelayRecord[] = listRelayRecords()): string[] {
+  const lines: string[] = [];
+  for (const record of records) {
+    const wait = record.retireRequest;
+    if (!wait) continue;
+    const who = `${record.name} (child ${record.childId})`;
+    if (wait.refused) lines.push(`fail  retirement: ${who} asked at ${wait.at} to be retired, and the daemon of parent ${record.parentId}, which holds its record, refused the request: ${wait.refused}. It stays in ${relayOutboxPath(wait.receipt)}; retire the child from the parent's machine with agent_stop.`);
+    else lines.push(`warn  retirement: ${who} asked at ${wait.at} to be retired. This machine does not hold its record: the daemon of parent ${record.parentId} on another machine does, and has not taken the request yet. It waits in ${relayOutboxPath(wait.receipt)} until that daemon connects here, and the child is retired then.`);
+  }
+  return lines;
 }

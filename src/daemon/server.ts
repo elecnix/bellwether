@@ -28,6 +28,7 @@ import { adoptedInboxGap, adoptedParentOf, type SessionReach } from '../core/ado
 import { lastAssistantMessage } from '../core/transcript.ts';
 import { harnessFor, resolveTranscript } from '../core/harnesses/index.ts';
 import type { CallerIdentity, OutboxEntry } from '../core/types.ts';
+import { RETIRE_TOOL, RetireRefused, realRetireOps, requestRetirementFromAfar, retirementPending, type RetireOps } from '../core/retire.ts';
 import type { RosterChild } from '../core/roster.ts';
 import type { InboxMessage, MessageAckRequest, RelayHostState, RelayMessageAnswer, RelayMessageRequest, RelayReport, ServedTool } from './protocol.ts';
 import { BRIEF_SESSION_WAIT_MS, BRIEF_TURN_WAIT_MS, unreadSessionMessages, type Inbox, type InboxAnswer } from '../core/send.ts';
@@ -87,6 +88,8 @@ export interface DaemonOptions {
   sessionWaitMs?: number;
   /** How long a start's brief waits for the child's model after its adapter received it, before it goes once more. Default 20 s. */
   briefTurnWaitMs?: number;
+  /** What retirement asks of git, gh and the process table, for a request that crosses from another machine. Tests pass a fake git. */
+  retireOps?: RetireOps;
   /** The tools a session gets, by its hello. Default the feature table's tools for its identity; a test passes a newer table. */
   tools?: (parent: ParentHello) => ServedTool[];
 }
@@ -151,6 +154,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
   const idleCheckMs = options.idleCheckMs ?? 30_000;
   const outbox = options.relayOutbox ?? new RelayOutbox({ log });
   const links = options.links ?? new RelayLinks({ log });
+  const retireOps = options.retireOps ?? realRetireOps();
 
   if (await canConnect(options.socketPath)) throw new Error(`a daemon already listens on ${options.socketPath}`);
   const lock = acquire(home, options.socketPath, pid, undefined, { ...(options.entry ? { entry: options.entry } : {}), ...(options.foreground ? { foreground: true } : {}) });
@@ -714,15 +718,55 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
   };
 
   /**
+   * request_retirement from a child whose record belongs to a parent on
+   * another machine, as a moved child's does (issue #227). This daemon holds
+   * no registry for it, only the relay record, so the request waits in the
+   * relay outbox for the daemon that holds the record, as a report does, and
+   * the answer says whose child it is. A child this daemon holds a parent
+   * record for is served locally, by the session's own tool.
+   */
+  const relayRetire = async (args: Record<string, unknown>, caller: CallerIdentity): Promise<string | undefined> => {
+    const childId = caller.childId;
+    if (!childId || localParentOf(childId)) return undefined;
+    const record = readRelayRecord(childId);
+    if (!record || record.adopted || record.retiredAt) return undefined;
+    const reason = typeof args['reason'] === 'string' && args['reason'].trim() ? args['reason'].trim() : undefined;
+    return outbox.retire(record, reason);
+  };
+
+  /**
+   * A retirement request that crossed from the machine a child runs on. The
+   * request settles on the child's record here, and a child that has already
+   * exited is cleaned up at once by its parent's service, or by the next
+   * service start when no session of that parent is connected. A refusal
+   * writes nothing and goes back as the answer, so the far end drops it.
+   */
+  const acceptRetire = async (host: string, parentId: string, childId: string, reason: string | undefined): Promise<{ answer: string }> => {
+    try {
+      const answer = await requestRetirementFromAfar(parentId, childId, host, retireOps, reason);
+      log(`retirement of child ${childId} requested from machine ${host} for parent ${parentId}`);
+      const child = readParent(parentId)?.children.find((entry) => entry.id === childId);
+      if (child?.exitedAt && retirementPending(child)) services.get(parentId)?.retire?.(childId);
+      return { answer };
+    } catch (error) {
+      if (!(error instanceof RetireRefused)) throw error;
+      log(`retirement of child ${childId} from machine ${host} refused: ${error.message}`);
+      return { answer: error.message };
+    }
+  };
+
+  /**
    * A report a child's machine handed over a relay connection. It must name a
    * parent this daemon holds and a child of that parent on that very host;
    * anything else is refused, which the far end keeps and does not resend.
    */
-  const acceptRelayed = (host: string, report: RelayReport): { refused?: string } => {
+  const acceptRelayed = (host: string, report: RelayReport): { refused?: string } | Promise<{ answer: string }> => {
     const route = routeReport({ parentId: report.parentId, childId: report.childId });
     if (route.kind !== 'local') return { refused: `this machine holds no parent ${report.parentId} with child ${report.childId}` };
     // A report the child left on the machine it moved away from still counts.
     if (hostOf(route.child) !== host && route.child.movedFrom?.host !== host) return { refused: `child ${report.childId} runs on machine ${hostOf(route.child)}, not ${host}` };
+    // Not a report: the child asks from that machine to be retired.
+    if (report.retire) return acceptRetire(host, route.parent.id, route.child.id, report.retire.reason);
     if (report.restartAnswer) {
       // Not a report: the answer of a restart this daemon asked for there, kept after a lost connection.
       log(learnRelayRestart(route.parent.id, route.child.id, host, report.restartAnswer.requestId, report.restartAnswer.answer, { log }));
@@ -852,7 +896,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
         return;
       }
       if (request.type === 'relay-ack') {
-        outbox.ack(request.receipt, request.refused);
+        outbox.ack(request.receipt, request.refused, request.answer);
         return;
       }
       if (request.type === 'relay-read') {
@@ -982,7 +1026,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
         }
         inFlight += 1;
         try {
-          const relayed = request.tool === 'parent_report' ? await relayCall(request.args, request.caller ?? {}, attached.get(socket)?.parent.session) : undefined;
+          const relayed = request.tool === 'parent_report' ? await relayCall(request.args, request.caller ?? {}, attached.get(socket)?.parent.session) : request.tool === RETIRE_TOOL ? await relayRetire(request.args, request.caller ?? {}) : undefined;
           const text = relayed ?? (await session.service.tool(request.tool, request.args, request.caller ?? {}));
           reply({ type: 'result', id: request.id, text });
           // A spawn or a stop may have added or removed the last child on a host.

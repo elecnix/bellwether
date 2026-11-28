@@ -24,7 +24,7 @@ export interface RelaySubscriber {
   send(report: RelayReport): void;
 }
 
-type Outcome = { refused?: string };
+type Outcome = { refused?: string; answer?: string };
 
 export class RelayOutbox {
   private readonly log: (message: string) => void;
@@ -72,9 +72,17 @@ export class RelayOutbox {
   }
 
   /** The parent's daemon took a report, or refused it. Either way it is not sent again. */
-  ack(receipt: string, refused?: string): void {
+  ack(receipt: string, refused?: string, answer?: string): void {
     const entry = listForwards().find((candidate) => candidate.receipt === receipt);
     if (entry) {
+      if (entry.retire) {
+        // The relay record says whether a retirement still waits, for doctor.
+        updateRelayRecord(entry.childId, (record) => {
+          if (record.retireRequest?.receipt !== receipt) return;
+          if (refused) record.retireRequest.refused = refused;
+          else delete record.retireRequest;
+        });
+      }
       if (refused) {
         saveForward({ ...entry, refused });
         this.log(`relay: the parent's daemon refused report ${receipt}, kept in ${relayOutboxPath(receipt)}: ${refused}`);
@@ -84,7 +92,7 @@ export class RelayOutbox {
       }
       this.settleRecord(entry.childId, !refused);
     }
-    this.acks.get(receipt)?.(refused ? { refused } : {});
+    this.acks.get(receipt)?.({ ...(refused ? { refused } : {}), ...(answer ? { answer } : {}) });
     this.acks.delete(receipt);
   }
 
@@ -125,6 +133,55 @@ export class RelayOutbox {
   }
 
   /**
+   * A child on this machine asked to be retired, and this daemon holds no
+   * registry for it: its record belongs to a parent on another machine
+   * (issue #227). The request waits in the outbox as a report does, the
+   * relay record says so, and it goes to each connected daemon of that
+   * parent, whose acknowledgement carries its answer for the child. The
+   * child may close its tab either way, because the request is on disk.
+   */
+  async retire(record: RelayRecord, reason?: string): Promise<string> {
+    const at = new Date(this.now()).toISOString();
+    const why = reason ? ` (${reason})` : '';
+    // A parent's daemon that predates `retire` takes this as a report, so its text says what the child asked.
+    const text = `${record.name} asked to be retired${why} from the machine it runs on, which does not hold its record. The parent's Bellwether predates a retirement request from another machine, so nothing was retired. Close the child with agent_stop, and remove its worktree by hand once its work is safe.`;
+    const entry: ForwardEntry = { receipt: newReportReceipt(), childId: record.childId, parentId: record.parentId, status: 'needs-input', text, at, retire: reason ? { reason } : {} };
+    const tooLong = overLong(entry);
+    if (tooLong) throw new Error(`request_retirement's reason is too long to cross to the parent's machine: as one relay line the request takes more than the ${MAX_DAEMON_FRAME_BYTES} characters a line may carry. Nothing was saved. Give a shorter reason.`);
+    saveForward(entry);
+    updateRelayRecord(record.childId, (kept) => {
+      kept.retireRequest = { at, receipt: entry.receipt };
+    });
+    this.settleRecord(entry.childId, false);
+    const lead = `Not this machine's child: the daemon here holds no registry for ${record.name} (child ${record.childId}). Its record belongs to parent ${record.parentId}, whose daemon runs on another machine, so the request goes there, the way a report does.`;
+    const saved = `saved as ${entry.receipt} in ${relayOutboxPath(entry.receipt)}`;
+    const close = 'You may close your tab now: the daemon that holds your record retires you once it takes the request, and `bellwether doctor` on this machine shows the request until then. Do not ask again.';
+    const listeners = [...this.subscribers].filter((subscriber) => subscriber.parentIds.has(entry.parentId));
+    if (!listeners.length) {
+      this.log(`relay: kept the retirement request ${entry.receipt} of child ${entry.childId} for parent ${entry.parentId}, whose daemon is not connected`);
+      return `${lead} That daemon is not connected to this machine now. The request is ${saved}, and it collects the request when it connects. ${close}`;
+    }
+    const outcome = new Promise<Outcome | undefined>((resolve) => {
+      const timer = setTimeout(() => {
+        this.acks.delete(entry.receipt);
+        resolve(undefined);
+      }, this.ackWaitMs);
+      timer.unref?.();
+      this.acks.set(entry.receipt, (result) => {
+        clearTimeout(timer);
+        resolve(result);
+      });
+    });
+    for (const listener of listeners) listener.send(toReport(entry));
+    this.log(`relay: sent the retirement request ${entry.receipt} of child ${entry.childId} to the daemon of parent ${entry.parentId}`);
+    const result = await outcome;
+    if (!result) return `${lead} That daemon has not acknowledged it yet. The request is ${saved}, and it goes again whenever that daemon reconnects, until it does. ${close}`;
+    if (result.refused) return `${lead} That daemon refused it: ${result.refused}. It stays in ${relayOutboxPath(entry.receipt)} and does not go again. Ask your parent to close you with agent_stop.`;
+    if (!result.answer) return `${lead} That daemon took the request without an answer, because it predates a retirement request from another machine: it showed your parent a request for input and retires nothing. Tell your parent with parent_report that your work is done, and ask it to close you with agent_stop.`;
+    return `${lead}\n${result.answer}`;
+  }
+
+  /**
    * The child's model read a parent's message that crossed from the parent's
    * machine. The read waits in the outbox as any report does, until the
    * parent's daemon acknowledges it, and goes to each connected one now.
@@ -156,8 +213,8 @@ export class RelayOutbox {
   /** Say on the child's relay record how many of its reports wait, and remove the record of a gone child once none does. */
   private settleRecord(childId: string, forwarded: boolean): void {
     const pending = this.waiting().filter((entry) => entry.childId === childId);
-    // A read or a restart answer waits like a report, but it is not one, so the count a person sees leaves it out.
-    const waiting = pending.filter((entry) => !entry.messageRead && !entry.restartAnswer).length;
+    // A read, a restart answer or a retirement request waits like a report, but it is not one, so the count a person sees leaves it out.
+    const waiting = pending.filter((entry) => !entry.messageRead && !entry.restartAnswer && !entry.retire).length;
     if (pending.length === 0 && readRelayRecord(childId)?.retiredAt) {
       removeRelayRecord(childId);
       this.log(`relay: removed the record of child ${childId}, which is gone and has no report left to collect`);
@@ -183,5 +240,5 @@ function overLong(entry: ForwardEntry): string | undefined {
 }
 
 function toReport(entry: ForwardEntry): RelayReport {
-  return { receipt: entry.receipt, childId: entry.childId, parentId: entry.parentId, status: entry.status, text: entry.text, at: entry.at, ...(entry.messageRead ? { messageRead: entry.messageRead } : {}), ...(entry.restartAnswer ? { restartAnswer: entry.restartAnswer } : {}) };
+  return { receipt: entry.receipt, childId: entry.childId, parentId: entry.parentId, status: entry.status, text: entry.text, at: entry.at, ...(entry.messageRead ? { messageRead: entry.messageRead } : {}), ...(entry.restartAnswer ? { restartAnswer: entry.restartAnswer } : {}), ...(entry.retire ? { retire: entry.retire } : {}) };
 }

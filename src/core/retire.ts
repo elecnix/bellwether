@@ -100,6 +100,17 @@ function outOfBounds(child: ChildRecord): string | undefined {
   return undefined;
 }
 
+/**
+ * Whether the worktree a child asked to retire is the one it left on this
+ * machine when it moved to another (issue #227). The child then runs
+ * elsewhere, but the worktree and its proofs are here, where the daemon can
+ * take them.
+ */
+function leftBehindHere(child: ChildRecord): boolean {
+  const intent = child.retireIntent;
+  return Boolean(intent?.movedAway && child.origin !== 'adopt' && child.movedFrom?.host === LOCAL_HOST && child.movedFrom.cwd && intent.worktree);
+}
+
 function mainRefusal(worktree: string, why: string): string {
   return `${worktree} is the repository's main worktree (${why}), and Bellwether never removes a main worktree, whoever asks. Nothing was written. Work in a worktree of your own to be retired with it.`;
 }
@@ -118,33 +129,73 @@ export async function requestRetirement(caller: CallerIdentity, ops: RetireOps, 
   const { parent, child } = found;
   const bounds = outOfBounds(child);
   if (bounds) throw new RetireRefused(`${bounds} Nothing was written.`);
+  return recordRequest(parent.id, child, child.cwd as string, ops, reason);
+}
 
-  if (!ops.dirExists(child.cwd as string)) {
-    throw new RetireRefused(`Your working directory ${child.cwd} no longer exists, so a harness that starts each command there fails every shell command, and there is no worktree left to retire. Call parent_report, which needs no shell, to tell your parent, and ask it to close you with agent_stop. Nothing was written.`);
+/**
+ * The parent's side of a request that crossed from the machine a child runs
+ * on, through that machine's relay outbox (issue #227). The daemon there holds
+ * no registry for the child, so the request comes to the daemon that holds the
+ * record. This daemon takes retirement's proofs only on its own machine, so
+ * the worktree it retires is the one a child left here when it moved away.
+ * Any other worktree sits where this daemon cannot look, and the request is
+ * refused with nothing written.
+ */
+export async function requestRetirementFromAfar(parentId: string, childId: string, host: string, ops: RetireOps, reason?: string): Promise<string> {
+  const parent = readParent(parentId);
+  const child = parent?.children.find((entry) => entry.id === childId);
+  if (!parent || !child) throw new RetireRefused(`no parent ${parentId} with child ${childId} on the parent's machine, so there is nothing to retire. Nothing was written.`);
+  if (child.origin === 'adopt') throw new RetireRefused(`${outOfBounds(child)} Nothing was written.`);
+  if (!child.movedFrom || child.movedFrom.host !== LOCAL_HOST) {
+    const far = child.cwd ? `the worktree it works in, ${child.cwd}, is on ${host}` : `its record names no working directory`;
+    throw new RetireRefused(`${child.name} runs on machine ${host}, and ${far}. The daemon of parent ${parentId} holds the record, but it takes retirement's proofs only on its own machine, so it cannot see that worktree and removes nothing. Nothing was written. Remove the worktree on ${host} by hand once its work is safe, then close your tab.`);
   }
-  const facts = await ops.inspect(child.cwd as string);
-  if ('error' in facts) throw new RetireRefused(`${child.cwd} is not a git worktree Bellwether can retire: ${facts.error}. Nothing was written.`);
-  if (facts.main) throw new RetireRefused(mainRefusal(facts.worktree, facts.main));
-  if (!facts.branch) throw new RetireRefused(`${facts.worktree} has no branch checked out (detached HEAD at ${facts.head.slice(0, 12)}), so Bellwether cannot tell whether its work is safe. Check out a branch, then ask again. Nothing was written.`);
+  const left = child.movedFrom.cwd;
+  if (!left) throw new RetireRefused(`${child.name} moved to ${host} before Bellwether recorded where a moved child worked, so the daemon of parent ${parentId} cannot tell which worktree it left behind and removes nothing. Nothing was written. Remove the worktree you left on the parent's machine by hand once its work is safe.`);
+  const stays = child.cwd ? ` Your worktree on ${host}, ${child.cwd}, stays in place: the daemon of parent ${parentId} cannot take a proof on that machine. Remove it there by hand once its work is safe.` : '';
+  return recordRequest(parentId, child, left, ops, reason, { movedAway: host, lead: `The daemon of parent ${parentId} took your request, and retires the worktree you left on its machine when you moved to ${host}.`, tail: stays });
+}
+
+/**
+ * Run the checks a request can run while the child is alive, against `dir`,
+ * write `retireRequestedAt` and the intent on the child record, and return
+ * one line per check. It removes nothing.
+ */
+async function recordRequest(parentId: string, child: ChildRecord, dir: string, ops: RetireOps, reason: string | undefined, afar?: { movedAway: string; lead: string; tail: string }): Promise<string> {
+  const yours = afar ? `The worktree you left behind, ${dir},` : `Your working directory ${dir}`;
+  if (!ops.dirExists(dir)) {
+    if (afar) throw new RetireRefused(`${yours} no longer exists on the parent's machine, so there is no worktree left to retire there. Nothing was written.${afar.tail}`);
+    throw new RetireRefused(`Your working directory ${dir} no longer exists, so a harness that starts each command there fails every shell command, and there is no worktree left to retire. Call parent_report, which needs no shell, to tell your parent, and ask it to close you with agent_stop. Nothing was written.`);
+  }
+  const facts = await ops.inspect(dir);
+  if ('error' in facts) throw new RetireRefused(`${dir} is not a git worktree Bellwether can retire: ${facts.error}. Nothing was written.${afar?.tail ?? ''}`);
+  if (facts.main) throw new RetireRefused(`${mainRefusal(facts.worktree, facts.main)}${afar?.tail ?? ''}`);
+  if (!facts.branch) throw new RetireRefused(`${facts.worktree} has no branch checked out (detached HEAD at ${facts.head.slice(0, 12)}), so Bellwether cannot tell whether its work is safe. Check out a branch, then ask again. Nothing was written.${afar?.tail ?? ''}`);
 
   const { passed, failing } = await workChecks(ops, { ...facts, branch: facts.branch });
   const others = liveChildrenIn(facts.worktree, child.id);
   (others.length ? failing : passed).push(others.length ? `${describeStanding(others)} in it, and the daemon never removes a directory a live child stands in` : 'no other live child stands in it');
 
-  const intent: RetireIntent = { worktree: facts.worktree, repo: facts.repo, branch: facts.branch, head: facts.head, ...(facts.defaultBranch ? { defaultBranch: facts.defaultBranch } : {}), ...(reason ? { reason } : {}) };
+  const intent: RetireIntent = { worktree: facts.worktree, repo: facts.repo, branch: facts.branch, head: facts.head, ...(facts.defaultBranch ? { defaultBranch: facts.defaultBranch } : {}), ...(reason ? { reason } : {}), ...(afar ? { movedAway: afar.movedAway } : {}) };
   const now = new Date().toISOString();
-  updateChild(parent.id, child.id, (entry) => {
+  updateChild(parentId, child.id, (entry) => {
     // A child resumed after an earlier retirement asks afresh.
     if (entry.retireOutcome) clearRetirement(entry);
     entry.retireRequestedAt ??= now;
     entry.retireIntent = intent;
   });
 
-  const lines = [`Retirement requested for ${child.name}: ${facts.worktree} on branch ${facts.branch}. Nothing has been removed.`];
+  const lines = afar ? [afar.lead] : [];
+  lines.push(`Retirement requested for ${child.name}: ${facts.worktree} on branch ${facts.branch}. Nothing has been removed.`);
   lines.push(`Passed now: ${passed.length ? passed.join('; ') : 'none'}.`);
   if (failing.length) lines.push(`Failing now: ${failing.join('; ')}. Fix these before you exit, or the daemon will refuse and leave everything in place.`);
   lines.push('After your pane is gone, the daemon checks again that the pane and tab are gone, that the worktree is not a main worktree, is clean and has no stash, that the work is safe, and that no process works inside it. Only then does it remove the worktree and delete the branch.');
-  lines.push('Leave the worktree in place: you stand in it, and your harness needs it for every command until your tab closes. Close your tab to finish.');
+  if (afar) {
+    if (afar.tail) lines.push(afar.tail.trim());
+    lines.push('Close your tab to finish.');
+  } else {
+    lines.push('Leave the worktree in place: you stand in it, and your harness needs it for every command until your tab closes. Close your tab to finish.');
+  }
   return lines.join('\n');
 }
 
@@ -288,7 +339,7 @@ async function reapLocked(parentId: string, childId: string, deps: ReapDeps, log
     return { outcome: 'refused', reason };
   };
 
-  const bounds = outOfBounds(child);
+  const bounds = leftBehindHere(child) ? undefined : outOfBounds(child);
   if (bounds) return refuse(`out of bounds: ${bounds}`);
   const intent = child.retireIntent;
   if (!intent) return refuse(`no intent: the record of ${child.name} asks for retirement but names no worktree, so nothing was touched. Ask again from a live child.`);

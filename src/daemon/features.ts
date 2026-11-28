@@ -174,6 +174,7 @@ export const BEHAVIORS: readonly Behavior[] = [
   { version: '0.1.9', prs: [181], summary: "A spawn counts a brief taken once the child's model begins a turn on it or reads it, rather than when its adapter receives it. It sends the brief once more when the model doesn't begin a turn, and fails with `BriefNotTaken` when the second copy doesn't start one either." },
   { version: '0.1.9', prs: [192], summary: "The new tab of a restart opens before the old pane closes, so a session alone in its herdr workspace comes back in that workspace, or in a new one under the old label once herdr has closed it. When the start fails after the close, the record keeps `restartFailed`, a child's parent receives an `exited` event, and doctor prints the session and its last pane." },
   { version: '0.1.9', prs: [194], summary: "A daemon finds herdr through HERDR_BIN_PATH, its inherited PATH, the login shell's PATH and the usual install directories, so a daemon started over SSH no longer fails every herdr command with `spawn herdr ENOENT`. Doctor fails when the running daemon can't find herdr, and lists each place it looked." },
+  { version: '0.1.9', prs: [202], summary: "An input box with two typed lines now counts as a draft. `agent_read` shows the box, and an idle child with a draft reaches its parent as idle. A screen is a dialog only when a question stands above a solid selection marker with a numbered option beside it, or with an option beside it and a confirm or cancel hint under the list. A y/n question also counts." },
 ];
 
 /**

@@ -216,17 +216,23 @@ The parent's brief asked for the smallest change first. The numbers argue agains
 
 ### Step 1, the incarnation family
 
+Tracked in [#277](https://github.com/elecnix/bellwether/issues/277).
+
 The fields are `paneId`, `tabId`, `host`, `cwd`, `session`, `lastStatus`, `startingUntil`, `exitedAt`, `exitCode`, `harnessEnded`, `harnessSeenAt`, `tabClosedAt`, `paneEnd`, `reportPending`, `resumedAt`, `restartFailed`, `crossingFailed`, `awaitsResume`, `closing` and `restartInDoubt`.
 
 The owner offers two transitions, a run that ends and a run that starts in a pane. Calls to the second come from the five places in the table of cleared fields, so those places clear the same fields by construction. Every field of `ChildRecord` gets a lifetime, per child or per run, in a table that `satisfies Record<keyof ChildRecord, Lifetime>`, so a new field without a lifetime fails the typecheck.
 
 ### Step 2, the delivery family
 
+Tracked in [#278](https://github.com/elecnix/bellwether/issues/278).
+
 The fields are `readAt`, `undelivered`, `relayInDoubt`, `receivedAt`, `takenAt`, `takenBy`, `messages` and `briefs`.
 
 The owner keeps the state of each message and each brief in a state machine, with transitions such as pushed, received, read, taken, undelivered and in doubt, and it refuses a transition the machine does not allow. `server.ts`, `send.ts`, `brief-delivery.ts`, `resume.ts`, `teleport.ts`, `carry.ts`, `recover-crossing.ts` and `watcher.ts` call transitions and stop writing fields.
 
 ### Step 3, the authority family
+
+Tracked in [#279](https://github.com/elecnix/bellwether/issues/279).
 
 The fields are `origin`, `replacedBy`, `adoptInDoubt` and `farRecordLost`.
 

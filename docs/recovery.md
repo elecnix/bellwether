@@ -61,6 +61,12 @@ That reply includes the new pane, the tab and the session id, so the caller can 
 
 A restart can close the old pane and then fail to start the session, which leaves the session gone. The record keeps `restartFailed`, with the time, the last pane, its workspace, the error and how to bring the session back. A child's parent receives one `exited` event that says the child did not come back from a restart. `bellwether doctor` prints a `fail` line for each such session, naming it and its last pane, until a restart, a resume or the session's own return clears it. The line in `~/.bellwether/restart.log` records `outcome: failed`.
 
+herdr can close the old pane and still return an error for the close, as a timeout does. The restart now reads herdr's pane list before it decides what to do next. If the list no longer includes the old pane, the close worked. The restart then goes on, and the line in `restart.log` carries `closeError`.
+
+When herdr does not reply to either request, the reply says the old pane's state is unknown, and `restart.log` records `outcome: failed` with `oldPaneState: unknown`. If the list still shows the pane instead, the restart closes the new tab and leaves everything else as it was.
+
+While herdr closes the old pane, the record keeps that pane, marked `closing` for at most 30 seconds. Because of that mark, the watcher does not report the close as an exit, and a daemon that stops mid-close still leaves a record that points to a real pane.
+
 Restarting a child that runs on another machine happens on that machine. The parent's daemon sends the request over the relay connection to the daemon there, which restarts the child through its own herdr under the same child id. The [Restarting a child there](remote-machines.md#restarting-a-child-there) section lists the cases it refuses.
 
 The daemon refuses a restart when:

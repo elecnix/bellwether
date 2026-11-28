@@ -22,15 +22,15 @@ export interface TeleportPlace {
 /** How the notice reached the teleported session. */
 export interface TeleportNoticeRecord {
   /** The message that carried it. */
-  message?: string;
+  readonly message?: string;
   /** The adapter that received it. */
-  via?: string;
-  receivedAt?: string;
-  readAt?: string;
+  readonly via?: string;
+  readonly receivedAt?: string;
+  readonly readAt?: string;
   /** When the model read it and began a turn on it. */
-  takenAt?: string;
+  readonly takenAt?: string;
   /** Why Bellwether did not see the model take it. The message stays on the record for the session's next hello. */
-  undelivered?: string;
+  readonly undelivered?: string;
 }
 
 /**

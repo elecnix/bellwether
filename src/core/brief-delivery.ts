@@ -33,6 +33,7 @@ import { BLANK_SCREEN } from './screen.ts';
 import { BRIEF_SESSION_WAIT_MS, BRIEF_TURN_WAIT_MS, messageChild, type Inbox, type MessageOutcome } from './send.ts';
 import { HarnessStartFailed, processInfoOf, startupQuote } from './start-check.ts';
 import { readParent, updateChild } from './registry.ts';
+import { briefPushed, briefResent, briefSettled, briefState, deliveryState, messageResent, recordBriefDelivery } from './delivery.ts';
 import type { BriefDelivery, ChildBrief, ChildRecord } from './types.ts';
 
 export interface BriefInput {
@@ -220,7 +221,7 @@ export async function deliverBrief(input: BriefInput): Promise<BriefOutcome> {
   let notTaken: string | undefined;
   try {
     let outcome = await send();
-    let delivery = deliveryOf(outcome);
+    let delivery = briefPushed(outcome, new Date().toISOString());
     if (outcome.message.path === 'session') {
       const first = outcome.message;
       let seen = await watch([first.id]);
@@ -239,7 +240,7 @@ export async function deliverBrief(input: BriefInput): Promise<BriefOutcome> {
         // a third time.
         outcome = await send();
         markResent(input.parentId, child.id, first.id, `its model did not read it and begin a turn on it within ${seconds(waitMs)} s (Bellwether saw ${signsSeen()}), so ${input.brief && !input.notice ? `brief ${input.brief.n}` : 'the notice'} went again as message ${outcome.message.id}`);
-        delivery = { ...deliveryOf(outcome), resentFrom: first.id };
+        delivery = briefResent(briefPushed(outcome, new Date().toISOString()), first.id);
         if (outcome.message.path === 'session') {
           // A read on the first copy can still come, from a child on another
           // machine whose receipt was on its way back: it settles the brief,
@@ -253,14 +254,13 @@ export async function deliverBrief(input: BriefInput): Promise<BriefOutcome> {
         }
       }
       if (seen.read) {
-        delivery = { ...delivery, readAt: seen.read.at, ...(seen.read.id !== delivery.message ? { readFrom: seen.read.id } : {}) };
         // Taken only on both facts (issue #211): a read with no turn keeps its read and no takenAt.
-        if (seen.turn) delivery = { ...delivery, takenAt: Date.parse(seen.read.at) > Date.parse(seen.turn) ? seen.read.at : seen.turn, takenBy: 'turn' };
-        else if (input.notice) notTaken = `${child.name}'s model read its teleport notice, but herdr reported no turn on it within ${seconds(waitMs)} s. It did not go again, because a second copy would enter its session twice.`;
+        delivery = briefSettled(delivery, seen.read, seen.turn);
+        if (!seen.turn && input.notice) notTaken = `${child.name}'s model read its teleport notice, but herdr reported no turn on it within ${seconds(waitMs)} s. It did not go again, because a second copy would enter its session twice.`;
       }
     }
-    if (input.brief) recordDelivery(input.parentId, child.id, input.brief.n, delivery);
-    const note = input.brief ? deliveryNote(child, input.brief, delivery, waitMs) : delivery.takenAt ? `${child.name}'s model read its teleport notice and began a turn on it; nothing was typed into its pane.` : (notTaken ?? `${child.name} did not take its teleport notice.`);
+    if (input.brief) recordBriefDelivery(input.parentId, child.id, input.brief.n, delivery);
+    const note = input.brief ? deliveryNote(child, input.brief, delivery, waitMs) : deliveryState(delivery) === 'taken' ? `${child.name}'s model read its teleport notice and began a turn on it; nothing was typed into its pane.` : (notTaken ?? `${child.name} did not take its teleport notice.`);
     return { delivery, note, ...(notTaken ? { notTaken } : {}) };
   } finally {
     ended = true;
@@ -269,36 +269,15 @@ export async function deliverBrief(input: BriefInput): Promise<BriefOutcome> {
   }
 }
 
-/** The delivery a message's outcome records, before the model's sign. */
-function deliveryOf(outcome: MessageOutcome): BriefDelivery {
-  const message = outcome.message;
-  if (message.path === 'session' && outcome.unanswered) return { path: 'session', via: message.via ?? 'session', message: message.id, at: message.at, unanswered: outcome.unanswered };
-  return message.path === 'session'
-    ? { path: 'session', via: message.via ?? 'session', message: message.id, at: message.at, receivedAt: new Date().toISOString() }
-    : { path: 'keystrokes', reason: message.reason ?? 'the session path was not available', message: message.id, at: message.at };
-}
-
 /** Take a first copy that went again out of the replay, with the reason. */
 function markResent(parentId: string, childId: string, messageId: string, why: string): void {
   updateChild(parentId, childId, (entry) => {
-    const found = entry.messages?.find((message) => message.id === messageId);
-    if (!found || found.readAt) return;
-    found.undelivered = why;
-    delete found.text;
-    delete found.from;
+    messageResent(entry, messageId, why);
   });
 }
 
 function seconds(ms: number): string {
   return String(Math.round(ms / 100) / 10);
-}
-
-/** Put a brief's delivery on its entry in the child record. */
-export function recordDelivery(parentId: string, childId: string, n: number, delivery: BriefDelivery): void {
-  updateChild(parentId, childId, (entry) => {
-    const found = entry.briefs?.find((brief) => brief.n === n);
-    if (found) found.delivery = delivery;
-  });
 }
 
 const VIA_LABEL: Record<string, string> = {
@@ -339,7 +318,7 @@ export function deliveryNote(child: Pick<ChildRecord, 'name'>, brief: Pick<Child
  * child, because each resume that brings a prompt adds a brief with its own
  * path (issue #189), so this line is where a reader finds it.
  */
-export function describeBrief(child: Pick<ChildRecord, 'name' | 'briefs'>): string[] {
+export function describeBrief(child: Pick<ChildRecord, 'name' | 'briefs' | 'messages'>): string[] {
   const brief = child.briefs?.at(-1);
   if (!brief) return [];
   const delivery = brief.delivery;
@@ -348,7 +327,9 @@ export function describeBrief(child: Pick<ChildRecord, 'name' | 'briefs'>): stri
   let how: string;
   if (delivery.path === 'session') {
     const twice = delivery.resentFrom ? `, sent twice because its model did not read message ${delivery.resentFrom} and begin a turn on it` : '';
-    const taken = delivery.takenBy === 'read' ? `its model read it at ${delivery.takenAt}` : delivery.takenBy === 'turn' ? `its model ${delivery.readAt ? 'read it and ' : ''}began a turn on it at ${delivery.takenAt}` : delivery.readAt ? `its model read it at ${delivery.readAt}, and herdr reported no turn on it` : 'Bellwether did not see its model take it';
+    const state = briefState(child, brief);
+    const lateRead = child.messages?.find((message) => (message.id === delivery.message || message.id === delivery.resentFrom) && message.readAt)?.readAt;
+    const taken = state === 'taken' ? `taken: its model ${delivery.readAt ? 'read it and ' : ''}began a turn on it at ${delivery.takenAt}` : state === 'read' ? `read: its model read it at ${delivery.readAt ?? delivery.takenAt ?? lateRead}, and herdr reported no turn on it` : state === 'in doubt' ? `in doubt: its session never answered the push, because ${(delivery.unanswered ?? '').replace(/[.\s]+$/, '')}` : 'pushed: Bellwether did not see its model take it';
     const both = delivery.readFrom ? `, and the read receipt for message ${delivery.readFrom} arrived after this copy went out, so its session holds both` : '';
     how = `into its session through its ${viaLabel(delivery.via)} as message ${delivery.message}${twice}${both}; ${taken}`;
   } else if (delivery.path === 'launch') {

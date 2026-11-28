@@ -3,6 +3,7 @@
 // the events it missed, runs the Bellwether tools through the daemon, and marks
 // receipts read. The daemon starts on demand, drains for an upgrade, and exits
 // when no session needs it.
+import { inRelayDoubt, messagePushed, messageRead as recordRead, messageRefused, relayAnswered } from '../core/delivery.ts';
 import { locateHerdr } from '../core/herdr-bin.ts';
 import fs from 'node:fs';
 import net from 'node:net';
@@ -404,11 +405,14 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
     const running = relayMessagesInFlight.get(id);
     if (running) return running;
     const record = readRelayRecord(request.childId);
-    if (!record || record.parentId !== request.parentId || record.retiredAt) return Promise.resolve({ delivered: false, unheld: true, reason: `this machine holds no running child ${request.childId} for parent ${request.parentId}` });
-    if (request.type === 'relay-message-again') {
+    // A second ask about a message this machine already pushed is answered
+    // from the record, even after the child retired here: its session took
+    // the message, and "never took it" would be false (issue #278).
+    if (request.type === 'relay-message-again' && record && record.parentId === request.parentId) {
       const pushed = record.pushed?.find((entry) => entry.id === id);
       if (pushed) return Promise.resolve({ delivered: true, via: pushed.via });
     }
+    if (!record || record.parentId !== request.parentId || record.retiredAt) return Promise.resolve({ delivered: false, unheld: true, reason: `this machine holds no running child ${request.childId} for parent ${request.parentId}` });
     const answering = (async (): Promise<RelayMessageAnswer> => {
       // A start's brief waits for the child's session first. It is kept on
       // the relay record only once that session is here, so the hello's
@@ -440,26 +444,16 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
     for (const parent of listParents()) {
       for (const child of parent.children) {
         if (hostOf(child) !== host) continue;
-        for (const message of child.messages ?? []) {
-          if (!message.relayInDoubt || message.readAt || message.undelivered || message.text === undefined || askingAgain.has(message.id)) continue;
+        for (const message of inRelayDoubt(child)) {
+          if (askingAgain.has(message.id)) continue;
           askingAgain.add(message.id);
-          const ask: InboxMessage = { id: message.id, from: message.from ?? 'your parent', text: message.text, at: message.at };
+          const ask: InboxMessage = { id: message.id, from: message.from ?? 'your parent', text: message.text ?? '', at: message.at };
           void links
             .message(host, parent.id, child.id, ask, { again: true })
             .then(
               (answer) => {
                 updateChild(parent.id, child.id, (entry) => {
-                  const found = entry.messages?.find((each) => each.id === message.id);
-                  if (!found?.relayInDoubt) return;
-                  delete found.relayInDoubt;
-                  if (answer.delivered) {
-                    if (answer.via && answer.via !== 'session') found.via = answer.via;
-                    else found.via ??= 'session';
-                  } else if (!found.readAt) {
-                    found.undelivered = `machine ${host} answered, once the relay was back, that its session never took it: ${answer.reason}. Nothing was typed, because the parent's call had already returned`;
-                    delete found.text;
-                    delete found.from;
-                  }
+                  relayAnswered(entry, message.id, answer.delivered ? { delivered: true, via: answer.via } : answer.unheld ? { delivered: false, unknowable: true, why: `machine ${host} no longer holds child ${child.id}, so whether its session took the message will never be known: ${answer.reason}` } : { delivered: false, why: `machine ${host} answered, once the relay was back, that its session never took it: ${answer.reason}. Nothing was typed, because the parent's call had already returned` });
                 });
                 log(`relay-message-again ${message.id} for child ${child.id}: ${answer.delivered ? `machine ${host} holds it in its session (${answer.via})` : `machine ${host} never pushed it: ${answer.reason}`}`);
               },
@@ -492,11 +486,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
       }
       if (found && childId)
         updateChild(found.parent.id, childId, (child) => {
-          const message = child.messages?.find((each) => each.id === ack.id);
-          if (!message || message.readAt) return;
-          message.undelivered = ack.reason ? `its session refused the message after its wait ran out: ${ack.reason}` : 'its session refused the message after its wait ran out';
-          delete message.text;
-          delete message.from;
+          messageRefused(child, ack.id, ack.reason ? `its session refused the message after its wait ran out: ${ack.reason}` : 'its session refused the message after its wait ran out');
         });
       log(`message ${ack.id} was refused by the child's session after its wait ran out`);
       return;
@@ -504,8 +494,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
     if (childId && !found && ack.via && readRelayRecord(childId)?.pushed?.some((entry) => entry.id === ack.id)) notePushed(childId, ack.id, ack.via);
     if (found && childId && ack.via)
       updateChild(found.parent.id, childId, (child) => {
-        const message = child.messages?.find((each) => each.id === ack.id);
-        if (message) message.via = ack.via;
+        messagePushed(child, ack.id, ack.via);
       });
     log(`message ${ack.id} reached the child's session after its wait ran out; nothing was typed`);
   };
@@ -535,14 +524,8 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
     }
     let readAt: string | undefined;
     updateChild(found.parent.id, childId, (child) => {
-      const message = child.messages?.find((entry) => entry.id === ack.id);
-      if (!message || message.readAt) return;
-      message.readAt = readAt = new Date(now()).toISOString();
-      if (ack.via) message.via ??= ack.via;
-      // A copy marked undelivered when the brief went again, read after all (issue #246).
-      delete message.undelivered;
-      delete message.text;
-      delete message.from;
+      // A copy marked undelivered when the brief went again counts as read after all (issue #246).
+      readAt = recordRead(child, ack.id, new Date(now()).toISOString(), ack.via);
     });
     if (readAt) messageRead(ack.id, readAt);
     log(`message ${ack.id} reached the model of child ${childId}`);
@@ -863,12 +846,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
       // Not a report: the child's model read a message this daemon sent over the relay.
       let readAt: string | undefined;
       updateChild(route.parent.id, route.child.id, (child) => {
-        const message = child.messages?.find((entry) => entry.id === report.messageRead);
-        if (!message || message.readAt) return;
-        message.readAt = readAt = report.at;
-        delete message.undelivered;
-        delete message.text;
-        delete message.from;
+        readAt = recordRead(child, report.messageRead!, report.at);
       });
       if (readAt) messageRead(report.messageRead, readAt);
       log(`message ${report.messageRead} reached the model of child ${report.childId} on machine ${host}`);

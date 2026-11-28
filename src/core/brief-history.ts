@@ -7,6 +7,7 @@
 // finished turn in the pane that started on it. Neither a status nor the time
 // the child ran counts, because a harness can run without reading anything.
 import fs from 'node:fs';
+import { briefState } from './delivery.ts';
 import { promptPath } from './paths.ts';
 import type { ChildBrief, ChildRecord } from './types.ts';
 
@@ -29,10 +30,9 @@ export function briefRead(child: BriefFacts, brief: ChildBrief): boolean {
   if (report >= Date.parse(brief.at)) return true;
   const turn = child.turnNotified;
   if (turn && (brief.paneId === undefined || turn.paneId === brief.paneId)) return true;
-  // A brief that went in as a session message is read once its adapter says the model took it.
-  const message = brief.delivery?.message;
-  if (brief.delivery?.path === 'session' && message && child.messages?.some((entry) => entry.id === message && entry.readAt)) return true;
-  return false;
+  // A brief that went in as a session message is read once its adapter says it entered the model's conversation.
+  const state = briefState(child, brief);
+  return state === 'read' || state === 'taken';
 }
 
 /** The newest brief, when nothing on the record proves the child read it. */

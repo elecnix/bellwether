@@ -228,9 +228,11 @@ The owner offers two transitions, a run that ends and a run that starts in a pan
 
 Tracked in [#278](https://github.com/elecnix/bellwether/issues/278).
 
-The fields are `readAt`, `undelivered`, `relayInDoubt`, `receivedAt`, `takenAt`, `takenBy`, `messages` and `briefs`.
+This family holds eight fields: `readAt`, `undelivered`, `relayInDoubt`, `receivedAt`, `takenAt`, `takenBy`, `messages` and `briefs`.
 
-The owner keeps the state of each message and each brief in a state machine, with transitions such as pushed, received, read, taken, undelivered and in doubt, and it refuses a transition the machine does not allow. `server.ts`, `send.ts`, `brief-delivery.ts`, `resume.ts`, `teleport.ts`, `carry.ts`, `recover-crossing.ts` and `watcher.ts` call transitions and stop writing fields.
+Writes to these fields now all go through `src/core/delivery.ts`, and `test/unit/delivery-owner.test.ts` fails on a write anywhere else. Coverage extends to `typedInDoubt`, `readFrom`, `resentFrom`, `via`, `delivery` and the two fields the step added, `held` and `unanswered`.
+
+Each message is in one of nine phases. A `TRANSITIONS` table lists each allowed move, and the owner refuses any other. A person reads seven words for them: sending, held, pushed, in doubt, typed, read and undelivered. `server.ts`, `send.ts`, `brief-delivery.ts`, `resume.ts`, `spawn.ts`, `teleport.ts`, `carry.ts` and `watcher.ts` call transitions, and the modules that read the fields, such as `brief-history.ts` and `restart.ts`, ask the owner for the phase.
 
 ### Step 3, the authority family
 

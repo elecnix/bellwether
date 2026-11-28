@@ -1,6 +1,6 @@
 // Tier 1: a typed message whose herdr request fails (issue #234). An error
 // from messageChild never leaves the child record silent. A request that
-// never reached herdr is recorded as never delivered, and its error says so,
+// never reached herdr is recorded as undelivered, and its error says so,
 // so the caller may send again. The isolation preload gives this file a
 // scratch home for the registry.
 import assert from 'node:assert/strict';
@@ -18,12 +18,12 @@ function codexChild(parentId: string): ChildRecord {
   return child;
 }
 
-test('a message whose herdr socket refuses the connection is recorded as never delivered, and the error says sending again enters it once (issue #234)', async () => {
+test('a message whose herdr socket refuses the connection is recorded as undelivered, and the error says sending again enters it once (issue #234)', async () => {
   const parentId = saveParent(emptyParent('pi', 'send-unreachable', '/work', {})).id;
   const child = codexChild(parentId);
   const refused = Object.assign(new Error('connect ECONNREFUSED /run/herdr.sock'), { code: 'ECONNREFUSED' });
   const herdr = { agentPrompt: async () => Promise.reject(refused) } as unknown as HerdrClient;
-  await assert.rejects(messageChild({ herdr, parentId, from: 'your parent', child, text: 'Run the tests again.' }), /^Error: herdr was not reachable, so nothing was typed into coder's pane: connect ECONNREFUSED \/run\/herdr\.sock\. Message m-[0-9a-f]{8} is on the record as never delivered, and sending it again enters it once\.$/);
+  await assert.rejects(messageChild({ herdr, parentId, from: 'your parent', child, text: 'Run the tests again.' }), /^Error: herdr was not reachable, so nothing was typed into coder's pane: connect ECONNREFUSED \/run\/herdr\.sock\. Message m-[0-9a-f]{8} is on the record as undelivered, and sending it again enters it once\.$/);
   const [message] = readParent(parentId)?.children[0]?.messages ?? [];
   assert.equal(message?.path, 'keystrokes');
   assert.equal(message?.undelivered, 'herdr was not reachable, so nothing was typed: connect ECONNREFUSED /run/herdr.sock');

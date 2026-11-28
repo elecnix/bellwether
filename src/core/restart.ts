@@ -38,6 +38,7 @@
 // The mid-turn rule: never restart a pane that is mid-turn unless the target
 // is the caller. For another target the actor waits for herdr to report idle
 // or done, with a bounded timeout, and refuses when the wait runs out.
+import { reachedModel } from './delivery.ts';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -1250,9 +1251,9 @@ function workingChildren(sessionParentId: string): ChildRecord[] {
   return (readParent(sessionParentId)?.children ?? []).filter((entry) => !entry.exitedAt && entry.lastStatus === 'working');
 }
 
-/** The messages that reached a child's session since a time, by either path. */
+/** The messages that reached a child's model since a time, by either path: read, or typed. A message still pushed or in doubt started no turn. */
 function messagesSince(child: ChildRecord | undefined, since: string): number {
-  return (child?.messages ?? []).filter((message) => message.at >= since && !message.undelivered).length;
+  return (child?.messages ?? []).filter((message) => message.at >= since && reachedModel(message)).length;
 }
 
 /**

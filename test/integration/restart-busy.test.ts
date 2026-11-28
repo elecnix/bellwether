@@ -4,6 +4,7 @@
 // turns or gives up within its bound, naming what held it. While it waits, the
 // daemon holds the session's own Bellwether events, which are what kept it
 // busy, and a second call says what the restart waits for.
+import { messageRead, messageSending } from '../../src/core/delivery.ts';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -153,8 +154,11 @@ test('a child that receives messages through its wait gives up by name, counting
   // A parent's message reaches the child at the end of each turn, so herdr never reports it idle.
   for (const n of [1, 2]) {
     await new Promise((resolve) => setTimeout(resolve, 100));
+    // Each one entered the session's conversation, as its adapter's read receipt says.
     updateChild(id, 'child-worker', (entry) => {
-      entry.messages = [...(entry.messages ?? []), { id: `m-${n}`, at: new Date().toISOString(), path: 'session', preview: `next task ${n}` }];
+      const at = new Date().toISOString();
+      messageSending(entry, { id: `m-${n}`, at, text: `next task ${n}`, from: 'your parent' });
+      messageRead(entry, `m-${n}`, at);
     });
   }
   assert.match(await tool({}, caller), /2 messages reached the session since the request, each a turn of its own\./);

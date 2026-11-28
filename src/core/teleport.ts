@@ -204,7 +204,7 @@ function seconds(ms: number): string {
 export async function requestSelfTeleport(deps: SelfTeleportDeps, caller: CallerIdentity, request: SelfTeleportRequest, hooks: RestartHooks): Promise<string> {
   if (!caller.childId) throw new Error('agent_teleport needs a child, or a session Bellwether started as a child: this session sent no child id, so there is nothing to teleport. Name the child to teleport with child.');
   const found = childOfCaller(caller);
-  if (!found) throw new Error(`agent_teleport was called for child ${caller.childId}, which no registry on this machine holds: its parent runs on another machine, and a child there cannot teleport itself until the request crosses the relay. Ask your parent with parent_report to teleport you. Nothing was recorded.`);
+  if (!found) throw new Error(`agent_teleport was called for child ${caller.childId}, which no registry on this machine holds: its parent runs on another machine. Self-teleport from there is not available yet: the request has to cross the relay to your parent's daemon, and that path is the next change. Until then, ask your parent with parent_report to teleport you. Nothing was recorded.`);
   const { parent, child } = found;
   const source = hostOf(child);
   const machine = request.machine?.trim();

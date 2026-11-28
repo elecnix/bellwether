@@ -47,11 +47,15 @@ export interface ReleaseRun {
   missing: number[];
   error?: string;
   logs: string[];
+  /** The release pull request's description as the run left it, from `gh pr create` and any later `gh pr edit`. */
+  description?: string;
 }
 
 export interface ReleaseRunOptions {
   /** Runs while `npm test` runs in the release worktree, after the release check. */
   duringGates?: () => Promise<void>;
+  /** Runs once GitHub has squash-merged the release pull request, before the run reads main again. */
+  afterRelease?: () => Promise<void>;
 }
 
 export interface ReleaseWorld {
@@ -78,7 +82,9 @@ export async function releaseWorld(first = '0.1.0'): Promise<ReleaseWorld & { cl
   const titles = new Map<number, string>();
   const published: string[] = [];
   let nextPr = 900;
-  let releasePr: { number: number; state: 'OPEN' | 'MERGED'; url: string; branch: string } | undefined;
+  // GitHub keeps a merged release pull request, so a later run of the same version finds it by its head.
+  const releasePrs = new Map<string, { number: number; state: 'OPEN' | 'MERGED'; url: string; branch: string; body: string }>();
+  let releasePr: { number: number; state: 'OPEN' | 'MERGED'; url: string; branch: string; body: string } | undefined;
 
   async function write(dir: string, files: Record<string, string>): Promise<void> {
     for (const [file, text] of Object.entries(files)) {
@@ -128,7 +134,7 @@ export async function releaseWorld(first = '0.1.0'): Promise<ReleaseWorld & { cl
 
   async function runRelease(version: string, options: ReleaseRunOptions = {}): Promise<ReleaseRun> {
     const logs: string[] = [];
-    releasePr = undefined;
+    releasePr = releasePrs.get(`release/${version}`);
     const run = async (cmd: string, args: string[], runOptions: RunOptions = {}): Promise<RunResult> => {
       const line = `${cmd} ${args.join(' ')}`;
       const cwd = runOptions.cwd ?? top;
@@ -159,12 +165,20 @@ export async function releaseWorld(first = '0.1.0'): Promise<ReleaseWorld & { cl
       if (line.startsWith('gh pr create')) {
         const branch = args[args.indexOf('--head') + 1]!;
         const number = nextPr++;
-        releasePr = { number, state: 'OPEN', url: `https://github.com/elecnix/bellwether/pull/${number}`, branch };
+        const body = await readFile(args[args.indexOf('--body-file') + 1]!, 'utf8');
+        releasePr = { number, state: 'OPEN', url: `https://github.com/elecnix/bellwether/pull/${number}`, branch, body };
+        releasePrs.set(branch, releasePr);
+        return ok(`${releasePr.url}\n`);
+      }
+      if (line.startsWith('gh pr edit') && args.includes('--body-file')) {
+        if (!releasePr || Number(args[2]) !== releasePr.number) throw new Error(`gh pr edit names #${args[2]}, which is not the release pull request`);
+        releasePr.body = await readFile(args[args.indexOf('--body-file') + 1]!, 'utf8');
         return ok(`${releasePr.url}\n`);
       }
       if (line.startsWith('gh monitor')) return ok(`${JSON.stringify({ type: 'ci-all-green' })}\n`);
       if (line.startsWith('gh pr merge')) {
         await squashRelease();
+        await options.afterRelease?.();
         return ok();
       }
       if (line.startsWith('gh pr view')) {
@@ -186,8 +200,9 @@ export async function releaseWorld(first = '0.1.0'): Promise<ReleaseWorld & { cl
       return { staged: false, missing: [], error: 'release() returned before staging', logs };
     } catch (error) {
       const message = (error as Error).message;
-      if (message.includes(STAGING)) return { staged: true, missing: [], logs };
-      return { staged: false, missing: [...message.matchAll(/^ {2}#(\d+) /gm)].map((m) => Number(m[1])), error: message, logs };
+      const description = releasePr?.body;
+      if (message.includes(STAGING)) return { staged: true, missing: [], logs, description };
+      return { staged: false, missing: [...message.matchAll(/^ {2}#(\d+) /gm)].map((m) => Number(m[1])), error: message, logs, description };
     } finally {
       // The operator's next run starts from a clean slate, as after a finished release.
       await git(top, ['worktree', 'remove', '--force', path.join(root, `release-${version}`)]);

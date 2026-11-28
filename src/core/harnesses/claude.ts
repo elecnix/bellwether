@@ -58,8 +58,8 @@ export const claude: HarnessEntry = {
     via: 'claude-channel',
     adopted: {
       adapter: 'server',
-      why: "takes no messages: Claude Code puts a server's message in a session only when the session started with that server as a channel",
-      reply: "Claude Code puts a server's message in a session only when the session started with that server as a channel, which a session Bellwether did not start never did, so agent_send types into its pane.",
+      why: "takes no messages: Claude Code puts a server's message in a session only when the session started with that server as a channel, and no channel flag on this session's command line names Bellwether, or its server predates 0.1.9",
+      reply: "Claude Code puts a server's message in a session only when the session started with that server as a channel, and no channel flag on this session's command line names Bellwether, or its server predates 0.1.9, so agent_send types into its pane.",
     },
   },
   conversation: { locate: locateClaudeTranscript },

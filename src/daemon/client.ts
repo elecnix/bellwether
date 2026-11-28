@@ -361,6 +361,36 @@ export class DaemonClient {
   }
 
   /**
+   * Say hello again as another harness session, as a Claude Code server does
+   * when a resume moves its process to another session (issue #184). The
+   * daemon serves a connection by its hello: the session decides its parent
+   * id, its tools, and the adoption it answers to. So the client leaves its
+   * connection with a bye, once no call waits on it, and connects again under
+   * the new session. The tool handlers hear a changed list as they do after a
+   * hand-over, and the daemon replays the unread messages of the child this
+   * session now is.
+   */
+  async reidentify(session: string): Promise<void> {
+    if (this.stopped || this.parent.session === session) return;
+    (this.parent as { session: string }).session = session;
+    // A call in flight answers on the connection that carried it.
+    const deadline = Date.now() + this.timeoutMs;
+    while (this.waiting.size && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 20));
+    const connection = this.connection;
+    if (connection) {
+      this.connection = undefined;
+      connection.abandoned = true;
+      connection.socket.on('error', () => {});
+      if (connection.socket.writable) connection.socket.write(formatRequest({ type: 'bye' }));
+      connection.socket.end();
+    }
+    // Events and receipts belong to the parent id the old session had.
+    this.received.clear();
+    this.lastEvents = [];
+    await this.reconnected();
+  }
+
+  /**
    * Connect, starting a daemon when nothing answers and spawning is allowed.
    * The client always says hello first and never refuses a daemon on its own:
    * only the daemon's answer decides. A daemon from an older release is handed

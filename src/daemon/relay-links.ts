@@ -22,7 +22,7 @@ import { farErrorLine, relayBridgeArgv, releaseAdvice } from '../core/ssh.ts';
 import type { ChildRecord } from '../core/types.ts';
 import { DAEMON_PROTOCOL, MAX_DAEMON_FRAME_BYTES, formatRequest, type DaemonReply, type DaemonRequest, type InboxMessage, type RelayMessageAnswer, type RelayAdoptAnswer, type RelayHostState, type RelayReport } from './protocol.ts';
 import { featureNamed } from './features.ts';
-import { BRIEF_SESSION_WAIT_MS } from '../core/send.ts';
+import { BRIEF_SESSION_WAIT_MS, type InboxAnswer, type InboxOptions } from '../core/send.ts';
 import type { PaneClaim } from '../core/pane-claims.ts';
 
 export interface RelayLinksOptions {
@@ -589,4 +589,20 @@ function writeMemory(memory: Record<string, unknown>): void {
 export function runsOn(hello: { version?: string; build?: string }): string {
   if (!hello.version) return 'a Bellwether that predates naming its version and build';
   return `bellwether ${hello.version}${hello.build ? ` build ${hello.build}` : ', a build that names no commit'}`;
+}
+
+/**
+ * A parent's message to a child on another machine, over the relay to that
+ * machine's daemon, which answers whether the child's session took it. A far
+ * daemon that predates relay-message, or a machine out of reach, gives the
+ * reason the caller records for typing.
+ */
+export async function relayInbox(links: Pick<RelayLinks, 'message'>, parentId: string, child: Pick<ChildRecord, 'id' | 'host'>, message: InboxMessage, options: InboxOptions = {}): Promise<InboxAnswer> {
+  const host = hostOf(child);
+  try {
+    const answer = await links.message(host, parentId, child.id, message, options);
+    return answer.delivered ? answer : { delivered: false, reason: `machine ${host} answered: ${answer.reason}` };
+  } catch (error) {
+    return { delivered: false, reason: (error as Error).message };
+  }
 }

@@ -28,7 +28,7 @@ import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import type { Feature } from '../src/daemon/features.ts';
-import { ADDED_NOTES_LOG, addedBy, NOTES_DIR, readNotes, resolvePrs, type Behavior } from './release-notes.ts';
+import { ADDED_NOTES_LOG, addedBy, NOTES_DIR, parseNote, readNotes, resolvePrs, type Behavior } from './release-notes.ts';
 import { bylineVersion, SITE_URL } from './site-version.ts';
 
 export const PACKAGE = '@elecnix/bellwether';
@@ -239,13 +239,21 @@ export function lateMessage(version: string, commit: string, missing: readonly M
   ].join('\n');
 }
 
+/** A note under a published version that its release commit did not carry, and why. */
+export interface MisplacedNote {
+  file: string;
+  /** What keeps the note from belonging to its version, in one clause. */
+  reason: string;
+}
+
 /** The error for notes that merged under a version npm already serves, where no release will list them. */
-export function publishedNoteMessage(version: string, previous: string, files: readonly string[]): string {
+export function publishedNoteMessage(version: string, previous: string, notes: readonly MisplacedNote[]): string {
   return [
-    `${files.length === 1 ? 'One note' : `${files.length} notes`} merged since ${previous} under a version npm already serves, so no release lists ${files.length === 1 ? 'it' : 'them'}:`,
+    `${notes.length === 1 ? 'One note' : `${notes.length} notes`} merged since ${previous} under a version npm already serves, so no release lists ${notes.length === 1 ? 'it' : 'them'}:`,
     '',
-    ...files.map((file) => `  ${file}`),
+    ...notes.map((note) => `  ${note.file}: ${note.reason}`),
     '',
+    'A note stays under a published version only when its front matter names each pull request it describes, and the commit that set that version carries every one of them.',
     `Move each one to ${NOTES_DIR}/${version}/ through a pull request, then run \`npm run release -- ${version}\` again. Nothing was pushed or staged.`,
   ].join('\n');
 }
@@ -619,17 +627,55 @@ class Release {
 
   /**
    * Stop when a commit since `base` added a note under `previous` or an
-   * older version. npm already serves that version, so no release would list
-   * the note, and a label on its pull request would hide it (issue #211).
+   * older version that the version's release commit did not carry. npm
+   * already serves that version, so no release would list a change that
+   * merged after it, and a label on its pull request would hide it (issue
+   * #211). A note belongs to a version when the commit that set the version
+   * has every pull request the note's front matter names as an ancestor, as
+   * for the entries #206 moved into files after 0.1.9 shipped them. Git
+   * decides the ancestry, never a date, because a squash merge keeps its
+   * author's date and a rebase moves it. A note whose front matter names no
+   * pull request belongs to the one that added it, which merged since
+   * `base`, so it never stays: leaving `prs:` out is no way past the check.
    */
   private async refuseNotesUnderPublished(tree: string, base: string, previous: string): Promise<void> {
     const added = (await this.must('git', ['log', '--first-parent', '--diff-filter=A', '--format=', '--name-only', `${base}..HEAD`, '--', NOTES_DIR], { cwd: tree }))
       .split('\n').map((line) => line.trim()).filter(Boolean);
-    const stale = [...new Set(added)].filter((file) => {
+    const candidates = [...new Set(added)].filter((file) => {
       const version = file.split('/')[1] ?? '';
-      return VERSION.test(version) && compareVersions(version, previous) <= 0;
+      return VERSION.test(version) && compareVersions(version, previous) <= 0 && existsSync(path.join(tree, file));
     }).sort();
-    if (stale.length > 0) throw new ReleaseError(publishedNoteMessage(this.version, previous, stale));
+    if (candidates.length === 0) return;
+    // Main takes squash merges, so the first-parent commit whose subject ends with (#N) is pull request N's.
+    const commits = new Map<number, string>();
+    for (const line of (await this.must('git', ['log', '--first-parent', '--format=%H %s', 'HEAD'], { cwd: tree })).split('\n')) {
+      const match = /^([0-9a-f]+) .*\(#(\d+)\)\s*$/.exec(line);
+      if (match && !commits.has(Number(match[2]))) commits.set(Number(match[2]), match[1]!);
+    }
+    const bases = new Map<string, string>();
+    const misplaced: MisplacedNote[] = [];
+    for (const file of candidates) {
+      const note = parseNote(file, await readFile(path.join(tree, file), 'utf8'));
+      if (note.prs.length === 0) {
+        misplaced.push({ file, reason: `its front matter names no pull request, so it belongs to the one that added it after ${previous}` });
+        continue;
+      }
+      if (!bases.has(note.version)) bases.set(note.version, await this.releaseBase(tree, note.version));
+      const versionCommit = bases.get(note.version)!;
+      const late: string[] = [];
+      for (const number of note.prs) {
+        const commit = commits.get(number);
+        if (!commit) {
+          late.push(`#${number}, which no commit on main carries`);
+          continue;
+        }
+        const ancestor = await this.deps.run('git', ['merge-base', '--is-ancestor', commit, versionCommit], { cwd: tree });
+        if (ancestor.code === 1) late.push(`#${number}, which merged after ${note.version}`);
+        else if (ancestor.code !== 0) throw new ReleaseError(`git merge-base --is-ancestor ${commit} ${versionCommit} failed in ${tree}: ${ancestor.stderr.trim()}`);
+      }
+      if (late.length > 0) misplaced.push({ file, reason: `it names ${late.join(' and ')}` });
+    }
+    if (misplaced.length > 0) throw new ReleaseError(publishedNoteMessage(this.version, previous, misplaced));
   }
 
   /**

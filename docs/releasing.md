@@ -72,7 +72,11 @@ GitHub squash-merges the release branch into `origin/main` as main stands at tha
 
 ### A note under a published version
 
-Both checks also stop on a note added since the previous release under that version or an older one. npm already serves that version, so no release would list the note, and a label on its pull request would hide it. The error lists each such file. Move it under the version you release.
+Both checks also stop on a note added since the previous release under that version or an older one, when that version's release commit doesn't carry the change. npm already serves that version, so no release would list the note, and a label on its pull request would hide it. The error lists each such file with the reason. Move it under the version you release.
+
+A note stays under its version when its front matter lists each pull request it describes, and the commit that set that version has all of them as ancestors. [#206](https://github.com/elecnix/bellwether/pull/206) moved the notes that 0.1.7 to 0.1.9 had published into files after 0.1.9, and each of those lists pull requests that merged before its version's release. The check reads that ancestry from git, never from a date, because a squash merge keeps its author's date and a rebase moves it.
+
+A note with no `prs:` belongs to the pull request that added it. That pull request merged after the previous release, so leaving the front matter out never gets a note past the check.
 
 ## A note is a file of its own
 

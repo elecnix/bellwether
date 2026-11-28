@@ -783,7 +783,8 @@ test("agent_stop of a child on another machine removes its brief, MCP config and
 
   const watcher = new Watcher({ client, parentId: parent.id, onEntries: () => {} });
   const reply = await runBellwetherTool({ client, clientFor: async () => client, parentId: parent.id, watcher, remote: ops }, 'agent_stop', { child: 'to-stop', force: true });
-  assert.equal(reply, 'Closed to-stop.');
+  // The worktree it ran in stays on its machine, where the parent's daemon cannot take a proof (issue #243).
+  assert.equal(reply, `Closed to-stop. Its worktree ${cwd} on child-box stays in place, because this daemon cannot take retirement's proofs on another machine. Remove it by hand there once its work is safe.`);
   for (const [what, file] of Object.entries(there)) assert.ok(!fs.existsSync(file), `the stop removed the ${what} file ${file}`);
 });
 

@@ -394,7 +394,7 @@ export function farWorktreesLine(child: ChildRecord): string | undefined {
   if (child.origin === 'adopt') return undefined;
   const runsOn = hostOf(child) === LOCAL_HOST ? undefined : hostOf(child);
   const far = [
-    ...(runsOn && child.cwd ? [`${child.cwd} on ${runsOn}, where it ran`] : []),
+    ...(runsOn && child.cwd ? [`${child.cwd} on ${runsOn}`] : []),
     ...departuresOf(child)
       .filter((entry) => entry.host !== LOCAL_HOST && entry.cwd)
       .map((entry) => `${entry.cwd} on ${entry.host}, which it left by a move`),

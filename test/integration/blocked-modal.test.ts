@@ -19,7 +19,7 @@ import { startDaemon, type ServiceFactory } from '../../src/daemon/server.ts';
 import { runBellwetherTool, type ToolContext } from '../../src/integrations/tools.ts';
 import { CLAUDE_PROMPT, PERMISSION_QUESTION } from '../fixtures/claude-screens.ts';
 import { startFakeHerdr, type FakeHerdr, type RecordedRequest } from '../fixtures/fake-herdr.ts';
-import { paneReadAnswer } from '../fixtures/ghost-screens.ts';
+import { CODEX_TWO_LINE_DRAFT, paneReadAnswer } from '../fixtures/ghost-screens.ts';
 
 const PANE = 'w1:p1';
 /** herdr methods that put input into a pane. None may appear on the watcher's path. */
@@ -199,6 +199,21 @@ test('a child at its prompt after a finished turn reads idle', async () => {
   try {
     await sleep(50);
     r.pane.set('idle');
+    await until('the idle event', () => r.published.length > 0);
+    await sleep(200);
+    assert.deepEqual(r.published.map((entry) => entry.event), ['idle']);
+    assert.equal(r.record()?.prompt, undefined);
+    assertNoInput(r);
+  } finally {
+    await r.stop();
+  }
+});
+
+test('a child idle with two lines typed into its box reads idle, not blocked (issue #164)', async () => {
+  const r = await rig(new Pane('working', CLAUDE_PROMPT), { kind: 'claude', harness: 'claude-code', lastStatus: 'working' });
+  try {
+    await sleep(50);
+    r.pane.set('idle', CODEX_TWO_LINE_DRAFT);
     await until('the idle event', () => r.published.length > 0);
     await sleep(200);
     assert.deepEqual(r.published.map((entry) => entry.event), ['idle']);

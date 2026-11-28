@@ -10,6 +10,10 @@ Between 03:19 and 03:38 UTC on 2026-11-28, the runs took place. Both machines ra
 
 Each artifact below sits under `~/.local/share/bellwether-empirical/` on the parent's machine, with probe scripts in `probes/` and outputs in `artifacts/`. Probes speak herdr's socket protocol directly, one request per connection as `src/core/herdr-client.ts` does, and none of them loads Bellwether code. Afterwards, the runs closed every session, child, tab and workspace they opened. The scratch folder on the second machine no longer exists.
 
+## Which code the runs saw
+
+The runs used 0.1.9. The fixes that changed a model verdict on 2026-11-28 all came later: #213, #216, #217, #221, #223, #225 and #248. A row below describes 0.1.9. `README.md` gives each invariant's verdict at f3fe3a7, and none of those verdicts contradicts a row here.
+
 ## Levels
 
 | Level | Meaning |

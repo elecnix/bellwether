@@ -18,6 +18,7 @@
 //      session still there, and leave a stopped one stopped as it was.
 //   6. Commit the copy, point the record, and so the relay, at the new host,
 //      and append the outcome to the policy's log.
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { withChildLock } from './child-lock.ts';
@@ -35,10 +36,18 @@ import type { ImportResult, ProbeResult, SessionBundle } from './session-state.t
 import { harnessOf, herdrLink, type RegisterRemote } from './spawn.ts';
 import { processInfoOf } from './start-check.ts';
 import { teleportState, type TeleportRefusalInput, type TeleportState } from './teleport-plan.ts';
-import type { ChildRecord } from './types.ts';
+import type { ChildRecord, Crossing } from './types.ts';
 
 /** How long the watcher ignores the old pane's close. Longer than any carry: two copies, a stop and a start. */
 export const MOVE_WINDOW_MS = 15 * 60_000;
+
+/**
+ * This daemon process, as a crossing's mark names it. A daemon that finds a
+ * mark naming another process knows that process stopped mid-crossing, since
+ * one daemon runs per machine and a new one starts only once the old one is
+ * gone.
+ */
+export const DAEMON_INSTANCE = `${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
 
 export interface CarryRequest {
   /** The child's name, id or pane. */
@@ -295,6 +304,7 @@ export async function carryChild(deps: CarryDeps, parentId: string, request: Car
       }
       // A file the first copy created stays created, whatever the second finds.
       for (const file of result.files) written.set(file.path, { path: file.path, created: written.get(file.path)?.created ?? file.created });
+      mark({ files: settle.files() });
       verifyCopy(prepared, result, target);
       sessionFile = result.sessionFile;
       bytes = prepared.reduce((sum, file) => sum + file.bytes, 0);
@@ -302,17 +312,39 @@ export async function carryChild(deps: CarryDeps, parentId: string, request: Car
     const settle = { childId: child.id, files: () => [...written.values()] };
     const noticeText = policy.notice?.({ source, target, sourceCwd: child.cwd ?? targetCwd, targetCwd, at: askedAt.toISOString(), by, ...(request.reason ? { reason: request.reason } : {}), state });
 
+    // The mark keeps a resume, a restart and the watcher off the child while it
+    // crosses, and tells a daemon that starts after this one stopped how far the
+    // crossing got, so it can finish or undo it (recover.ts).
+    const mark = (change: Partial<Crossing>): void => {
+      updateChild(parentId, child.id, (record) => {
+        if (record.moving?.daemon === DAEMON_INSTANCE) record.moving = { ...record.moving, ...change };
+      });
+    };
+    updateChild(parentId, child.id, (record) => {
+      record.moving = {
+        from: source,
+        to: target,
+        since: askedAt.toISOString(),
+        until: new Date(askedAt.getTime() + MOVE_WINDOW_MS).toISOString(),
+        verb,
+        daemon: DAEMON_INSTANCE,
+        stage: 'checked',
+        state,
+        source: { ...(child.cwd ? { cwd: child.cwd } : {}), paneId: child.paneId, ...(child.tabId ? { tabId: child.tabId } : {}), ...(child.workspaceId ? { workspaceId: child.workspaceId } : {}), ...(child.session ? { session: child.session } : {}), ...(child.transcript ? { transcript: child.transcript } : {}), ...(child.exitedAt ? { exitedAt: child.exitedAt } : {}) },
+        target: { cwd: targetCwd },
+        sourceFile: bundle.sourceFile,
+        by,
+        ...(request.reason ? { reason: request.reason } : {}),
+      };
+    });
+
     try {
       // 2. Copy and verify, while a live child still runs on the source.
       stage = 'copied';
       await copy(bundle);
       stage = 'verified';
+      mark({ stage, files: settle.files(), target: { cwd: targetCwd, session: byPath ? { kind: 'path', value: sessionFile } : { kind: 'id', value: resumable.value } } });
       log(`${verb}: ${child.name} copied to ${where(target)} and verified, ${bytes} bytes`);
-
-      // The mark keeps a resume, a restart and the watcher off the child while it crosses.
-      updateChild(parentId, child.id, (record) => {
-        record.moving = { from: source, to: target, since: askedAt.toISOString(), until: new Date(askedAt.getTime() + MOVE_WINDOW_MS).toISOString() };
-      });
 
       // 3. Stop a live child, so the session is never live twice. The watcher ignores this close.
       if (state === 'live') {
@@ -326,12 +358,14 @@ export async function carryChild(deps: CarryDeps, parentId: string, request: Car
         const stillLive = (await sourceClient.agentList()).find((other) => other.paneId === child.paneId || holdsSession(other, resumable));
         if (stillLive) throw new Error(closeError ? `its tab on ${where(source)} could not be closed: ${closeError.message}` : `its session still runs in pane ${stillLive.paneId} on ${where(source)} after its tab closed`);
         stage = 'stopped';
+        mark({ stage });
 
         // The harness may write its last lines as it exits, so read the session once more.
         const after = await sourceEnd.exportSession({ harness, session: resumable.value, cwd: child.cwd });
         if (!sameBundle(bundle, after)) {
           stage = 'recopied';
           await copy(after);
+          mark({ stage, files: settle.files() });
           log(`${verb}: ${child.name}'s session grew as it stopped, so it was copied again and verified, ${bytes} bytes`);
         }
       }
@@ -390,8 +424,11 @@ export async function carryChild(deps: CarryDeps, parentId: string, request: Car
           rollbackError = (fault as Error).message;
         }
       }
+      const reopen = `agent_spawn with resume ${child.name}, which resumes it on ${where(source)} from ${bundle.sourceFile}`;
       updateChild(parentId, child.id, (record) => {
         delete record.moving;
+        // A child that runs on neither machine says so until it runs again.
+        if (rollbackError) record.crossingFailed = { at: new Date().toISOString(), verb, from: source, to: target, stage, error: `${failure.replace(/\.$/, '')}; starting it again on ${where(source)} failed too: ${rollbackError}`, sourceFile: bundle.sourceFile, reopen };
       });
       const outcome = rollbackError ? 'stranded' : restart ? 'rolled-back' : 'abandoned';
       appendLog({ at: new Date().toISOString(), parent: parentId, child: child.id, name: child.name, harness, state, outcome, from: source, to: target, stage, by, reason: request.reason, error: failure, ...(rollbackError ? { rollbackError } : {}), ...(notes.length ? { notes } : {}) });

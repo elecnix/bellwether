@@ -22,6 +22,8 @@ import { RETIRE_TOOL, goneCwdLine, realRetireOps, requestRetirement, retireLine,
 import type { RemoteOps } from '../core/remote.ts';
 import { lastAssistantMessage } from '../core/transcript.ts';
 import { moveChild } from '../core/move.ts';
+import { isMoving } from '../core/move-plan.ts';
+import { crossingState } from '../core/recover-crossing.ts';
 import { compareVersions } from '../core/move-plan.ts';
 import { teleportChild, teleportReply } from '../core/teleport.ts';
 import { predates } from '../daemon/relay-links.ts';
@@ -447,7 +449,9 @@ function describeChild(child: ChildRecord, watcher: Watcher, relayState?: ToolCo
   const retire = child.retireOutcome === 'removed' ? ', retired' : child.retireOutcome === 'refused' ? ', retirement refused' : child.retireRequestedAt ? ', retirement requested' : '';
   const away = child.exitedAt ? undefined : watcher.unreachable(hostOf(child));
   const live = away ? `unreachable since ${away.since} (last seen ${child.lastStatus})` : child.lastStatus;
-  const state = `${child.exitedAt ? `exited${child.exitCode === undefined ? '' : ` (${child.exitCode})`}` : live}${restart}${retire}`;
+  // A child that is crossing to another machine is unreachable, not exited (issue #219 was the same confusion for a far claim).
+  const crossing = isMoving(child) ? crossingState(child) : undefined;
+  const state = `${crossing ?? (child.exitedAt ? `exited${child.exitCode === undefined ? '' : ` (${child.exitCode})`}` : live)}${child.crossingFailed ? ', on neither machine since a crossing failed' : ''}${restart}${retire}`;
   // An exited child names what became of its last pane, in a column of its own at the end (issue #187).
   const ended = childPaneEnd(child, hostOf(child) === LOCAL_HOST ? view : undefined) ?? '-';
   const name = child.agentName ? `${child.name} (${child.agentName})` : child.name;

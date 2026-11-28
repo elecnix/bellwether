@@ -15,6 +15,7 @@ import { bellwetherHome } from './core/paths.ts';
 import { emptyParent, listParents, readParent, saveParent } from './core/registry.ts';
 import { restartFailureLines, restartWaitLines } from './core/restart.ts';
 import { teleportLines } from './core/teleport.ts';
+import { crossingLines } from './core/recover-crossing.ts';
 import { farRecordLines } from './core/remote.ts';
 import { goneSessionLines, herdrView } from './core/pane-fate.ts';
 import { PROMPT_NOTICE, isReportStatus } from './core/report.ts';
@@ -260,6 +261,10 @@ async function doctor(): Promise<number> {
   for (const line of farRecordLines(listParents())) console.log(`  ${line}`);
   // A recent teleport, and a teleported child that has not read its notice (issue #226).
   for (const line of teleportLines(listParents())) console.log(`  ${line}`);
+  // A crossing under way shows as one, not as an exit, and a child a crossing left on neither machine fails (issue #226).
+  const crossings = crossingLines(listParents());
+  for (const line of crossings) console.log(`  ${line}`);
+  failures += crossings.filter((line) => line.startsWith('fail')).length;
   // Each session on this machine whose pane is gone, and the command that brings it back (issue #187).
   const view = panes ? await herdrView(herdr, panes) : undefined;
   if (view) {

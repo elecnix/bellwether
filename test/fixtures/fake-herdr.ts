@@ -26,6 +26,8 @@ export interface FakeHerdrOptions {
   respond?: (request: RecordedRequest) => { result: unknown } | { error: { code: string; message: string } } | undefined;
   /** Wait this long before each answer, as a busy herdr would. */
   delayMs?: number;
+  /** Record a request and never answer it, as a herdr whose caller is killed mid-call would see it. */
+  hold?: (request: RecordedRequest) => boolean;
   /** The status herdr reports after it detects a typed start: idle by default, or null for none. */
   statusAfterStart?: string | null;
 }
@@ -190,6 +192,7 @@ export async function startFakeHerdr(options: FakeHerdrOptions = {}): Promise<Fa
         seen += 1;
 
         if (request.method === 'events.subscribe' && options.subscribe?.(socket, request)) continue;
+        if (options.hold?.(request)) continue;
 
         const invalid = validateRequest(request.method, request.params);
         if (invalid) {

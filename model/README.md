@@ -42,12 +42,14 @@ npm install -g everystate     # or: brew install mattzcarey/tap/everystate
 | `RecordNamesPane` | A record names a pane that exists | Breaks: `OpenNew`, `LetGo`, `Crash` |
 | `LiveWorktreeKept` | A worktree a live child works in is never removed | Breaks: `ReapCheck`, `ReapBusy`, `ResumeClear`, `ReapRemove` |
 | `LiveWorkspaceKept` | A workspace holding a live session is never removed | Breaks: `OwnerCloses`, `RelList`, `SpawnInto`, `RelClose`; **holds** when herdr removes an empty workspace |
-| `TakenMeansTurn` | A brief is taken only if the model began a turn on it | Breaks: `Push`, `AdapterQueue`, `Stray`, `Record`; **holds** with no stray status and no resend |
+| `TakenMeansTurn` | A brief is taken only if the model began a turn on it | Breaks: `Push`, `AdapterQueue`, `Stray`, `Record`; **holds** with no stray status, with or without a resend |
 | `EntersOnce` | A message enters a session exactly once | Breaks: `Push`, `AckTimeout`, `AdapterQueue` |
 | `ShippedHasNote` | A merged pull request has a note in the release that ships it | Breaks: `Open`, `StartRelease`, `Merge`, `FinishRelease` |
 | `NoNoteUnderPublished` | No note is filed under an already published version | Breaks: `Open`, `StartRelease`, `FinishRelease`, `Merge` |
 
-Two configurations hold, and they earn their place: `LifecycleHerdrRemovesEmpty-LiveWorkspaceKept.cfg` and `DeliveryNoStrayNoResend-TakenMeansTurn.cfg`. Each shows what a breach depends on. The first needs herdr to keep an empty workspace; the second needs either a status that arrives when nothing is being sent, or a resend after a lapse. A fix that removes one assumption turns a breach into a hold, and the config file is where that is written down.
+Two configurations hold, and they earn their place: `LifecycleHerdrRemovesEmpty-LiveWorkspaceKept.cfg` and `DeliveryNoStrayNoResend-TakenMeansTurn.cfg`. Each shows what a breach depends on. The first needs herdr to keep an empty workspace; the second needs a `working` status that the brief did not cause, which `Stray` stands for.
+
+With `StrayWorking = FALSE` and `MaxPushes = 2`, the checker doesn't find a breach, so a resend on its own leaves `TakenMeansTurn` intact. A fix that removes one assumption turns a breach into a hold, and the config file is where that is written down.
 
 ## What the model is not
 

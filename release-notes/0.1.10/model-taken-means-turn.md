@@ -1,0 +1,1 @@
+In the model's README, the cause of a `TakenMeansTurn` breach is now a `working` status that the brief did not cause. A resend after a lapse doesn't break it on its own, so a fix for that breach starts at the status check in `src/core/brief-delivery.ts`.

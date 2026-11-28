@@ -93,6 +93,24 @@ A harness can quit and leave its pane open, and then the child exits. `relay-cle
 
 Should the parent's watcher miss the return, as when its daemon was down, `agent_adopt` on the pane brings the child back under its child id, and the reply reports it. A daemon on that machine may hold the session under another child id, and that id then stands for the session. The reply gives both ids, and the old record keeps its exited status and gets `replacedBy`.
 
+## Restarting a child there
+
+An `agent_restart` of a child on another machine travels over the relay connection that carries its reports. The request goes out as a `relay-restart`, and the daemon on that machine restarts the child as it would one of its own. It opens a new tab in the child's workspace and closes the old pane. Then it writes the child's start files again and resumes the same session under the same child id.
+
+That daemon replies with the new pane, which the parent's record takes. Everything else in the record stays as it was, so the child's history, receipts and messages carry on.
+
+The parent's record lets go of the old pane before it asks. The watcher then reads the close on that machine as part of the restart, not as the child exiting. If the daemon refuses, the pane goes back on the record, and nothing changes on either machine.
+
+Each case below refuses a restart, and the refusal gives the reason that applied:
+
+- the daemon there predates the request, which came with Bellwether 0.1.9; the refusal reports the version that machine runs
+- no herdr answers on that machine at the socket of the herdr session that the saved machine profile names
+- the child's session is not on that machine, because its harness never wrote the session's file there
+- that machine doesn't have a relay record of the child for this parent
+- the machine is unreachable; the refusal reports the state of the connection
+
+A failure can come late, after the old pane there has closed and before the session starts again. Bellwether marks the child as gone on the parent's record in that case, as it does when a restart fails on the parent's own machine.
+
 ## Connection state
 
 Backoff runs from 1 second to 5 minutes when the parent's daemon retries a connection that fails or drops. The first reply on each connection gives the version and build of the child's machine, and `bellwether doctor` prints both on the `relay` line for that machine. Machines on one version number but different builds then show different lines.

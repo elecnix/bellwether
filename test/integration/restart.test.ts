@@ -3,7 +3,7 @@
 // same child id, a parent session's pane closes before the same session starts
 // in a new one, and a caller restarting itself is deferred until its turn
 // ends. The daemon refuses a target with no session to name, one on another
-// machine, a pane no registry holds, a parent pane that now holds another
+// machine it holds no relay to, a pane no registry holds, a parent pane that now holds another
 // session, and a mid-turn pane that never settles. Each case runs in its own root.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -404,7 +404,7 @@ test('a second restart during one is refused by the lock', async (t) => {
   assert.equal(calls(rig.fake, 'tab.close').length, 1);
 });
 
-test('an adopted child, and a child on another machine, are refused', async (t) => {
+test('an adopted child, and a child on another machine with no relay to it, are refused', async (t) => {
   isolate(t, 'bellwether-restart-');
   const rig = await herdr(t);
   const adoptedId = parent('restart-adopted');
@@ -414,7 +414,7 @@ test('an adopted child, and a child on another machine, are refused', async (t) 
 
   const remoteId = parent('restart-remote');
   upsertChild(remoteId, worker({ host: 'hawthorne' }));
-  await assert.rejects(context(remoteId, rig).tool('agent_restart', { target: 'worker' }), /worker runs on machine hawthorne, and this daemon only restarts agents on its own machine/);
+  await assert.rejects(context(remoteId, rig).tool('agent_restart', { target: 'worker' }), /worker runs on machine hawthorne, and it was not restarted: this daemon holds no relay connection to that machine, which a restart there goes through\./);
   assert.equal(calls(rig.fake, 'tab.close').length, 0);
 });
 

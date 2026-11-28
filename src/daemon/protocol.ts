@@ -6,6 +6,7 @@ import type { CallerIdentity, Harness, OutboxEntry, RelayHostState, ReportStatus
 import type { AncestryAnswer } from '../core/ancestry.ts';
 import type { RosterChild } from '../core/roster.ts';
 import type { SessionReach } from '../core/adopted-session.ts';
+import type { RelayRestartChild } from '../core/restart.ts';
 
 export type { RelayHostState, RelayLinkStatus } from '../core/types.ts';
 
@@ -30,6 +31,11 @@ export type { RelayHostState, RelayLinkStatus } from '../core/types.ts';
 //    crosses back in the relay outbox as a relay report that names
 //    `messageRead`. A far daemon that predates it answers unknown_type, and
 //    the parent types the message instead.
+//    Later, without a bump: a parent's daemon asks the daemon on a child's
+//    machine to restart that child there (relay-restart), which closes the
+//    child's pane, opens a new tab and resumes the same session under the same
+//    child id. A far daemon that predates it answers unknown_type, and the
+//    parent refuses the restart by name, with the release that brings it.
 //
 // Change the wire additively: a new request type, or a new optional field,
 // needs no bump, because a daemon answers a request it does not know with
@@ -67,6 +73,10 @@ export const PROTOCOL_HISTORY: readonly { protocol: number; breaks: boolean; cha
   // the child's session before it answers (issue #162). A far daemon that
   // predates the field answers at once that no session is connected, and the
   // parent types the brief into the far pane, as for any message it refuses.
+  // A relay-restart asks the daemon on a child's machine to restart that
+  // child there (issue #190). A far daemon that predates it answers
+  // unknown_type, and the parent refuses the restart by name and changes
+  // nothing.
 ];
 
 /**
@@ -263,6 +273,27 @@ export interface RelayMessageRequest {
   awaitSession?: boolean;
 }
 
+/**
+ * From a parent's daemon on another machine: restart a child this machine
+ * holds a relay record for, as a restart on its own machine would. The daemon
+ * here closes the child's pane, opens a new tab and resumes the same session
+ * under the same child id. The answer is a result whose text is the JSON of
+ * `RelayRestartAnswer`. Added without a protocol bump: a daemon that predates
+ * it answers unknown_type, and the parent refuses the restart by name.
+ */
+export interface RelayRestartRequest {
+  type: 'relay-restart';
+  id: string;
+  parentId: string;
+  childId: string;
+  /** What the parent's registry holds about the child, which the restart here needs. */
+  child: RelayRestartChild;
+  /** The herdr session the parent reaches this machine through, from its saved machine profile. */
+  herdrSession?: string;
+  /** How long to wait for a turn under way to end before refusing, in milliseconds. */
+  waitTimeoutMs?: number;
+}
+
 /** The text of a relay-message result: the child's session took it, through which adapter, or why not. */
 export type RelayMessageAnswer = { delivered: true; via: string } | { delivered: false; reason: string };
 
@@ -341,7 +372,7 @@ export interface AncestryRequest {
   agent: string;
 }
 
-export type DaemonRequest = HelloRequest | CallRequest | ReceiptRequest | ByeRequest | DrainRequest | WatchRequest | ReportRequest | RelaySubscribeRequest | RelayAckRequest | RelayReadRequest | RelayAdoptRequest | RelayStatusRequest | SessionsRequest | AncestryRequest | MessageAckRequest | RelayMessageRequest;
+export type DaemonRequest = HelloRequest | CallRequest | ReceiptRequest | ByeRequest | DrainRequest | WatchRequest | ReportRequest | RelaySubscribeRequest | RelayAckRequest | RelayReadRequest | RelayAdoptRequest | RelayStatusRequest | SessionsRequest | AncestryRequest | MessageAckRequest | RelayMessageRequest | RelayRestartRequest;
 
 export interface HelloReply {
   type: 'hello';
@@ -628,6 +659,29 @@ export function parseRequest(line: string): DaemonRequest {
       const body = typeof message['text'] === 'string' ? message['text'] : '';
       if (!messageId || !body.trim()) throw new ProtocolError('invalid_message', 'a relay message needs a message id and text');
       return { type: 'relay-message', id, parentId, childId, message: { id: messageId, text: body, from: text(message['from']) || 'your parent', at: text(message['at']) || new Date().toISOString() }, ...(value['awaitSession'] === true ? { awaitSession: true } : {}) };
+    }
+    case 'relay-restart': {
+      const id = text(value['id']);
+      const parentId = text(value['parentId']);
+      const childId = text(value['childId']);
+      const child = value['child'];
+      if (!id || !parentId || !childId || !isRecord(child)) throw new ProtocolError('invalid_restart', 'a relay restart needs an id, a parent id, a child id and the child');
+      const session = child['session'];
+      const name = text(child['name']);
+      const kind = text(child['kind']);
+      const harness = text(child['harness']);
+      const paneId = typeof child['paneId'] === 'string' ? child['paneId'] : '';
+      if (!name || !kind || !harness || !isRecord(session) || !text(session['value'])) throw new ProtocolError('invalid_restart', 'a relay restart needs the child\'s name, kind, harness and session');
+      const sessionKind = text(session['kind']) || 'id';
+      const optional = (key: string): Record<string, string> => (text(child[key]) ? { [key]: text(child[key]) } : {});
+      const depth = typeof child['depth'] === 'number' && Number.isInteger(child['depth']) ? child['depth'] : 1;
+      const maxDepth = typeof child['maxDepth'] === 'number' && Number.isInteger(child['maxDepth']) ? { maxDepth: child['maxDepth'] } : {};
+      const reads = Array.isArray(child['reads']) && child['reads'].every((entry) => typeof entry === 'string') ? { reads: child['reads'] as string[] } : {};
+      const launch = isRecord(child['launch']) ? { launch: { ...(text(child['launch']['harnessModel']) ? { harnessModel: text(child['launch']['harnessModel']) } : {}), ...(text(child['launch']['provider']) ? { provider: text(child['launch']['provider']) } : {}) } } : {};
+      const parsed: RelayRestartChild = { name, kind, harness, paneId, depth, session: { kind: sessionKind, value: text(session['value']) }, ...optional('tabId'), ...optional('workspaceId'), ...optional('workspaceLabel'), ...optional('cwd'), ...(child['ownsWorkspace'] === true ? { ownsWorkspace: true } : {}), ...maxDepth, ...reads, ...launch };
+      const herdrSession = text(value['herdrSession']);
+      const waitTimeoutMs = typeof value['waitTimeoutMs'] === 'number' && value['waitTimeoutMs'] > 0 ? { waitTimeoutMs: value['waitTimeoutMs'] } : {};
+      return { type: 'relay-restart', id, parentId, childId, child: parsed, ...(herdrSession ? { herdrSession } : {}), ...waitTimeoutMs };
     }
     case 'relay-status': {
       const id = text(value['id']);

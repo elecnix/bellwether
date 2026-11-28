@@ -20,6 +20,7 @@ import { RelayLinks, relayInbox } from './relay-links.ts';
 import { LOCAL_HOST, hostOf } from '../core/machine.ts';
 import { acceptLocalReport, isReportStatus, localParentOf, routeReport, type ReportInput } from '../core/report.ts';
 import { readRelayRecord, updateRelayRecord } from '../core/relay-records.ts';
+import { restartForRelay, type RelayRestartAnswer } from '../core/restart.ts';
 import { claimPane } from '../core/pane-claims.ts';
 import { adoptedInboxGap, adoptedParentOf, type SessionReach } from '../core/adopted-session.ts';
 import { lastAssistantMessage } from '../core/transcript.ts';
@@ -714,6 +715,18 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
         const answer = await sessionInbox({ id: record.childId, name: record.name, kind: record.kind }, request.message);
         if (!answer.delivered) keepRelayMessage(request.childId, undefined, request.message.id);
         log(`relay-message ${request.message.id} for child ${request.childId}: ${answer.delivered ? `taken by its session (${answer.via})` : answer.reason}`);
+        reply({ type: 'result', id: request.id, text: JSON.stringify(answer) });
+        return;
+      }
+      if (request.type === 'relay-restart') {
+        // A parent's daemon on another machine restarts its child here (issue #190), as a restart here would.
+        let answer: RelayRestartAnswer;
+        try {
+          answer = await restartForRelay(request.parentId, request.childId, request.child, { ...(request.herdrSession ? { herdrSession: request.herdrSession } : {}), ...(request.waitTimeoutMs === undefined ? {} : { waitTimeoutMs: request.waitTimeoutMs }), hooks: { log } });
+        } catch (error) {
+          answer = { restarted: false, reason: `the restart there failed before it closed anything: ${(error as Error).message}` };
+        }
+        log(`relay-restart of child ${request.childId} for ${request.parentId}: ${answer.restarted ? `closed ${answer.outcome.oldPane}, opened ${answer.outcome.newPane}` : answer.reason}`);
         reply({ type: 'result', id: request.id, text: JSON.stringify(answer) });
         return;
       }

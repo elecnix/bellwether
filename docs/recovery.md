@@ -61,10 +61,12 @@ That reply includes the new pane, the tab and the session id, so the caller can 
 
 A restart can close the old pane and then fail to start the session, which leaves the session gone. The record keeps `restartFailed`, with the time, the last pane, its workspace, the error and how to bring the session back. A child's parent receives one `exited` event that says the child did not come back from a restart. `bellwether doctor` prints a `fail` line for each such session, naming it and its last pane, until a restart, a resume or the session's own return clears it. The line in `~/.bellwether/restart.log` records `outcome: failed`.
 
+Restarting a child that runs on another machine happens on that machine. The parent's daemon sends the request over the relay connection to the daemon there, which restarts the child through its own herdr under the same child id. The [Restarting a child there](remote-machines.md#restarting-a-child-there) section lists the cases it refuses.
+
 The daemon refuses a restart when:
 
 - the target has no recorded session, and the refusal includes the child and its pane
-- the child runs on another machine
+- the child runs on another machine, and that machine refuses the restart
 - Bellwether did not start the pane of an adopted child
 - the target is a live agent missing from every registry
 - the parent's pane now holds another session or another harness

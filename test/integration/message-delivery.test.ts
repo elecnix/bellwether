@@ -7,6 +7,7 @@
 // anything was typed into a pane, and the child record says which path the
 // message took.
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -177,6 +178,79 @@ test('a Claude Code child gets the message through its channel, nothing is typed
   const read = await until('the read on the record', () => messagesOf(space, WRITER.id).find((message) => message.id === id && message.readAt));
   assert.equal(read.text, undefined, 'the text leaves the record once it is read');
   assert.match(await space.parent.tool('agent_list', {}), new RegExp(`writer: message ${id} at .*, into its session through Bellwether channel; read at `));
+});
+
+test('a message pushed before Claude Code finishes the MCP handshake waits for it, so the channel never writes a notification Claude Code would drop (issue #274)', async (t) => {
+  // Claude Code 2.1.332 drops a channel notification that reaches it before
+  // its notifications/initialized, and the write to stdout still succeeds.
+  // The server says hello to the daemon at once, so a start's first push can
+  // come in that window. This case plays Claude Code by hand and holds the
+  // handshake back until the push has reached the server.
+  const space = await room(t, [WRITER]);
+  const session = '1d2e3f4a-5b6c-4d7e-8f90-a1b2c3d4e5f6';
+  const cwd = path.join(space.root, 'worktree');
+  const config = path.join(space.root, '.claude');
+  const transcript = path.join(config, 'projects', claudeProjectDir(cwd), `${session}.jsonl`);
+  fs.mkdirSync(path.dirname(transcript), { recursive: true });
+  fs.writeFileSync(transcript, '');
+  const env: Record<string, string> = {
+    PATH: process.env['PATH'] ?? '',
+    HOME: space.root,
+    BELLWETHER_HOME: space.home,
+    BELLWETHER_DAEMON_SOCKET: space.socketPath,
+    CLAUDE_CONFIG_DIR: config,
+    CLAUDE_CODE_SESSION_ID: session,
+    CLAUDE_PROJECT_DIR: cwd,
+    HERDR_SOCKET_PATH: space.fake.socketPath,
+    HERDR_PANE_ID: WRITER.pane,
+    BELLWETHER_PARENT: space.parentId,
+    BELLWETHER_DEPTH: '1',
+  };
+  const server = spawn(process.execPath, [channelServer, '--child', WRITER.id], { env, stdio: ['pipe', 'pipe', 'pipe'] });
+  t.after(() => {
+    server.stdin.end();
+    server.kill();
+  });
+  // Every line the server writes, with whether Claude Code had finished its handshake when it came.
+  const lines: { message: { id?: number; method?: string; params?: { meta?: Record<string, string> } }; initialized: boolean }[] = [];
+  let initialized = false;
+  let buffer = '';
+  server.stdout.setEncoding('utf8');
+  server.stdout.on('data', (chunk: string) => {
+    buffer += chunk;
+    for (let end = buffer.indexOf('\n'); end >= 0; end = buffer.indexOf('\n')) {
+      const line = buffer.slice(0, end).trim();
+      buffer = buffer.slice(end + 1);
+      if (line) lines.push({ message: JSON.parse(line) as (typeof lines)[number]['message'], initialized });
+    }
+  });
+  server.stderr.resume();
+  const write = (message: Record<string, unknown>): void => {
+    server.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', ...message })}\n`);
+  };
+  const channelNotes = (): (typeof lines)[number][] => lines.filter((entry) => entry.message.method === 'notifications/claude/channel');
+  await connected(space, WRITER.id);
+
+  // The push goes out while Claude Code has not even sent initialize.
+  const sending = space.parent.tool('agent_send', { child: 'writer', text: 'Rebase on main before you push.' });
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  assert.deepEqual(channelNotes(), [], 'no channel notification before Claude Code has finished the MCP handshake, because Claude Code drops it');
+
+  write({ id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'claude-code', version: '0.0.0' } } });
+  await until('the initialize answer', () => lines.some((entry) => entry.message.id === 1));
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  assert.deepEqual(channelNotes(), [], 'none between initialize and notifications/initialized either');
+  initialized = true;
+  write({ method: 'notifications/initialized' });
+
+  const reply = await sending;
+  const id = /Delivered to writer's session as message (m-[0-9a-f]{8}), through its Bellwether channel; nothing was typed into its pane\./.exec(reply)?.[1];
+  assert.ok(id, reply);
+  const notes = await until('the channel notification', () => (channelNotes().length ? channelNotes() : undefined));
+  assert.equal(notes.length, 1, 'the message enters the session once');
+  assert.equal(notes[0]?.initialized, true);
+  assert.equal(notes[0]?.message.params?.meta?.['message_id'], id);
+  assert.deepEqual(typed(space.fake, WRITER.pane), [], 'nothing typed into the pane');
 });
 
 test('a pi child gets the message as a steered pi message, and message_end marks it read', async (t) => {

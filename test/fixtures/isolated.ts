@@ -17,7 +17,7 @@ import { LIVE_SOCKET } from './isolation.ts';
 /** The live herdr socket, from the password database, so a changed HOME cannot hide it. */
 export const LIVE_HERDR_SOCKET = path.join(os.userInfo().homedir, '.config', 'herdr', 'herdr.sock');
 
-const HERDR_VARIABLES = ['HERDR_ENV', 'HERDR_PANE_ID', 'HERDR_SOCKET_PATH', 'HERDR_SESSION'];
+const HERDR_VARIABLES = ['HERDR_ENV', 'HERDR_PANE_ID', 'HERDR_SOCKET_PATH', 'HERDR_SESSION', 'HERDR_BIN_PATH'];
 const OWNED = ['HOME', 'BELLWETHER_HOME', 'BELLWETHER_DAEMON_SOCKET', 'XDG_CONFIG_HOME', 'PI_CODING_AGENT_DIR', 'CLAUDE_CONFIG_DIR', 'CLINE_DIR', ...HERDR_VARIABLES];
 
 /** Throw when the herdr or daemon socket this process would use is a live one, or sits outside `root`. */

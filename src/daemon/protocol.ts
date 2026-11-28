@@ -1,6 +1,7 @@
 // The daemon protocol: one request per line, JSON, on a local socket. The
 // version travels in every hello, so a client newer than a running daemon can
 // ask it to drain and start the new one.
+import type { HerdrLocation } from '../core/herdr-bin.ts';
 import type { CallerIdentity, Harness, OutboxEntry, RelayHostState, ReportStatus } from '../core/types.ts';
 import type { AncestryAnswer } from '../core/ancestry.ts';
 import type { RosterChild } from '../core/roster.ts';
@@ -500,6 +501,8 @@ export interface SessionsReply {
     draining: boolean;
     /** The requests and tools it serves, by name. */
     features?: string[];
+    /** The herdr binary the daemon runs, and where it found it, or why it found none. A daemon from before 0.1.9 leaves it out. */
+    herdr?: HerdrLocation;
   };
   sessions: SessionInfo[];
   /** Connections from parents' daemons on other machines, through relay-bridge. */

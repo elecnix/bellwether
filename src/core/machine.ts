@@ -4,6 +4,7 @@
 // does the same, so a subscription to a remote pane works like a local one.
 import { execFile, spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
+import { herdrBinary } from './herdr-bin.ts';
 import { HerdrClient, type HerdrConnection, type HerdrDialer } from './herdr-client.ts';
 import { shellQuote } from './ssh.ts';
 
@@ -110,25 +111,14 @@ export function pickMachine(profiles: MachineProfile[], selector: string): Machi
 
 export type MachineResolver = (selector: string) => Promise<MachineProfile>;
 
-/** Ask the local herdr for its saved machines. */
-export const resolveMachine: MachineResolver = (selector) =>
-  new Promise((resolve, reject) => {
-    execFile('herdr', ['machine', 'list', '--json'], { timeout: 10_000 }, (error, stdout) => {
-      if (error) return reject(new Error(`herdr machine list failed: ${error.message}`));
-      try {
-        resolve(pickMachine(parseMachineList(stdout), selector));
-      } catch (fault) {
-        reject(fault as Error);
-      }
-    });
-  });
-
 /** Every saved herdr machine, as `herdr machine list --json` prints them. */
 export type MachineLister = () => Promise<MachineProfile[]>;
 
-export const listMachines: MachineLister = () =>
-  new Promise((resolve, reject) => {
-    execFile('herdr', ['machine', 'list', '--json'], { timeout: 10_000 }, (error, stdout) => {
+/** Run `herdr machine list --json` with the herdr that locateHerdr finds, rather than whichever `herdr` this process's PATH holds (issue #186). */
+export const listMachines: MachineLister = async () => {
+  const herdr = await herdrBinary();
+  return new Promise((resolve, reject) => {
+    execFile(herdr, ['machine', 'list', '--json'], { timeout: 10_000 }, (error, stdout) => {
       if (error) return reject(new Error(`herdr machine list failed: ${error.message}`));
       try {
         resolve(parseMachineList(stdout));
@@ -137,6 +127,10 @@ export const listMachines: MachineLister = () =>
       }
     });
   });
+};
+
+/** Ask the local herdr for its saved machines, and pick one. */
+export const resolveMachine: MachineResolver = async (selector) => pickMachine(await listMachines(), selector);
 
 /** The hosts a child can run on from here: this machine, and every enabled saved machine by label. */
 export async function knownHosts(list: MachineLister = listMachines): Promise<string[]> {

@@ -23,7 +23,7 @@ import { removeBriefAt, writeBrief, writeBriefIn } from './core/brief.ts';
 import { removeChildFiles } from './core/mcp-config.ts';
 import { farEnvironment } from './core/relay-env.ts';
 import { harnessFor, harnessNamed } from './core/harnesses/index.ts';
-import { describeUpgrade, farPairing, gatherUpgrade } from './daemon/upgrade-status.ts';
+import { daemonHerdrLine, describeUpgrade, farPairing, gatherUpgrade } from './daemon/upgrade-status.ts';
 import { describeState } from './core/hygiene.ts';
 import { HEARTBEAT_MISSES } from './core/ssh.ts';
 import { DaemonClient, REFUSED_EXIT, ReportRefused, daemonAncestry, drainDaemon, ensureDaemon, postReport, relayStatus } from './daemon/client.ts';
@@ -210,6 +210,11 @@ async function doctor(): Promise<number> {
   // The upgrade report: which code the daemon and each session run, and whether a hand-over has finished.
   const upgrade = await gatherUpgrade(bellwetherHome(), daemonSocket);
   for (const line of describeUpgrade(upgrade).lines) console.log(`  ${line}`);
+  const herdrLine = daemonHerdrLine(upgrade.sessions);
+  if (herdrLine) {
+    console.log(`  ${herdrLine.line}`);
+    if (herdrLine.failed) failures += 1;
+  }
   failures += checkPackaging();
   failures += checkToolSources();
   failures += await checkRelay(daemonLive, daemonSocket);

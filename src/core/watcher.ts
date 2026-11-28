@@ -23,7 +23,7 @@ import { removeChildFiles } from './mcp-config.ts';
 import { childLabel } from './label.ts';
 import { reportViaLine } from './report.ts';
 import { spoolPath } from './paths.ts';
-import { realRetireOps, reapChild, retirementPending, type RetireOps } from './retire.ts';
+import { realRetireOps, reapChild, retirementPending, type ReapDeps, type RetireOps } from './retire.ts';
 import { isMoving } from './move-plan.ts';
 import type { AgentStatus, ChildEventKind, ChildMessage, ChildRecord, DialogDecision, OutboxEntry, PaneEnd, RelayHostState, ReportVia, SpoolReport } from './types.ts';
 import { unreadSessionMessages } from './send.ts';
@@ -65,6 +65,8 @@ export interface WatcherOptions {
   log?: (message: string) => void;
   /** git, gh and the process table, for the retirement cleanup. Tests pass a fake. */
   retireOps?: RetireOps;
+  /** Ask the daemon on another machine to retire a worktree there, over the relay (issue #242). Absent without a relay. */
+  retireFar?: ReapDeps['retireFar'];
   /** Remove a child's brief and MCP config on its own machine, for a child on another one. */
   cleanupRemote?: (child: ChildRecord) => Promise<void>;
   /**
@@ -123,6 +125,7 @@ export class Watcher {
   private readonly screenPollMs: number;
   private readonly log: (message: string) => void;
   private readonly retireOps: RetireOps;
+  private readonly retireFar: ReapDeps['retireFar'];
   private readonly cleanupRemote: ((child: ChildRecord) => Promise<void>) | undefined;
   private readonly reclaimRemote: ((child: ChildRecord) => Promise<void>) | undefined;
   private readonly childrenChanged: (() => void) | undefined;
@@ -179,6 +182,7 @@ export class Watcher {
     this.screenPollMs = options.screenPollMs ?? 30_000;
     this.log = options.log ?? (() => {});
     this.retireOps = options.retireOps ?? realRetireOps();
+    this.retireFar = options.retireFar;
     this.cleanupRemote = options.cleanupRemote;
     this.reclaimRemote = options.reclaimRemote;
     this.childrenChanged = options.childrenChanged;
@@ -237,6 +241,7 @@ export class Watcher {
     }
     const job = reapChild(this.parentId, childId, {
       ops: this.retireOps,
+      ...(this.retireFar ? { retireFar: this.retireFar } : {}),
       paneOrTabLive: (child) => this.paneOrTabLive(child),
       log: this.log,
       busyRetries: this.retireBusy.retries,

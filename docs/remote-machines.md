@@ -143,9 +143,18 @@ Each answer starts with `Not this machine's child` and the parent's id, then say
 
 Retirement's proofs run only on the parent's machine, where a child that moved away left its worktree. Every place the child left goes on its record, oldest first, under `departures` ([#241](https://github.com/elecnix/bellwether/issues/241)). So after a move to a second machine and on to a third, the worktree on the parent's machine is still on record. Once herdr on the other machine drops the child's pane, the parent's daemon retires each worktree the child left on its own machine, newest first, with the same checks as before the move. Each worktree has its own outcome: one that fails a check stays, and the others still go. On the record, `movedAway` in the intent gives the sending machine, and `left` lists the other worktrees with their outcomes.
 
-A parent's `agent_stop` of a moved child retires the same worktrees, as the child's own request would ([#243](https://github.com/elecnix/bellwether/issues/243)). The reply to the stop lists each worktree on another machine, with its machine, because the parent's daemon can't take a proof there.
+A parent's `agent_stop` of a moved child retires the same worktrees, as the child's own request would ([#243](https://github.com/elecnix/bellwether/issues/243)).
 
-The child's current worktree stays on the other machine, as does each worktree it left on a third machine. For each of them, the answer gives the directory and its machine, and tells the child to remove it there by hand. When a child never ran on the parent's machine, its request doesn't change the record, and the answer says why.
+### A worktree on another machine
+
+A child's current worktree is on the machine it runs on, and a move can leave another on a third machine. Its record is in the parent's daemon, which can't take a proof on another machine. On that machine, the local daemon can take the proofs, but it doesn't keep the record. So the parent's daemon decides, and the daemon there acts ([#242](https://github.com/elecnix/bellwether/issues/242)):
+
+1. A request or a stop puts each such worktree on the intent under `far`, with its machine and its directory from the record. A child that never ran on the parent's machine gets an intent with `far` alone.
+2. Once herdr on the child's machine drops its pane, the parent's daemon sends `relay-retire` to each machine over the connection it keeps there, naming that directory.
+3. The daemon there runs retirement's checks against its own git and process table. It refuses a main worktree, an uncommitted path, a stash on the branch, and work that no merge, push or merged pull request covers. It also refuses while any process works inside the worktree, or a live child stands in it. Only when every check passes does that daemon remove the worktree and delete its branch.
+4. The answer comes back as the reply to the request. A copy waits in that machine's relay outbox until the parent's daemon writes the outcome on the record, so an answer that a dropped connection lost arrives once the connection is back.
+
+With no connection from the parent's daemon, a machine keeps its worktree. So does a machine whose Bellwether predates `relay-retire`. Both the record and `retire.log` give the refusal with the machine and the directory, because Bellwether never removes a worktree on a guess. Where the directory no longer exists, the outcome is `gone`. Each far worktree has its own outcome on the record, and `agent_list` and the stop's reply quote it.
 
 Once retired, a worktree leaves `departures`, and so does a place the child comes back to. That way the list contains one entry for each place that still has something left. Older releases read only `movedFrom`, so it keeps the newest entry.
 

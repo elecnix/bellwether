@@ -6,8 +6,9 @@
 // that acknowledgement, so a dropped connection or a stopped daemon loses
 // nothing, and the receipt in each report makes a second delivery harmless.
 import { relayOutboxPath } from '../core/paths.ts';
-import { listForwards, newReportReceipt, readRelayRecord, removeForward, removeRelayRecord, saveForward, updateRelayRecord, type ForwardEntry, type RelayRecord } from '../core/relay-records.ts';
+import { listForwards, newReportReceipt, retireAnswerReceipt, readRelayRecord, removeForward, removeRelayRecord, saveForward, updateRelayRecord, type ForwardEntry, type RelayRecord } from '../core/relay-records.ts';
 import type { RelayRestartAnswer } from '../core/restart.ts';
+import type { RelayRetireAnswer } from '../core/retire.ts';
 import type { ReportStatus, ReportVia } from '../core/types.ts';
 import { MAX_DAEMON_FRAME_BYTES, formatReply, type RelayReport } from './protocol.ts';
 
@@ -266,11 +267,30 @@ export class RelayOutbox {
     this.log(`relay: kept the answer of restart ${requestId} of child ${record.childId} for parent ${record.parentId}${listeners.length ? ', and sent it' : ', whose daemon is not connected'}`);
   }
 
+  /**
+   * Keep the answer of a relay-retire until the parent's daemon takes it
+   * (issue #242). It needs no relay record: the child's record here may be
+   * gone by the time its pane closes.
+   */
+  retireAnswer(parentId: string, childId: string, requestId: string, answer: RelayRetireAnswer): void {
+    // Named after the request, so the parent's daemon that took the answer directly acknowledges this copy too.
+    const entry: ForwardEntry = { receipt: retireAnswerReceipt(requestId), childId, parentId, status: 'progress', text: '', at: new Date(this.now()).toISOString(), retireAnswer: { requestId, answer } };
+    saveForward(entry);
+    const listeners = [...this.subscribers].filter((subscriber) => subscriber.parentIds.has(parentId));
+    for (const listener of listeners) listener.send(toReport(entry));
+    this.log(`relay: kept the answer of retirement ${requestId} of child ${childId} for parent ${parentId}${listeners.length ? ', and sent it' : ', whose daemon is not connected'}`);
+  }
+
+  /** The answer kept for a relay-retire request that waits to be taken, for a repeat of the same request. */
+  keptRetireAnswer(requestId: string): RelayRetireAnswer | undefined {
+    return listForwards().find((entry) => entry.retireAnswer?.requestId === requestId)?.retireAnswer?.answer;
+  }
+
   /** Say on the child's relay record how many of its reports wait, and remove the record of a gone child once none does. */
   private settleRecord(childId: string, forwarded: boolean): void {
     const pending = this.waiting().filter((entry) => entry.childId === childId);
     // A read, a restart answer or a retirement request waits like a report, but it is not one, so the count a person sees leaves it out.
-    const waiting = pending.filter((entry) => !entry.messageRead && !entry.restartAnswer && !entry.retire && !entry.teleport).length;
+    const waiting = pending.filter((entry) => !entry.messageRead && !entry.restartAnswer && !entry.retireAnswer && !entry.retire && !entry.teleport).length;
     if (pending.length === 0 && readRelayRecord(childId)?.retiredAt) {
       removeRelayRecord(childId);
       this.log(`relay: removed the record of child ${childId}, which is gone and has no report left to collect`);
@@ -296,5 +316,5 @@ function overLong(entry: ForwardEntry): string | undefined {
 }
 
 function toReport(entry: ForwardEntry): RelayReport {
-  return { receipt: entry.receipt, childId: entry.childId, parentId: entry.parentId, status: entry.status, text: entry.text, at: entry.at, ...(entry.via ? { via: entry.via } : {}), ...(entry.toolOffered !== undefined ? { toolOffered: entry.toolOffered } : {}), ...(entry.messageRead ? { messageRead: entry.messageRead } : {}), ...(entry.restartAnswer ? { restartAnswer: entry.restartAnswer } : {}), ...(entry.retire ? { retire: entry.retire } : {}), ...(entry.teleport ? { teleport: entry.teleport } : {}) };
+  return { receipt: entry.receipt, childId: entry.childId, parentId: entry.parentId, status: entry.status, text: entry.text, at: entry.at, ...(entry.via ? { via: entry.via } : {}), ...(entry.toolOffered !== undefined ? { toolOffered: entry.toolOffered } : {}), ...(entry.messageRead ? { messageRead: entry.messageRead } : {}), ...(entry.restartAnswer ? { restartAnswer: entry.restartAnswer } : {}), ...(entry.retire ? { retire: entry.retire } : {}), ...(entry.teleport ? { teleport: entry.teleport } : {}), ...(entry.retireAnswer ? { retireAnswer: entry.retireAnswer } : {}) };
 }

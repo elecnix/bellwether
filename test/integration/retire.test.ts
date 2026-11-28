@@ -691,7 +691,7 @@ test('agent_stop of a moved child leaves the worktree it left here when its work
   assert.match(text, /Retirement left worktree \/work\/x\/feat-x and branch feat\/x in place, because Bellwether could not prove the work merged/);
 });
 
-test('agent_stop of a child that only ever ran on another machine writes no intent here and names its worktree there (issue #243)', async (t) => {
+test('agent_stop of a child that only ever ran on another machine asks for its far worktree, and without a relay refuses it by machine and directory (issues #243, #242)', async (t) => {
   const w = await world(t, { host: 'hawthorne', cwd: FAR });
   const watcher = w.watcher();
   watcher.start();
@@ -699,9 +699,11 @@ test('agent_stop of a child that only ever ran on another machine writes no inte
   const text = await stop(w, watcher, () => {
     w.panes.delete(PANE);
   });
-  assert.equal(w.child().retireRequestedAt, undefined);
-  assert.equal(w.child().retireIntent, undefined);
-  assert.deepEqual(w.git.calls, []);
+  assert.equal(w.child().retireIntent?.worktree, undefined);
+  const far = w.child().retireIntent?.far?.[0];
+  assert.equal(far?.outcome, 'refused');
+  assert.ok(far?.refusal?.includes(FAR) && far.refusal.includes('hawthorne'), far?.refusal);
+  assert.deepEqual(w.git.calls, [], 'nothing is removed on a guess');
   assert.ok(text.includes(FAR) && text.includes('hawthorne'), text);
 });
 
@@ -726,13 +728,16 @@ test('agent_stop of a child that teleported here never writes removed while the 
   assert.deepEqual(w.git.calls, [`worktree remove ${WORKTREE}`, 'branch -D feat/x'], 'the worktree here goes');
   assert.notEqual(child.retireOutcome, 'removed', 'the record must not claim a removal that left a worktree in place');
   assert.equal(child.retireOutcome, 'partial');
-  assert.deepEqual(child.retireIntent?.far, [{ host: 'vandenberg', worktree: LEFT_FAR }], 'the record names the worktree that stays');
+  // No relay reaches vandenberg here, so the daemon there is never asked, and the refusal names the machine and the directory (issue #242).
+  assert.deepEqual(child.retireIntent?.far?.map((item) => [item.host, item.worktree, item.outcome]), [['vandenberg', LEFT_FAR, 'refused']], 'the record names the worktree that stays');
+  assert.match(child.retireIntent?.far?.[0]?.refusal ?? '', /^\/far\/x\/practice-tele on vandenberg stays in place/);
   assert.ok(text.includes(LEFT_FAR) && text.includes('vandenberg'), `the reply names the worktree on vandenberg: ${text}`);
   assert.match(text, /Retired in part: removed worktree \/work\/x\/feat-x and branch feat\/x/);
   assert.equal(text.split(LEFT_FAR).length - 1, 1, `the reply names the far worktree once: ${text}`);
-  const log = w.log();
+  const log = w.log().filter((line) => !line['far']);
   assert.deepEqual(log.map((line) => line['outcome']), ['partial'], 'retire.log has no removed line');
   assert.deepEqual(log[0]?.['stays'], [{ host: 'vandenberg', worktree: LEFT_FAR }]);
+  assert.deepEqual(w.log().filter((line) => line['far']).map((line) => [line['host'], line['worktree'], line['outcome']]), [['vandenberg', LEFT_FAR, 'refused']]);
 });
 
 test("a child's own request_retirement after a teleport here ends partial, not removed, and names the worktree on the machine it left (issue #273)", async (t) => {
@@ -744,7 +749,7 @@ test("a child's own request_retirement after a teleport here ends partial, not r
   await until('the outcome', () => w.child().retireOutcome);
   await watcher.retirements();
   assert.equal(w.child().retireOutcome, 'partial');
-  assert.deepEqual(w.log().map((line) => line['outcome']), ['partial']);
+  assert.deepEqual(w.log().filter((line) => !line['far']).map((line) => line['outcome']), ['partial']);
   const listed = await runBellwetherTool(w.ctx(watcher), 'agent_list', {});
   assert.match(listed, /retired in part/);
   assert.doesNotMatch(listed, /, retired\t/);

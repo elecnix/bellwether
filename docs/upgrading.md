@@ -6,7 +6,20 @@ A session you start by hand after the upgrade runs the new code and hands the da
 
 ## What you run on each machine
 
-1. `brew upgrade bellwether` where the machine uses the tap. Without Homebrew, run `npm install -g @elecnix/bellwether`. On an SSH machine, a login shell finds both commands: `ssh host 'bash -lc "command -v brew bellwether"'`. You can also give the absolute path, such as `/opt/homebrew/bin/brew`. A plain `ssh host command -v brew` runs without the login shell's `PATH`. On a Mac, Homebrew adds `/opt/homebrew/bin` only in that login shell, so the plain probe finds neither `brew` nor `bellwether` on a machine that has both.
+1. Upgrade every install of the `bellwether` command on the machine. A machine can have more than one install, such as an npm install and a Homebrew one. `relay-bridge` runs the first one it finds, and a Claude Code child runs its server from the install that wrote its MCP configuration, so an install left behind keeps serving the old code. On an SSH machine, list them with the same search `relay-bridge` makes:
+
+   ```sh
+   ssh host 'for c in "$(command -v bellwether)" ~/.local/bin/bellwether ~/.npm-global/bin/bellwether /home/linuxbrew/.linuxbrew/bin/bellwether /opt/homebrew/bin/bellwether /usr/local/bin/bellwether ~/.nvm/versions/node/*/bin/bellwether; do [ -x "$c" ] && echo "$c: $("$c" --version)"; done'
+   ```
+
+   Upgrade each one in place:
+
+   - For an install under a Homebrew prefix, `/home/linuxbrew/.linuxbrew` or `/opt/homebrew`, run that prefix's `bin/brew upgrade bellwether`.
+   - For an npm install, run `npm install -g --prefix <prefix> @elecnix/bellwether`, where `<prefix>` is the path before `/bin/bellwether`, such as `~/.local`. A bare `npm install -g` writes to npm's own prefix. When that is another directory, it adds a second install and leaves the old one first on the path.
+
+   Don't probe with a login shell. On Linux, `~/.local/bin` and Linuxbrew often sit only on an interactive shell's `PATH`, so `ssh host 'bash -lc "command -v brew bellwether"'` finds neither command on a machine that has both. A plain `ssh host command -v brew` misses them too.
+
+   Homebrew deletes the old version's directory when it upgrades. A Claude Code child whose MCP configuration names that directory keeps the server it runs, but Claude Code can't start that server again. The child's next restart or resume writes the file again from the daemon's install.
 2. `pi install npm:@elecnix/bellwether` for the Pi extension, which Homebrew doesn't touch. When `pi list` also shows Bellwether at a checkout or another directory, the install adds the npm package beside that entry and leaves it there. Remove the old entry first, then install:
 
    ```sh
@@ -17,7 +30,7 @@ A session you start by hand after the upgrade runs the new code and hands the da
 
    Give `pi remove` the source exactly as `pi list` prints it, and run it from `~/.pi/agent`. pi's settings hold a relative source relative to that directory, but `pi remove` resolves it against the working directory, so from anywhere else it answers `No matching package found`. Order matters because a session started by hand loads every copy its settings list, and pi exits at startup when two extensions register the same tool. With the old entry removed first, a session that starts before the install ends runs without Bellwether tools, where the other order leaves a moment in which a new session doesn't start at all.
 3. `claude plugin marketplace update elecnix-plugins`, then `claude plugin update bellwether@elecnix-plugins`. The marketplace installs the plugin from this repository's default branch, not from npm.
-4. Start your next session by hand, as you would any other, and it hands the daemon over. On a machine where nobody starts a session by hand, because a parent's daemon starts every one, run the new install's `bellwether relay-bridge < /dev/null` instead. It hands the daemon over, then connects briefly. It exits when its input closes. Over SSH, give its absolute path or run it through `bash -lc`, as in step 1.
+4. Start your next session by hand, as you would any other, and it hands the daemon over. On a machine where nobody starts a session by hand, because a parent's daemon starts every one, run the new install's `bellwether relay-bridge < /dev/null` instead. It hands the daemon over, then connects briefly. It exits when its input closes. Over SSH, give the absolute path that step 1 found.
 
 Leave the sessions that are already open alone. Then run `bellwether doctor` from the new install, and check that its `versions:` line shows the daemon on the new release.
 
@@ -163,3 +176,16 @@ Every git-URL install in [#57](https://github.com/elecnix/bellwether/issues/57) 
 Use drain when doctor shows a daemon that won't hand over, or to choose between two copies of the same release, such as a checkout and a package.
 
 To go back to the old procedure in full, run `bellwether drain`, then end and restart every Pi and Claude Code session on the machine. You shouldn't need it. It is still the answer when a session runs a release older than the daemon serves.
+
+### Roll back a release
+
+Install the previous release into the same prefix as the current install, then drain the daemon. For an install under `~/.local`:
+
+```sh
+npm install -g --prefix ~/.local @elecnix/bellwether@0.1.9
+bellwether drain
+```
+
+The `versions:` line in `bellwether doctor` gives the daemon's entry point, and the prefix is the part before `/lib/node_modules`. Without `--prefix`, npm writes to its own prefix, and the command can succeed while the install that runs stays on the new release. Check with `bellwether --version` from the same path.
+
+For a Homebrew install, `brew` keeps only the version it upgraded to. Roll back with npm into a prefix of its own that comes first on the path, or wait for a fixed release.

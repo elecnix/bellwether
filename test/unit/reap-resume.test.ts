@@ -8,6 +8,7 @@ import { emptyParent, readParent, saveParent, updateChild } from '../../src/core
 import { clearRetirement, reapChild } from '../../src/core/retire.ts';
 import { fakeGit } from '../fixtures/fake-git.ts';
 import { isolate } from '../fixtures/isolated.ts';
+import { runStarts } from '../../src/core/incarnation.ts';
 
 const WORKTREE = '/work/x/feat-x';
 const REPO = '/repos/x.git';
@@ -33,16 +34,8 @@ function exitedChild(t: test.TestContext) {
 /** What resumeChild writes before it opens the new tab: the child is live again. */
 function resumeWrites(parentId: string): void {
   updateChild(parentId, CHILD, (child) => {
-    child.paneId = '';
-    delete child.tabId;
-    delete child.exitedAt;
-    delete child.exitCode;
-    delete child.reportPending;
-    delete child.harnessSeenAt;
-    delete child.harnessEnded;
-    delete child.tabClosedAt;
+    runStarts(child, { paneId: '', tabId: undefined, resumedAt: new Date().toISOString() });
     clearRetirement(child);
-    child.resumedAt = new Date().toISOString();
   });
 }
 

@@ -18,6 +18,7 @@ import type { ChildRecord, DialogDecision } from '../../src/core/types.ts';
 import { runBellwetherTool, toolsFor, type ToolContext } from '../../src/integrations/tools.ts';
 import { startFakeHerdr, type FakeHerdr } from '../fixtures/fake-herdr.ts';
 import { fakeGit, type FakeGit } from '../fixtures/fake-git.ts';
+import { runEnds, sessionSeen } from '../../src/core/incarnation.ts';
 
 const WORKTREE = '/work/x/feat-x';
 const MAIN = '/work/x/main';
@@ -259,7 +260,7 @@ test('a child whose pane is still alive gets no cleanup', async (t) => {
 
   // A record marked exited while herdr still lists the tab is not gone either.
   updateChild(w.parentId, 'c-retire', (entry) => {
-    entry.exitedAt = new Date().toISOString();
+    runEnds(entry, { at: new Date().toISOString() });
   });
   w.panes.delete(PANE);
   w.panes.set('w1:p6', TAB);
@@ -286,7 +287,7 @@ test('the main worktree of a repository is never removed, whoever asks', async (
   updateChild(w.parentId, 'c-retire', (entry) => {
     entry.retireRequestedAt = new Date().toISOString();
     entry.retireIntent = { worktree: MAIN, repo: REPO, branch: 'main', head: 'abc123def456' };
-    entry.exitedAt = new Date().toISOString();
+    runEnds(entry, { at: new Date().toISOString() });
   });
   w.panes.clear();
   const restarted = w.watcher();
@@ -360,7 +361,7 @@ test('an adopted child and a child on another host are out of bounds', async (t)
   updateChild(adopted.parentId, 'c-retire', (entry) => {
     entry.retireRequestedAt = new Date().toISOString();
     entry.retireIntent = { worktree: WORKTREE, repo: REPO, branch: 'feat/x', head: 'abc123def456' };
-    entry.exitedAt = new Date().toISOString();
+    runEnds(entry, { at: new Date().toISOString() });
   });
   adopted.git.merged.add(`${REPO}:feat/x`);
   adopted.panes.clear();
@@ -479,7 +480,7 @@ test('agent_stop retires a child that never asked, once its branch is merged, an
   assert.match(read, /^Retired: removed worktree \/work\/x\/feat-x and branch feat\/x, because branch feat\/x is merged into origin\/main\./);
   // A resume would start the child where nothing is left, so it is refused by name.
   updateChild(w.parentId, 'c-retire', (entry) => {
-    entry.session = { kind: 'id', value: 'session-feat-x' };
+    sessionSeen(entry, { kind: 'id', value: 'session-feat-x' });
   });
   await assert.rejects(runBellwetherTool(w.ctx(watcher), 'agent_spawn', { resume: 'feat-x' }), /feat-x's working directory \/work\/x\/feat-x no longer exists: retirement removed it at .*, so Bellwether refused to resume the child there\./);
 });

@@ -26,6 +26,7 @@ import type { RemoteRegistration } from './remote.ts';
 import { BARE, RoutesFileError, bareLaunch, launchLine, readRoutes, resolveRoute, routeConfig, routeLaunch, type RouteConfig, type RouteLaunch, type RoutesFile } from './routes.ts';
 import { openChildTab, parseWorkspaces, placeChild, undoChildTab, type ChildTab, type WorkspaceEntry } from './workspace.ts';
 import type { ChildRecord, ChildRoute, DialogDecision, ModelPair, ParentRecord } from './types.ts';
+import { firstRun, holdEvents, paneOpened, releaseEvents, sessionSeen, statusSeen } from './incarnation.ts';
 
 /** How deep a Bellwether child may spawn. The design starts at 2. */
 export { DEFAULT_MAX_DEPTH } from './depth.ts';
@@ -325,12 +326,9 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
     name: options.name,
     kind: options.kind,
     harness: entry.harness,
-    paneId: '',
-    host,
+    ...firstRun({ paneId: '', host, cwd: options.cwd, ...(store?.mint ? { session: { kind: 'id' as const, value: store.mint() } } : {}) }),
     origin: 'spawn',
-    cwd: options.cwd,
     startedAt: now,
-    lastStatus: 'unknown',
     statusChangedAt: now,
     lastBusyAt: now,
     depth,
@@ -342,7 +340,7 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
     ...(options.prompt ? { briefs: [{ n: 1, file: promptPath(id), at: now }] } : {}),
     // herdr reports no session for a harness with a store of its own, so the spawn names it.
     // A harness that takes a session id on its launch line gets one minted here.
-    ...(store ? { ...(store.mint ? { session: { kind: 'id' as const, value: store.mint() } } : {}), store: store.storePath(harnessHooks, { id }) } : {}),
+    ...(store ? { store: store.storePath(harnessHooks, { id }) } : {}),
   };
   // 1. The record lands before herdr is asked for anything.
   upsertChild(parent.id, child);
@@ -371,8 +369,7 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
     opened = tab;
     if (!tab.paneId) throw new Error('herdr created no pane for the child tab');
 
-    child.tabId = tab.tabId;
-    child.paneId = tab.paneId;
+    paneOpened(child, { paneId: tab.paneId, tabId: tab.tabId });
     child.workspaceId = tab.workspaceId;
     if (tab.workspaceLabel) child.workspaceLabel = tab.workspaceLabel;
     if (tab.ownsWorkspace) child.ownsWorkspace = true;
@@ -381,13 +378,13 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
     // has its events held until then, and the status watch opens before the start.
     if (entry.startup) {
       const timeoutMs = options.startupTimeoutMs ?? STARTUP_TIMEOUT_MS;
-      child.startingUntil = new Date(Date.now() + Math.max(STARTUP_HOLD_MS, timeoutMs + 15_000)).toISOString();
+      holdEvents(child, new Date(Date.now() + Math.max(STARTUP_HOLD_MS, timeoutMs + 15_000)).toISOString());
       startup = await watchStartup(client, tab.paneId, signal, { timeoutMs, redrawMs: options.redrawMs, dialogs: entry.startup });
     }
     // A harness that can stop on a fatal error is held the same way while the
     // start waits for its first status, so the parent hears no idle event
     // from a child whose spawn then fails.
-    if (entry.startupFatal && !child.startingUntil) child.startingUntil = new Date(Date.now() + ROUTED_START_MS + START_CONFIRM_MS + 15_000).toISOString();
+    if (entry.startupFatal && !child.startingUntil) holdEvents(child, new Date(Date.now() + ROUTED_START_MS + START_CONFIRM_MS + 15_000).toISOString());
     upsertChild(parent.id, child);
 
     // 3. Start the harness in the tab's root pane. A tab answers tab.create
@@ -404,7 +401,7 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
     if (store && child.store && briefFile && child.cwd) {
       try {
         const found = await store.confirm({ store: child.store, ...(child.session ? { session: child.session.value } : {}), cwd: child.cwd, briefFile, since: child.startedAt }, harnessHooks);
-        child.session = { kind: 'id', value: found };
+        sessionSeen(child, { kind: 'id', value: found });
         // The store showing the prompt is the acknowledgement for a harness
         // that takes no message in its session.
         const first = child.briefs?.find((brief) => brief.n === 1);
@@ -456,9 +453,10 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
   // events meanwhile, so a child idle at its prompt is not reported as done.
   const first = child.briefs?.find((brief) => brief.n === 1);
   if (options.prompt && first && !entry.brief.launch) {
-    child.startingUntil = new Date(Date.now() + briefHoldMs(hooks.inbox)).toISOString();
+    const held = new Date(Date.now() + briefHoldMs(hooks.inbox)).toISOString();
+    holdEvents(child, held);
     updateChild(parent.id, child.id, (record) => {
-      record.startingUntil = child.startingUntil;
+      holdEvents(record, held);
     });
     try {
       const handed = await deliverBrief({ herdr: client, parentId: parent.id, child, brief: first, text: options.prompt, from: hooks.from ?? parent.id, inbox: hooks.inbox, fatal: entry.startupFatal, signal });
@@ -482,7 +480,7 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
     // transcript is looked up the same way as a session herdr reports.
     const session = child.session ?? sessionFrom(pane['agent_session']);
     if (session) {
-      child.session = session;
+      sessionSeen(child, session);
       // A remote child's transcript sits on its own machine's disk.
       if (child.host === LOCAL_HOST) {
         // Claude Code writes its file at the first turn, which can come after
@@ -496,27 +494,26 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
       }
     }
     const status = pane['agent_status'];
-    if (typeof status === 'string' && status) child.lastStatus = status as ChildRecord['lastStatus'];
+    if (typeof status === 'string' && status) statusSeen(child, status as ChildRecord['lastStatus']);
     child.agentName = agentNameOf(pane, child.name);
   } catch {
     // A missed session id only costs the transcript-based summary until the
     // watcher reads it.
   }
-  child.startingUntil = undefined;
+  releaseEvents(child);
   updateChild(parent.id, child.id, (entry) => {
-    if (child.session) entry.session = child.session;
+    if (child.session) sessionSeen(entry, child.session);
     if (child.agentName) entry.agentName = child.agentName;
     if (child.model && !entry.model) entry.model = child.model;
     if (child.transcript) {
       entry.transcript = child.transcript;
       delete entry.transcriptMissing;
     } else if (child.transcriptMissing) entry.transcriptMissing = child.transcriptMissing;
-    if (entry.lastStatus !== child.lastStatus) entry.statusChangedAt = new Date().toISOString();
-    entry.lastStatus = child.lastStatus;
+    if (statusSeen(entry, child.lastStatus)) entry.statusChangedAt = new Date().toISOString();
     // The hold ends with the answers, which are activity. The inactivity clock
     // starts here, not at spawn time, so a long dialog does not eat the window.
     if (startup) entry.lastBusyAt = new Date().toISOString();
-    delete entry.startingUntil;
+    releaseEvents(entry);
   });
 
   const note = modelNote(child);

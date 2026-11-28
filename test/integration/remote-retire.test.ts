@@ -26,6 +26,7 @@ import { stopDaemonsUnder } from '../fixtures/daemons.ts';
 import { fakeGit, type FakeGit } from '../fixtures/fake-git.ts';
 import { installFakeSsh, type FakeSsh } from '../fixtures/fake-ssh.ts';
 import { LIVE_HOME } from '../fixtures/isolation.ts';
+import { runEnds } from '../../src/core/incarnation.ts';
 
 const CLI = path.resolve(import.meta.dirname, '../../src/cli.ts');
 const PARENT_ID = 'claude-code-the-parent';
@@ -170,7 +171,7 @@ test("a moved child's request_retirement reaches its parent's daemon, and the wo
 
   // The pane closes on child-box, and the parent's watcher marks the exit; the cleanup runs as it would have before the move.
   updateChild(PARENT_ID, 'c-moved', (entry) => {
-    entry.exitedAt = new Date().toISOString();
+    runEnds(entry, { at: new Date().toISOString() });
   });
   const result = await reapChild(PARENT_ID, 'c-moved', { ops: git, paneOrTabLive: async () => false, busyRetries: 0 });
   // The worktree the child runs in on child-box stays, so the outcome is partial, never removed (issue #273).
@@ -206,7 +207,7 @@ test("a child that moved twice, from the parent's machine to mid-box and on to c
   assert.equal(childOf('c-twice')?.retireIntent?.worktree, LEFT);
 
   updateChild(PARENT_ID, 'c-twice', (entry) => {
-    entry.exitedAt = new Date().toISOString();
+    runEnds(entry, { at: new Date().toISOString() });
   });
   const result = await reapChild(PARENT_ID, 'c-twice', { ops: git, paneOrTabLive: async () => false, busyRetries: 0 });
   assert.equal(result.outcome, 'partial', 'the worktrees on mid-box and child-box stay (issue #273)');
@@ -236,7 +237,7 @@ test("a child that left two worktrees on the parent's machine has both retired, 
   assert.ok(answer.includes(MID), answer);
 
   updateChild(PARENT_ID, 'c-three', (entry) => {
-    entry.exitedAt = new Date().toISOString();
+    runEnds(entry, { at: new Date().toISOString() });
   });
   const result = await reapChild(PARENT_ID, 'c-three', { ops: git, paneOrTabLive: async () => false, busyRetries: 0 });
   assert.equal(result.outcome, 'refused', 'a worktree left in place makes the retirement a refusal');
@@ -295,7 +296,7 @@ test("the destination daemon answers that the child is not its own, names the pa
 
   // The child closes its tab; later the parent's daemon connects, takes the request, and the exited child is retired as before the move.
   updateChild(PARENT_ID, 'c-alone', (entry) => {
-    entry.exitedAt = new Date().toISOString();
+    runEnds(entry, { at: new Date().toISOString() });
   });
   await client.close();
   // The link opens for the exited child's one drain, and may close again before a poll would see it connected.

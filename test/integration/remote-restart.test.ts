@@ -32,6 +32,7 @@ import { harnessStarts, startFakeHerdr, type FakeHerdr, type RecordedRequest } f
 import { installFakeSsh } from '../fixtures/fake-ssh.ts';
 import { fakeWorld, type FakeWorld } from '../fixtures/fake-world.ts';
 import { LIVE_HOME } from '../fixtures/isolation.ts';
+import { answerLost } from '../../src/core/incarnation.ts';
 
 const PARENT_ID = 'claude-code-the-parent';
 const CHILD_ID = 'child-far';
@@ -333,7 +334,7 @@ test('a child whose restart outcome is unknown is refused a second restart, and 
   const space = await room(t);
   const at = new Date().toISOString();
   updateChild(PARENT_ID, CHILD_ID, (entry) => {
-    entry.restartInDoubt = { host: 'child-box', requestId: 'rs-example', at, oldPane: PANE, oldTab: TAB, error: 'the connection to machine child-box ended: example', launch: {} };
+    answerLost(entry, { host: 'child-box', requestId: 'rs-example', at, oldPane: PANE, oldTab: TAB, error: 'the connection to machine child-box ended: example', launch: {} });
   });
 
   await assert.rejects(space.parent.tool('agent_restart', { target: NAME }), /the outcome of the last restart of first-mate on machine child-box is unknown since .*, so a second restart could start the session twice/);

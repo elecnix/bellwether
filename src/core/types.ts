@@ -332,8 +332,8 @@ export interface ChildRecord {
    * the same path to the child as OPENCODE_DB, so both sides read one file.
    */
   store?: string;
-  paneId: string;
-  tabId?: string;
+  readonly paneId: string;
+  readonly tabId?: string;
   /** The herdr workspace that holds the child's tab, on the child's machine. */
   workspaceId?: string;
   /** That workspace's label, when the spawn knew it. */
@@ -350,15 +350,15 @@ export interface ChildRecord {
    * every herdr call for the child goes to this host, and a resume goes back
    * to it.
    */
-  host: string;
+  readonly host: string;
   /** How the child came under this parent. An older record means spawn. */
   origin?: 'spawn' | 'adopt' | 'resume';
   /** When the child was last brought back by a spawn with a resume target. */
-  resumedAt?: string;
-  cwd?: string;
+  readonly resumedAt?: string;
+  readonly cwd?: string;
   startedAt: string;
   /** The last status herdr reported for the pane. */
-  lastStatus: AgentStatus;
+  readonly lastStatus: AgentStatus;
   /** Set when the status last changed, for the settle time. */
   statusChangedAt: string;
   /** herdr's completion_seq for the last finished turn. */
@@ -387,7 +387,7 @@ export interface ChildRecord {
    * The harness session, recorded as soon as herdr reports it and kept after
    * the child exits, so a retired child can still be resumed.
    */
-  session?: ChildSession;
+  readonly session?: ChildSession;
   /** herdr's state_change_seq for the newest status Bellwether has read. */
   stateChangeSeq?: number;
   /** How many Bellwether generations deep this child is. */
@@ -421,7 +421,7 @@ export interface ChildRecord {
    * when that turn ends, so a child that reported does not also produce an
    * idle event for the same turn.
    */
-  reportPending?: boolean;
+  readonly reportPending?: boolean;
   /**
    * The newest turn the parent heard about, by a report or an idle event, and
    * the pane that ran it. The watcher compares each finished turn against it
@@ -475,7 +475,7 @@ export interface ChildRecord {
    * rather than a flag, so a daemon that stops mid-spawn cannot silence the
    * child for good.
    */
-  startingUntil?: string;
+  readonly startingUntil?: string;
   /**
    * Set while a restart closes the pane and tab the record still names, so the
    * watcher reads that close as part of the restart rather than as the child
@@ -483,7 +483,7 @@ export interface ChildRecord {
    * has closed it. A time rather than a flag: a daemon that stops mid-close
    * leaves a record the watcher checks against herdr once the time passes.
    */
-  closing?: { pane: string; tab?: string; until: string };
+  readonly closing?: { pane: string; tab?: string; until: string };
   /**
    * Set when a restart of a child on another machine sent its request and the
    * connection ended before the answer came back (issue #211). The far side
@@ -491,7 +491,7 @@ export interface ChildRecord {
    * the record claims neither. The far daemon keeps its answer in the relay
    * outbox, and this daemon takes it from there when the connection returns.
    */
-  restartInDoubt?: RestartInDoubt;
+  readonly restartInDoubt?: RestartInDoubt;
   /** This child's inactivity threshold in milliseconds. Set at spawn; the default when absent. */
   inactiveMs?: number;
   /** The quiet period whose inactive event already went out, as an ISO time. Survives a restart. */
@@ -512,7 +512,7 @@ export interface ChildRecord {
   /** When the daemon last restarted the child in a new tab, on the same session. */
   restartedAt?: string;
   /** Set when a restart closed the child's pane and could not start it again (issue #185). A later restart or resume clears it. */
-  restartFailed?: RestartFailure;
+  readonly restartFailed?: RestartFailure;
   /** What a pending self-restart waits for, while `restartRequestedAt` is set (issue #188). */
   restartWait?: RestartWait;
   /** Why the last self-restart gave up without acting, until the next request (issue #188). */
@@ -530,7 +530,7 @@ export interface ChildRecord {
    * either machine, or when a crossing that a stopped daemon left half done
    * could not be undone. A later resume clears it.
    */
-  crossingFailed?: CrossingFailure;
+  readonly crossingFailed?: CrossingFailure;
   /** A teleport this child asked for itself, which waits for its turn to end (issue #226). */
   teleportRequest?: TeleportRequestRecord;
   /** Why the last teleport the child asked for itself did not run, until its next request. */
@@ -553,24 +553,24 @@ export interface ChildRecord {
   /** Each teleport of this child, newest last (issue #226): where from and to, who asked, how the notice arrived, and the proof it runs. */
   teleports?: TeleportEntry[];
   /** Set once the child is gone, so its events stop. */
-  exitedAt?: string;
-  exitCode?: number;
+  readonly exitedAt?: string;
+  readonly exitCode?: number;
   /** How the pane the child last ran in ended, for agent_list (issue #187). It counts only while `exitedAt` is set. */
-  paneEnd?: PaneEnd;
+  readonly paneEnd?: PaneEnd;
   /**
    * When herdr first saw the harness run in the child's pane: a detected
    * agent, or a status other than unknown. A child without it after its start
    * window is checked once, to tell a harness that died at once from one that
    * is still loading.
    */
-  harnessSeenAt?: string;
+  readonly harnessSeenAt?: string;
   /**
    * How the child's harness ended, when its pane outlived it: `before-start`
    * for one that ended before it reported anything, so it never ran its task,
    * and `in-pane` for one that ended later. Either way the tab stays open on
    * the shell that ran it.
    */
-  harnessEnded?: 'before-start' | 'in-pane';
+  readonly harnessEnded?: 'before-start' | 'in-pane';
   /**
    * Set when herdr closed the tab of a child whose harness had already ended
    * in it. herdr can name one close twice, as `pane_closed` and `tab_closed`,
@@ -578,7 +578,7 @@ export interface ChildRecord {
    * and ignores the second. Cleared with `harnessEnded` when the child comes
    * back.
    */
-  tabClosedAt?: string;
+  readonly tabClosedAt?: string;
   /**
    * For an adopted child whose harness ended and left its pane open: when.
    * The watcher keeps watching that pane, and a harness that comes back there
@@ -586,7 +586,7 @@ export interface ChildRecord {
    * #191). Cleared when it comes back, when the pane closes, or when another
    * session takes the pane.
    */
-  awaitsResume?: string;
+  readonly awaitsResume?: string;
   /**
    * The child's machine answered that it holds no record of this child, while
    * this registry still does, and the record could not be restored there

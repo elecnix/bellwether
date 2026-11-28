@@ -21,6 +21,7 @@ import { harnessFor } from './harnesses/index.ts';
 import type { ChildRecord, ParentRecord } from './types.ts';
 import { resolveInactiveMs } from './inactivity.ts';
 import type { SessionReach } from './adopted-session.ts';
+import { firstRun, runStarts, stopAwaiting } from './incarnation.ts';
 
 export interface AdoptOptions {
   /** A pane id, or the name of a live agent, on the host. */
@@ -84,22 +85,14 @@ export function resumableAdoption(parent: Pick<ParentRecord, 'children'>, host: 
  * again. The turns the pane finished while nobody watched are not news, so
  * the next event is the end of the next turn, as at the adoption.
  */
-export function backInPane(entry: ChildRecord, pane: Pick<HerdrPane, 'agentStatus' | 'completionSeq' | 'tabId' | 'workspaceId' | 'cwd'>, now = new Date().toISOString()): void {
-  delete entry.exitedAt;
-  delete entry.exitCode;
-  delete entry.reportPending;
-  delete entry.harnessEnded;
-  delete entry.tabClosedAt;
-  delete entry.awaitsResume;
+export function backInPane(entry: ChildRecord, pane: Pick<HerdrPane, 'paneId' | 'agentStatus' | 'completionSeq' | 'tabId' | 'workspaceId' | 'cwd'>, now = new Date().toISOString()): void {
+  // Every field of the run before goes. herdr sees the harness run now, so
+  // the start-window check has nothing left to find.
+  runStarts(entry, { paneId: pane.paneId, ...(pane.tabId ? { tabId: pane.tabId } : {}), ...(pane.cwd ? { cwd: pane.cwd } : {}), status: pane.agentStatus, resumedAt: now, seenAt: now });
   clearRetirement(entry);
-  entry.lastStatus = pane.agentStatus;
   entry.statusChangedAt = now;
   entry.lastBusyAt = now;
-  entry.harnessSeenAt = now;
-  entry.resumedAt = now;
-  if (pane.tabId) entry.tabId = pane.tabId;
   if (pane.workspaceId) entry.workspaceId = pane.workspaceId;
-  if (pane.cwd) entry.cwd = pane.cwd;
   if (pane.completionSeq !== undefined) {
     entry.completionSeq = pane.completionSeq;
     entry.turnNotified = { paneId: entry.paneId, seq: pane.completionSeq };
@@ -206,7 +199,6 @@ export async function adoptPane(client: HerdrClient, parent: ParentRecord, optio
     const from = earlier.paneId !== pane.paneId ? earlier.paneId : undefined;
     updateChild(parent.id, earlier.id, (entry) => {
       // The session runs in this pane now, wherever it ran before.
-      entry.paneId = pane.paneId;
       backInPane(entry, pane, now);
       entry.name = name;
       if (doubt) entry.adoptInDoubt = doubt;
@@ -219,7 +211,7 @@ export async function adoptPane(client: HerdrClient, parent: ParentRecord, optio
   if (replaced) {
     updateChild(parent.id, replaced, (entry) => {
       entry.replacedBy = id;
-      delete entry.awaitsResume;
+      stopAwaiting(entry);
     });
   }
   const kind = pane.agent;
@@ -231,20 +223,15 @@ export async function adoptPane(client: HerdrClient, parent: ParentRecord, optio
     name,
     kind,
     harness,
-    paneId: pane.paneId,
-    tabId: pane.tabId,
+    ...firstRun({ paneId: pane.paneId, tabId: pane.tabId, host, cwd: pane.cwd, session: pane.agentSessionId ? { kind: pane.agentSessionId.includes('/') ? 'path' : 'id', value: pane.agentSessionId } : undefined, status: pane.agentStatus }),
     workspaceId: pane.workspaceId,
-    host,
     origin: 'adopt',
-    cwd: pane.cwd,
     startedAt: now,
-    lastStatus: pane.agentStatus,
     statusChangedAt: now,
     completionSeq: pane.completionSeq,
     // The turns the pane finished before this parent adopted it are not news.
     // The first event is the end of the next turn, as for a spawned child.
     ...(pane.completionSeq === undefined ? {} : { turnNotified: { paneId: pane.paneId, seq: pane.completionSeq } }),
-    session: pane.agentSessionId ? { kind: pane.agentSessionId.includes('/') ? 'path' : 'id', value: pane.agentSessionId } : undefined,
     transcript: found?.path,
     transcriptMissing: found?.missing,
     lastBusyAt: now,

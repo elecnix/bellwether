@@ -33,6 +33,7 @@ import { ClaimRefused, claimantOf, decideClaim } from './pane-claims.ts';
 import { removeRelayRecord } from './relay-records.ts';
 import { ClaimHeldElsewhere } from './remote.ts';
 import { releaseWorkspace } from './workspace.ts';
+import { harnessSeen, reportPending, runEnds, sessionSeen, statusSeen, stopAwaiting, tabClosed, viewOf } from './incarnation.ts';
 
 /** herdr's status for a pane, or the child's last known status. */
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -424,7 +425,7 @@ export class Watcher {
       const agent = isRecord(result) && isRecord(result['agent']) ? result['agent'] : undefined;
       if (typeof agent?.['agent'] === 'string' && agent['agent']) {
         updateChild(this.parentId, child.id, (entry) => {
-          entry.harnessSeenAt ??= new Date().toISOString();
+          harnessSeen(entry, new Date().toISOString());
         });
         return false;
       }
@@ -459,8 +460,7 @@ export class Watcher {
     // for an exit, so the workspace is released and retirement started once.
     if (readParent(this.parentId)?.children.find((entry) => entry.id === child.id)?.tabClosedAt) return;
     updateChild(this.parentId, child.id, (entry) => {
-      entry.tabClosedAt = new Date().toISOString();
-      entry.paneEnd = { pane: entry.paneId, ...(entry.workspaceId ? { workspaceId: entry.workspaceId } : {}), how: 'closed', at: entry.tabClosedAt };
+      tabClosed(entry, new Date().toISOString());
     });
     removeChildFiles(child.id, hostOf(child) === LOCAL_HOST ? child.cwd : undefined, { briefs: !this.keepsBriefs(child) });
     void this.releaseWorkspace(child);
@@ -491,7 +491,7 @@ export class Watcher {
   /** Stop watching an exited adopted child's pane for its return. */
   private stopAwaiting(child: ChildRecord, why: string): void {
     updateChild(this.parentId, child.id, (entry) => {
-      delete entry.awaitsResume;
+      stopAwaiting(entry);
     });
     this.log(`stopped watching pane ${child.paneId} for ${child.name}'s return: ${why}`);
   }
@@ -536,7 +536,7 @@ export class Watcher {
         if (error instanceof ClaimHeldElsewhere) {
           updateChild(this.parentId, child.id, (entry) => {
             entry.replacedBy = error.childId;
-            delete entry.awaitsResume;
+            stopAwaiting(entry);
           });
           this.log(`${child.name} came back in pane ${child.paneId}, and ${error.message}; adopt the pane again to watch it under that id`);
           return;
@@ -577,13 +577,9 @@ export class Watcher {
     const awaitsResume = Boolean(harnessEnded) && child.origin === 'adopt' && how !== 'session-changed';
     let unread: ChildMessage[] = [];
     updateChild(this.parentId, child.id, (entry) => {
-      entry.exitedAt = new Date().toISOString();
-      entry.exitCode = code;
-      entry.lastStatus = 'unknown';
+      const at = new Date().toISOString();
       // What became of the pane, for agent_list and doctor (issue #187).
-      entry.paneEnd = { pane: entry.paneId, ...(entry.workspaceId ? { workspaceId: entry.workspaceId } : {}), how, at: entry.exitedAt, ...(code === undefined ? {} : { code }), ...detail };
-      if (harnessEnded) entry.harnessEnded = harnessEnded;
-      if (awaitsResume) entry.awaitsResume = entry.exitedAt;
+      runEnds(entry, { at, code, statusUnknown: true, paneEnd: { pane: entry.paneId, ...(entry.workspaceId ? { workspaceId: entry.workspaceId } : {}), how, at, ...(code === undefined ? {} : { code }), ...detail }, ...(harnessEnded ? { harnessEnded } : {}), awaitsResume });
       // A message in the session that the model never received is undelivered, and the exit event says so.
       unread = unreadSessionMessages(entry);
       for (const message of unread) {
@@ -592,7 +588,7 @@ export class Watcher {
         delete message.from;
       }
     });
-    child = { ...child, ...(harnessEnded ? { harnessEnded } : {}), ...(detail.session || detail.reason ? { paneEnd: { pane: child.paneId, how, at: new Date().toISOString(), ...detail } } : {}) };
+    child = viewOf(child, { ...(harnessEnded ? { harnessEnded } : {}), ...(detail.session || detail.reason ? { paneEnd: { pane: child.paneId, how, at: new Date().toISOString(), ...detail } } : {}) });
     // A brief nothing shows the child read stays for the resume that hands it over (issue #132).
     removeChildFiles(child.id, hostOf(child) === LOCAL_HOST ? child.cwd : undefined, { briefs: !this.keepsBriefs(child) });
     if (hostOf(child) !== LOCAL_HOST && this.cleanupRemote) {
@@ -710,7 +706,7 @@ export class Watcher {
           entry.completionPane = entry.paneId;
           entry.lastBusyAt = new Date().toISOString();
         }
-        if (status !== 'unknown' && !entry.harnessSeenAt) entry.harnessSeenAt = new Date().toISOString();
+        if (status !== 'unknown') harnessSeen(entry, new Date().toISOString());
         if (entry.prompt?.source === 'screen' && (entry.lastStatus !== status || (stateSeq !== undefined && stateSeq !== entry.stateChangeSeq))) delete entry.prompt;
         if (hookDialogClosed(entry.prompt, entry.lastStatus, status)) delete entry.prompt;
         if (entry.lastStatus !== status) {
@@ -719,7 +715,7 @@ export class Watcher {
           // read before the change no longer describes the status.
           entry.stateChangeSeq = stateSeq;
         } else if (stateSeq !== undefined) entry.stateChangeSeq = stateSeq;
-        entry.lastStatus = status;
+        statusSeen(entry, status);
       });
       // A pi child can reach herdr's detection after the spawn looked, and
       // after the agent_detected event, so a status change of a child with no
@@ -748,7 +744,7 @@ export class Watcher {
       }
       if (typeof event.data['agent'] === 'string' && event.data['agent'] && !child.harnessSeenAt) {
         updateChild(this.parentId, child.id, (entry) => {
-          entry.harnessSeenAt ??= new Date().toISOString();
+          harnessSeen(entry, new Date().toISOString());
         });
       }
       const signal = this.controller?.signal;
@@ -775,10 +771,10 @@ export class Watcher {
     const agentName = agentNameOf(agent, child.name);
     if (!session && !agentName) return;
     updateChild(this.parentId, child.id, (entry) => {
-      if (session) entry.session = session;
+      if (session) sessionSeen(entry, session);
       if (agentName) entry.agentName = agentName;
     });
-    if (session && host === LOCAL_HOST && !child.transcript) this.recordTranscript({ ...child, session }, session.value);
+    if (session && host === LOCAL_HOST && !child.transcript) this.recordTranscript(child, session.value);
   }
 
   private dropLink(host: string): void {
@@ -834,7 +830,7 @@ export class Watcher {
       const seen = !child.harnessSeenAt && ((typeof pane['agent'] === 'string' && pane['agent'] !== '') || status !== 'unknown');
       if (seen) {
         updateChild(this.parentId, child.id, (entry) => {
-          entry.harnessSeenAt ??= new Date().toISOString();
+          harnessSeen(entry, new Date().toISOString());
         });
       }
       if (status !== child.lastStatus || (seq !== undefined && seq !== child.completionSeq) || (stateSeq !== undefined && stateSeq !== child.stateChangeSeq) || sessionChanged || nameChanged) {
@@ -847,13 +843,13 @@ export class Watcher {
           // A new turn is activity even when the status did not change. The
           // record keeps it, so a restarted parent does not lose the period.
           if (seq !== undefined && seq !== entry.completionSeq) entry.lastBusyAt = at;
-          entry.lastStatus = status;
+          statusSeen(entry, status);
           if (seq !== undefined) {
             entry.completionSeq = seq;
             entry.completionPane = entry.paneId;
           }
           if (stateSeq !== undefined) entry.stateChangeSeq = stateSeq;
-          if (session) entry.session = session;
+          if (session) sessionSeen(entry, session);
           if (agentName) entry.agentName = agentName;
         });
         // A new session is a new file to read, and for pi the session is the file.
@@ -1055,13 +1051,12 @@ export class Watcher {
         entry.turnNotified = { paneId: child.paneId, seq: state.reportedFor };
         delete entry.turnBaseline;
       }
-      if (pending) entry.reportPending = true;
-      else delete entry.reportPending;
+      reportPending(entry, pending);
     });
     const fresh = readParent(this.parentId)?.children.find((entry) => entry.id === child.id);
     child.turnNotified = fresh?.turnNotified;
     child.turnBaseline = fresh?.turnBaseline;
-    child.reportPending = pending || undefined;
+    reportPending(child, pending);
   }
 
   private readonly answering = new Set<string>();
@@ -1136,9 +1131,9 @@ export class Watcher {
       const session = sessionFrom(record?.['agent_session']);
       if (!session) return undefined;
       updateChild(this.parentId, child.id, (entry) => {
-        entry.session = session;
+        sessionSeen(entry, session);
       });
-      return this.recordTranscript({ ...child, session }, session.value);
+      return this.recordTranscript(child, session.value);
     } catch {
       return undefined;
     }

@@ -7,6 +7,7 @@ import path from 'node:path';
 import { parentId, parentsDir, registryPath, slug } from './paths.ts';
 import { readsSuggestion } from './reads.ts';
 import { REGISTRY_SCHEMA, type ChildRecord, type DialogDecision, type Harness, type ParentRecord } from './types.ts';
+import { defaultHost } from './incarnation.ts';
 
 /** The host of a child started before the registry recorded one. */
 const LOCAL_HOST = 'local';
@@ -52,7 +53,7 @@ export function migrateParent(record: ParentRecord): ParentRecord {
   if (!Array.isArray(record.children)) record.children = [];
   for (const child of record.children) {
     // Every child before version 2 ran on the parent's own herdr.
-    if (typeof child.host !== 'string' || !child.host) child.host = LOCAL_HOST;
+    defaultHost(child);
   }
   if (typeof record.schema !== 'number' || record.schema < REGISTRY_SCHEMA) record.schema = REGISTRY_SCHEMA;
   return record;

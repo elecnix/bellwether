@@ -118,8 +118,8 @@ export function createHerdrService(parent: ParentHello, id: string, deps: Servic
   });
   // A session whose restart failed is connected again, so it came back by hand.
   if (readParent(record.id)?.restartFailed) {
-    mutateParent(record.id, (entry) => {
-      delete entry.restartFailed;
+    mutateParent(record.id, (parentRecord) => {
+      delete parentRecord.restartFailed;
     });
   }
   return {

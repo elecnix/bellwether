@@ -38,6 +38,7 @@ import { harnessOf, herdrLink, type RegisterRemote } from './spawn.ts';
 import { processInfoOf } from './start-check.ts';
 import { teleportState, type TeleportRefusalInput, type TeleportState } from './teleport-plan.ts';
 import type { ChildRecord, Crossing } from './types.ts';
+import { crossingFailed, relocated, runEnds, viewOf } from './incarnation.ts';
 
 /** How long the watcher ignores the old pane's close. Longer than any carry: two copies, a stop and a start. */
 export const MOVE_WINDOW_MS = 15 * 60_000;
@@ -375,7 +376,10 @@ export async function carryChild(deps: CarryDeps, parentId: string, request: Car
 
       // 4. Start the child at the destination, resuming the copy, under the same id and name.
       const at = new Date().toISOString();
-      const moved: ChildRecord = { ...(readParent(parentId)?.children.find((record) => record.id === child.id) ?? child), host: target, cwd: targetCwd, session: byPath ? { kind: 'path', value: sessionFile } : { kind: 'id', value: resumable.value }, exitedAt: child.exitedAt ?? at };
+      const moved: ChildRecord = { ...(readParent(parentId)?.children.find((record) => record.id === child.id) ?? child) };
+      relocated(moved, { host: target, cwd: targetCwd, session: byPath ? { kind: 'path', value: sessionFile } : { kind: 'id', value: resumable.value } });
+      // The run on the source ended when its tab closed, or before, for a stopped child.
+      runEnds(moved, { at: child.exitedAt ?? at });
       delete moved.transcript;
       delete moved.transcriptMissing;
       // A workspace id belongs to the source machine's herdr. A child with a
@@ -394,7 +398,7 @@ export async function carryChild(deps: CarryDeps, parentId: string, request: Car
       const notes: string[] = [];
       if (plan.closeTarget && started) {
         await targetClient.tabClose(started.tabId ?? started.paneId).catch((fault: unknown) => notes.push(`its new tab on ${where(target)} could not be closed: ${(fault as Error).message}`));
-        if (target !== LOCAL_HOST) await deps.cleanupRemote?.({ ...started, host: target }).catch(() => {});
+        if (target !== LOCAL_HOST) await deps.cleanupRemote?.(viewOf(started, { host: target })).catch(() => {});
         else removeChildFiles(child.id);
       }
       if (plan.discardTarget && written.size) {
@@ -410,7 +414,7 @@ export async function carryChild(deps: CarryDeps, parentId: string, request: Car
       let rollbackError: string | undefined;
       if (restart) {
         updateChild(parentId, child.id, (record) => {
-          record.exitedAt = new Date().toISOString();
+          runEnds(record, { at: new Date().toISOString() });
         });
         const restored = readParent(parentId)?.children.find((record) => record.id === child.id);
         const parent = readParent(parentId);
@@ -431,7 +435,7 @@ export async function carryChild(deps: CarryDeps, parentId: string, request: Car
       updateChild(parentId, child.id, (record) => {
         delete record.moving;
         // A child that runs on neither machine says so until it runs again.
-        if (rollbackError) record.crossingFailed = { at: new Date().toISOString(), verb, from: source, to: target, stage, error: `${failure.replace(/\.$/, '')}; starting it again on ${where(source)} failed too: ${rollbackError}`, sourceFile: bundle.sourceFile, reopen };
+        if (rollbackError) crossingFailed(record, { at: new Date().toISOString(), verb, from: source, to: target, stage, error: `${failure.replace(/\.$/, '')}; starting it again on ${where(source)} failed too: ${rollbackError}`, sourceFile: bundle.sourceFile, reopen });
       });
       const outcome = rollbackError ? 'stranded' : restart ? 'rolled-back' : 'abandoned';
       appendLog({ at: new Date().toISOString(), parent: parentId, child: child.id, name: child.name, harness, state, outcome, from: source, to: target, stage, by, reason: request.reason, error: failure, ...(rollbackError ? { rollbackError } : {}), ...(notes.length ? { notes } : {}) });
@@ -448,7 +452,7 @@ export async function carryChild(deps: CarryDeps, parentId: string, request: Car
     // 6. Keep the copy, tidy the machine the child left, and point the record at its new host.
     await targetEnd.commit({ childId: settle.childId, files: settle.files() }).catch((error: unknown) => log(`${verb}: the backups on ${where(target)} stay: ${(error as Error).message}`));
     if (source === LOCAL_HOST) removeChildFiles(child.id);
-    else await deps.cleanupRemote?.({ ...child, host: source }).catch((error: unknown) => log(`${verb}: could not remove ${child.name}'s files on ${where(source)}: ${(error as Error).message}`));
+    else await deps.cleanupRemote?.(viewOf(child, { host: source })).catch((error: unknown) => log(`${verb}: could not remove ${child.name}'s files on ${where(source)}: ${(error as Error).message}`));
     const doneAt = new Date().toISOString();
     updateChild(parentId, child.id, (record) => {
       delete record.moving;

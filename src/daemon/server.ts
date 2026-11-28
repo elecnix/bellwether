@@ -576,8 +576,8 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
   /** The session's last connection closed: the record says when, so doctor can tell a session that left (issue #187). */
   const leftDaemon = (parentId: string): void => {
     try {
-      mutateParent(parentId, (entry) => {
-        entry.disconnectedAt = new Date(now()).toISOString();
+      mutateParent(parentId, (parentRecord) => {
+        parentRecord.disconnectedAt = new Date(now()).toISOString();
       });
     } catch (error) {
       log(`could not record that session ${parentId} left: ${(error as Error).message}`);
@@ -1020,10 +1020,10 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
         session = serviceFor(request.parent);
         // The pane a session says hello from is where it runs now, even after a resume by hand (issue #187).
         const hello = request.parent;
-        mutateParent(session.parentId, (entry) => {
-          if (hello.paneId) entry.paneId = hello.paneId;
-          if (hello.paneId && hello.workspaceId) entry.workspaceId = hello.workspaceId;
-          delete entry.disconnectedAt;
+        mutateParent(session.parentId, (parentRecord) => {
+          if (hello.paneId) parentRecord.paneId = hello.paneId;
+          if (hello.paneId && hello.workspaceId) parentRecord.workspaceId = hello.workspaceId;
+          delete parentRecord.disconnectedAt;
         });
         // A child a parent on another machine started holds the pane it says hello from while it stays connected (issue #244).
         if (hello.childId && hello.paneId) childSaidHello(socket, hello.childId, hello.paneId);

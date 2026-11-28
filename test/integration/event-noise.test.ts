@@ -17,6 +17,7 @@ import { Watcher } from '../../src/core/watcher.ts';
 import type { ChildRecord, OutboxEntry } from '../../src/core/types.ts';
 import { startFakeHerdr, type FakeHerdr, type RecordedRequest } from '../fixtures/fake-herdr.ts';
 import { paneReadAnswer } from '../fixtures/ghost-screens.ts';
+import { paneOpened } from '../../src/core/incarnation.ts';
 
 const PANE = 'w1:p1';
 const LIMITS = { idleMs: 40, blockedMs: 20, stuckMs: 60_000 };
@@ -379,8 +380,7 @@ async function cross(r: Rig, paneId: string, herdrSays: { status: string; seq?: 
   r.pane.paneId = paneId;
   r.pane.seq = herdrSays.seq;
   updateChild(r.parentId, r.childId, (entry) => {
-    entry.paneId = paneId;
-    entry.tabId = `${paneId.split(':')[0]}:t9`;
+    paneOpened(entry, { paneId, tabId: `${paneId.split(':')[0]}:t9` });
   });
   r.pane.detected();
   r.pane.set(herdrSays.status);

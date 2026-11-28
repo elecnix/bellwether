@@ -10,6 +10,7 @@ import { registryPath } from '../../src/core/paths.ts';
 import { readParent } from '../../src/core/registry.ts';
 import type { ChildRecord } from '../../src/core/types.ts';
 import { isolate } from '../fixtures/isolated.ts';
+import { relocated } from '../../src/core/incarnation.ts';
 
 function child(extra: Partial<ChildRecord> = {}): ChildRecord {
   const at = '2026-11-28T05:00:00.000Z';
@@ -19,8 +20,7 @@ function child(extra: Partial<ChildRecord> = {}): ChildRecord {
 /** What a move does to the record: point it at the new place, then note the place it left. */
 function move(record: ChildRecord, to: { host: string; cwd: string }, at: string, verb: 'move' | 'teleport' = 'move'): void {
   const from = { host: record.host ?? 'local', cwd: record.cwd };
-  record.host = to.host;
-  record.cwd = to.cwd;
+  relocated(record, to);
   recordDeparture(record, { host: from.host, at, ...(from.cwd ? { cwd: from.cwd } : {}), verb, reason: `to ${to.host}` });
 }
 

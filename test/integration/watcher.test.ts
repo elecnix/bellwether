@@ -13,6 +13,7 @@ import { emptyParent, saveParent, updateChild } from '../../src/core/registry.ts
 import { Watcher } from '../../src/core/watcher.ts';
 import type { ChildRecord, OutboxEntry } from '../../src/core/types.ts';
 import { startFakeHerdr } from '../fixtures/fake-herdr.ts';
+import { releaseEvents } from '../../src/core/incarnation.ts';
 
 async function until<T>(what: string, check: () => T | undefined, timeoutMs = 5_000): Promise<T> {
   const deadline = Date.now() + timeoutMs;
@@ -113,7 +114,7 @@ test('a child whose spawn is answering its dialogs produces no blocked event unt
     await new Promise((resolve) => setTimeout(resolve, 300));
     assert.deepEqual(entries, []);
     updateChild(parent.id, held.id, (entry) => {
-      delete entry.startingUntil;
+      releaseEvents(entry);
     });
     const blocked = await until('the blocked event', () => entries.find((entry) => entry.event === 'blocked'));
     assert.match(blocked.text, /^worker \(w1:p9\) is blocked/);

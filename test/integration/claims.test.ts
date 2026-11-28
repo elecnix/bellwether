@@ -15,6 +15,7 @@ import { PANE, farAdopt, farRecords, herdr, herdrPanes, liveOnPane, localAdopt, 
 import { startFakeHerdr, type FakeHerdr } from '../fixtures/fake-herdr.ts';
 import { fakeWorld, type FakeWorld } from '../fixtures/fake-world.ts';
 import { isolate } from '../fixtures/isolated.ts';
+import { runEnds } from '../../src/core/incarnation.ts';
 
 const X = 'w1:p1';
 const Y = 'w1:p2';
@@ -185,8 +186,8 @@ function runsQuietly(r: Rig, pane: string, session: string): void {
 function leaveWithClaimKept(parentHome: string, parentId: string, childId: string, session: string): void {
   on(parentHome, () =>
     updateChild(parentId, childId, (entry) => {
-      entry.exitedAt = new Date().toISOString();
-      entry.paneEnd = { pane: entry.paneId, how: 'session-changed', at: entry.exitedAt, session };
+      const at = new Date().toISOString();
+      runEnds(entry, { at, paneEnd: { pane: entry.paneId, how: 'session-changed', at, session } });
     }),
   );
 }

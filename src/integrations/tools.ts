@@ -34,6 +34,7 @@ import type { Watcher } from '../core/watcher.ts';
 import type { CallerIdentity, ChildRecord, RelayHostState, ReportStatus } from '../core/types.ts';
 import type { SessionReach } from '../core/adopted-session.ts';
 import { FEATURES, featureNamed, serves, type DaemonOffer, type Feature } from '../daemon/features.ts';
+import { runEnds } from '../core/incarnation.ts';
 
 export interface ToolContext {
   /** The parent's own herdr. */
@@ -607,8 +608,8 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
     });
     // The depth-0 session's max_depth is the tree's ceiling, raised only by its own spawns.
     const tree = raiseTree(record, asked);
-    if (tree !== undefined) mutateParent(record.id, (entry) => {
-      entry.maxDepth = tree;
+    if (tree !== undefined) mutateParent(record.id, (parentRecord) => {
+      parentRecord.maxDepth = tree;
     });
     const where = child.host === LOCAL_HOST ? '' : ` on machine ${child.host}`;
     const room = child.ownsWorkspace ? `, in workspace ${workspaceName(child)}, which Bellwether created for it` : options.workspace && child.workspaceId ? `, in workspace ${workspaceName(child)}` : '';
@@ -778,7 +779,7 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
     if (child.tabId) await herdr.tabClose(child.tabId);
     else await herdr.paneClose(child.paneId);
     updateChild(ctx.parentId, child.id, (entry) => {
-      entry.exitedAt = new Date().toISOString();
+      runEnds(entry, { at: new Date().toISOString() });
     });
     // A brief nothing shows the child read stays, so a resume can still hand it over.
     removeChildFiles(child.id, hostOf(child) === LOCAL_HOST ? child.cwd : undefined, { briefs: !keepsBriefs(child) });

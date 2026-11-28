@@ -218,6 +218,8 @@ The parent's brief asked for the smallest change first. The numbers argue agains
 
 Tracked in [#277](https://github.com/elecnix/bellwether/issues/277).
 
+Every write to these fields now goes through `src/core/incarnation.ts`, and `test/unit/incarnation-owner.test.ts` fails on a write anywhere else.
+
 The fields are `paneId`, `tabId`, `host`, `cwd`, `session`, `lastStatus`, `startingUntil`, `exitedAt`, `exitCode`, `harnessEnded`, `harnessSeenAt`, `tabClosedAt`, `paneEnd`, `reportPending`, `resumedAt`, `restartFailed`, `crossingFailed`, `awaitsResume`, `closing` and `restartInDoubt`.
 
 The owner offers two transitions, a run that ends and a run that starts in a pane. Calls to the second come from the five places in the table of cleared fields, so those places clear the same fields by construction. Every field of `ChildRecord` gets a lifetime, per child or per run, in a table that `satisfies Record<keyof ChildRecord, Lifetime>`, so a new field without a lifetime fails the typecheck.

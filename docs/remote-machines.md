@@ -103,7 +103,7 @@ The parent's record lets go of the old pane before it asks. The watcher then rea
 
 Each case below refuses a restart, and the refusal gives the reason that applied:
 
-- the daemon there predates the request, which came with Bellwether 0.1.9; the refusal reports the version that machine runs
+- the daemon there predates the request, which came with Bellwether 0.1.10; the refusal reports the version that machine runs
 - no herdr answers on that machine at the socket of the herdr session that the saved machine profile names
 - the child's session is not on that machine, because its harness never wrote the session's file there
 - that machine doesn't have a relay record of the child for this parent

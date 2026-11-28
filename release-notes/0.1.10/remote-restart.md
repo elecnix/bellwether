@@ -1,0 +1,1 @@
+Restarting a child on another machine closes its pane there, opens a new tab and resumes the same session under the same child id. That machine's daemon refuses by name when that machine has no herdr, lacks the session or runs Bellwether older than 0.1.10.

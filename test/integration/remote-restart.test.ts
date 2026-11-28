@@ -225,7 +225,7 @@ test("a parent restarts its child on another machine: same child id, a new pane,
   assert.equal(after.exitedAt, undefined);
 });
 
-/** A daemon on the child's machine from 0.1.8: it serves the relay and answers anything newer with unknown_type. */
+/** A daemon on the child's machine from 0.1.9: it serves the relay and answers anything newer with unknown_type. */
 async function olderDaemon(socketPath: string): Promise<() => Promise<void>> {
   fs.mkdirSync(path.dirname(socketPath), { recursive: true });
   const sockets = new Set<net.Socket>();
@@ -242,7 +242,7 @@ async function olderDaemon(socketPath: string): Promise<() => Promise<void>> {
         if (!line.trim()) continue;
         const request = JSON.parse(line) as { type: string };
         if (request.type === 'relay-subscribe') {
-          socket.write(`${JSON.stringify({ type: 'relay-hello', protocol: 4, pid: process.pid, waiting: 0, version: '0.1.8', build: 'f080cfa' })}\n`);
+          socket.write(`${JSON.stringify({ type: 'relay-hello', protocol: 4, pid: process.pid, waiting: 0, version: '0.1.9', build: '150094f' })}\n`);
           socket.write(`${JSON.stringify({ type: 'relay-drained', sent: 0 })}\n`);
         } else {
           socket.write(`${JSON.stringify({ type: 'error', code: 'unknown_type', message: `unknown request type ${JSON.stringify(request.type)}` })}\n`);
@@ -269,7 +269,7 @@ function unchanged(space: Room, before: ChildRecord): void {
 test('a far daemon that predates the restart request is refused by name, with the release that brings it, and nothing changes', async (t) => {
   const space = await room(t, { farDaemon: olderDaemon });
   const before = child();
-  await assert.rejects(space.parent.tool('agent_restart', { target: NAME }), /first-mate runs on machine child-box, and it was not restarted: machine child-box runs bellwether 0\.1\.8 build f080cfa, which does not serve relay-restart: that takes the relay-restart request, which came with bellwether 0\.1\.9\. Update @elecnix\/bellwether on machine child-box\./);
+  await assert.rejects(space.parent.tool('agent_restart', { target: NAME }), /first-mate runs on machine child-box, and it was not restarted: machine child-box runs bellwether 0\.1\.9 build 150094f, which does not serve relay-restart: that takes the relay-restart request, which came with bellwether 0\.1\.10\. Update @elecnix\/bellwether on machine child-box\./);
   unchanged(space, before);
   assert.notEqual(space.links.state('child-box')?.status, 'reconnecting', 'an unknown request does not end the relay');
 });

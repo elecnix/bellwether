@@ -18,6 +18,7 @@
 //      session still there, and leave a stopped one stopped as it was.
 //   6. Commit the copy, point the record, and so the relay, at the new host,
 //      and append the outcome to the policy's log.
+import { noticeTaken, withMessagesOf } from './delivery.ts';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -407,7 +408,7 @@ export async function carryChild(deps: CarryDeps, parentId: string, request: Car
       // The record goes back to what it was before the carry: the source's host,
       // directory and session. Messages sent since keep their place on it.
       const current = readParent(parentId)?.children.find((record) => record.id === child.id);
-      upsertChild(parentId, { ...original, ...(current?.messages ? { messages: current.messages } : {}) });
+      upsertChild(parentId, withMessagesOf(original, current));
       // A live child that was stopped resumes on the source, whose session the carry never touched.
       const restart = plan.restartSource && state === 'live';
       let restoredPane: string | undefined;
@@ -459,7 +460,7 @@ export async function carryChild(deps: CarryDeps, parentId: string, request: Car
       recordDeparture(record, { host: source, at: doneAt, ...(child.cwd ? { cwd: child.cwd } : {}), verb, ...(request.reason ? { reason: request.reason } : {}) });
     });
     const outcome = policy.outcome(notice);
-    const untold = notice && !notice.delivery.takenAt ? (notice.notTaken ?? notice.delivery.unanswered ?? 'Bellwether did not see its model read it and begin a turn on it') : undefined;
+    const untold = notice && !noticeTaken(notice) ? (notice.notTaken ?? notice.delivery.unanswered ?? 'Bellwether did not see its model read it and begin a turn on it') : undefined;
     appendLog({ at: doneAt, parent: parentId, child: child.id, name: child.name, harness, state, outcome, from: source, to: target, by, reason: request.reason, sourceFile: bundle.sourceFile, targetFile: sessionFile, cwd: targetCwd, bytes, pane: started?.paneId, ...(leftBehind.length && request.acceptLoss ? { leftBehind } : {}), ...(untold ? { undelivered: untold } : {}) });
     log(`${verb}: ${child.name} ${outcome} from ${where(source)} to ${where(target)}, pane ${started?.paneId}${request.reason ? `, because ${request.reason}` : ''}${untold ? `, not told: ${untold}` : ''}`);
     const saved = readParent(parentId)?.children.find((record) => record.id === child.id) ?? (started as ChildRecord);

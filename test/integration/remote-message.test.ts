@@ -392,6 +392,43 @@ test('EntersOnce: a relay link that drops after the far session took the message
   assert.deepEqual(typed(space.far), []);
 });
 
+// Issue #278: the relay answer that never comes, for a child that then
+// retires on its machine. The far daemon keeps its relay record, marked
+// retired, while a report still waits there. Its record says it pushed the
+// message, so the second ask must answer that, and never "its session never
+// took it".
+test('Delivery: a far child that retired after its session took the message answers the second ask from its record, and the message is not marked undelivered', async (t) => {
+  const space = await room(t);
+  const farSocket = path.join(space.childHome, 'daemon.sock');
+  const hello = { harness: 'claude-code' as const, session: SESSION, cwd: '/far/work', host: 'child-box', paneId: PANE, depth: 1, herdrSocket: space.far.socketPath, childId: CHILD_ID, reportsTo: PARENT_ID, accepts: ['message'] };
+  const session = await inHome(space.childHome, () => DaemonClient.connect(hello, { socketPath: farSocket, home: space.childHome }));
+  t.after(() => session.close());
+  let dropped: Promise<number> | undefined;
+  session.onMessage((message) => {
+    dropped ??= space.ssh.drop().then(async (code) => {
+      session.messageAck(message.id, 'queued', { via: 'claude-channel' });
+      return code;
+    });
+  });
+  await relayUp(space);
+
+  const reply = await space.parent.tool('agent_send', { child: NAME, text: 'Pull before you rebase.' });
+  await dropped;
+  const id = /message (m-[0-9a-f]{8})/.exec(reply)?.[1];
+  assert.ok(id, reply);
+  assert.ok(messages()[0]?.relayInDoubt, 'the far answer is not known');
+  // The far daemon noted the push, then the child retired there while a report still waited.
+  const pushed = await until('the push on the far relay record', () => inHome(space.childHome, () => readRelayRecord(CHILD_ID))?.pushed?.some((entry) => entry.id === id));
+  assert.ok(pushed);
+  inHome(space.childHome, () => saveRelayRecord({ ...readRelayRecord(CHILD_ID)!, retiredAt: new Date().toISOString() }));
+
+  await relayUp(space);
+  const settled = await until('the far answer on the parent record', () => messages().find((entry) => entry.id === id && entry.relayInDoubt === undefined));
+  assert.equal(settled.undelivered, undefined, `its session took the message, so it is not undelivered: ${settled.undelivered}`);
+  assert.equal(settled.via, 'claude-channel');
+  assert.deepEqual(typed(space.far), []);
+});
+
 /** A daemon on the child's machine from before relay-message: it serves the relay and answers anything newer with unknown_type. */
 async function olderDaemon(socketPath: string): Promise<() => Promise<void>> {
   fs.mkdirSync(path.dirname(socketPath), { recursive: true });

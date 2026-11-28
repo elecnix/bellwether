@@ -12,6 +12,7 @@
 // on the child and in teleport.log. A notice the model does not take leaves
 // the agent running at the destination, says so, and keeps the notice for
 // the session's next hello.
+import { noticeOf, noticeState, noticeTaken } from './delivery.ts';
 import path from 'node:path';
 import { carryChild, where, type CarryDeps, type CarryPolicy, type CarryRequest } from './carry.ts';
 import { harnessFor } from './harnesses/index.ts';
@@ -89,19 +90,8 @@ async function inboundGap(deps: TeleportDeps, target: string, kind: string): Pro
   return deps.inbound?.(target, kind);
 }
 
-/** The notice as the record keeps it: how it arrived, or why Bellwether did not see the model take it. */
-export function noticeRecord(outcome: NoticeOutcome | undefined): TeleportNoticeRecord {
-  const delivery = outcome?.delivery;
-  if (!delivery) return { undelivered: 'the resume carried no notice' };
-  return {
-    ...(delivery.message ? { message: delivery.message } : {}),
-    ...(delivery.via ? { via: delivery.via } : {}),
-    ...(delivery.receivedAt ? { receivedAt: delivery.receivedAt } : {}),
-    ...(delivery.readAt ? { readAt: delivery.readAt } : {}),
-    ...(delivery.takenAt ? { takenAt: delivery.takenAt } : {}),
-    ...(delivery.takenAt ? {} : { undelivered: outcome?.notTaken ?? delivery.unanswered ?? 'Bellwether did not see its model read it and begin a turn on it' }),
-  };
-}
+/** The notice as the record keeps it, which `src/core/delivery.ts` writes. */
+export const noticeRecord = noticeOf;
 
 export async function teleportChild(deps: TeleportDeps, parentId: string, request: TeleportRequest): Promise<TeleportResult> {
   const policy: CarryPolicy = {
@@ -115,7 +105,7 @@ export async function teleportChild(deps: TeleportDeps, parentId: string, reques
     refused: (name, target, reasons) => new TeleportRefusedError(name, target, reasons),
     failed: (message, stage, restoredPane) => new TeleportFailedError(message, stage, restoredPane),
     logPath: teleportLogPath,
-    outcome: (notice) => (notice?.delivery.takenAt ? 'teleported' : 'teleported-untold'),
+    outcome: (notice) => (noticeTaken(notice) ? 'teleported' : 'teleported-untold'),
   };
   const result = await carryChild(deps, parentId, request, policy);
   const told = noticeRecord(result.notice);
@@ -172,10 +162,10 @@ export function teleportLines(parents: Pick<ParentRecord, 'children'>[], now = D
     if (stalled) lines.push(`warn  teleport: ${child.name}'s request to teleport itself${stalled.machine ? ` to ${where(stalled.machine)}` : ''}, made at ${stalled.requestedAt ?? stalled.at}, did not run: ${stalled.reason.replace(/\.$/, '')}.`);
     const last = child.teleports?.at(-1);
     if (!last) continue;
-    const read = last.notice.message ? child.messages?.find((message) => message.id === last.notice.message)?.readAt : undefined;
+    const notice = noticeState(child, last.notice);
     const trip = `${child.name} went from ${where(last.from.host)} (${last.from.cwd}) to ${where(last.to.host)} (${last.to.cwd}) at ${last.at}`;
-    if (!last.notice.takenAt && !read) lines.push(`warn  teleport: ${trip}, and has not read the notice that it was teleported: ${(last.notice.undelivered ?? 'no reason was recorded').replace(/\.$/, '')}. Its session is offered the notice when it next connects.`);
-    else if (Date.parse(last.at) > now - RECENT_MS) lines.push(`info  teleport: ${trip}, and read the notice at ${last.notice.takenAt ?? read}.`);
+    if (notice.state === 'not seen') lines.push(`warn  teleport: ${trip}, and has not read the notice that it was teleported: ${(last.notice.undelivered ?? 'no reason was recorded').replace(/\.$/, '')}. Its session is offered the notice when it next connects.`);
+    else if (Date.parse(last.at) > now - RECENT_MS) lines.push(`info  teleport: ${trip}, and ${notice.state === 'taken' ? 'read the notice and began a turn on it' : 'read the notice'} at ${notice.at}.`);
   }
   return lines;
 }

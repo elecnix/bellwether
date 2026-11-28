@@ -2,6 +2,7 @@
 // a resume target (see spawn-resume.ts) opens a new tab on the host the child ran on, starts the harness with its
 // session's resume flag, and puts the new pane under the same child id. The
 // child's outbox entries and receipts are keyed by that id, so they continue.
+import { briefAdded, briefDelivered, briefsCarried, briefsRestored, type NoticeOutcome } from './delivery.ts';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { HerdrClient, HerdrPane } from './herdr-client.ts';
@@ -103,11 +104,7 @@ export interface ResumeOptions {
 }
 
 /** How a teleport's notice reached the resumed session. */
-export interface NoticeOutcome {
-  delivery: BriefDelivery;
-  /** Why Bellwether did not see the model read it and begin a turn on it. */
-  notTaken?: string;
-}
+export type { NoticeOutcome } from './delivery.ts';
 
 export interface ResumeResult {
   child: ChildRecord;
@@ -209,13 +206,7 @@ export async function resumeChild(client: HerdrClient, parent: ParentRecord, tar
   // that carried that one is not offered again when the session reconnects,
   // so the child takes the task once.
   if (next?.repeats) {
-    const carried = new Set([...(next.repeats.carries ?? []), next.repeats.n]);
-    for (const message of child.messages ?? []) {
-      if (message.brief === undefined || !carried.has(message.brief) || message.readAt || message.undelivered) continue;
-      message.undelivered = `brief ${next.brief.n} carries it into the resumed session`;
-      delete message.text;
-      delete message.from;
-    }
+    briefsCarried(child, new Set([...(next.repeats.carries ?? []), next.repeats.n]), `brief ${next.brief.n} carries it into the resumed session`);
   }
   upsertChild(parent.id, child);
 
@@ -241,8 +232,7 @@ export async function resumeChild(client: HerdrClient, parent: ParentRecord, tar
       else delete entry.route;
       if (previous.model) entry.model = previous.model;
       else delete entry.model;
-      if (previousBriefs) entry.briefs = previousBriefs;
-      else delete entry.briefs;
+      briefsRestored(entry, previousBriefs);
     });
   };
 
@@ -270,8 +260,7 @@ export async function resumeChild(client: HerdrClient, parent: ParentRecord, tar
     if (tab.workspaceLabel) child.workspaceLabel = tab.workspaceLabel;
     if (next) {
       next.brief.paneId = tab.paneId;
-      const kept = knownBriefs.filter((brief) => brief.n !== next.brief.n);
-      child.briefs = [...kept, next.brief];
+      briefAdded(child, knownBriefs, next.brief);
     }
     // A resumed Claude Code child paints the same development-channel dialog
     // as a new one, so the watcher holds its events while the resume answers.
@@ -326,7 +315,7 @@ export async function resumeChild(client: HerdrClient, parent: ParentRecord, tar
       const text = options.notice === undefined ? (next?.text ?? '') : next ? `${options.notice}\n\n---\n\n${next.text}` : options.notice;
       const handed = await deliverBrief({ herdr: client, parentId: parent.id, child, ...(next ? { brief: next.brief } : {}), text, from: options.from ?? parent.id, inbox: options.inbox, fatal: requireHarness(kind).startupFatal, signal, ...(options.notice === undefined ? {} : { notice: true as const }) });
       if (next) {
-        next.brief.delivery = handed.delivery;
+        briefDelivered(next.brief, handed.delivery);
         briefNote = handed.note;
       }
       if (options.notice !== undefined) notice = { delivery: handed.delivery, ...(handed.notTaken ? { notTaken: handed.notTaken } : {}) };

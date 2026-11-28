@@ -7,6 +7,7 @@
 // the push sends its read receipt and begins a turn, which herdr on the
 // destination reports, as a real adapter and herdr do. herdr records every
 // agent.prompt, so a case knows nothing was typed.
+import { briefAdded } from '../../src/core/delivery.ts';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -176,7 +177,7 @@ test('an unread brief rides behind the notice in the same message, so the notice
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, 'Rebase the branch on main.', { mode: 0o600 });
   updateChild(w.parentId, 'child-worker', (entry) => {
-    entry.briefs = [{ n: 1, file, at: new Date().toISOString() }];
+    briefAdded(entry, [], { n: 1, file, at: new Date().toISOString() });
   });
   const session = fakeSession(w, true);
 

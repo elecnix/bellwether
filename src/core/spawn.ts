@@ -1,6 +1,7 @@
 // Starting a child. The order follows the design: write the registry record
 // first, then create the tab with the Bellwether environment, then ask herdr
 // to start the harness in the tab's root pane, then watch the new pane.
+import { briefDelivered, briefOnLaunch, firstBriefs } from './delivery.ts';
 import os from 'node:os';
 import { HerdrApiError, type HerdrClient } from './herdr-client.ts';
 import { BLANK_SCREEN } from './screen.ts';
@@ -337,7 +338,7 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
     ...(options.reads?.length ? { reads: options.reads } : {}),
     inactiveMs: resolveInactiveMs(options.inactiveMinutes),
     // The record names the brief's file, so a resume can tell whether the child read it.
-    ...(options.prompt ? { briefs: [{ n: 1, file: promptPath(id), at: now }] } : {}),
+    ...(options.prompt ? firstBriefs(promptPath(id), now) : {}),
     // herdr reports no session for a harness with a store of its own, so the spawn names it.
     // A harness that takes a session id on its launch line gets one minted here.
     ...(store ? { store: store.storePath(harnessHooks, { id }) } : {}),
@@ -406,8 +407,8 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
         // that takes no message in its session.
         const first = child.briefs?.find((brief) => brief.n === 1);
         if (first && entry.brief.launch) {
-          first.delivery = { path: 'launch', reason: `${entry.inbox.via === 'none' ? entry.inbox.reason : `${entry.label} takes its first prompt on its launch line`}, and its own store showed the session with that prompt`, at: new Date().toISOString() };
-          briefNote = deliveryNote(child, first, first.delivery);
+          const delivery = briefOnLaunch(first, `${entry.inbox.via === 'none' ? entry.inbox.reason : `${entry.label} takes its first prompt on its launch line`}, and its own store showed the session with that prompt`, new Date().toISOString());
+          briefNote = deliveryNote(child, first, delivery);
         }
         upsertChild(parent.id, child);
       } catch (error) {
@@ -460,7 +461,7 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
     });
     try {
       const handed = await deliverBrief({ herdr: client, parentId: parent.id, child, brief: first, text: options.prompt, from: hooks.from ?? parent.id, inbox: hooks.inbox, fatal: entry.startupFatal, signal });
-      first.delivery = handed.delivery;
+      briefDelivered(first, handed.delivery);
       briefNote = handed.note;
     } catch (error) {
       await abandon(client, parent.id, child, opened, hooks, registered);

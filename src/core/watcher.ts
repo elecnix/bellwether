@@ -6,6 +6,7 @@
 // events, so a subscription opened after the snapshot would miss whatever
 // happened in between. After a disconnect the watcher takes a fresh snapshot
 // for the same reason.
+import { childExited } from './delivery.ts';
 import { closingNow, restartFailureText } from './restart.ts';
 import fs from 'node:fs';
 import type { HerdrClient, HerdrEvent, Subscription } from './herdr-client.ts';
@@ -26,7 +27,6 @@ import { spoolPath } from './paths.ts';
 import { realRetireOps, reapChild, retirementPending, type RetireOps } from './retire.ts';
 import { isMoving } from './move-plan.ts';
 import type { AgentStatus, ChildEventKind, ChildMessage, ChildRecord, DialogDecision, OutboxEntry, PaneEnd, RelayHostState, ReportVia, SpoolReport } from './types.ts';
-import { unreadSessionMessages } from './send.ts';
 import { backInPane } from './adopt.ts';
 import { parsePane, type HerdrPane } from './herdr-client.ts';
 import { ClaimRefused, claimantOf, decideClaim } from './pane-claims.ts';
@@ -592,12 +592,7 @@ export class Watcher {
       // What became of the pane, for agent_list and doctor (issue #187).
       runEnds(entry, { at, code, statusUnknown: true, paneEnd: { pane: entry.paneId, ...(entry.workspaceId ? { workspaceId: entry.workspaceId } : {}), how, at, ...(code === undefined ? {} : { code }), ...detail }, ...(harnessEnded ? { harnessEnded } : {}), awaitsResume });
       // A message in the session that the model never received is undelivered, and the exit event says so.
-      unread = unreadSessionMessages(entry);
-      for (const message of unread) {
-        message.undelivered = 'the child exited before its model received it';
-        delete message.text;
-        delete message.from;
-      }
+      unread = childExited(entry, 'the child exited before its model received it');
     });
     child = viewOf(child, { ...(harnessEnded ? { harnessEnded } : {}), ...(detail.session || detail.reason ? { paneEnd: { pane: child.paneId, how, at: new Date().toISOString(), ...detail } } : {}) });
     // A brief nothing shows the child read stays for the resume that hands it over (issue #132).

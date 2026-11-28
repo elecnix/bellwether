@@ -5,6 +5,7 @@
 // Claude Code channel server as a process, or a bare daemon client where a
 // case counts each push. herdr records every agent.prompt, so a case knows
 // whether the brief was typed, and the child record says which path carried it.
+import { messageRead } from '../../src/core/delivery.ts';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -199,7 +200,7 @@ test("agent_list says how each child's newest brief arrived, and names the recor
   assert.ok(list.includes(`plain: brief 1 at ${plain.briefs?.[0]?.at}, typed into its pane as message ${plain.briefs?.[0]?.delivery?.message}, because fake-agent is a test harness with no inbound path; Bellwether cannot tell when its model read it. The brief stays at ${plain.briefs?.[0]?.file}.`), list);
   const taken = listener.briefs?.[0]?.delivery;
   assert.equal(taken?.takenBy, 'turn');
-  assert.ok(list.includes(`listener: brief 1 at ${listener.briefs?.[0]?.at}, into its session through its Bellwether pi extension as message ${taken?.message}; its model read it and began a turn on it at ${taken?.takenAt}.`), list);
+  assert.ok(list.includes(`listener: brief 1 at ${listener.briefs?.[0]?.at}, into its session through its Bellwether pi extension as message ${taken?.message}; taken: its model read it and began a turn on it at ${taken?.takenAt}.`), list);
 });
 
 test('a child with no adapter gets its brief typed, and the record says so with the reason', async (t) => {
@@ -289,10 +290,7 @@ test('a restart of a child whose brief its model read delivers nothing again, an
   // The model read it, as the adapter reports from the transcript.
   updateChild(space.parentId, child.id, (entry) => {
     const message = entry.messages?.find((candidate) => candidate.brief === 1);
-    if (message) {
-      message.readAt = new Date().toISOString();
-      delete message.text;
-    }
+    if (message) messageRead(entry, message.id, new Date().toISOString());
   });
   pushes.length = 0;
   const reply = await space.parent.tool('agent_restart', { target: 'writer' });

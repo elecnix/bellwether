@@ -14,8 +14,10 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { HerdrClient } from '../../src/core/herdr-client.ts';
 import { LOCAL_HOST } from '../../src/core/machine.ts';
-import { emptyParent, readParent, saveParent, upsertChild } from '../../src/core/registry.ts';
+import { emptyParent, readParent, saveParent, updateChild, upsertChild } from '../../src/core/registry.ts';
+import { messageChild, type Inbox, type InboxAnswer } from '../../src/core/send.ts';
 import { claudeProjectDir } from '../../src/core/transcript.ts';
 import type { ChildMessage, ChildRecord, OutboxEntry } from '../../src/core/types.ts';
 import { DaemonClient, daemonSessions } from '../../src/daemon/client.ts';
@@ -170,7 +172,7 @@ test('a Claude Code child gets the message through its channel, nothing is typed
   assert.equal(sent?.path, 'session');
   assert.equal(sent?.via, 'claude-channel');
   assert.equal(sent?.readAt, undefined, 'queued in Claude Code is not read by the model');
-  assert.match(await space.parent.tool('agent_list', {}), new RegExp(`writer: message ${id} at .*, into its session through Bellwether channel; not read yet\\.`));
+  assert.match(await space.parent.tool('agent_list', {}), new RegExp(`writer: message ${id} at .*, into its session through Bellwether channel; pushed; not read yet\\.`));
 
   // Claude Code records the channel message reaching the model as an attachment line.
   fs.appendFileSync(transcript, `${JSON.stringify({ type: 'attachment', attachment: { type: 'queued_command', prompt: note.params.content, commandMode: 'prompt', origin: { kind: 'channel', server: 'bellwether' } } })}\n`);
@@ -240,7 +242,7 @@ test('a typed message whose agent.prompt fails after the request left stays on t
   const space = await room(t, [CODER], { prompt: () => ({ error: { code: 'prompt_timeout', message: 'the agent did not take the prompt in time' } }) });
   let id = '';
   await assert.rejects(space.parent.tool('agent_send', { child: 'coder', text: 'Run the tests again.' }), (error: Error) => {
-    id = /herdr may have typed message (m-[0-9a-f]{8}) into coder's pane: its agent\.prompt failed after the request left, with herdr the agent did not take the prompt in time\. The record keeps the message, and agent_list shows it\. Read the pane with agent_read before you send it again/.exec(error.message)?.[1] ?? '';
+    id = /herdr may have typed message (m-[0-9a-f]{8}) into coder's pane: its agent\.prompt failed after the request left, with herdr the agent did not take the prompt in time\. The record keeps the message as in doubt, and agent_list shows it\. Read the pane with agent_read before you send it again/.exec(error.message)?.[1] ?? '';
     return Boolean(id) || assert.fail(error.message);
   });
   assert.deepEqual(typed(space.fake, CODER.pane), ['Run the tests again.'], 'herdr took the request, so the text may be in the pane');
@@ -249,7 +251,7 @@ test('a typed message whose agent.prompt fails after the request left stays on t
   assert.equal(message?.path, 'keystrokes');
   assert.equal(message?.typedInDoubt, 'herdr the agent did not take the prompt in time');
   assert.equal(message?.undelivered, undefined, 'nothing says it never arrived');
-  assert.match(await space.parent.tool('agent_list', {}), new RegExp(`coder: message ${id} at .*, typed into its pane, because Codex .*; not known whether herdr typed it, because its agent\\.prompt failed with herdr the agent did not take the prompt in time; read its pane with agent_read before you send it again\\.`));
+  assert.match(await space.parent.tool('agent_list', {}), new RegExp(`coder: message ${id} at .*, typed into its pane, because Codex .*; in doubt: not known whether herdr typed it, because its agent\\.prompt failed with herdr the agent did not take the prompt in time; read its pane with agent_read before you send it again\\.`));
 });
 
 test('a Claude Code child whose session is not connected gets the message typed, and the reply says why', async (t) => {
@@ -392,4 +394,87 @@ test('a child that exits before reading a session message is reported: the exit 
   const [message] = messagesOf(space, WRITER.id);
   assert.equal(message?.undelivered, 'the child exited before its model received it');
   assert.equal(message?.text, undefined);
+});
+
+// Issue #278: one test per delivery transition that the record got wrong
+// before src/core/delivery.ts owned it. Each case fails on a daemon whose
+// modules wrote the fields themselves.
+
+/** A daemon's door into the child's session, scripted, for a case that needs an answer the real one gives only by a race. */
+function scriptedInbox(answer: (message: InboxMessage) => Promise<InboxAnswer> | InboxAnswer): Inbox {
+  return async (_parentId, _child, message) => answer(message);
+}
+
+test('Delivery: a read that crosses back before the relay loses its answer leaves the message read, not in doubt', async (t) => {
+  const space = await room(t, [WRITER]);
+  const herdr = new HerdrClient({ socketPath: space.fake.socketPath });
+  const child = readParent(space.parentId)!.children[0]!;
+  const outcome = await messageChild({
+    herdr,
+    parentId: space.parentId,
+    from: 'your parent',
+    child,
+    text: 'Pull before you rebase.',
+    inbox: scriptedInbox((message) => {
+      // The far session read it, and the read arrived in the relay outbox
+      // before the connection carrying the answer to relay-message dropped.
+      updateChild(space.parentId, child.id, (entry) => {
+        const found = entry.messages?.find((each) => each.id === message.id) as { readAt?: string; text?: string; from?: string } | undefined;
+        if (found) {
+          found.readAt = new Date().toISOString();
+          delete found.text;
+          delete found.from;
+        }
+      });
+      return { delivered: true, via: '', inDoubt: true, unanswered: 'the relay to machine child-box lost its answer: the connection ended' };
+    }),
+  });
+  const [message] = messagesOf(space, WRITER.id);
+  assert.ok(message?.readAt, 'the read stays on the record');
+  assert.equal(message?.relayInDoubt, undefined, `a message its model read is not in doubt; reply: ${outcome.text}`);
+  assert.match(outcome.text, /^Delivered to writer's session as message m-[0-9a-f]{8}/);
+  assert.match(await space.parent.tool('agent_list', {}), new RegExp(`writer: message ${message?.id} at .*; read at `));
+});
+
+test('Delivery: a push the session did not answer in time is in doubt on the record, and the ack that comes after the timeout makes it pushed', async (t) => {
+  const space = await room(t, [WRITER], { messageAckMs: 300 });
+  let ack: () => void = () => {};
+  const acked = new Promise<void>((resolve) => {
+    ack = resolve;
+  });
+  await bareChild(t, space, WRITER, (message, _replay, client) => {
+    void acked.then(() => client.messageAck(message.id, 'queued', { via: 'claude-channel' }));
+  });
+  const reply = await space.parent.tool('agent_send', { child: 'writer', text: 'Hello?' });
+  assert.match(reply, /^Pushed to writer's session as message m-[0-9a-f]{8}, but its session had not answered within 0\.3 s/);
+  const [doubt] = messagesOf(space, WRITER.id);
+  assert.match(doubt?.unanswered ?? '', /its session had not answered within 0\.3 s/, 'the record says the push may or may not be in the session');
+  assert.match(await space.parent.tool('agent_list', {}), new RegExp(`writer: message ${doubt?.id} at .*; in doubt: its session had not answered within 0\\.3 s, so its session may hold it`));
+
+  ack();
+  const settled = await until('the late ack on the record', () => messagesOf(space, WRITER.id).find((entry) => entry.via === 'claude-channel'));
+  assert.equal(settled.unanswered, undefined, 'the ack settles the doubt');
+  assert.match(await space.parent.tool('agent_list', {}), new RegExp(`writer: message ${settled.id} at .*, into its session through Bellwether channel; pushed; not read yet\\.`));
+  assert.deepEqual(typed(space.fake, WRITER.pane), []);
+});
+
+test('Delivery: a message that is never typed, whose session was not ready, is offered to that session when it connects', async (t) => {
+  const space = await room(t, [WRITER]);
+  const herdr = new HerdrClient({ socketPath: space.fake.socketPath });
+  const child = readParent(space.parentId)!.children[0]!;
+  // A teleport's notice takes this path: the session's channel is not ready yet, and the notice is never typed.
+  const outcome = await messageChild({ herdr, parentId: space.parentId, from: 'your parent', child, text: 'You were teleported to child-box.', typing: false, inbox: scriptedInbox(() => ({ delivered: false, reason: "no session of writer that takes messages is connected to this machine's Bellwether daemon" })) });
+  assert.match(outcome.text, /It is never typed, and its session is offered it when it next connects\.$/);
+  assert.match(await space.parent.tool('agent_list', {}), new RegExp(`writer: message ${outcome.message.id} at .*; held: its session did not take it`));
+
+  const offered: { id: string; replay: boolean }[] = [];
+  await bareChild(t, space, WRITER, (message, replay, client) => {
+    offered.push({ id: message.id, replay });
+    client.messageAck(message.id, 'read', { via: 'claude-channel' });
+  });
+  await until('the replay of the held message', () => offered[0], 3_000);
+  assert.deepEqual(offered, [{ id: outcome.message.id, replay: true }]);
+  const read = await until('the read on the record', () => messagesOf(space, WRITER.id).find((entry) => entry.readAt));
+  assert.equal(read.held, undefined);
+  assert.deepEqual(typed(space.fake, WRITER.pane), [], 'nothing was typed');
 });

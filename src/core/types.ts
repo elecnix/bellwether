@@ -236,8 +236,8 @@ export interface ChildBrief {
   paneId?: string;
   /** The earlier briefs this one repeats, because the record could not prove the child read them. */
   carries?: number[];
-  /** How the brief reached the harness, once the start handed it over. A start that failed leaves it out. */
-  delivery?: BriefDelivery;
+  /** How the brief reached the harness, once the start handed it over. A start that failed leaves it out. Written only by `src/core/delivery.ts`. */
+  readonly delivery?: BriefDelivery;
 }
 
 /**
@@ -252,28 +252,28 @@ export interface ChildBrief {
  * confirmed that prompt.
  */
 export interface BriefDelivery {
-  path: 'session' | 'keystrokes' | 'launch';
+  readonly path: 'session' | 'keystrokes' | 'launch';
   /** For the session path: the adapter that received it, `claude-channel` or `pi-message`. */
-  via?: string;
+  readonly via?: string;
   /** For the session path: when the adapter received the message that carried it. Transport, not reading. */
-  receivedAt?: string;
+  readonly receivedAt?: string;
   /** For the session path: why the adapter's receipt is missing, when its session had not answered within the bound. Nothing was typed. */
-  unanswered?: string;
+  readonly unanswered?: string;
   /** For the session path: when the adapter reported the model read it. */
-  readAt?: string;
+  readonly readAt?: string;
   /** For the session path: when the model took it, the later of its read receipt and its first turn. */
-  takenAt?: string;
+  readonly takenAt?: string;
   /** For the session path: `turn` once the adapter's read receipt and a `working` status both came for one copy. Before 0.1.10, either fact alone settled it: `turn` for the status, `read` for the receipt. A read with no turn leaves it out and keeps `readAt` (issue #246). */
-  takenBy?: 'turn' | 'read';
+  readonly takenBy?: 'turn' | 'read';
   /** The message that carried the first copy, when no read came for it and the brief went again. */
-  resentFrom?: string;
+  readonly resentFrom?: string;
   /** The message whose read settled the brief, when it is not `message`: the first copy's read arrived after the second copy went out (issue #246). */
-  readFrom?: string;
+  readonly readFrom?: string;
   /** For keystrokes and launch: why the brief did not go into the session. */
-  reason?: string;
+  readonly reason?: string;
   /** The message under `messages` that carried it, for the session path and keystrokes. */
-  message?: string;
-  at: string;
+  readonly message?: string;
+  readonly at: string;
 }
 
 export interface ChildSession {
@@ -411,9 +411,9 @@ export interface ChildRecord {
    * `prompts/<child id>.md`. Added without a protocol bump: only the daemon
    * reads it.
    */
-  briefs?: ChildBrief[];
-  /** The newest messages a parent sent the child, with the path each took. */
-  messages?: ChildMessage[];
+  readonly briefs?: ChildBrief[];
+  /** The newest messages a parent sent the child, with the path each took. Written only by `src/core/delivery.ts`. */
+  readonly messages?: ChildMessage[];
   /** The last report the child sent, when, and the path it took. */
   lastReport?: { status: ReportStatus; text: string; at: string; seq: number; via?: ReportVia; toolOffered?: boolean };
   /**
@@ -664,7 +664,8 @@ export interface DepthRequest {
 }
 
 /**
- * One message a parent sent a child, and how it got there. `session` means
+ * One message a parent sent a child, and how it got there. `src/core/delivery.ts`
+ * writes every field that says what became of it, and names its phase. `session` means
  * the child's own Bellwether server or extension put it in the session as a
  * message; `keystrokes` means herdr typed it into the child's pane.
  */
@@ -673,19 +674,19 @@ export interface ChildMessage {
   at: string;
   path: 'session' | 'keystrokes';
   /** For the session path: the adapter that carried it, `claude-channel` or `pi-message`. */
-  via?: string;
+  readonly via?: string;
   /** For keystrokes: why the session path was not taken. */
   reason?: string;
-  /** For the session path: when the child's model received it. */
-  readAt?: string;
+  /** For the session path: when the adapter reported that the message entered the model's conversation. */
+  readonly readAt?: string;
   /** Why the message never reached the child's model. */
-  undelivered?: string;
+  readonly undelivered?: string;
   /** The start of the text, for agent_list and the exit event. */
   preview: string;
   /** The whole text, kept only while a session message waits to be read, so a reconnected session can take it again. */
-  text?: string;
+  readonly text?: string;
   /** Who sent it, as the child reads it, kept with the text. */
-  from?: string;
+  readonly from?: string;
   /** The number of the brief this message carried, for a start's brief rather than a parent's message. */
   brief?: number;
   /**
@@ -695,14 +696,26 @@ export interface ChildMessage {
    * parent's daemon asks the far daemon again once the connection is back,
    * and the field goes when that answer arrives.
    */
-  relayInDoubt?: string;
+  readonly relayInDoubt?: string;
   /**
    * For keystrokes: why it is not known whether herdr typed the message, after
    * herdr's agent.prompt failed once the request had left (issue #234). The
    * request may have typed the text before the failure, so the record keeps
    * the message and the caller's error says so.
    */
-  typedInDoubt?: string;
+  readonly typedInDoubt?: string;
+  /**
+   * For the session path: why the session's answer is not known, when it did
+   * not answer the push within the bound or its connection closed first. The
+   * session may hold the message, so nothing is typed, and its next hello
+   * offers it again. A late answer or a read clears it.
+   */
+  readonly unanswered?: string;
+  /**
+   * For a message that is never typed, such as a teleport's notice: why its
+   * session did not take it. The session's next hello offers it (issue #278).
+   */
+  readonly held?: string;
 }
 
 /** One raise of a child's ceiling, for the audit trail agent_list shows. */

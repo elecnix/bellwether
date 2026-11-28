@@ -12,10 +12,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
 import { INCARNATION_FIELDS, LIFETIMES } from '../../src/core/incarnation.ts';
+import { ROOT, ownerScanner } from '../fixtures/field-owner.ts';
 
-const ROOT = path.resolve(import.meta.dirname, '../..');
 const OWNER = path.join('src', 'core', 'incarnation.ts');
-const FIELDS = INCARNATION_FIELDS.join('|');
 
 /**
  * Writes to a field of the same name on an object that is not a child record.
@@ -39,174 +38,7 @@ const NOT_A_CHILD: Record<string, string> = {
   'src/core/restart.ts parentRecord': 'a parent record, which keeps its own pane and restart failure',
 };
 
-/**
- * The names the code gives a child record. A literal that spreads one of them
- * and sets an incarnation field is a copy of the record with its run changed.
- * A spread of anything else, such as `...(cond ? { cwd } : {})`, builds
- * another object. The design matrix reads fields by the same names.
- */
-const RECORD_NAMES = ['child', 'entry', 'record', 'existing', 'original', 'restored', 'started', 'moved', 'saved', 'earlier', 'known', 'current', 'previous'];
-const RECORD_SPREAD = new RegExp(`(^|\\?\\?|\\|\\|)\\s*(${RECORD_NAMES.join('|')})$|\\.children\\.find\\(|childById\\(`);
-
-/** Whether a top-level spread in a literal copies a child record. */
-function spreadsRecord(body: string): boolean {
-  let depth = 0;
-  let start = -1;
-  const spreads: string[] = [];
-  for (let at = 0; at <= body.length; at += 1) {
-    const char = body[at] ?? ',';
-    if (depth === 0 && body.startsWith('...', at)) start = at + 3;
-    if ('{(['.includes(char)) depth += 1;
-    else if ('})]'.includes(char)) depth -= 1;
-    else if (char === ',' && depth === 0 && start >= 0) {
-      spreads.push(body.slice(start, at).trim());
-      start = -1;
-    }
-  }
-  return spreads.some((spread) => {
-    let inner = spread;
-    while (inner.startsWith('(') && closing(inner, 0) === inner.length - 1) inner = inner.slice(1, -1).trim();
-    return RECORD_SPREAD.test(inner);
-  });
-}
-
-interface Finding {
-  file: string;
-  line: number;
-  rule: 'write' | 'copy' | 'assign' | 'literal';
-  text: string;
-}
-
-/** The source with comments and the contents of strings blanked, keeping every offset and line. */
-function codeOnly(source: string): string {
-  let out = '';
-  let index = 0;
-  const blank = (text: string): string => text.replace(/[^\n]/g, ' ');
-  while (index < source.length) {
-    const rest = source.slice(index);
-    const comment = /^(\/\/[^\n]*|\/\*[\s\S]*?\*\/)/.exec(rest);
-    if (comment) {
-      out += blank(comment[0]);
-      index += comment[0].length;
-      continue;
-    }
-    const quote = source[index];
-    if (quote === '"' || quote === "'" || quote === '`') {
-      let end = index + 1;
-      let depth = 0;
-      while (end < source.length) {
-        const char = source[end];
-        if (char === '\\') {
-          end += 2;
-          continue;
-        }
-        if (quote === '`' && char === '$' && source[end + 1] === '{') depth += 1;
-        else if (quote === '`' && char === '}' && depth > 0) depth -= 1;
-        else if (char === quote && depth === 0) break;
-        end += 1;
-      }
-      out += quote + blank(source.slice(index + 1, end)) + (source[end] ?? '');
-      index = end + 1;
-      continue;
-    }
-    out += source[index];
-    index += 1;
-  }
-  return out;
-}
-
-function lineOf(source: string, offset: number): number {
-  return source.slice(0, offset).split('\n').length;
-}
-
-/** The index of the bracket that closes the one at `open`. */
-function closing(code: string, open: number): number {
-  const pairs: Record<string, string> = { '{': '}', '(': ')', '[': ']' };
-  const stack: string[] = [];
-  for (let at = open; at < code.length; at += 1) {
-    const char = code[at] ?? '';
-    if (pairs[char]) stack.push(pairs[char]);
-    else if (char === stack.at(-1)) {
-      stack.pop();
-      if (!stack.length) return at;
-    }
-  }
-  return code.length;
-}
-
-/** The text of a literal at its own depth, with every nested bracket's contents removed. */
-function topLevel(body: string): string {
-  let out = '';
-  let depth = 0;
-  for (const char of body) {
-    if ('{(['.includes(char)) depth += 1;
-    if (depth === 0) out += char;
-    if ('})]'.includes(char)) depth -= 1;
-  }
-  return out;
-}
-
-const KEY = new RegExp(`(^|[,{\\s])(${FIELDS})\\s*(:|,|$)`);
-const WRITE = new RegExp(`(\\([^()\\n]*\\)|[\\w$]+(?:\\??\\.[\\w$]+|\\[[^\\]\\n]*\\])*)\\s*\\??\\.\\s*(${FIELDS})\\s*(=(?![=>])|\\?\\?=|\\|\\|=|&&=|\\+=|-=)`, 'g');
-const DELETE = new RegExp(`delete\\s+(\\([^()\\n]*\\)|[\\w$]+(?:\\??\\.[\\w$]+|\\[[^\\]\\n]*\\])*)\\s*\\??\\.\\s*(${FIELDS})\\b`, 'g');
-const INDEXED = new RegExp(`\\[\\s*['"\`](${FIELDS})['"\`]\\s*\\]\\s*(=(?![=>])|\\?\\?=)`, 'g');
-
-/** Every write to an incarnation field in one file that is not the owner's. */
-export function scanSource(file: string, source: string): Finding[] {
-  if (file === OWNER) return [];
-  const raw = source;
-  const code = codeOnly(source);
-  const found: Finding[] = [];
-  const quoted = (offset: number, length: number): string => raw.slice(offset, offset + length).replace(/\s+/g, ' ').trim();
-
-  for (const pattern of [WRITE, DELETE]) {
-    for (const match of code.matchAll(pattern)) {
-      const receiver = (match[1] ?? '').trim();
-      if (NOT_A_CHILD[`${file} ${receiver}`]) continue;
-      found.push({ file, line: lineOf(code, match.index), rule: 'write', text: quoted(match.index, match[0].length) });
-    }
-  }
-  for (const match of raw.matchAll(INDEXED)) found.push({ file, line: lineOf(code, match.index), rule: 'write', text: quoted(match.index, match[0].length) });
-
-  // Object.assign and Reflect write past readonly, so any that names a field is a write.
-  for (const match of code.matchAll(/\b(Object\.assign|Reflect\.set|Reflect\.deleteProperty|Reflect\.defineProperty|Object\.defineProperty)\s*\(/g)) {
-    const open = match.index + match[0].length - 1;
-    const args = code.slice(open, closing(code, open) + 1);
-    const named = new RegExp(`\\b(${FIELDS})\\b`).test(args) || new RegExp(`['"\`](${FIELDS})['"\`]`).test(raw.slice(open, closing(code, open) + 1));
-    if (named) found.push({ file, line: lineOf(code, match.index), rule: 'assign', text: quoted(match.index, Math.min(120, args.length + match[0].length)) });
-  }
-
-  for (let at = code.indexOf('{'); at >= 0; at = code.indexOf('{', at + 1)) {
-    const end = closing(code, at);
-    const own = topLevel(code.slice(at + 1, end));
-    const before = code.slice(Math.max(0, at - 80), at);
-    const after = code.slice(end + 1).trimStart();
-    // A destructuring pattern reads the fields, and a block or a type is no literal.
-    if (/(const|let|var)\s*$/.test(before) || /^=(?![=>])/.test(after) || /^\)\s*(:[^=]*)?=>/.test(after) || /^:\s*[\w<]/.test(after)) continue;
-    if (!KEY.test(own)) continue;
-    const literalOfRecord = /(:\s*ChildRecord\s*=|\bas\s+ChildRecord|satisfies\s+ChildRecord|<ChildRecord>)\s*\(?\s*$/.test(before) || /^\)?\s*(as|satisfies)\s+ChildRecord\b/.test(after);
-    if (!literalOfRecord && !spreadsRecord(code.slice(at + 1, end))) continue;
-    found.push({ file, line: lineOf(code, at), rule: literalOfRecord ? 'literal' : 'copy', text: quoted(at, Math.min(120, end - at + 1)) });
-  }
-  return found;
-}
-
-function sourceFiles(): string[] {
-  const files: string[] = [];
-  const walk = (dir: string): void => {
-    for (const entry of fs.readdirSync(path.join(ROOT, dir), { withFileTypes: true })) {
-      const relative = path.join(dir, entry.name);
-      if (entry.isDirectory()) walk(relative);
-      else if (/\.(ts|js|mjs)$/.test(entry.name) && !entry.name.endsWith('.d.ts')) files.push(relative);
-    }
-  };
-  walk('src');
-  return files;
-}
-
-function scanAll(): Finding[] {
-  return sourceFiles().flatMap((file) => scanSource(file, fs.readFileSync(path.join(ROOT, file), 'utf8')));
-}
+const { scanSource, scanAll, staleExemptions } = ownerScanner({ owner: OWNER, fields: INCARNATION_FIELDS, notMine: NOT_A_CHILD, literalTypes: ['ChildRecord'] });
 
 test('the scan flags each way a module could write an incarnation field without the owner', () => {
   const rules = (source: string): string[] => scanSource('src/core/example.ts', source).map((finding) => finding.rule);
@@ -244,13 +76,7 @@ test('no file but src/core/incarnation.ts writes an incarnation field', () => {
 });
 
 test('every exemption still names a write the scan would otherwise flag', () => {
-  for (const key of Object.keys(NOT_A_CHILD)) {
-    const [file, ...rest] = key.split(' ');
-    const receiver = rest.join(' ');
-    const code = codeOnly(fs.readFileSync(path.join(ROOT, file ?? ''), 'utf8'));
-    const used = [...code.matchAll(WRITE), ...code.matchAll(DELETE)].some((match) => (match[1] ?? '').trim() === receiver);
-    assert.ok(used, `${key} no longer writes an incarnation field, so remove its exemption`);
-  }
+  assert.deepEqual(staleExemptions(), [], 'these no longer write an incarnation field, so remove their exemptions');
 });
 
 test('ChildRecord declares every incarnation field readonly, so the typecheck sees every alias', () => {

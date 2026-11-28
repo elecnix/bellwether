@@ -12,6 +12,7 @@ import { HerdrApiError, type HerdrClient } from './herdr-client.ts';
 import { BLANK_SCREEN, shownScreen } from './screen.ts';
 import { harnessFor } from './harnesses/index.ts';
 import { updateChild } from './registry.ts';
+import { messageDropped, messageHeld, messageNeverSent, messagePushed, messageSending, messageTyped, messageUnanswered, phaseOf, preview, relayAnswerLost, toReplay, type NewMessage, type Typing } from './delivery.ts';
 import type { ChildMessage, ChildRecord } from './types.ts';
 import type { InboxMessage } from '../daemon/protocol.ts';
 
@@ -79,10 +80,6 @@ export const BRIEF_TURN_WAIT_MS = 20_000;
  */
 export const BRIEF_SESSION_WAIT_MS = 30_000;
 
-/** How many messages a child record keeps. */
-const KEPT = 20;
-const PREVIEW = 80;
-
 /** What a message became, for the caller's reply. */
 export interface MessageOutcome {
   message: ChildMessage;
@@ -121,25 +118,14 @@ export interface MessageInput {
   typing?: boolean;
 }
 
-function preview(text: string): string {
-  const line = text.replace(/\s+/g, ' ').trim();
-  return line.length > PREVIEW ? `${line.slice(0, PREVIEW - 1)}…` : line;
-}
-
-function forget(parentId: string, childId: string, id: string): void {
+/** The message as the record holds it now, or as it was written when the record has lost it. */
+function update(parentId: string, childId: string, fallback: ChildMessage, change: (entry: ChildRecord) => ChildMessage | undefined | void): ChildMessage {
+  let now: ChildMessage | undefined;
   updateChild(parentId, childId, (entry) => {
-    const kept = (entry.messages ?? []).filter((existing) => existing.id !== id);
-    if (kept.length) entry.messages = kept;
-    else delete entry.messages;
+    change(entry);
+    now = entry.messages?.find((existing) => existing.id === fallback.id);
   });
-}
-
-function remember(parentId: string, childId: string, message: ChildMessage): void {
-  updateChild(parentId, childId, (entry) => {
-    const kept = (entry.messages ?? []).filter((existing) => existing.id !== message.id);
-    kept.push(message);
-    entry.messages = kept.slice(-KEPT);
-  });
+  return now ?? fallback;
 }
 
 /**
@@ -171,41 +157,40 @@ export async function messageChild(input: MessageInput): Promise<MessageOutcome>
   const refusal = sessionPathRefusal(child, input.inbox);
   const brief = input.brief ? { brief: input.brief.n } : {};
   let reason = refusal;
+  const fresh: NewMessage = { id, at, text, from: input.from, ...(input.brief ? { brief: input.brief.n } : {}) };
   if (!refusal && input.inbox) {
     // Recorded before the push, so a read that comes back at once finds it.
-    remember(parentId, child.id, { id, at, path: 'session', preview: preview(text), text, from: input.from, ...brief });
+    let sent!: ChildMessage;
+    updateChild(parentId, child.id, (entry) => {
+      sent = messageSending(entry, fresh);
+    });
     const pushed = input.inbox(parentId, child, { id, from: input.from, text, at }, input.brief || input.awaitSession ? { awaitSession: true } : {}).catch((error: unknown): InboxAnswer => ({ delivered: false, reason: (error as Error).message }));
     let answer: InboxAnswer;
     try {
       answer = await (input.gone ? Promise.race([pushed, input.gone]) : pushed);
     } catch (error) {
-      forget(parentId, child.id, id);
+      updateChild(parentId, child.id, (entry) => messageDropped(entry, id));
       throw error;
     }
     if (answer.delivered) {
-      const message: ChildMessage = { id, at, path: 'session', via: answer.via, preview: preview(text), text, from: input.from, ...brief };
-      updateChild(parentId, child.id, (entry) => {
-        const found = entry.messages?.find((existing) => existing.id === id);
-        if (!found) return;
-        if (answer.via) found.via = answer.via;
-        if (answer.inDoubt) found.relayInDoubt = answer.unanswered ?? 'the relay lost the answer';
-      });
-      if (answer.inDoubt) {
-        const { via: _none, ...unknown } = message;
+      const lost = answer.inDoubt ? (answer.unanswered ?? 'the relay lost the answer') : undefined;
+      // A read that crossed back before this answer has settled the message, and every transition below then leaves it as read.
+      const message = update(parentId, child.id, { ...sent, ...(answer.via ? { via: answer.via } : {}) }, (entry) => (lost ? relayAnswerLost(entry, id, lost) : answer.unanswered ? messageUnanswered(entry, id, answer.via, answer.unanswered) : messagePushed(entry, id, answer.via)));
+      if (lost && phaseOf(message) === 'relay-in-doubt') {
         return {
-          message: { ...unknown, relayInDoubt: answer.unanswered ?? 'the relay lost the answer' },
+          message,
           unanswered: answer.unanswered,
-          text: `Pushed to ${child.name}'s session as message ${id}, but ${(answer.unanswered ?? 'the relay lost the answer').replace(/[.\s]+$/, '')}, so nothing was typed into its pane: its session may already hold it, and a typed copy would enter it twice. Bellwether asks that machine again once the relay is back, and its daemon pushes the message only if it never did. agent_list shows the answer.`,
+          text: `Pushed to ${child.name}'s session as message ${id}, but ${lost.replace(/[.\s]+$/, '')}, so nothing was typed into its pane: its session may already hold it, and a typed copy would enter it twice. Bellwether asks that machine again once the relay is back, and its daemon pushes the message only if it never did. agent_list shows the answer.`,
         };
       }
-      if (answer.unanswered) {
+      if (answer.unanswered && phaseOf(message) === 'unanswered') {
         return {
           message,
           unanswered: answer.unanswered,
           text: `Pushed to ${child.name}'s session as message ${id}, but ${answer.unanswered}, so nothing was typed into its pane: a session that takes it late would hold two copies. agent_list shows when its model has read it, and a session that reconnects is offered it again.`,
         };
       }
-      const label = VIA_LABEL[answer.via] ?? answer.via;
+      const label = VIA_LABEL[answer.via] ?? (answer.via || 'adapter');
       return {
         message,
         text: `Delivered to ${child.name}'s session as message ${id}, through its ${label}; nothing was typed into its pane.${answer.note ? ` ${answer.note}` : ''} An idle ${child.name} starts a turn on it, and a busy one takes it after the tool calls in flight, before its next model call. agent_list shows when its model has read it, and if ${child.name} exits first, the exit event says it never did.`,
@@ -213,19 +198,22 @@ export async function messageChild(input: MessageInput): Promise<MessageOutcome>
     }
     // A repair on the way, such as a claim restored on the child's machine, still goes in the reply (issue #219).
     reason = answer.note ? `${answer.reason.replace(/\.$/, '')}. ${answer.note}` : answer.reason;
-    // A message that is never typed stays on the record as it was written
-    // before the push, where the session's next hello offers it.
+    // A message that is never typed stays on the record, held for the
+    // session's next hello, which offers it (issue #278).
     if (input.typing === false) {
-      const kept: ChildMessage = { id, at, path: 'session', preview: preview(text), text, from: input.from, ...brief };
-      return { message: kept, unanswered: reason, text: `${child.name}'s session did not take message ${id}, because ${reason.replace(/\.$/, '')}. It is never typed, and its session is offered it when it next connects.` };
+      const why = reason;
+      const message = update(parentId, child.id, sent, (entry) => messageHeld(entry, id, why));
+      return { message, unanswered: why, text: `${child.name}'s session did not take message ${id}, because ${why.replace(/\.$/, '')}. It is never typed, and its session is offered it when it next connects.` };
     }
     // The fallback records a message of its own under the same id.
-    forget(parentId, child.id, id);
+    updateChild(parentId, child.id, (entry) => messageDropped(entry, id));
   }
   if (input.typing === false) {
     const why = reason ?? 'the session path was not available';
-    const kept: ChildMessage = { id, at, path: 'session', preview: preview(text), undelivered: why, ...brief };
-    remember(parentId, child.id, kept);
+    let kept!: ChildMessage;
+    updateChild(parentId, child.id, (entry) => {
+      kept = messageNeverSent(entry, fresh, why);
+    });
     return { message: kept, unanswered: why, text: `${child.name}'s session cannot take message ${id}, because ${why.replace(/\.$/, '')}, and it is never typed.` };
   }
   await input.beforeTyping?.();
@@ -238,7 +226,13 @@ export async function messageChild(input: MessageInput): Promise<MessageOutcome>
  */
 async function typeInto(input: MessageInput, id: string, at: string, reason: string): Promise<MessageOutcome> {
   const { herdr, child, parentId, text } = input;
-  const message: ChildMessage = { id, at, path: 'keystrokes', reason, preview: preview(text), ...(input.brief ? { brief: input.brief.n } : {}) };
+  const typed = (how: Typing): ChildMessage => {
+    let kept!: ChildMessage;
+    updateChild(parentId, child.id, (entry) => {
+      kept = messageTyped(entry, { id, at, text, ...(input.brief ? { brief: input.brief.n } : {}) }, reason, how);
+    });
+    return kept ?? { id, at, path: 'keystrokes', reason, preview: preview(text) };
+  };
   try {
     if (input.brief) {
       // Pane feature: the parent that spawned this child asked for the brief
@@ -252,18 +246,17 @@ async function typeInto(input: MessageInput, id: string, at: string, reason: str
       // OpenCode's and Kilo's session message API reached from the daemon.
       await herdr.agentPrompt(child.paneId, text);
     }
-    remember(parentId, child.id, message);
+    const message = typed({ typed: true });
     return { message, text: `Prompted ${child.name}: herdr typed message ${id} into its pane, because ${reason.replace(/\.$/, '')}.` };
   } catch (error) {
     if (error instanceof HerdrApiError && child.lastStatus === 'blocked') {
-      const refused: ChildMessage = { ...message, undelivered: 'herdr refused the prompt, because the child is blocked on a dialog' };
-      remember(parentId, child.id, refused);
+      const refused = typed({ refused: 'herdr refused the prompt, because the child is blocked on a dialog' });
       // Pane feature: herdr refused the parent's prompt, so the parent sees the
       // dialog that blocks the child and chooses the keys that answer it.
       const dialog = shownScreen(await herdr.paneRead({ paneId: child.paneId, source: 'detection', lines: 30 }).catch(() => BLANK_SCREEN));
       return { message: refused, text: `herdr refused the prompt because ${child.name} is blocked. The dialog:\n${dialog}\n\nReply with agent_send keys, for example ["enter"] or ["down","enter"].` };
     }
-    throw promptFailed(parentId, child, message, error as Error);
+    throw promptFailed(child, id, error as Error, typed);
   }
 }
 
@@ -278,26 +271,49 @@ const NOT_REACHED = new Set(['ENOENT', 'ECONNREFUSED', 'EACCES']);
  * or the error came back. The error says which, so the caller knows whether
  * sending again could type the message twice.
  */
-function promptFailed(parentId: string, child: ChildRecord, message: ChildMessage, error: Error): Error {
+function promptFailed(child: ChildRecord, id: string, error: Error, typed: (how: Typing) => ChildMessage): Error {
   const why = error.message.replace(/[.\s]+$/, '');
   if (NOT_REACHED.has(String((error as NodeJS.ErrnoException).code))) {
-    remember(parentId, child.id, { ...message, undelivered: `herdr was not reachable, so nothing was typed: ${why}` });
-    return new Error(`herdr was not reachable, so nothing was typed into ${child.name}'s pane: ${why}. Message ${message.id} is on the record as never delivered, and sending it again enters it once.`);
+    typed({ refused: `herdr was not reachable, so nothing was typed: ${why}` });
+    return new Error(`herdr was not reachable, so nothing was typed into ${child.name}'s pane: ${why}. Message ${id} is on the record as undelivered, and sending it again enters it once.`);
   }
-  remember(parentId, child.id, { ...message, typedInDoubt: why });
-  return new Error(`herdr may have typed message ${message.id} into ${child.name}'s pane: its agent.prompt failed after the request left, with ${why}. The record keeps the message, and agent_list shows it. Read the pane with agent_read before you send it again, because a second agent_send could type it into the pane twice.`);
+  typed({ inDoubt: why });
+  return new Error(`herdr may have typed message ${id} into ${child.name}'s pane: its agent.prompt failed after the request left, with ${why}. The record keeps the message as in doubt, and agent_list shows it. Read the pane with agent_read before you send it again, because a second agent_send could type it into the pane twice.`);
 }
 
 /** The session messages a child never read, which a reconnected session takes again. */
 export function unreadSessionMessages(child: Pick<ChildRecord, 'messages'>): ChildMessage[] {
-  return (child.messages ?? []).filter((message) => message.path === 'session' && message.via && !message.readAt && !message.undelivered && message.text !== undefined);
+  return toReplay(child);
+}
+
+/** What a message's phase says, in the words agent_list uses for every message. */
+function stateLine(message: ChildMessage): string {
+  switch (phaseOf(message)) {
+    case 'sending':
+      return 'sending: its session has not answered yet';
+    case 'held':
+      return `held: its session did not take it, because ${(message.held ?? '').replace(/[.\s]+$/, '')}; it is never typed, and its session is offered it when it next connects`;
+    case 'pushed':
+      return 'pushed; not read yet';
+    case 'unanswered':
+      return `in doubt: ${(message.unanswered ?? '').replace(/[.\s]+$/, '')}, so its session may hold it; nothing was typed, and its session is offered it again when it next connects`;
+    case 'relay-in-doubt':
+      return `in doubt: not known whether its machine pushed it, because ${(message.relayInDoubt ?? '').replace(/[.\s]+$/, '')}; Bellwether asks again once the relay is back`;
+    case 'typed-in-doubt':
+      return `in doubt: not known whether herdr typed it, because its agent.prompt failed with ${message.typedInDoubt}; read its pane with agent_read before you send it again`;
+    case 'typed':
+      return 'typed; Bellwether cannot tell when the model read it';
+    case 'read':
+      return `read at ${message.readAt}`;
+    case 'undelivered':
+      return `undelivered: ${message.undelivered}`;
+  }
 }
 
 /** One line per recent message, for agent_list. */
 export function describeMessages(child: Pick<ChildRecord, 'name' | 'messages'>): string[] {
   return (child.messages ?? []).slice(-3).map((message) => {
     const path = message.path === 'session' ? `into its session through ${VIA_LABEL[message.via ?? ''] ?? 'its adapter (waiting for it to take the message)'}` : `typed into its pane, because ${message.reason ?? 'no reason was recorded'}`;
-    const state = message.undelivered ? `never delivered: ${message.undelivered}` : message.typedInDoubt ? `not known whether herdr typed it, because its agent.prompt failed with ${message.typedInDoubt}; read its pane with agent_read before you send it again` : message.relayInDoubt && !message.readAt ? `not known whether its machine pushed it, because ${message.relayInDoubt.replace(/[.\s]+$/, '')}; Bellwether asks again once the relay is back` : message.path === 'keystrokes' ? 'typed; Bellwether cannot tell when the model read it' : message.readAt ? `read at ${message.readAt}` : 'not read yet';
-    return `${child.name}: message ${message.id} at ${message.at}, ${path}; ${state}. "${message.preview}"`;
+    return `${child.name}: message ${message.id} at ${message.at}, ${path}; ${stateLine(message)}. "${message.preview}"`;
   });
 }

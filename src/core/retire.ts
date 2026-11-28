@@ -422,7 +422,7 @@ export function farWorktreesLine(child: ChildRecord): string | undefined {
 /** The sentence that names worktrees on other machines, which stay in place. */
 function farLine(far: FarWorktree[]): string | undefined {
   if (!far.length) return undefined;
-  const list = listed(far.map((item) => `${item.worktree} on ${item.host}, ${item.runs ? 'where it ran' : 'which it left by a move'}`));
+  const list = listed(far.map((item) => `${item.worktree} on ${item.host} (${item.runs ? 'where it ran' : 'which it left by a move'})`));
   return `Its worktree${far.length === 1 ? '' : 's'} ${list} ${far.length === 1 ? 'stays' : 'stay'} in place, because this daemon cannot take retirement's proofs on another machine. Remove ${far.length === 1 ? 'it' : 'each one'} by hand there once its work is safe.`;
 }
 

@@ -170,7 +170,7 @@ Bellwether leaves a child it adopted, a child on another machine, a detached HEA
 | Case | The line |
 | --- | --- |
 | Removed | `Retired: removed worktree <dir> and branch <branch>, because <proof>.` |
-| Removed, with a worktree left elsewhere | `Retired in part: removed worktree <dir> and branch <branch>, because <proof>. Its worktree <far dir> on <machine>, which it left by a move, stays in place, because this daemon cannot take retirement's proofs on another machine. Remove it by hand there once its work is safe.` |
+| Removed, with a worktree left elsewhere | `Retired in part: removed worktree <dir> and branch <branch>, because <proof>. Its worktree <far dir> on <machine> (which it left by a move) stays in place, because this daemon cannot take retirement's proofs on another machine. Remove it by hand there once its work is safe.` |
 | No proof | `Retirement left worktree <dir> and branch <branch> in place, because Bellwether could not prove the work merged: <what git found>. Push the branch or merge it, then remove the worktree and the branch by hand.` |
 | Another check failed | `Retirement left worktree <dir> and branch <branch> in place, because <the check and what to do>` |
 | Pane still listed | `Retirement pending: Bellwether removes worktree <dir> and branch <branch> once herdr no longer lists the pane, if it can still prove the work merged. agent_list and retire.log show the outcome.` |

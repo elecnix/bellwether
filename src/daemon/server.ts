@@ -390,7 +390,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
     const running = relayMessagesInFlight.get(id);
     if (running) return running;
     const record = readRelayRecord(request.childId);
-    if (!record || record.parentId !== request.parentId || record.retiredAt) return Promise.resolve({ delivered: false, reason: `this machine holds no running child ${request.childId} for parent ${request.parentId}` });
+    if (!record || record.parentId !== request.parentId || record.retiredAt) return Promise.resolve({ delivered: false, unheld: true, reason: `this machine holds no running child ${request.childId} for parent ${request.parentId}` });
     if (request.type === 'relay-message-again') {
       const pushed = record.pushed?.find((entry) => entry.id === id);
       if (pushed) return Promise.resolve({ delivered: true, via: pushed.via });

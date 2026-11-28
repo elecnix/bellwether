@@ -14,6 +14,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { HerdrClient } from '../../src/core/herdr-client.ts';
 import { pickMachine, type MachineProfile } from '../../src/core/machine.ts';
 import { emptyParent, readParent, saveParent, upsertChild } from '../../src/core/registry.ts';
+import { claimPane } from '../../src/core/pane-claims.ts';
 import { RELAY_SCHEMA, readRelayRecord, removeRelayRecord, saveRelayRecord } from '../../src/core/relay-records.ts';
 import { reclaimRemote, remoteOps } from '../../src/core/remote.ts';
 import type { ChildRecord, OutboxEntry } from '../../src/core/types.ts';
@@ -369,7 +370,7 @@ test('an adopted Claude Code session on another machine whose server started und
   assert.deepEqual(typedFar(w), [], 'herdr typed nothing into the adopted pane');
 });
 
-test('a message to an adopted child on another machine whose claim is gone there is typed, and both the reply and the record say keystrokes and why (issue #184)', async (t) => {
+test('a message to an adopted child on another machine whose claim is gone there, and whose session runs no adapter, gets the claim back and is typed, and the reply and the record say why (issues #184, #219)', async (t) => {
   const w = await world(t);
   w.ctx.inbox = (parentId, record, message, options) => relayInbox(w.links, parentId, record, message, options);
   await adopt(w);
@@ -378,13 +379,76 @@ test('a message to an adopted child on another machine whose claim is gone there
   await until('the relay to hold child-box open for the child', () => w.links.state('child-box')?.status === 'connected' && (w.links.state('child-box')?.children ?? []).includes(id));
 
   const reply = await runBellwetherTool(w.ctx, 'agent_send', { child: id, text: 'Status?' });
-  const why = `machine child-box answered: this machine holds no running child ${id} for parent ${PARENT_ID}`;
+  const why = 'machine child-box answered: first-mate is an adopted session with no Bellwether server or extension connected to this machine\'s daemon, so nothing in it can take a message';
+  const restored = `Machine child-box had lost its record of child ${id}, so Bellwether claimed pane ${PANE} there again before sending`;
   assert.match(reply, /^Prompted first-mate: herdr typed message m-[0-9a-f]{8} into its pane, because /, reply);
-  assert.ok(reply.endsWith(`because ${why}.`), reply);
+  assert.ok(reply.endsWith(`because ${why}. ${restored}.`), reply);
   assert.deepEqual(typedFar(w), ['Status?']);
   const message = child(w)?.messages?.at(-1);
   assert.equal(message?.path, 'keystrokes');
-  assert.equal(message?.reason, why);
+  assert.equal(message?.reason, `${why}. ${restored}.`);
+  assert.equal(inHome(w.childHome, () => readRelayRecord(id))?.parentId, PARENT_ID, 'child-box holds the claim again');
+});
+
+// Issue #219: the parent's record and the far daemon hold the same fact twice.
+// When the far daemon has lost its claim, as after a reboot of that machine,
+// the parent claims the pane there again rather than type into it.
+test('a message to an adopted child whose claim the far machine lost claims the pane there again and enters its session, with nothing typed (issue #219)', async (t) => {
+  const w = await world(t, { accept: () => ({}) });
+  w.ctx.inbox = (parentId, record, message, options) => relayInbox(w.links, parentId, record, message, options);
+  const farHome = { home: w.childHome, socketPath: path.join(w.childHome, 'daemon.sock') };
+  const session = await DaemonClient.connect(farClaude(w, SESSION), farHome);
+  t.after(() => session.close());
+  const taken: string[] = [];
+  takeMessages(session, taken);
+  await adopt(w);
+  const id = child(w)!.id;
+  await until('the relay to hold child-box open for the child', () => w.links.state('child-box')?.status === 'connected' && (w.links.state('child-box')?.children ?? []).includes(id));
+  // child-box loses the claim, while this parent's record still names the child.
+  inHome(w.childHome, () => removeRelayRecord(id));
+
+  const reply = await runBellwetherTool(w.ctx, 'agent_send', { child: id, text: 'Status?' });
+  assert.match(reply, /^Delivered to first-mate's session as message m-[0-9a-f]{8}, through its Bellwether channel; nothing was typed into its pane\./, reply);
+  assert.match(reply, new RegExp(`Machine child-box had lost its record of child ${id}, so Bellwether claimed pane ${PANE} there again before sending\\.`), reply);
+  assert.deepEqual(taken, ['Status?']);
+  assert.deepEqual(typedFar(w), [], 'herdr typed nothing into the adopted pane');
+  assert.equal(inHome(w.childHome, () => readRelayRecord(id))?.parentId, PARENT_ID, 'child-box holds the claim again');
+  assert.equal(child(w)?.farRecordLost, undefined);
+});
+
+test('adopting a pane this session already holds asks the far machine, and claims it there again when that machine lost the claim (issue #219)', async (t) => {
+  const w = await world(t, { accept: () => ({}) });
+  await adopt(w);
+  const id = child(w)!.id;
+  inHome(w.childHome, () => removeRelayRecord(id));
+
+  const reply = await adopt(w);
+  assert.match(reply, new RegExp(`^first-mate in pane ${PANE} is already a child of this session\\. Machine child-box had lost its record of it, and holds it again as child ${id}\\.`), reply);
+  assert.equal(inHome(w.childHome, () => readRelayRecord(id))?.childId, id);
+  // With both records in place, a second call changes nothing and says so plainly.
+  assert.equal(await adopt(w), `first-mate in pane ${PANE} is already a child of this session.`);
+});
+
+test('a far machine that refuses to take the claim back leaves the message typed, and the record and its reason say the two machines disagree (issue #219)', async (t) => {
+  const w = await world(t);
+  w.ctx.inbox = (parentId, record, message, options) => relayInbox(w.links, parentId, record, message, options);
+  await adopt(w);
+  const id = child(w)!.id;
+  await until('the relay to hold child-box open for the child', () => w.links.state('child-box')?.status === 'connected' && (w.links.state('child-box')?.children ?? []).includes(id));
+  // child-box lost this parent's claim, and another parent there took the pane since.
+  inHome(w.childHome, () => {
+    removeRelayRecord(id);
+    claimPane({ parentId: 'pi-another-parent', childId: 'other-child', name: 'other', kind: 'claude', paneId: PANE, session: SESSION });
+  });
+
+  const reply = await runBellwetherTool(w.ctx, 'agent_send', { child: id, text: 'Status?' });
+  assert.match(reply, /^Prompted first-mate: herdr typed message m-[0-9a-f]{8} into its pane, because /, reply);
+  assert.match(reply, new RegExp(`machine child-box holds no running child ${id} for parent ${PARENT_ID}, and refused to take the claim back: pane ${PANE} is already a child of pi-another-parent`), reply);
+  assert.deepEqual(typedFar(w), ['Status?']);
+  const lost = child(w)?.farRecordLost;
+  assert.ok(lost, 'the record keeps the disagreement');
+  assert.equal(lost?.host, 'child-box');
+  assert.match(lost?.reason ?? '', /already a child of pi-another-parent/);
 });
 
 /** Every record this parent holds for the adopted pane, live or exited. */

@@ -56,8 +56,8 @@ export const ADOPTED_TELEPORT_ISSUE = 'https://github.com/elecnix/bellwether/iss
 
 export interface TeleportRefusalInput extends Omit<RefusalInput, 'exited'> {
   state: TeleportState;
-  /** How the child came to this parent. */
-  origin?: ChildRecord['origin'];
+  /** Whether the parent holds the child by adoption now (issue #256). */
+  adopted?: boolean;
   /** The route the child runs on, which only this machine's routes file defines. */
   route?: string;
   /** Why the destination has no way to put the notice into the agent's session, when it has none. */
@@ -83,11 +83,11 @@ export function teleportRefusals(input: TeleportRefusalInput): string[] {
   // rule about a running child does not apply to it. That is the one rule a
   // teleport loosens, and the reply says so.
   const live = input.state === 'live';
-  const { state: _state, origin: _origin, route: _route, inbound: _inbound, targetCwdExists, ...move } = input;
+  const { state: _state, adopted: _adopted, route: _route, inbound: _inbound, targetCwdExists, ...move } = input;
   const reasons = moveRefusals({ ...move, exited: false, status: live ? input.status : 'idle' });
   // The harness check returns alone: nothing else can be judged about a harness Bellwether cannot carry.
   if (reasons.length === 1 && /Bellwether moves only/.test(reasons[0] ?? '')) return reasons;
-  if (input.origin === 'adopt') {
+  if (input.adopted) {
     reasons.push(`${input.childName} is an adopted child. Bellwether did not start it, and its parent's record and the daemon that holds its pane can disagree about it, so a teleport would carry that disagreement to ${where}. Teleporting an adopted child waits on ${ADOPTED_TELEPORT_ISSUE}.`);
   }
   if (input.route && input.target !== LOCAL_HOST) {

@@ -32,6 +32,7 @@ import { RelayAnswerLost } from '../core/relay-answer.ts';
 import type { RelayRetireAnswer, RelayRetireAsk } from '../core/retire.ts';
 import { retireAnswerReceipt } from '../core/relay-records.ts';
 import type { RelayRestartAnswer, RelayRestartAsk } from '../core/restart.ts';
+import { heldByAdoption } from '../core/acquisition.ts';
 
 export interface RelayLinksOptions {
   /** Turns a child's herdr machine into its SSH target. Defaults to herdr's saved machines. */
@@ -725,7 +726,7 @@ export function runsOn(hello: { version?: string; build?: string }): string {
  * daemon that predates relay-message, or a machine out of reach, gives the
  * reason the caller records for typing.
  */
-export async function relayInbox(links: Pick<RelayLinks, 'message' | 'adopt'>, parentId: string, child: Pick<ChildRecord, 'id' | 'host' | 'origin' | 'name' | 'kind' | 'paneId' | 'session' | 'farRecordLost'>, message: InboxMessage, options: InboxOptions = {}): Promise<InboxAnswer> {
+export async function relayInbox(links: Pick<RelayLinks, 'message' | 'adopt'>, parentId: string, child: Pick<ChildRecord, 'id' | 'host' | 'origin' | 'launchedAt' | 'name' | 'kind' | 'paneId' | 'session' | 'farRecordLost'>, message: InboxMessage, options: InboxOptions = {}): Promise<InboxAnswer> {
   const host = hostOf(child);
   try {
     const answer = await links.message(host, parentId, child.id, message, options);
@@ -738,7 +739,7 @@ export async function relayInbox(links: Pick<RelayLinks, 'message' | 'adopt'>, p
     // An adopted child's record there is a claim, which this daemon can make
     // again; a spawned child's needs the files only a spawn writes there.
     const lost = `machine ${host} holds no running child ${child.id} for parent ${parentId}`;
-    if (child.origin !== 'adopt') {
+    if (!heldByAdoption(child)) {
       farRecordGone(parentId, child, host, answer.reason);
       return { delivered: false, reason: `${lost}, and only a spawn there registers a spawned child, so doctor names it until it is registered again` };
     }

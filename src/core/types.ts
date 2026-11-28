@@ -356,8 +356,18 @@ export interface ChildRecord {
    * to it.
    */
   readonly host: string;
-  /** How the child came under this parent. An older record means spawn. */
+  /**
+   * How the child first came under this parent. An older record means spawn.
+   * It stays as provenance: how the parent holds the child now is
+   * `heldByAdoption` in acquisition.ts, which also reads `launchedAt`.
+   */
   origin?: 'spawn' | 'adopt' | 'resume';
+  /**
+   * When Bellwether last started this child's harness in a tab it opened, as
+   * a resume does. An adopted child with this set is held as one Bellwether
+   * started, until its session comes back under an adoption (issue #256).
+   */
+  readonly launchedAt?: string;
   /** When the child was last brought back by a spawn with a resume target. */
   readonly resumedAt?: string;
   readonly cwd?: string;

@@ -19,7 +19,6 @@ function ready(extra: Partial<TeleportRefusalInput> = {}): TeleportRefusalInput 
     harness: 'claude-code',
     status: 'idle',
     state: 'live',
-    origin: 'spawn',
     source: LOCAL_HOST,
     target: 'hawthorne',
     hasSession: true,
@@ -76,7 +75,7 @@ test('contract 3: a destination with no inbound path for the notice is refused, 
 });
 
 test('contract 4: an adopted child is refused by name, with the issue that lifts the refusal', () => {
-  const reasons = teleportRefusals(ready({ origin: 'adopt' }));
+  const reasons = teleportRefusals(ready({ adopted: true }));
   assert.equal(reasons.length, 1, reasons.join('\n'));
   assert.match(reasons[0] ?? '', /worker is an adopted child/);
   assert.match(reasons[0] ?? '', /issues\/219/);

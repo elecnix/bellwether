@@ -208,7 +208,9 @@ export async function resumeChild(client: HerdrClient, parent: ParentRecord, tar
   // a record the watcher and doctor read as exited, never one with no pane
   // and no exit that nothing repairs. The new harness has yet to show herdr it
   // runs, and the watcher checks it once after its start window.
-  runAwaitsPane(child, { tabId: undefined, resumedAt: now, at: now });
+  // Bellwether starts this harness, so the parent holds the child as one it
+  // started from now on, whether it first came by adoption or not (issue #256).
+  runAwaitsPane(child, { tabId: undefined, resumedAt: now, launchedAt: now, at: now });
   // A child brought back did not ask for this run to end its worktree.
   clearRetirement(child);
   child.statusChangedAt = now;

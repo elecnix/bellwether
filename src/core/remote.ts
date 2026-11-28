@@ -18,6 +18,7 @@ import type { SessionReach } from './adopted-session.ts';
 import { adoptionClaim } from './adopt.ts';
 import { hostOf } from './machine.ts';
 import type { RelayRestartAnswer, RelayRestartAsk } from './restart.ts';
+import { heldByAdoption } from './acquisition.ts';
 
 /** What the child's machine wrote when it registered the child. */
 export interface RemoteRegistration {
@@ -182,7 +183,7 @@ export function farRecordLines(parents: ParentRecord[]): string[] {
     for (const child of parent.children) {
       const lost = child.farRecordLost;
       if (!lost || child.exitedAt) continue;
-      const fix = child.origin === 'adopt' ? `Run agent_adopt ${lost.host}:${child.paneId} to claim it there again.` : 'Stop it and resume its session with agent_spawn to register it there again.';
+      const fix = heldByAdoption(child) ? `Run agent_adopt ${lost.host}:${child.paneId} to claim it there again.` : 'Stop it and resume its session with agent_spawn to register it there again.';
       lines.push(`warn  far record: ${child.name} (child ${child.id} of ${parent.id}) on machine ${lost.host}: that machine has held no record of it since ${lost.at}, so messages to it are typed into its pane (${lost.reason}). ${fix}`);
     }
   }

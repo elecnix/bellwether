@@ -132,7 +132,7 @@ async function recoverOne(deps: CarryDeps, parentId: string, childId: string, in
     updateChild(parentId, childId, (entry) => {
       relocated(entry, { host: crossing.to, ...(crossing.target ? { cwd: crossing.target.cwd } : {}), ...(crossing.target?.session ? { session: crossing.target.session } : {}) });
       // The session runs at the destination: a new run, and nothing of the source's stays.
-      runStarts(entry, { paneId: there.paneId, tabId: there.tabId || undefined, status: there.agentStatus });
+      runStarts(entry, { paneId: there.paneId, tabId: there.tabId || undefined, status: there.agentStatus, launchedAt: new Date().toISOString() });
       if (there.workspaceId) entry.workspaceId = there.workspaceId;
       else delete entry.workspaceId;
       delete entry.transcript;

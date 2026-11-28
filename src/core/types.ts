@@ -60,6 +60,25 @@ export interface DialogDecision {
   told?: boolean;
 }
 
+/**
+ * A restart that closed the old pane and then failed to start the session
+ * again, so the session is gone. It stays on the record until the session
+ * returns, for `bellwether doctor` and, for a child, for its parent's event.
+ */
+export interface RestartFailure {
+  at: string;
+  /** The pane the session last ran in, now closed. */
+  oldPane: string;
+  /** The workspace that pane was in. */
+  workspaceId?: string;
+  session: string;
+  error: string;
+  /** How to bring the session back: the command and its directory for a session, the agent_spawn resume for a child. */
+  reopen: string;
+  /** Set once the parent has received the event about it. */
+  told?: boolean;
+}
+
 /** What the parent is told about a child. */
 export type ChildEventKind = 'report' | 'idle' | 'blocked' | 'stuck' | 'inactive' | 'exited';
 
@@ -315,6 +334,8 @@ export interface ChildRecord {
   restartRoute?: { via?: string; model?: string; keyFile?: string; provider?: string; reads?: string[] };
   /** When the daemon last restarted the child in a new tab, on the same session. */
   restartedAt?: string;
+  /** Set when a restart closed the child's pane and could not start it again (issue #185). A later restart or resume clears it. */
+  restartFailed?: RestartFailure;
   /**
    * Set while agent_move carries the child to another machine. The watcher
    * ignores the close of the child's old pane while it is set, so the parent
@@ -490,6 +511,8 @@ export interface ParentRecord {
   restartRequestedAt?: string;
   /** When the daemon last started a new pane for this session. */
   restartedAt?: string;
+  /** Set when a restart closed this session's pane and could not start it again (issue #185). The session's return clears it. */
+  restartFailed?: RestartFailure;
   /** The roster line this parent last received with an alert, without its age, and when (issue #146). */
   rosterSent?: { at: string; line: string };
   updatedAt: string;

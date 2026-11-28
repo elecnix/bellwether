@@ -13,6 +13,7 @@ import path from 'node:path';
 import { HerdrClient, resolveSocketPath } from './core/herdr-client.ts';
 import { bellwetherHome } from './core/paths.ts';
 import { emptyParent, listParents, readParent, saveParent } from './core/registry.ts';
+import { restartFailureLines } from './core/restart.ts';
 import { PROMPT_NOTICE, isReportStatus } from './core/report.ts';
 import { HOOK_COMMAND, dialogFromHook } from './core/claude-hooks.ts';
 import { hostName } from './core/spawn.ts';
@@ -240,6 +241,10 @@ async function doctor(): Promise<number> {
   const routeLines = describeRoutes(() => readRoutes(), listParents().flatMap((parent) => parent.children).filter((child) => !child.exitedAt));
   for (const line of routeLines) console.log(`  ${line}`);
   failures += routeLines.filter((line) => line.startsWith('fail')).length;
+  // A restart that closed a session's pane and never brought it back (issue #185).
+  const lostRestarts = restartFailureLines(listParents());
+  for (const line of lostRestarts) console.log(`  ${line}`);
+  failures += lostRestarts.length;
   await checkMoves(socket);
   return failures;
 }

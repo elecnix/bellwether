@@ -6,6 +6,7 @@
 // events, so a subscription opened after the snapshot would miss whatever
 // happened in between. After a disconnect the watcher takes a fresh snapshot
 // for the same reason.
+import { restartFailureText } from './restart.ts';
 import fs from 'node:fs';
 import type { HerdrClient, HerdrEvent, Subscription } from './herdr-client.ts';
 import { DEFAULT_LIMITS, advance, limitsFor, markReported, seedFor, type ClassifierState, type SettleLimits } from './classifier.ts';
@@ -750,6 +751,17 @@ export class Watcher {
     if (!record) return;
     const now = this.now();
     for (const child of record.children) {
+      // A restart that closed the child's pane and could not start it again
+      // left the child gone, and the parent hears of it once (issue #185). The
+      // restart may have run in another session's service, so the record
+      // carries it here.
+      if (child.restartFailed && !child.restartFailed.told) {
+        const failure = child.restartFailed;
+        updateChild(this.parentId, child.id, (entry) => {
+          if (entry.restartFailed) entry.restartFailed.told = true;
+        });
+        this.offer(child, 'exited', restartFailureText(child, failure));
+      }
       if (child.exitedAt) continue;
       // The spawn is answering this child's startup dialogs. Its first state
       // is read once the spawn is done.

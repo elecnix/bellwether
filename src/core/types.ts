@@ -358,6 +358,14 @@ export interface ChildRecord {
    * child for good.
    */
   startingUntil?: string;
+  /**
+   * Set while a restart closes the pane and tab the record still names, so the
+   * watcher reads that close as part of the restart rather than as the child
+   * exiting (issue #211). The record keeps naming the old pane until herdr
+   * has closed it. A time rather than a flag: a daemon that stops mid-close
+   * leaves a record the watcher checks against herdr once the time passes.
+   */
+  closing?: { pane: string; tab?: string; until: string };
   /** This child's inactivity threshold in milliseconds. Set at spawn; the default when absent. */
   inactiveMs?: number;
   /** The quiet period whose inactive event already went out, as an ISO time. Survives a restart. */

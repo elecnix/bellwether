@@ -734,3 +734,95 @@ test('a child in a workspace Bellwether made for it, whose workspace herdr has a
   assert.ok(child?.workspaceId && child.workspaceId !== 'w5');
   assert.equal(child.ownsWorkspace, true);
 });
+
+// Issue #211, item 3: herdr closed the old tab and then answered an error. The
+// restart reads herdr's pane list to learn what the close did, and goes on.
+test('a restart whose tab.close answers an error after herdr closed the tab goes on, and leaves the child running', async (t) => {
+  isolate(t, 'bellwether-restart-');
+  const rig = await herdr(t);
+  const id = parent('close-answers-error');
+  upsertChild(id, worker());
+  liveWorker(rig.world);
+  const answer = rig.world.answer.bind(rig.world);
+  rig.world.answer = (request) => {
+    if (request.method === 'tab.close' && request.params['tab_id'] === 'w1:t3') {
+      answer(request);
+      return { error: { code: 'timeout', message: 'tab.close timed out after 5000ms' } };
+    }
+    return answer(request);
+  };
+
+  const reply = await context(id, rig).tool('agent_restart', { target: 'worker' });
+  const child = children(id)[0];
+  assert.ok(child?.paneId && child.paneId !== 'w1:p3', `the record names the new pane, not ${child?.paneId}`);
+  assert.equal(rig.world.panes.get(child.paneId)?.agent_session?.value, 'sess-1', `the session runs in ${child.paneId}; reply: ${reply}`);
+  assert.equal(child.restartFailed, undefined);
+  assert.equal(child.closing, undefined);
+  assert.equal(restartLog().at(-1)?.['outcome'], 'restarted');
+  assert.equal(restartLog().at(-1)?.['closeError'], 'herdr tab.close timed out after 5000ms');
+});
+
+// The guard on the same path: a close that answers an error and left the tab
+// open changed nothing, and the reply may say so.
+test('a restart whose tab.close answers an error with the tab still open closes the new tab and leaves the child where it was', async (t) => {
+  isolate(t, 'bellwether-restart-');
+  const rig = await herdr(t);
+  const id = parent('close-refused');
+  upsertChild(id, worker());
+  liveWorker(rig.world);
+  const answer = rig.world.answer.bind(rig.world);
+  rig.world.answer = (request) => (request.method === 'tab.close' && request.params['tab_id'] === 'w1:t3' ? { error: { code: 'busy', message: 'refused the close' } } : answer(request));
+
+  await assert.rejects(context(id, rig).tool('agent_restart', { target: 'worker' }), /closing worker's tab w1:t3 failed, and herdr still lists pane w1:p3, so the restart stopped and nothing else changed: herdr refused the close/);
+  const child = children(id)[0];
+  assert.equal(child?.paneId, 'w1:p3');
+  assert.equal(child?.tabId, 'w1:t3');
+  assert.equal(child?.closing, undefined);
+  assert.deepEqual([...rig.world.panes.keys()], ['w1:p3']);
+});
+
+// Issue #211, item 4, first shape: a daemon that stops while tab.close is in
+// flight leaves the record on disk as it stood. It must name a pane.
+test('while tab.close is in flight the record names the old pane, marked as closing', async (t) => {
+  isolate(t, 'bellwether-restart-');
+  const rig = await herdr(t);
+  const id = parent('close-window');
+  upsertChild(id, worker());
+  liveWorker(rig.world);
+  let during: ChildRecord | undefined;
+  const answer = rig.world.answer.bind(rig.world);
+  rig.world.answer = (request) => {
+    if (request.method === 'tab.close' && request.params['tab_id'] === 'w1:t3') during = children(id)[0];
+    return answer(request);
+  };
+
+  await context(id, rig).tool('agent_restart', { target: 'worker' });
+  assert.ok(during, 'tab.close reached herdr');
+  assert.equal(during.paneId, 'w1:p3', `while tab.close was in flight the record named ${JSON.stringify(during.paneId)}`);
+  assert.equal(during.tabId, 'w1:t3');
+  assert.equal(during.closing?.pane, 'w1:p3');
+  assert.equal(children(id)[0]?.closing, undefined);
+});
+
+// The same close on a parent session's pane: herdr closed it and answered an error.
+test('a session restart whose pane.close answers an error after herdr closed the pane goes on in the new pane', async (t) => {
+  isolate(t, 'bellwether-restart-');
+  const rig = await herdr(t);
+  saveParent(emptyParent('claude-code', 'ops-session', '/work/ops', { workspaceId: 'w1', host: hostName(), paneId: 'w1:p7' }));
+  rig.world.add({ pane_id: 'w1:p7', tab_id: 'w1:t7', agent: 'claude', name: 'ops', agent_status: 'idle', agent_session: { agent: 'claude', kind: 'id', source: 'herdr:claude', value: 'ops-session' }, cwd: '/work/ops' });
+  const answer = rig.world.answer.bind(rig.world);
+  rig.world.answer = (request) => {
+    if (request.method === 'pane.close' && request.params['pane_id'] === 'w1:p7') {
+      answer(request);
+      return { error: { code: 'timeout', message: 'pane.close timed out after 5000ms' } };
+    }
+    return answer(request);
+  };
+
+  const text = await context(parent('restart-caller'), rig).tool('agent_restart', { target: 'ops-session' });
+  assert.match(text, /Restarted ops: closed pane w1:p7, started claude in pane w1:p\d+/);
+  const newPane = readParent(registryId('claude-code', 'ops-session'))?.paneId;
+  assert.ok(newPane && newPane !== 'w1:p7');
+  assert.equal(rig.world.panes.get(newPane)?.agent_session?.value, 'ops-session');
+  assert.equal(restartLog().at(-1)?.['closeError'], 'herdr pane.close timed out after 5000ms');
+});

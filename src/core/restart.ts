@@ -88,6 +88,28 @@ export const RESTART_WAIT_MAX_MS = 45_000;
  */
 export const RESTART_DEFER_MS = 5 * 60_000;
 
+/**
+ * How long the record marks an old pane as closing. herdr answers a close
+ * within its 5 s request bound, and the pane list after an error takes as
+ * long, so the mark outlasts both and still expires for a daemon that stopped.
+ */
+export const CLOSING_HOLD_MS = 30_000;
+
+/** The pane and tab a restart is closing for this child, while its mark holds. */
+export function closingNow(child: Pick<ChildRecord, 'closing'>, now = Date.now()): ChildRecord['closing'] {
+  return child.closing && Date.parse(child.closing.until) > now ? child.closing : undefined;
+}
+
+/** Whether herdr still lists a pane or tab, or `undefined` when herdr does not answer. */
+async function stillListed(client: HerdrClient, pane: string, tab: string | undefined): Promise<boolean | undefined> {
+  try {
+    const panes = await client.paneList();
+    return panes.some((entry) => (pane && entry.paneId === pane) || (tab !== undefined && entry.tabId === tab));
+  } catch {
+    return undefined;
+  }
+}
+
 /** The one log line per restart outcome, beside the daemon's own state. */
 export function restartLogPath(): string {
   return path.join(bellwetherHome(), 'restart.log');
@@ -435,30 +457,45 @@ async function restartInPlace(client: HerdrClient, store: RestartStore, child: C
   const newTab = opened.tabId ?? newPane;
   const toolSource = files.toolSource;
 
-  // 2. The record lets go of the old pane before herdr closes it, so the close
-  // is read as part of this restart, not as the child exiting.
+  // 2. The record marks the old pane as closing before herdr closes it, so the
+  // close is read as part of this restart, not as the child exiting. It keeps
+  // naming that pane, which exists until herdr closes it: a daemon that stops
+  // mid-close leaves a record that names a real pane (issue #211).
   // From here the act runs to the end. Closing the caller's own tab makes its
   // adapter say bye, which stops its service, so the act takes no signal.
   store.update((entry) => {
-    entry.paneId = '';
-    delete entry.tabId;
     delete entry.reportPending;
     delete entry.restartRequestedAt;
     delete entry.restartRoute;
+    entry.closing = { pane: oldPane, ...(oldTab ? { tab: oldTab } : {}), until: new Date(Date.now() + CLOSING_HOLD_MS).toISOString() };
     entry.startingUntil = new Date(Date.now() + STARTUP_HOLD_MS).toISOString();
   });
-  // 3. Close what Bellwether started.
+  // 3. Close what Bellwether started. herdr can close the tab and still answer
+  // an error, as a timeout does, so an error is checked against herdr's pane
+  // list before the restart decides what the close did (issue #211).
+  const closed = oldTab ? `tab ${oldTab}` : `pane ${oldPane}`;
+  let closeError: string | undefined;
   try {
     if (oldTab) await client.tabClose(oldTab);
     else if (oldPane) await client.paneClose(oldPane);
   } catch (error) {
-    await undoChildTab(client, opened);
-    store.update((entry) => {
-      entry.paneId = oldPane;
-      if (oldTab) entry.tabId = oldTab;
-      delete entry.startingUntil;
-    });
-    throw new RestartRefused(`closing ${child.name}'s ${oldTab ? `tab ${oldTab}` : `pane ${oldPane}`} failed, so the restart stopped and nothing else changed: ${(error as Error).message}`);
+    closeError = (error as Error).message;
+    const listed = await stillListed(client, oldPane, oldTab);
+    if (listed !== false) {
+      await undoChildTab(client, opened);
+      store.update((entry) => {
+        delete entry.closing;
+        delete entry.startingUntil;
+      });
+      if (listed) throw new RestartRefused(`closing ${child.name}'s ${closed} failed, and herdr still lists pane ${oldPane}, so the restart stopped and nothing else changed: ${closeError}`);
+      // herdr answered neither the close nor the pane list. The record keeps
+      // naming the old pane, and the watcher's next pass reads whether it is gone.
+      hooks.log?.(`restart ${child.name}: closing ${closed} failed and herdr did not list its panes, so whether ${oldPane} is open is unknown: ${closeError}`);
+      logRestart({ outcome: 'failed', target: 'child', parent: parentId, child: child.id, name: child.name, oldPane, session: session.value, error: closeError, oldPaneState: 'unknown' });
+      throw new RestartRefused(`closing ${child.name}'s ${closed} failed, and herdr then did not list its panes, so Bellwether cannot tell whether pane ${oldPane} is still open. The restart stopped and closed the new tab. The record still names ${oldPane}, and the watcher reports the child exited if herdr no longer has it: ${closeError}`);
+    }
+    // herdr no longer lists the old pane: the close did its work, so the restart goes on.
+    hooks.log?.(`restart ${child.name}: herdr answered an error to closing ${closed} but no longer lists ${oldPane}, so the restart goes on: ${closeError}`);
   }
 
   // 4. Start the same harness on the same session in the new tab, under the
@@ -468,6 +505,7 @@ async function restartInPlace(client: HerdrClient, store: RestartStore, child: C
     // The record names the new pane before the harness starts, as a spawn does.
     store.update((entry) => {
       entry.paneId = newPane;
+      delete entry.closing;
       if (toolSource) entry.toolSource = toolSource;
       if (opened.tabId) entry.tabId = opened.tabId;
       if (opened.workspaceId) entry.workspaceId = opened.workspaceId;
@@ -521,7 +559,7 @@ async function restartInPlace(client: HerdrClient, store: RestartStore, child: C
   });
   hooks.reset?.(child.id);
   hooks.log?.(`restart ${child.name}: closed ${oldPane}, opened ${newPane} on session ${session.value}, ${matched ? 'the session matched' : `herdr reported ${reported?.value ?? 'no session'}`}`);
-  logRestart({ outcome: 'restarted', target: 'child', parent: parentId, child: child.id, name: child.name, oldPane, newPane, ...(newTab ? { newTab } : {}), session: session.value, sessionMatched: matched, ...(waitedMs !== undefined ? { waitedMs } : {}) });
+  logRestart({ outcome: 'restarted', target: 'child', parent: parentId, child: child.id, name: child.name, oldPane, newPane, ...(newTab ? { newTab } : {}), session: session.value, sessionMatched: matched, ...(waitedMs !== undefined ? { waitedMs } : {}), ...(closeError ? { closeError } : {}) });
   const landed = opened.workspaceId ?? workspaceId;
   return { target: 'child', id: child.id, name: child.name, oldPane, newPane, ...(newTab ? { newTab } : {}), ...(landed ? { workspaceId: landed } : {}), session: session.value, kind: child.kind, command: commandWords(child.kind, resume, launch), route: routeMove(child.route, launch), sessionMatched: matched, ...(waitedMs !== undefined ? { waitedMs } : {}) };
 }
@@ -534,6 +572,7 @@ function markRestartFailed(entry: ChildRecord, failure: RestartFailure): void {
   entry.exitedAt = failure.at;
   entry.lastStatus = 'unknown';
   entry.restartFailed = failure;
+  delete entry.closing;
   entry.paneEnd = { pane: failure.oldPane, ...(failure.workspaceId ? { workspaceId: failure.workspaceId } : {}), how: 'restart', at: failure.at };
   delete entry.startingUntil;
   delete entry.restartRequestedAt;
@@ -550,6 +589,7 @@ function markRestarted(entry: ChildRecord, back: { session: ChildSession; status
   entry.restartedAt = at;
   applyLaunch(entry, back.launch);
   delete entry.startingUntil;
+  delete entry.closing;
   delete entry.exitedAt;
   delete entry.exitCode;
   delete entry.paneEnd;
@@ -1016,12 +1056,22 @@ async function restartParentLocked(client: HerdrClient, parentId: string, hooks:
   mutateParent(record.id, (entry) => {
     delete entry.restartRequestedAt;
   });
+  // herdr can close the pane and still answer an error, so an error is checked
+  // against herdr's pane list before the restart decides (issue #211).
+  let closeError: string | undefined;
   if (live) {
     try {
       await client.paneClose(live.paneId);
     } catch (error) {
-      await undoChildTab(client, opened);
-      throw new RestartRefused(`closing pane ${live.paneId} of session ${record.id} failed, so the restart stopped and nothing else changed: ${(error as Error).message}`);
+      closeError = (error as Error).message;
+      const listed = await stillListed(client, live.paneId, undefined);
+      if (listed !== false) {
+        await undoChildTab(client, opened);
+        if (listed) throw new RestartRefused(`closing pane ${live.paneId} of session ${record.id} failed, and herdr still lists it, so the restart stopped and nothing else changed: ${closeError}`);
+        logRestart({ outcome: 'failed', target: 'parent', parent: record.id, oldPane, session: record.session, error: closeError, oldPaneState: 'unknown' });
+        throw new RestartRefused(`closing pane ${live.paneId} of session ${record.id} failed, and herdr then did not list its panes, so Bellwether cannot tell whether that pane is still open. The restart stopped and closed the new tab: ${closeError}`);
+      }
+      hooks.log?.(`restart of session ${record.id}: herdr answered an error to closing ${live.paneId} but no longer lists it, so the restart goes on: ${closeError}`);
     }
   }
 
@@ -1067,7 +1117,7 @@ async function restartParentLocked(client: HerdrClient, parentId: string, hooks:
     delete entry.restartFailed;
   });
   hooks.log?.(`restart session ${record.id}: ${oldPane ? `closed ${oldPane}, ` : ''}opened ${newPane} on ${plan.sessionValue}, ${matched ? 'the session matched' : 'herdr reported another session'}`);
-  logRestart({ outcome: 'restarted', target: 'parent', parent: record.id, oldPane, newPane, ...(newTab ? { newTab } : {}), session: record.session, sessionMatched: matched, ...(waitedMs !== undefined ? { waitedMs } : {}) });
+  logRestart({ outcome: 'restarted', target: 'parent', parent: record.id, oldPane, newPane, ...(newTab ? { newTab } : {}), session: record.session, sessionMatched: matched, ...(waitedMs !== undefined ? { waitedMs } : {}), ...(closeError ? { closeError } : {}) });
   const landed = opened.workspaceId ?? workspaceNow;
   return { target: 'parent', id: record.id, name: label, oldPane, newPane, ...(newTab ? { newTab } : {}), ...(landed ? { workspaceId: landed } : {}), session: record.session, kind: plan.kind, command: plan.resume.join(' '), sessionMatched: matched, ...(waitedMs !== undefined ? { waitedMs } : {}) };
 }

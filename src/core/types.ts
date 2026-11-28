@@ -131,6 +131,9 @@ export interface RestartWait {
 /** A self-restart that gave up because its session never ended a turn in time. */
 export interface RestartStall {
   at: string;
+  /** When the request that gave up was made, and the pane it waited on (issue #220). */
+  requestedAt?: string;
+  paneId?: string;
   /** What held it: the live turn, the messages that reached the session, its working children. */
   reason: string;
 }

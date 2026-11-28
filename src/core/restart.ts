@@ -60,7 +60,7 @@ import { watchStartup, type StartupWatch } from './startup-dialogs.ts';
 import { sessionFrom } from './transcript.ts';
 import { harnessFor, requireHarness, resolveTranscript } from './harnesses/index.ts';
 import type { ChildFiles } from './harnesses/types.ts';
-import { REGISTRY_SCHEMA, type CallerIdentity, type ChildRecord, type ChildRoute, type ChildSession, type DialogDecision, type ParentRecord, type RestartFailure, type RestartInDoubt, type RestartWait } from './types.ts';
+import { REGISTRY_SCHEMA, type CallerIdentity, type ChildRecord, type ChildRoute, type ChildSession, type DialogDecision, type ParentRecord, type RestartFailure, type RestartInDoubt, type RestartStall, type RestartWait } from './types.ts';
 import { openReturnTab, parseWorkspaces, returnPlacement, undoChildTab, type ChildTab, type TabRequest, type WorkspacePlacement } from './workspace.ts';
 
 export const RESTART_TOOL = 'agent_restart';
@@ -260,7 +260,7 @@ const CLOSE_EVENTS = new Set(['pane.exited', 'pane_exited', 'pane.closed', 'pane
  * contains its request to finish. Undefined means there was nothing to wait
  * for: the pane was already idle, or already gone.
  */
-async function waitForTurnEnd(client: HerdrClient, label: string, pane: { paneId: string; tabId?: string }, options: { timeoutMs: number; freshOnly?: boolean; signal?: AbortSignal; onStatus?: (status: string) => void }): Promise<{ waitedMs: number } | undefined> {
+async function waitForTurnEnd(client: HerdrClient, label: string, pane: { paneId: string; tabId?: string }, options: { timeoutMs: number; freshOnly?: boolean; readAtDeadline?: boolean; signal?: AbortSignal; onStatus?: (status: string) => void }): Promise<{ waitedMs: number } | undefined> {
   if (options.signal?.aborted) throw new RestartRefused(`The restart of ${label} was cancelled before it began.`);
   const started = Date.now();
   const controller = new AbortController();
@@ -322,8 +322,28 @@ async function waitForTurnEnd(client: HerdrClient, label: string, pane: { paneId
     },
     (error: unknown) => fail(new RestartRefused(`the herdr subscription for pane ${pane.paneId} was lost before its turn ended, so nothing was restarted: ${String(error)}`)),
   );
+  const timedOut = (): void => fail(new RestartRefused(`${label} is still ${status} after the ${(options.timeoutMs / 1000).toFixed(1)} s wait; agent_restart never restarts a pane mid-turn. Ask it to finish, or call again once it is idle.`));
   const timer = setTimeout(() => {
-    fail(new RestartRefused(`${label} is still ${status} after the ${(options.timeoutMs / 1000).toFixed(1)} s wait; agent_restart never restarts a pane mid-turn. Ask it to finish, or call again once it is idle.`));
+    if (!options.readAtDeadline) return timedOut();
+    // herdr sends no change for a pane whose status stays as it was, so a
+    // turn that ended while it read idle never ends the wait. One read at
+    // the deadline takes the fact that is there rather than wait for an event
+    // that may never come (issue #220). It is a snapshot at a bound, not a poll.
+    client.request('agent.get', { target: pane.paneId }).then(
+      (result) => {
+        const value = agentInfo(result)['agent_status'];
+        if (typeof value === 'string' && value && value !== status) {
+          status = value;
+          options.onStatus?.(value);
+        }
+        if (value === 'idle' || value === 'done') settle('idle');
+        else timedOut();
+      },
+      (error: unknown) => {
+        if (error instanceof HerdrApiError && (error.code === 'agent_not_found' || error.code === 'pane_not_found')) settle('gone');
+        else timedOut();
+      },
+    );
   }, options.timeoutMs);
   timer.unref?.();
   try {
@@ -978,14 +998,19 @@ export function restartFailureLines(parents: ParentRecord[]): string[] {
  * and for each restart on another machine whose answer was lost (issue #211).
  */
 export function restartWaitLines(parents: ParentRecord[]): string[] {
+  const pendingLine = (who: string, requestedAt: string, wait: RestartWait | undefined, facts: { messages?: number; working?: ChildRecord[] }): string =>
+    wait ? `info  restart: ${restartWaitText(who, requestedAt, wait, facts)}` : `warn  restart: ${who} has a restart requested at ${requestedAt} that nothing waits on, so it never runs on its own. Call agent_restart again from the session to replace it (issue #220).`;
+  const stallLine = (who: string, stall: RestartStall): string =>
+    `warn  restart: ${who} gave up ${stall.requestedAt ? `the restart it requested at ${stall.requestedAt}${stall.paneId ? ` on pane ${stall.paneId}` : ''}, at ${stall.at}` : `a restart at ${stall.at}`}: ${stall.reason}`;
+  const restartedSince = (record: { restartedAt?: string }, stall: RestartStall): boolean => Boolean(record.restartedAt && record.restartedAt >= stall.at);
   const lines: string[] = [];
   for (const parent of parents) {
-    if (parent.restartRequestedAt) lines.push(`info  restart: ${restartWaitText(`session ${parent.id}`, parent.restartRequestedAt, parent.restartWait, { working: workingChildren(parent.id) })}`);
-    else if (parent.restartStalled) lines.push(`info  restart: session ${parent.id} gave up a restart at ${parent.restartStalled.at}: ${parent.restartStalled.reason}`);
+    if (parent.restartRequestedAt) lines.push(pendingLine(`session ${parent.id}`, parent.restartRequestedAt, parent.restartWait, { working: workingChildren(parent.id) }));
+    else if (parent.restartStalled && !restartedSince(parent, parent.restartStalled)) lines.push(stallLine(`session ${parent.id}`, parent.restartStalled));
     for (const child of parent.children) {
       const who = `${child.name} (child ${child.id} of ${parent.id})`;
-      if (child.restartRequestedAt) lines.push(`info  restart: ${restartWaitText(who, child.restartRequestedAt, child.restartWait, { messages: messagesSince(child, child.restartRequestedAt) })}`);
-      else if (child.restartStalled) lines.push(`info  restart: ${who} gave up a restart at ${child.restartStalled.at}: ${child.restartStalled.reason}`);
+      if (child.restartRequestedAt) lines.push(pendingLine(who, child.restartRequestedAt, child.restartWait, { messages: messagesSince(child, child.restartRequestedAt) }));
+      else if (child.restartStalled && !restartedSince(child, child.restartStalled)) lines.push(stallLine(who, child.restartStalled));
       const doubt = child.restartInDoubt;
       if (doubt) lines.push(`warn  restart: ${who} on machine ${doubt.host}: the answer to its restart at ${doubt.at} was lost with the connection, so the outcome is unknown until the daemon there hands over the answer it kept (${doubt.error}). Its pane before the restart was ${doubt.oldPane || '(none)'}.`);
     }
@@ -1279,23 +1304,39 @@ export function restartWaitText(who: string, requestedAt: string, wait: RestartW
   const held = facts.held ? ` Bellwether holds ${facts.held} event${facts.held === 1 ? '' : 's'} for the new session, so they do not start another turn.` : '';
   const messages = facts.messages ? ` ${facts.messages} message${facts.messages === 1 ? '' : 's'} reached the session since the request, each a turn of its own.` : '';
   const working = facts.working?.length ? ` ${facts.working.length} of its children ${facts.working.length === 1 ? 'is' : 'are'} working: ${facts.working.map((entry) => entry.name).join(', ')}.` : '';
-  const until = wait?.until ? ` It gives up at ${wait.until} if the turn has not ended, and says why.` : '';
+  const until = wait?.until ? ` At ${wait.until} it reads the pane from herdr once more: idle restarts it, and anything else gives up and says why.` : '';
   return `${who} has a restart pending since ${requestedAt}. It waits for pane ${pane} to end its turn, and ${status}.${held}${messages}${working}${until}`;
 }
 
 /** Why a wait that ran out did not restart the session, naming what held it. */
 function stallReason(pane: string, wait: RestartWait | undefined, bound: string, facts: { messages: number; working: ChildRecord[]; error: string }): string {
-  const status = wait?.status ?? 'unknown';
-  const parts = [`pane ${pane} did not end a turn within ${bound}: herdr reported it ${status}${wait?.statusSince ? ` since ${wait.statusSince}` : ''}, so the turn was live the whole time`];
+  const status = wait?.status;
+  const parts = [
+    status && status !== 'unknown'
+      ? `pane ${pane} did not end a turn within ${bound}: herdr reported it ${status}${wait?.statusSince ? ` since ${wait.statusSince}` : ''}, so the turn was live the whole time`
+      : `herdr reported no status for pane ${pane} within ${bound}, nor when the daemon read the pane at the deadline, so the daemon could not tell that its turn had ended`,
+  ];
   if (facts.messages) parts.push(`${facts.messages} message${facts.messages === 1 ? '' : 's'} reached the session during the wait`);
   if (facts.working.length) parts.push(`${facts.working.length} of its children ${facts.working.length === 1 ? 'was' : 'were'} working (${facts.working.map((entry) => entry.name).join(', ')})`);
   const timeout = /still \S+ after/.test(facts.error) ? '' : ` (${facts.error})`;
   return `${parts.join('; ')}${timeout}. Nothing was closed. End the turn and call agent_restart again, or ask the parent or the operator to restart it.`;
 }
 
+/** The clause a reply adds when its request replaces one that nothing was waiting on. */
+function replaces(orphan: string | undefined): string {
+  return orphan ? ` It replaces the request from ${orphan}, which nothing was waiting on.` : '';
+}
+
+/** What a deferred act refused after its wait leaves on the record, so the request ends (issue #220). */
+function refusedStall(requestedAt: string, paneId: string, message: string): RestartStall {
+  return { at: new Date().toISOString(), requestedAt, paneId, reason: `the restart did not run: ${message.replace(/\.?\s*$/, '.')} Call agent_restart again once the cause is settled.` };
+}
+
 async function deferChildRestart(client: HerdrClient, ownParentId: string, parent: ParentRecord, childNow: ChildRecord, caller: CallerIdentity, hooks: RestartHooks, change?: RouteChange): Promise<string> {
   const child = readParent(parent.id)?.children.find((entry) => entry.id === childNow.id) ?? childNow;
-  if (child.restartRequestedAt) return restartWaitText(`${child.name} (child ${child.id})`, child.restartRequestedAt, child.restartWait, { held: hooks.held?.(), messages: messagesSince(child, child.restartRequestedAt), working: workingChildren(ownParentId) });
+  if (child.restartRequestedAt && child.restartWait) return restartWaitText(`${child.name} (child ${child.id})`, child.restartRequestedAt, child.restartWait, { held: hooks.held?.(), messages: messagesSince(child, child.restartRequestedAt), working: workingChildren(ownParentId) });
+  // A request with no wait on its record has nothing that would ever end it (issue #220): a new call replaces it.
+  const orphan = child.restartRequestedAt;
   if (!hooks.defer) throw new RestartRefused('This daemon cannot defer a restart, so it cannot restart the session that asked.');
   if (hostOf(child) !== LOCAL_HOST) throw new RestartRefused(`${child.name} runs on machine ${hostOf(child)}, and this daemon only restarts agents on its own machine.`);
   if (child.origin === 'adopt') throw new RestartRefused(`${child.name} (child ${child.id}) was adopted, not started by Bellwether, so agent_restart will not close pane ${child.paneId}: it closes only panes Bellwether started.`);
@@ -1318,11 +1359,12 @@ async function deferChildRestart(client: HerdrClient, ownParentId: string, paren
   hooks.hold?.(true);
   hooks.defer(`child:${child.id}`, () => deferredChildRestart(client, ownParentId, parent.id, child.id, paneId, child.tabId, hooks));
   const moved = routeMove(child.route, launch);
-  return `Restart requested for ${child.name} (child ${child.id}). Once this turn ends, the daemon closes pane ${paneId} and starts ${child.kind} in a new tab with ${commandWords(child.kind, resume, launch)}, keeping the same child id, so its history and receipts continue.${moved ? ` ${moved}` : ''} Until then Bellwether holds the events bound for this session, which the new session receives. If the turn has not ended within ${boundWords(hooks)}, the restart gives up and says what held it. Finish your reply first; the new pane carries on this session.`;
+  return `Restart requested for ${child.name} (child ${child.id}).${replaces(orphan)} Once this turn ends, the daemon closes pane ${paneId} and starts ${child.kind} in a new tab with ${commandWords(child.kind, resume, launch)}, keeping the same child id, so its history and receipts continue.${moved ? ` ${moved}` : ''} Until then Bellwether holds the events bound for this session, which the new session receives. If the turn has not ended within ${boundWords(hooks)}, the daemon reads the pane from herdr once: idle restarts it, and anything else gives up and says what held it. Finish your reply first; the new pane carries on this session.`;
 }
 
 function deferParentRestart(client: HerdrClient, record: ParentRecord, caller: CallerIdentity, hooks: RestartHooks): string {
-  if (record.restartRequestedAt) return restartWaitText('This session', record.restartRequestedAt, record.restartWait, { held: hooks.held?.(), working: workingChildren(record.id) });
+  if (record.restartRequestedAt && record.restartWait) return restartWaitText('This session', record.restartRequestedAt, record.restartWait, { held: hooks.held?.(), working: workingChildren(record.id) });
+  const orphan = record.restartRequestedAt;
   if (!hooks.defer) throw new RestartRefused('This daemon cannot defer a restart, so it cannot restart the session that asked.');
   const plan = parentSessionPlan(record);
   const paneId = record.paneId ?? caller.paneId;
@@ -1335,7 +1377,7 @@ function deferParentRestart(client: HerdrClient, record: ParentRecord, caller: C
   });
   hooks.hold?.(true);
   hooks.defer(`parent:${record.id}`, () => deferredParentRestart(client, record.id, paneId, hooks));
-  return `Restart requested. Once this turn ends, the daemon closes this pane (${paneId}) and starts ${plan.kind} in a new tab with ${plan.resume.join(' ')} in ${record.cwd}, on the same session. Until then Bellwether holds the events bound for this session, which the new session receives. If the turn has not ended within ${boundWords(hooks)}, the restart gives up and says what held it. Finish your reply first; the new pane carries on this session.`;
+  return `Restart requested.${replaces(orphan)} Once this turn ends, the daemon closes this pane (${paneId}) and starts ${plan.kind} in a new tab with ${plan.resume.join(' ')} in ${record.cwd}, on the same session. Until then Bellwether holds the events bound for this session, which the new session receives. If the turn has not ended within ${boundWords(hooks)}, the daemon reads the pane from herdr once: idle restarts it, and anything else gives up and says what held it. Finish your reply first; the new pane carries on this session.`;
 }
 
 /** Keep the status herdr reports for the waiting pane on the record, for a second call and doctor. */
@@ -1357,16 +1399,17 @@ async function deferredChildRestart(client: HerdrClient, sessionParentId: string
   );
   try {
     try {
-      await waitForTurnEnd(client, name, { paneId, tabId }, { timeoutMs: hooks.deferTimeoutMs ?? RESTART_DEFER_MS, freshOnly: true, signal: hooks.signal, onStatus });
+      await waitForTurnEnd(client, name, { paneId, tabId }, { timeoutMs: hooks.deferTimeoutMs ?? RESTART_DEFER_MS, freshOnly: true, readAtDeadline: true, signal: hooks.signal, onStatus });
     } catch (error) {
       // A daemon that stops mid-wait leaves the marker for its next start.
       if (hooks.signal?.aborted) return;
       const child = readParent(parentId)?.children.find((entry) => entry.id === childId);
       const reason = stallReason(paneId, child?.restartWait, boundWords(hooks), { messages: child?.restartRequestedAt ? messagesSince(child, child.restartRequestedAt) : 0, working: workingChildren(sessionParentId), error: (error as Error).message });
       updateChild(parentId, childId, (entry) => {
+        const requestedAt = entry.restartRequestedAt;
         delete entry.restartRequestedAt;
         delete entry.restartWait;
-        entry.restartStalled = { at: new Date().toISOString(), reason };
+        entry.restartStalled = { at: new Date().toISOString(), ...(requestedAt ? { requestedAt } : {}), paneId, reason };
       });
       hooks.log?.(`deferred restart of ${childId} did not run: ${reason}`);
       logRestart({ outcome: 'timeout', target: 'child', parent: parentId, child: childId, error: reason });
@@ -1374,15 +1417,28 @@ async function deferredChildRestart(client: HerdrClient, sessionParentId: string
     }
     const current = readParent(parentId)?.children.find((entry) => entry.id === childId);
     if (!current?.restartRequestedAt) return;
-    updateChild(parentId, childId, (entry) => {
-      delete entry.restartWait;
-    });
+    // The wait stays on the record until the act ends, so a request is never
+    // left pending with nothing that would end it (issue #220).
     try {
       await restartChild(client, parentId, childId, hooks);
     } catch (error) {
-      hooks.log?.(`deferred restart of ${childId} failed: ${(error as Error).message}`);
+      const message = (error as Error).message;
+      hooks.log?.(`deferred restart of ${childId} failed: ${message}`);
+      // An act refused before it closed anything still holds the request open.
+      let refused = false;
+      updateChild(parentId, childId, (entry) => {
+        if (!entry.restartRequestedAt) return;
+        entry.restartStalled = refusedStall(entry.restartRequestedAt, paneId, message);
+        delete entry.restartRequestedAt;
+        delete entry.restartRoute;
+        refused = true;
+      });
+      if (refused) logRestart({ outcome: 'refused', target: 'child', parent: parentId, child: childId, error: message });
     }
   } finally {
+    updateChild(parentId, childId, (entry) => {
+      delete entry.restartWait;
+    });
     hooks.hold?.(false);
   }
 }
@@ -1395,33 +1451,46 @@ async function deferredParentRestart(client: HerdrClient, parentId: string, pane
   );
   try {
     try {
-      await waitForTurnEnd(client, parentId, { paneId }, { timeoutMs: hooks.deferTimeoutMs ?? RESTART_DEFER_MS, freshOnly: true, signal: hooks.signal, onStatus });
+      await waitForTurnEnd(client, parentId, { paneId }, { timeoutMs: hooks.deferTimeoutMs ?? RESTART_DEFER_MS, freshOnly: true, readAtDeadline: true, signal: hooks.signal, onStatus });
     } catch (error) {
       // A daemon that stops mid-wait leaves the marker for its next start.
       if (hooks.signal?.aborted) return;
       const reason = stallReason(paneId, readParent(parentId)?.restartWait, boundWords(hooks), { messages: 0, working: workingChildren(parentId), error: (error as Error).message });
       mutateParent(parentId, (entry) => {
+        const requestedAt = entry.restartRequestedAt;
         delete entry.restartRequestedAt;
         delete entry.restartWait;
-        entry.restartStalled = { at: new Date().toISOString(), reason };
+        entry.restartStalled = { at: new Date().toISOString(), ...(requestedAt ? { requestedAt } : {}), paneId, reason };
       });
       hooks.log?.(`deferred restart of session ${parentId} did not run: ${reason}`);
       logRestart({ outcome: 'timeout', target: 'parent', parent: parentId, error: reason });
       return;
     }
     if (!readParent(parentId)?.restartRequestedAt) return;
-    mutateParent(parentId, (entry) => {
-      delete entry.restartWait;
-    });
     try {
       await restartParent(client, parentId, hooks);
     } catch (error) {
-      hooks.log?.(`deferred restart of session ${parentId} failed: ${(error as Error).message}`);
+      const message = (error as Error).message;
+      hooks.log?.(`deferred restart of session ${parentId} failed: ${message}`);
+      let refused = false;
+      mutateParent(parentId, (entry) => {
+        if (!entry.restartRequestedAt) return;
+        entry.restartStalled = refusedStall(entry.restartRequestedAt, paneId, message);
+        delete entry.restartRequestedAt;
+        refused = true;
+      });
+      if (refused) logRestart({ outcome: 'refused', target: 'parent', parent: parentId, error: message });
     }
   } finally {
+    mutateParent(parentId, (entry) => {
+      delete entry.restartWait;
+    });
     hooks.hold?.(false);
   }
 }
+
+/** Why a request a new daemon finds with no pane gives up at once (issue #220). */
+const NO_PANE_REASON = 'the daemon that took this request stopped, and the request has no pane on its record, so no daemon can tell when its turn ends. Nothing was closed. Call agent_restart again from the session.';
 
 /**
  * Arm the restarts a daemon stopped part of the way through: a record that
@@ -1438,8 +1507,14 @@ export function armPendingRestarts(client: HerdrClient, parent: ParentRecord, ho
       mutateParent(fresh.id, (entry) => {
         delete entry.restartRequestedAt;
       });
-    } else if (fresh.paneId) {
-      const paneId = fresh.paneId;
+    } else if (!(fresh.restartWait?.paneId ?? fresh.paneId)) {
+      mutateParent(fresh.id, (entry) => {
+        entry.restartStalled = { at: new Date().toISOString(), requestedAt: fresh.restartRequestedAt, reason: NO_PANE_REASON };
+        delete entry.restartRequestedAt;
+        delete entry.restartWait;
+      });
+    } else {
+      const paneId = (fresh.restartWait?.paneId ?? fresh.paneId) as string;
       // The wait starts again with its full bound, and the session's events wait with it.
       mutateParent(fresh.id, (entry) => {
         entry.restartWait = { until: new Date(Date.now() + (hooks.deferTimeoutMs ?? RESTART_DEFER_MS)).toISOString(), paneId };
@@ -1456,8 +1531,18 @@ export function armPendingRestarts(client: HerdrClient, parent: ParentRecord, ho
       });
       continue;
     }
-    if (!child.paneId) continue;
-    const { paneId, tabId } = child;
+    const paneId = child.restartWait?.paneId ?? child.paneId;
+    if (!paneId) {
+      const requestedAt = child.restartRequestedAt;
+      updateChild(fresh.id, child.id, (entry) => {
+        entry.restartStalled = { at: new Date().toISOString(), requestedAt, reason: NO_PANE_REASON };
+        delete entry.restartRequestedAt;
+        delete entry.restartWait;
+        delete entry.restartRoute;
+      });
+      continue;
+    }
+    const { tabId } = child;
     updateChild(fresh.id, child.id, (entry) => {
       entry.restartWait = { until: new Date(Date.now() + (hooks.deferTimeoutMs ?? RESTART_DEFER_MS)).toISOString(), paneId };
     });

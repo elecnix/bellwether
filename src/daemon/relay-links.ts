@@ -20,6 +20,7 @@ import { relayHostsPath } from '../core/paths.ts';
 import { listParents, updateChild } from '../core/registry.ts';
 import { adoptionClaim } from '../core/adopt.ts';
 import { farErrorLine, relayBridgeArgv, releaseAdvice } from '../core/ssh.ts';
+import { hasAgent } from '../core/ssh-agent.ts';
 import type { ChildRecord } from '../core/types.ts';
 import { DAEMON_PROTOCOL, MAX_DAEMON_FRAME_BYTES, formatRequest, type DaemonReply, type DaemonRequest, type InboxMessage, type RelayMessageAnswer, type RelayAdoptAnswer, type RelayHostState, type RelayReport } from './protocol.ts';
 import { featureNamed } from './features.ts';
@@ -47,6 +48,8 @@ export interface RelayLinksOptions {
    * line, so a connection that died without closing ends there too.
    */
   heartbeatMs?: number;
+  /** The environment each ssh inherits. Defaults to the daemon's own, whose SSH_AUTH_SOCK decides whether ssh has an agent. */
+  env?: NodeJS.ProcessEnv;
 }
 
 /** What the daemon does with a report that arrived: take it, or refuse it for good. */
@@ -113,11 +116,12 @@ export class RelayLinks {
   private readonly maxDelayMs: number;
   private readonly readTimeoutMs: number;
   private readonly heartbeatMs: number;
+  private readonly env: NodeJS.ProcessEnv;
   private readonly links = new Map<string, Link>();
   /** Hosts a read holds open, though no child there needs a connection. */
   private readonly pins = new Map<string, number>();
   /** What earlier daemons learnt about each host, kept across a restart. */
-  private memory: Record<string, { lastDrainAt?: string; lastConnectedAt?: string; lastError?: string }> = {};
+  private memory: Record<string, RelayMemory> = {};
   private accept: AcceptRelayed = () => ({ refused: 'this daemon takes no reports' });
   private readonly connectedHandlers = new Set<(host: string) => void>();
   private sequence = 0;
@@ -132,6 +136,7 @@ export class RelayLinks {
     this.maxDelayMs = options.maxDelayMs ?? 5 * 60_000;
     this.readTimeoutMs = options.readTimeoutMs ?? 15_000;
     this.heartbeatMs = options.heartbeatMs ?? 15_000;
+    this.env = options.env ?? process.env;
   }
 
   /** Start connecting to every host a child of this machine's parents runs on. */
@@ -381,7 +386,8 @@ export class RelayLinks {
         if (this.stopped || link.closing) return;
         link.state.target = profile.target;
         this.log(`relay: connecting to machine ${link.host} as ${profile.target}${link.state.attempts ? `, attempt ${link.state.attempts + 1}` : ''}`);
-        const child = spawn(this.ssh, relayBridgeArgv(profile.target, this.heartbeatMs), { stdio: ['pipe', 'pipe', 'pipe'] });
+        link.state.sshAgent = hasAgent(this.env);
+        const child = spawn(this.ssh, relayBridgeArgv(profile.target, this.heartbeatMs), { stdio: ['pipe', 'pipe', 'pipe'], env: this.env });
         link.process = child;
         child.stdin.on('error', () => {});
         child.stdout.setEncoding('utf8');
@@ -609,8 +615,8 @@ export class RelayLinks {
   }
 
   private remember(link: Link): void {
-    const { lastDrainAt, lastConnectedAt, lastError } = link.state;
-    this.memory[link.host] = { ...(lastDrainAt ? { lastDrainAt } : {}), ...(lastConnectedAt ? { lastConnectedAt } : {}), ...(lastError ? { lastError } : {}) };
+    const { lastDrainAt, lastConnectedAt, lastError, target } = link.state;
+    this.memory[link.host] = { ...(target ? { target } : {}), ...(lastDrainAt ? { lastDrainAt } : {}), ...(lastConnectedAt ? { lastConnectedAt } : {}), ...(lastError ? { lastError } : {}) };
     writeMemory(this.memory);
   }
 
@@ -635,8 +641,17 @@ export function unreachable(state: RelayHostState): string {
   return `${parts.join('; ')}.`;
 }
 
+/** What a daemon keeps about one remote host across a restart. */
+export interface RelayMemory {
+  /** The SSH target the host resolved to, which a hand-over reads ssh's configuration for (issue #245). */
+  target?: string;
+  lastDrainAt?: string;
+  lastConnectedAt?: string;
+  lastError?: string;
+}
+
 /** What earlier daemons on this machine learnt about each remote host. */
-export function readMemory(): Record<string, { lastDrainAt?: string; lastConnectedAt?: string; lastError?: string }> {
+export function readMemory(): Record<string, RelayMemory> {
   try {
     const parsed = JSON.parse(fs.readFileSync(relayHostsPath(), 'utf8')) as unknown;
     return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed) ? (parsed as Record<string, { lastDrainAt?: string }>) : {};

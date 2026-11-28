@@ -849,6 +849,12 @@ export interface RelayHostState {
   nextAttemptAt?: string;
   /** The children on that machine this daemon is waiting to hear from. */
   children: string[];
+  /**
+   * Whether the newest ssh attempt inherited an SSH agent: SSH_AUTH_SOCK set
+   * to a path that exists in the daemon's environment. A daemon from before
+   * 0.1.10 leaves it out (issue #245).
+   */
+  sshAgent?: boolean;
   /** That machine's daemon's package version, from its last relay-hello. */
   farVersion?: string;
   /** That daemon's build, its commit, from its last relay-hello. One version number covers many builds. */

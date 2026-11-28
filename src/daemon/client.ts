@@ -17,6 +17,7 @@ import { canConnect } from './server.ts';
 import type { ModelPair, OutboxEntry } from '../core/types.ts';
 import type { AncestryAnswer } from '../core/ancestry.ts';
 import { rosterFrom, type RosterChild } from '../core/roster.ts';
+import { handOverAgentNotice } from '../core/ssh-agent.ts';
 
 const DEFAULT_TIMEOUT_MS = 60_000;
 const START_TIMEOUT_MS = 10_000;
@@ -782,6 +783,15 @@ export interface HandOverOptions {
   timeoutMs?: number;
 }
 
+/** What a hand-over that started a daemon has to tell its caller. */
+export interface HandOverResult {
+  /**
+   * One sentence when the new daemon starts without an SSH agent and a relay
+   * depends on one, so the operator hears it before the relays fail (issue #245).
+   */
+  notice?: string;
+}
+
 /**
  * Replace the daemon on a socket with one from this install. The client takes
  * the starting marker first, which a client of 0.1.4 or later respects: the
@@ -797,13 +807,13 @@ export interface HandOverOptions {
  * daemon that dies drops its lock with its pid, and a marker whose writer
  * died, or that has not been refreshed for 30 s, is taken over.
  */
-export async function handOverDaemon(home: string, socketPath: string, options: HandOverOptions = {}): Promise<void> {
+export async function handOverDaemon(home: string, socketPath: string, options: HandOverOptions = {}): Promise<HandOverResult> {
   fs.mkdirSync(home, { recursive: true });
   const marker = startingMarker(home);
   const timeoutMs = options.timeoutMs ?? HANDOVER_TIMEOUT_MS;
   if (!takeStartingMarker(marker)) {
     await waitWhileMarkerHeld(marker, Date.now() + timeoutMs);
-    return;
+    return {};
   }
   const refresh = setInterval(() => refreshMarker(marker), 5_000);
   refresh.unref?.();
@@ -812,8 +822,12 @@ export async function handOverDaemon(home: string, socketPath: string, options: 
     await askOnce(socketPath, formatRequest({ type: 'drain' }), START_TIMEOUT_MS).catch(() => undefined);
     await waitForRelease(home, socketPath, timeoutMs);
     options.log?.(`the old daemon${old ? ` (pid ${old.pid})` : ''} has let go of ${socketPath}; starting this install's daemon`);
+    // The new daemon inherits this process's environment: say now what that costs the relays, not a retry later.
+    const notice = await handOverAgentNotice(old?.sshAgent);
+    if (notice) options.log?.(notice);
     spawnDaemon(home, socketPath, options.entry);
     await waitForSocket(socketPath);
+    return notice ? { notice } : {};
   } finally {
     clearInterval(refresh);
     removeOwnMarker(marker);
@@ -1011,17 +1025,17 @@ function askOnce(socketPath: string, line: string, timeoutMs: number): Promise<D
  * the socket, which is how a parent's newer daemon brings the far machine's
  * daemon up to the far machine's own install.
  */
-export async function ensureDaemon(home: string, socketPath: string, entry?: string, log?: (message: string) => void): Promise<void> {
+export async function ensureDaemon(home: string, socketPath: string, entry?: string, log?: (message: string) => void): Promise<HandOverResult> {
   if (await canConnect(socketPath)) {
     const lock = readLock(home);
-    if (!lock) return;
+    if (!lock) return {};
     const decision = decideHandOver({ protocol: lock.protocol, ...versionOf(lock) });
-    if (decision.kind === 'keep') return;
+    if (decision.kind === 'keep') return {};
     log?.(`handing over: ${decision.reason}`);
-    await handOverDaemon(home, socketPath, { entry, log });
-    return;
+    return handOverDaemon(home, socketPath, { entry, log });
   }
   await startDaemonProcess(home, socketPath, entry);
+  return {};
 }
 
 /** Who is connected to the daemon on a socket and on which code. A daemon before 0.1.5 answers unknown_type. */

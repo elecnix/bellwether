@@ -26,8 +26,12 @@ export interface FakeMachine {
   env?: Record<string, string>;
 }
 
-/** What one ssh call does: refuse (exit 255, nothing runs), drop (runs, then exit 255), or ok. */
-export type SshStep = 'refuse' | 'drop' | 'ok';
+/**
+ * What one ssh call does: refuse (exit 255, nothing runs), deny (exit 255 on a
+ * public-key refusal, as a host does when ssh offers no key it accepts), drop
+ * (runs, then exit 255), or ok.
+ */
+export type SshStep = 'refuse' | 'deny' | 'drop' | 'ok';
 
 export interface FakeSsh {
   dir: string;
@@ -96,6 +100,7 @@ while (index < argv.length && argv[index].startsWith('-')) index += options.has(
 const target = argv[index];
 const command = argv[index + 1];
 if (step === 'refuse') { process.stderr.write('ssh: connect to host ' + target + ' port 22: Connection refused\\n'); process.exit(255); }
+if (step === 'deny') { process.stderr.write('someone@' + target + ': Permission denied (publickey,password,keyboard-interactive).\\n'); process.exit(255); }
 const machines = JSON.parse(fs.readFileSync(path.join(dir, 'machines.json'), 'utf8'));
 const machine = machines[target];
 if (!machine) { process.stderr.write('ssh: Could not resolve hostname ' + target + '\\n'); process.exit(255); }

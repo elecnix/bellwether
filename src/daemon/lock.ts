@@ -4,6 +4,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { hasAgent } from '../core/ssh-agent.ts';
 import { BELLWETHER_BUILD_ID, BELLWETHER_VERSION } from '../core/version.ts';
 import { DAEMON_PROTOCOL } from './protocol.ts';
 
@@ -30,6 +31,13 @@ export interface LockRecord {
    * would have started. A detached daemon leaves the field out.
    */
   foreground?: true;
+  /**
+   * Whether the daemon started with an SSH agent: SSH_AUTH_SOCK set to a path
+   * that exists. Its relays' ssh inherits that environment, so a daemon without
+   * one reaches a host only through IdentityAgent or IdentityFile in
+   * ~/.ssh/config. A lock from before 0.1.10 has none (issue #245).
+   */
+  sshAgent?: boolean;
 }
 
 /** How the daemon that takes a lock was started, for the lock to record. */
@@ -38,6 +46,8 @@ export interface LockOrigin {
   entry?: string;
   /** Whether `bellwether daemon` runs it in the foreground. */
   foreground?: boolean;
+  /** Whether the daemon's environment names an SSH agent. Defaults to this process's. */
+  sshAgent?: boolean;
 }
 
 /** Where a daemon's code comes from: a git working tree, or a package a package manager installed. */
@@ -86,6 +96,7 @@ export function readLock(home: string): LockRecord | undefined {
     if (record.origin === 'checkout' || record.origin === 'package') read.origin = record.origin;
     if (typeof record.build === 'string' && record.build) read.build = record.build;
     if (record.foreground === true) read.foreground = true;
+    if (typeof record.sshAgent === 'boolean') read.sshAgent = record.sshAgent;
     return read;
   } catch {
     return undefined;
@@ -120,6 +131,7 @@ export function acquire(home: string, socketPath: string, pid = process.pid, ali
     record.origin = originOf(record.entry);
   }
   if (started.foreground) record.foreground = true;
+  record.sshAgent = started.sshAgent ?? hasAgent(process.env);
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
       const fd = fs.openSync(target, 'wx', 0o600);

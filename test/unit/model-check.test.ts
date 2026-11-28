@@ -15,13 +15,19 @@ import { promisify } from 'node:util';
 const run = promisify(execFile);
 const model = path.resolve(import.meta.dirname, '../../model');
 
-/** A stand-in checker: it allocates the given MiB, holds them, then exits with the given code. */
-function standIn(dir: string, mib: number, code: number): string {
+/**
+ * A stand-in checker: it allocates the given MiB and holds them, then exits with the given code, or with 'killed'
+ * holds them until something stops it. The buffers stay on `globalThis`: a local array that no timer refers to is
+ * garbage once the script ends, and a collection then took the resident size back under the ceiling before the
+ * watchdog's next read. A stand-in over the ceiling never exits on its own, so the only way its run ends is the cap.
+ */
+function standIn(dir: string, mib: number, code: number | 'killed'): string {
   const file = path.join(dir, `checker-${mib}-${code}`);
+  const end = code === 'killed' ? 'setInterval(() => {}, 60_000);' : `setTimeout(() => process.exit(${code}), 1500);`;
   fs.writeFileSync(file, `#!/usr/bin/env node
-const held = [];
-for (let i = 0; i < ${mib}; i++) held.push(Buffer.alloc(1 << 20, 1));
-setTimeout(() => process.exit(${code}), 1500);
+globalThis.held = [];
+for (let i = 0; i < ${mib}; i++) globalThis.held.push(Buffer.alloc(1 << 20, 1));
+${end}
 `, { mode: 0o755 });
   return file;
 }
@@ -52,7 +58,7 @@ for (const cap of caps) {
     }
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bw-model-'));
     try {
-      const result = await check(standIn(dir, 400, 0), { ...env, EVERYSTATE_MEMORY: '128M' });
+      const result = await check(standIn(dir, 400, 'killed'), { ...env, EVERYSTATE_MEMORY: '128M' });
       assert.equal(result.code, 137, result.stderr);
       assert.match(result.stderr, /passed the memory ceiling of 128M/);
     } finally {

@@ -622,16 +622,24 @@ test('an unknown machine, an empty pane and a pane another parent watches there 
 // RouteToWatcher in model/Claims.tla (issue #211, item 6): the far daemon saves the claim, and its answer is lost.
 test('an adoption whose answer from the far machine is lost leaves a record in doubt, and the watcher asks again, so the claim there routes to a live child', async (t) => {
   const w = await world(t);
-  const links = w.links as unknown as { ask: (host: string, type: string, build: unknown, timeoutMs?: number) => Promise<string> };
+  // The far daemon receives the first adoption and saves its claim, and the link drops that one result line, so its
+  // answer never comes back. A short bound against an answer that does come back would race the runner's speed.
+  type Build = (id: string) => unknown;
+  type Reply = { type: string; id?: string };
+  const links = w.links as unknown as { ask: (host: string, type: string, build: Build, timeoutMs?: number) => Promise<string>; dispatch: (link: unknown, child: unknown, reply: Reply) => void };
   const ask = links.ask.bind(w.links);
-  let lose = true;
+  const dispatch = links.dispatch.bind(w.links);
+  let lostId: string | undefined;
   links.ask = (host, type, build, timeoutMs) => {
-    if (type !== 'relay-adopt' || !lose) return ask(host, type, build, timeoutMs);
-    lose = false;
-    return ask(host, type, build, 1);
+    if (type !== 'relay-adopt' || lostId !== undefined) return ask(host, type, build, timeoutMs);
+    return ask(host, type, (id) => ((lostId = id), build(id)), 200);
+  };
+  links.dispatch = (link, child, reply) => {
+    if (reply.type === 'result' && reply.id !== undefined && reply.id === lostId) return;
+    dispatch(link, child, reply);
   };
   const text = await adopt(w);
-  assert.match(text, /^Machine child-box did not answer the adoption of pane w1:p5 \(machine child-box did not answer an adoption within 1 ms\), so Bellwether does not know whether it recorded it\. The child stands as first-mate, child \S+, in doubt: Bellwether asks that machine again and reports what it learns\./, text);
+  assert.match(text, /^Machine child-box did not answer the adoption of pane w1:p5 \(machine child-box did not answer an adoption within 200 ms\), so Bellwether does not know whether it recorded it\. The child stands as first-mate, child \S+, in doubt: Bellwether asks that machine again and reports what it learns\./, text);
   const id = child(w)!.id;
   await until('the far claim', () => inHome(w.childHome, () => readRelayRecord(id))?.adopted === true, 10_000);
   await until('the doubt to clear', () => child(w)?.adoptInDoubt === undefined, 10_000, () => w.logs.slice(-5));

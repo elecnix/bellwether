@@ -20,7 +20,7 @@ Each run reads where the release stands, then takes it one stage further:
 
 2. With the version staged on npm, the script waits up to 30 minutes while the registry's review shows `validating`, then prints the `stage approve` command. A rejected stage stops it.
 
-3. If `origin/main` already declares the version, the script checks out the commit that set it in a `release-<version>` worktree beside the current one. After `npm ci` there, it checks that the packed tarball installs. Then it stages the version and continues as in step 2.
+3. If `origin/main` already declares the version, the script checks the pull requests merged into that commit, as [A pull request that merges during the gates](#a-pull-request-that-merges-during-the-gates) describes. It then checks out the commit that set the version in a `release-<version>` worktree beside the current one. After `npm ci` there, it checks that the packed tarball installs. Then it stages the version and continues as in step 2.
 
    The check installs the tarball into an empty global prefix and over the version npm serves as `latest`, each a throwaway prefix, then reads `bellwether --version` and `bellwether help`. A failed install stops the script before `npm stage publish`, naming the case and npm's error.
 
@@ -65,6 +65,14 @@ Before its gates, the script lists the pull requests merged into `origin/main` s
 - the `release-note: none` label, for a change a person would not read about. Examples are a test fix, a typo, a dependency bump and a fix to the release tooling.
 
 The error lists each such pull request with its title and how to add either one. It stops before any push or stage, so notes go in through a pull request of their own, never mid-release.
+
+### A pull request that merges during the gates
+
+GitHub squash-merges the release branch into `origin/main` as main stands at that moment. A pull request that merged while the gates ran goes out in the release, although the check before the gates never saw it ([#211](https://github.com/elecnix/bellwether/issues/211)). So the script checks again before it stages. It lists the pull requests from the previous release commit up to the release commit, and reads the notes and `FEATURES` on `origin/main` as it stands then. When one of them has neither a line nor the label, the release stops before `npm stage publish`. Add a note under `release-notes/<version>/` whose front matter names that pull request, or give it the label, then run the script again.
+
+### A note under a published version
+
+Both checks also stop on a note added since the previous release under that version or an older one. npm already serves that version, so no release would list the note, and a label on its pull request would hide it. The error lists each such file. Move it under the version you release.
 
 ## A note is a file of its own
 

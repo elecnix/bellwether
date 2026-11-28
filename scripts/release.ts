@@ -223,6 +223,33 @@ export function unrecorded(version: string, merged: readonly MergedPr[], feature
   return merged.filter((pr) => !named.has(pr.number) && !pr.labels.includes(NO_ENTRY_LABEL));
 }
 
+/**
+ * The error for a release commit that carries pull requests which merged
+ * after the check, while the release pull request waited for its gates.
+ */
+export function lateMessage(version: string, commit: string, missing: readonly MergedPr[]): string {
+  return [
+    `${missing.length === 1 ? 'One pull request' : `${missing.length} pull requests`} merged while the release pull request was open, so the release commit ${commit.slice(0, 7)} carries ${missing.length === 1 ? 'it' : 'them'} into ${version}, with no note in ${NOTES_DIR}/${version}/ and no entry under ${version} in src/daemon/features.ts:`,
+    '',
+    ...missing.map((pr) => `  #${pr.number} ${pr.title}`),
+    '',
+    `Give each one a note through a pull request: a file ${NOTES_DIR}/${version}/<name>.md whose front matter names it, \`prs: [<number>]\`. `
+      + `A pull request that changes nothing a person would read about takes the \`${NO_ENTRY_LABEL}\` label instead (\`gh pr edit <number> -R ${REPO} --add-label '${NO_ENTRY_LABEL}'\`). `
+      + `This check reads the notes on origin/main, so run \`npm run release -- ${version}\` again once they merge. Nothing was staged.`,
+  ].join('\n');
+}
+
+/** The error for notes that merged under a version npm already serves, where no release will list them. */
+export function publishedNoteMessage(version: string, previous: string, files: readonly string[]): string {
+  return [
+    `${files.length === 1 ? 'One note' : `${files.length} notes`} merged since ${previous} under a version npm already serves, so no release lists ${files.length === 1 ? 'it' : 'them'}:`,
+    '',
+    ...files.map((file) => `  ${file}`),
+    '',
+    `Move each one to ${NOTES_DIR}/${version}/ through a pull request, then run \`npm run release -- ${version}\` again. Nothing was pushed or staged.`,
+  ].join('\n');
+}
+
 /** The error for a release with merged pull requests that no note names. */
 export function unrecordedMessage(version: string, previous: string, missing: readonly MergedPr[]): string {
   return [
@@ -241,9 +268,10 @@ export function unrecordedMessage(version: string, previous: string, missing: re
  * The feature table of the tree being released, which can be newer than the
  * checkout running this script.
  */
-async function treeFeatures(tree: string): Promise<readonly Feature[]> {
+async function treeFeatures(tree: string, head: string): Promise<readonly Feature[]> {
   const file = path.join(tree, 'src/daemon/features.ts');
-  const loaded = (await import(pathToFileURL(file).href)) as { FEATURES?: readonly Feature[] };
+  // One worktree holds the release branch, then main: the commit keys the module cache.
+  const loaded = (await import(`${pathToFileURL(file).href}?commit=${head}`)) as { FEATURES?: readonly Feature[] };
   if (!Array.isArray(loaded.FEATURES)) throw new ReleaseError(`${file} exports no FEATURES, so the release pull request cannot list what ${tree} adds`);
   return loaded.FEATURES;
 }
@@ -305,6 +333,7 @@ class Release {
       if (!commit) throw new ReleaseError(`origin/main has no commit that sets the version to ${this.version}, although the pull request merged`);
     }
 
+    await this.refuseLateUnrecorded(top, commit, latest);
     const tree = await this.worktree(top, commit);
     await this.must('npm', ['ci'], { cwd: tree, inherit: true });
     const manifest = JSON.parse(await readFile(path.join(tree, 'package.json'), 'utf8')) as { version?: string };
@@ -525,7 +554,8 @@ class Release {
    * its file.
    */
   private async treeTables(tree: string): Promise<{ features: readonly Feature[]; behaviors: readonly Behavior[] }> {
-    const features = await treeFeatures(tree);
+    const head = (await this.must('git', ['rev-parse', 'HEAD'], { cwd: tree })).trim();
+    const features = await treeFeatures(tree, head);
     let notes;
     try {
       notes = readNotes(tree);
@@ -538,32 +568,78 @@ class Release {
 
   /**
    * Stop before the gates when a pull request merged since `previous` has no
-   * entry under this version and no NO_ENTRY_LABEL. The entries go in through
-   * a pull request of their own, so nobody writes a summary mid-release.
+   * entry under this version and no NO_ENTRY_LABEL, or when a note merged
+   * since then sits under a version npm already serves. The entries go in
+   * through a pull request of their own, so nobody writes a summary mid-release.
    */
   private async refuseUnrecorded(tree: string, previous: string | undefined, tables: { features: readonly Feature[]; behaviors: readonly Behavior[] }): Promise<void> {
     if (!previous) {
       this.deps.log(`npm serves no earlier release, so no merged pull request is checked against ${NOTES_DIR}/ and src/daemon/features.ts`);
       return;
     }
-    const merged = await this.mergedSince(tree, previous);
+    const base = await this.releaseBase(tree, previous);
+    await this.refuseNotesUnderPublished(tree, base, previous);
+    const merged = await this.mergedBetween(tree, base, 'HEAD');
     const missing = unrecorded(this.version, merged, tables.features, tables.behaviors);
     if (missing.length > 0) throw new ReleaseError(unrecordedMessage(this.version, previous, missing));
     this.deps.log(`each of the ${merged.length} pull requests merged since ${previous} has a note or entry under ${this.version}, or the ${NO_ENTRY_LABEL} label`);
   }
 
   /**
-   * The pull requests merged into the tree's HEAD since the commit that set
-   * package.json to `previous`. Main takes squash merges, so each first-parent
-   * subject ends with its pull request's number; a commit without one is
-   * logged and skipped, because no label or entry could name it.
+   * Stop before staging when the release commit carries a pull request that
+   * no note under this version names. The check before the gates read main
+   * as it stood then. GitHub squash-merges the release pull request onto main
+   * as it stands at the merge, so a pull request that merged during the gates
+   * ships in this version without that check (issue #211). This reads the
+   * notes and the feature table on origin/main, where a note filed for such a
+   * pull request lands, and lists every pull request from the previous
+   * release commit up to the release commit, which it leaves out.
    */
-  private async mergedSince(tree: string, previous: string): Promise<MergedPr[]> {
+  private async refuseLateUnrecorded(top: string, commit: string, previous: string | undefined): Promise<void> {
+    if (!previous) return;
+    const main = (await this.must('git', ['rev-parse', 'origin/main'], { cwd: top })).trim();
+    const tree = await this.worktree(top, main);
+    const tables = await this.treeTables(tree);
+    const base = await this.releaseBase(tree, previous);
+    await this.refuseNotesUnderPublished(tree, base, previous);
+    const merged = await this.mergedBetween(tree, base, `${commit}^`);
+    const missing = unrecorded(this.version, merged, tables.features, tables.behaviors);
+    if (missing.length > 0) throw new ReleaseError(lateMessage(this.version, commit, missing));
+    this.deps.log(`each of the ${merged.length} pull requests in the release commit ${commit.slice(0, 7)} has a note or entry under ${this.version} on origin/main, or the ${NO_ENTRY_LABEL} label`);
+  }
+
+  /** The commit in the tree's history that set package.json to `previous`. */
+  private async releaseBase(tree: string, previous: string): Promise<string> {
     // The oldest commit whose diff changes the count of the string is the one that set it.
     const shas = (await this.must('git', ['log', '--format=%H', `-S"version": "${previous}"`, 'HEAD', '--', 'package.json'], { cwd: tree })).trim().split('\n').filter(Boolean);
     const base = shas.at(-1);
     if (!base) throw new ReleaseError(`no commit in ${tree} sets package.json to ${previous}, so the pull requests merged since it cannot be listed`);
-    const subjects = (await this.must('git', ['log', '--first-parent', '--format=%s', `${base}..HEAD`], { cwd: tree })).split('\n').filter(Boolean).reverse();
+    return base;
+  }
+
+  /**
+   * Stop when a commit since `base` added a note under `previous` or an
+   * older version. npm already serves that version, so no release would list
+   * the note, and a label on its pull request would hide it (issue #211).
+   */
+  private async refuseNotesUnderPublished(tree: string, base: string, previous: string): Promise<void> {
+    const added = (await this.must('git', ['log', '--first-parent', '--diff-filter=A', '--format=', '--name-only', `${base}..HEAD`, '--', NOTES_DIR], { cwd: tree }))
+      .split('\n').map((line) => line.trim()).filter(Boolean);
+    const stale = [...new Set(added)].filter((file) => {
+      const version = file.split('/')[1] ?? '';
+      return VERSION.test(version) && compareVersions(version, previous) <= 0;
+    }).sort();
+    if (stale.length > 0) throw new ReleaseError(publishedNoteMessage(this.version, previous, stale));
+  }
+
+  /**
+   * The pull requests merged after `base`, up to `head`. Main takes squash
+   * merges, so each first-parent subject ends with its pull request's number;
+   * a commit without one is logged and skipped, because no label or entry
+   * could name it.
+   */
+  private async mergedBetween(tree: string, base: string, head: string): Promise<MergedPr[]> {
+    const subjects = (await this.must('git', ['log', '--first-parent', '--format=%s', `${base}..${head}`], { cwd: tree })).split('\n').filter(Boolean).reverse();
     const merged: MergedPr[] = [];
     for (const subject of subjects) {
       const number = /\(#(\d+)\)$/.exec(subject)?.[1];

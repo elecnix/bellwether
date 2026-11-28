@@ -98,6 +98,9 @@ async function harness(overrides: Partial<World> = {}) {
     if (line === 'git show origin/main:package.json') return ok(JSON.stringify({ type: 'module', version: world.mainVersion }));
     if (line.startsWith('git log -1')) return ok('c0ffee\n');
     if (line.startsWith('git log --format=%H -S')) return ok('b0a5e00\n');
+    // The notes added since the previous release commit: the scripted notes sit under that
+    // window's versions, and test/unit/release-window.test.ts covers a stale one with real git.
+    if (line.startsWith('git log --first-parent --diff-filter=A --format= ')) return ok('');
     if (line.startsWith('git log --first-parent --diff-filter=A')) {
       return ok(world.treeNotes.filter((note) => note.addedBy).reverse().map((note) => `\0Add a note (#${note.addedBy})\n\n${note.file}\n`).join(''));
     }

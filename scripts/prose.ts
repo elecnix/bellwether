@@ -81,12 +81,46 @@ export function valeFailure(root: string, status: number | null, output: string)
   return `vale exited ${status}: ${output.trim()}`;
 }
 
+/**
+ * The script rules a Vale run names as stopped at its time limit, when that
+ * is the run's only error. Vale stops a script rule after 2 s, a limit no
+ * setting changes, and reports it as E201 with "did not finish within", then
+ * exits 2, the code it gives for a broken configuration too (issue #249).
+ * Any other line, such as a rule that crashed or a missing style pack, makes
+ * the run a failure to lint, and the list comes back empty.
+ */
+export function timedOutRules(output: string): string[] {
+  const lines = output.split('\n').map((line) => line.trim()).filter(Boolean);
+  const rules = lines.map((line) => /:E201:(\S+): did not finish within \S+$/.exec(line)?.[1]);
+  return rules.length > 0 && rules.every((rule) => rule !== undefined) ? rules as string[] : [];
+}
+
+/**
+ * A Vale run that stopped a script rule at its time limit twice. It fails
+ * the gate, because a run that did not finish never looked at the prose, and
+ * its message says so, because it says nothing about the prose either.
+ */
+export class ValeUnfinished extends Error {
+  readonly rules: string[];
+
+  constructor(rules: string[]) {
+    super(`vale stopped ${rules.join(', ')} at its time limit on two runs in a row, so the linter did not finish; this says nothing about the prose. Vale gives a script rule 2 s, which a machine under load can miss. Run the check again when the machine is less busy.`);
+    this.name = 'ValeUnfinished';
+    this.rules = rules;
+  }
+}
+
 function vale(root: string, args: string[]): { status: number | null; stdout: string; stderr: string } {
-  const result = spawnSync('vale', args, { cwd: root, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
-  if (result.error) throw new Error(`vale did not run (${result.error.message}). Install Vale 3.20.0, the version CI pins, then run \`cd ${root} && vale sync\` to fetch the style packs.`);
-  // Vale exits 1 when it reports an error-level alert, and 2 when it cannot run.
-  if (result.status !== 0 && result.status !== 1) throw new Error(valeFailure(root, result.status, result.stderr.trim() || result.stdout));
-  return { status: result.status, stdout: result.stdout, stderr: result.stderr };
+  for (let attempt = 1; ; attempt++) {
+    const result = spawnSync('vale', args, { cwd: root, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+    if (result.error) throw new Error(`vale did not run (${result.error.message}). Install Vale 3.20.0, the version CI pins, then run \`cd ${root} && vale sync\` to fetch the style packs.`);
+    // Vale exits 1 when it reports an error-level alert, and 2 when it cannot run or a script rule ran out of time.
+    if (result.status === 0 || result.status === 1) return { status: result.status, stdout: result.stdout, stderr: result.stderr };
+    const rules = result.status === 2 ? timedOutRules(result.stderr) : [];
+    if (rules.length === 0) throw new Error(valeFailure(root, result.status, result.stderr.trim() || result.stdout));
+    if (attempt > 1) throw new ValeUnfinished(rules);
+    console.error(`vale: ${rules.join(', ')} did not finish within 2s, so the gate ran Vale once more.`);
+  }
 }
 
 /** Every alert at warning level or above, one per line, in the pages and in each release description. */
@@ -233,6 +267,9 @@ if (process.argv[1] !== undefined && path.resolve(process.argv[1]) === import.me
   } catch (error) {
     // The message names the remedy; a stack trace would bury it.
     console.error(error instanceof Error ? error.message : String(error));
-    process.exitCode = 2;
+    // A run that did not finish exits 3, apart from an alert (1) and a Vale that cannot run (2),
+    // and in CI its annotation carries its own title.
+    if (error instanceof ValeUnfinished && process.env.GITHUB_ACTIONS === 'true') console.log(`::error title=Vale did not finish::${error.message}`);
+    process.exitCode = error instanceof ValeUnfinished ? 3 : 2;
   }
 }

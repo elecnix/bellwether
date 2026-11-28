@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { COVERAGE_RULE, coverage, coverageConfig, lint, valeFailure, PROSE_PATHS, RELEASE_BODIES, releaseBodyAlerts, SIGNATURE_CASES, signatureFindings, trackedPages } from '../../scripts/prose.ts';
+import { COVERAGE_RULE, coverage, coverageConfig, lint, timedOutRules, valeFailure, PROSE_PATHS, RELEASE_BODIES, releaseBodyAlerts, SIGNATURE_CASES, signatureFindings, trackedPages } from '../../scripts/prose.ts';
 
 const root = path.resolve(import.meta.dirname, '../..');
 
@@ -183,4 +183,64 @@ test('the lint on a machine without Vale names the install and the sync', () => 
   } finally {
     fs.rmSync(bin, { recursive: true, force: true });
   }
+});
+
+// On a loaded machine Vale stops the ContentDuplication script rule after its
+// built-in 2 s and exits 2, the same code it gives for a broken configuration
+// (issue #249). One commit failed at load 20 and passed on a quiet machine.
+// The gate runs Vale once more on a timeout and only on a timeout, and when
+// the second run times out too, it says the linter did not finish.
+const TIMEOUT_LINE = '/repo/.github/vale/styles/ai-tells-experimental/ContentDuplication.yml:2:E201:ai-tells-experimental.ContentDuplication: did not finish within 2s';
+
+test('only a script rule that did not finish reads as a timeout', () => {
+  assert.deepEqual(timedOutRules(`${TIMEOUT_LINE}\n`), ['ai-tells-experimental.ContentDuplication']);
+  assert.deepEqual(timedOutRules(MISSING_STYLE), [], 'a missing style pack is not a timeout');
+  assert.deepEqual(timedOutRules('/repo/styles/x/Rule.yml:2:E201:x.Rule: runtime error: index out of range\n'), [], 'a rule that crashed is not a timeout');
+  assert.deepEqual(timedOutRules(`${TIMEOUT_LINE}\nE100 [.vale.ini] Runtime error\n\nunknown key Bogus\n`), [], 'a timeout beside another error is not only a timeout');
+  assert.deepEqual(timedOutRules(''), []);
+});
+
+/**
+ * Runs `scripts/prose.ts lint` with a stand-in `vale` first on PATH. The
+ * stand-in times out on its first `timeouts` calls, as Vale does under load,
+ * and hands every later call to the real Vale.
+ */
+function lintWithTimeouts(timeouts: number): { status: number | null; stdout: string; stderr: string; calls: number } {
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'bw-slowvale-'));
+  try {
+    const real = execFileSync('sh', ['-c', 'command -v vale'], { encoding: 'utf8' }).trim();
+    const count = path.join(bin, 'calls');
+    fs.writeFileSync(path.join(bin, 'vale'), `#!/bin/sh
+n=$(cat '${count}' 2>/dev/null || echo 0)
+n=$((n + 1))
+echo "$n" > '${count}'
+if [ "$n" -le ${timeouts} ]; then
+  echo '${TIMEOUT_LINE}' >&2
+  exit 2
+fi
+exec '${real}' "$@"
+`, { mode: 0o755 });
+    const result = spawnSync(process.execPath, ['--disable-warning=ExperimentalWarning', path.join(root, 'scripts/prose.ts'), 'lint'], { cwd: root, encoding: 'utf8', env: { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}` } });
+    return { status: result.status, stdout: result.stdout, stderr: result.stderr, calls: Number(fs.readFileSync(count, 'utf8')) };
+  } finally {
+    fs.rmSync(bin, { recursive: true, force: true });
+  }
+}
+
+test('the prose lint runs Vale once more when a script rule did not finish, and passes clean prose', { skip: hasVale ? false : 'vale is not on PATH' }, () => {
+  const { status, stdout, stderr, calls } = lintWithTimeouts(1);
+  assert.equal(status, 0, stderr);
+  assert.match(stdout, /vale: no alerts/);
+  assert.match(stderr, /ai-tells-experimental\.ContentDuplication did not finish within 2s, so the gate ran Vale once more/, 'the run records the retry');
+  assert.equal(calls, 4, 'one retry, then one run for the pages, the release descriptions and the signature cases each');
+});
+
+test('the prose lint says the linter did not finish when a script rule times out twice, and blames no prose', { skip: hasVale ? false : 'vale is not on PATH' }, () => {
+  const { status, stderr, calls } = lintWithTimeouts(2);
+  assert.equal(status, 3, 'a timeout fails with its own exit code, apart from an alert (1) and a Vale that cannot run (2)');
+  assert.equal(calls, 2, 'one retry and no more');
+  assert.match(stderr, /the linter did not finish; this says nothing about the prose/);
+  assert.match(stderr, /ai-tells-experimental\.ContentDuplication/);
+  assert.doesNotMatch(stderr, /Fix the prose|vale exited 2/);
+  assert.doesNotMatch(stderr, /\n\s+at /, 'no stack trace');
 });

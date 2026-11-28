@@ -372,7 +372,23 @@ export interface AncestryRequest {
   agent: string;
 }
 
-export type DaemonRequest = HelloRequest | CallRequest | ReceiptRequest | ByeRequest | DrainRequest | WatchRequest | ReportRequest | RelaySubscribeRequest | RelayAckRequest | RelayReadRequest | RelayAdoptRequest | RelayStatusRequest | SessionsRequest | AncestryRequest | MessageAckRequest | RelayMessageRequest | RelayRestartRequest;
+/**
+ * Resume a session whose pane is gone, from its own record, for `bellwether
+ * resume` (issue #187). Needs no hello. Added without a protocol bump: a daemon
+ * that predates it answers unknown_type.
+ */
+export interface ResumeRequest {
+  type: 'resume';
+  id: string;
+  /** A registry id, a session id or pi file, or the pane the session last ran in. */
+  target: string;
+  /** The herdr socket of the caller's server. The daemon's default when left out. */
+  herdrSocket?: string;
+  /** The tab label, when the record keeps none. */
+  label?: string;
+}
+
+export type DaemonRequest = HelloRequest | CallRequest | ReceiptRequest | ByeRequest | DrainRequest | WatchRequest | ReportRequest | RelaySubscribeRequest | RelayAckRequest | RelayReadRequest | RelayAdoptRequest | RelayStatusRequest | SessionsRequest | AncestryRequest | MessageAckRequest | RelayMessageRequest | RelayRestartRequest | ResumeRequest;
 
 export interface HelloReply {
   type: 'hello';
@@ -698,6 +714,14 @@ export function parseRequest(line: string): DaemonRequest {
       const agent = text(value['agent']);
       if (!id || !agent) throw new ProtocolError('invalid_ancestry', 'an ancestry request needs an id and an agent');
       return { type: 'ancestry', id, agent };
+    }
+    case 'resume': {
+      const id = text(value['id']);
+      const target = text(value['target']);
+      if (!id || !target) throw new ProtocolError('invalid_resume', 'a resume request needs an id and a target');
+      const herdrSocket = text(value['herdrSocket']);
+      const label = text(value['label']);
+      return { type: 'resume', id, target, ...(herdrSocket ? { herdrSocket } : {}), ...(label ? { label } : {}) };
     }
     case 'message-ack': {
       const id = text(value['id']);

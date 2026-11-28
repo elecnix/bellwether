@@ -45,7 +45,7 @@ A parent session restarts from its own record, which stores its session id, its 
 
 Pi sessions restart with the file under `~/.pi/agent/sessions` passed to `--session`. Claude Code sessions restart with `--resume` and the `plugin:bellwether@elecnix-plugins` channel flag, the one the install guide starts a parent with, so the new process loads Bellwether again. The daemon sends the accepting key to the channel question in the new pane.
 
-The daemon refuses to restart a live agent missing from every registry. It closes only a pane it can identify from a registry, and it never starts a second copy of a running session.
+The daemon refuses to restart a live agent that is missing from every registry, and it never starts a second copy of a running session. It closes only a pane it can identify from a registry. It also refuses a session that runs in a pane its record doesn't name, as after a resume by hand. Its record follows the session to that pane once its Bellwether adapter connects from there.
 
 Sessions that restart themselves hear back first. That call records `restartRequestedAt` and registers the work with the daemon. It answers with what will happen.
 
@@ -74,8 +74,52 @@ The daemon refuses a restart when:
 - the Pi session's file no longer exists
 - herdr shows the pane with no agent
 - the target is still mid-turn when the wait runs out
+- the session runs in a pane other than the one its record names
 
 By default the wait lasts 30 seconds, and `wait_seconds` raises it. It stays under 45 seconds so the call still answers inside the client's own timeout. One lock per target spans the wait and the restart, so two callers produce one restart. That second caller gets a refusal that reports the process that holds the lock.
+
+## A session with no pane
+
+A failed restart, a closed tab or a removed workspace can leave a session with no pane. `agent_spawn` with `resume` reopens only this session's own children, so it can't bring back a parent session. Its record keeps the values a person would otherwise type: the session and its folder, plus the workspace and the tab label. `bellwether resume` reads them and does the rest:
+
+```sh
+bellwether resume claude-code-<session id>
+```
+
+Name the session by registry id, session id or pi session file, or by the last pane it ran in. The daemon opens a tab in the session's folder and starts the harness on the session. Claude Code gets `--resume` with the Bellwether channel flag. pi gets `--session` with the session file. The tab goes in the session's workspace, or in a new one when herdr has removed it. Its label is the one the record keeps, or `<folder>-<end of the session id>`, and `--label` sets another. Last, the reply lists the pane, the tab, the workspace and the command, and it ends with the herdr link.
+
+`bellwether resume` refuses, and opens nothing, when:
+
+- no record matches the target, or more than one does, and the refusal lists them
+- the session ran on another machine
+- the folder on the record no longer exists
+- the session file no longer exists, and the refusal states the file it looked for
+- the session is a child of a parent on this machine, which brings it back under its child id with `agent_spawn` and `resume`, so its reports still reach that parent
+- herdr shows a pane that already runs the session, which `agent_restart` restarts in place instead
+
+Starting is a parent restart with no pane to close. It takes the same lock and writes the same `restartFailed` line when the harness doesn't come up.
+
+### Finding a session with no pane
+
+`bellwether doctor` prints one `info` line for each session on this machine that has lost its pane, newest first. After a day without a connection, a session drops off the list. Each line identifies the session and gives its folder and tab label. It then reports the last pane and what became of it, followed by the `bellwether resume` command:
+
+```
+info  session pi-<id> (pi session <id>, folder /work/repo): last pane w74:p1 closed, and herdr removed its workspace w74; its Bellwether connection closed at 2026-11-28T01:42:16.353Z. Resume it with `bellwether resume pi-<id>`.
+```
+
+For a child session, the line gives its parent and the `agent_spawn` call that resumes it, in place of the command.
+
+Each session's record follows the pane its adapter last connected from, and keeps the time its last connection closed. So two sessions in one folder show different panes and different times.
+
+For an exited child, `agent_list` says how its pane ended:
+
+- the pane exited, with its exit code when herdr gave one
+- the pane closed
+- the pane went, and no event said how
+- the harness exited and left the pane open on its shell
+- a restart closed the pane and didn't start the session again
+
+When herdr no longer lists the child's workspace, `agent_list` adds that herdr removed it.
 
 ## A blocked or stuck child
 

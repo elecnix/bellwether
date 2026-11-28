@@ -716,7 +716,7 @@ test('a session restart that fails to start leaves a line on its record and a do
   const lines = restartFailureLines(listParents());
   assert.equal(lines.length, 1);
   assert.match(lines[0] ?? '', new RegExp(`^fail +restart: session ${id} \\(claude-code, last pane w74:p1 in workspace w74\\) did not come back`));
-  assert.match(lines[0] ?? '', /Reopen it by hand with `claude .*--resume lost-session` in \/work\./);
+  assert.match(lines[0] ?? '', new RegExp(`Bring it back with \x60bellwether resume ${id}\x60, or by hand with \x60claude .*--resume lost-session\x60 in /work\\.`));
   assert.equal(restartLog().at(-1)?.['outcome'], 'failed');
 });
 

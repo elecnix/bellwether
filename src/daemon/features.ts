@@ -137,6 +137,10 @@ const BASE: readonly Feature[] = [
   ...brought('request', 4, '0.1.10', {
     'relay-restart': "`agent_restart` restarts a child on another machine: the daemon there closes its pane, opens a new tab and resumes the same session under the same child id.",
   }, [203]),
+  // A daemon that predates it answers unknown_type, and `bellwether resume` names the release that brought it.
+  ...brought('request', 4, '0.1.10', {
+    resume: '`bellwether resume <session>` brings back a session that has lost its pane, from its own record, and reports the pane and tab it opened.',
+  }, [208]),
 ];
 
 /**

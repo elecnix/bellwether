@@ -6,7 +6,7 @@ Every session with Bellwether gets these tools, in Pi and in Claude Code alike.
 | -- | -- | -- |
 | `agent_spawn` | any session | starts a child in a new tab, on this machine or on a saved herdr machine named by `machine`, in your workspace or the one `workspace` names. With `resume`, it messages an earlier child instead, and reopens its session when herdr no longer has it. |
 | `agent_adopt` | any session | makes a running agent this session didn't start into its child, on this machine or another one, and refuses a pane another session watches. [remote-machines.md](remote-machines.md#adopting-an-agent-on-another-machine) covers another machine |
-| `agent_list` | any session | lists this session's children with status, age, workspace and unread events |
+| `agent_list` | any session | lists this session's children with status, age, workspace and unread events, and how an exited child's last pane ended |
 | `agent_read` | any session | returns a child's last assistant message, or its screen when you pass `lines` |
 | `agent_send` | any session | sends a child a message, or keys for a dialog. [Messages to a child](#messages-to-a-child) gives the path a message takes |
 | `agent_move` | any session | moves a live claude or pi child to another machine, under the same id and with its session. [moving.md](moving.md) lists the refusals. |

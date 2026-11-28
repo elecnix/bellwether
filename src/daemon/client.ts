@@ -1043,6 +1043,39 @@ export async function daemonAncestry(socketPath: string, agent: string, timeoutM
   throw new Error(`the daemon answered ${reply.type} to an ancestry request`);
 }
 
+/** How long `bellwether resume` waits: a tab, the harness start and its startup dialog. */
+export const RESUME_TIMEOUT_MS = 90_000;
+
+/**
+ * Resume a session whose pane is gone, through this machine's daemon, which
+ * it starts or hands over first as a report does (issue #187). Resolves with
+ * the daemon's answer, and throws its refusal as the error's message.
+ */
+export async function daemonResume(request: { target: string; herdrSocket?: string; label?: string }, options: ConnectOptions = {}): Promise<string> {
+  const home = options.home ?? process.env['BELLWETHER_HOME'] ?? path.join(os.homedir(), '.bellwether');
+  const socketPath = options.socketPath ?? process.env['BELLWETHER_DAEMON_SOCKET'] ?? defaultDaemonSocket(home);
+  await ensureDaemon(home, socketPath, options.entry, options.log);
+  const line = formatRequest({ type: 'resume', id: 'resume1', target: request.target, ...(request.herdrSocket ? { herdrSocket: request.herdrSocket } : {}), ...(request.label ? { label: request.label } : {}) });
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const reply = await askOnce(socketPath, line, options.timeoutMs ?? RESUME_TIMEOUT_MS);
+    if (reply.type === 'result' && reply.retry) {
+      await waitWhileMarkerHeld(startingMarker(home), Date.now() + HANDOVER_TIMEOUT_MS);
+      continue;
+    }
+    if (reply.type === 'result') {
+      if (reply.error !== undefined) throw new Error(reply.error);
+      return reply.text ?? '';
+    }
+    if (reply.type === 'error' && reply.code === 'unknown_type') {
+      const lock = readLock(home);
+      throw new Error(missingFeatureMessage('resume', { protocol: lock?.protocol ?? 0, ...versionOf(lock) }));
+    }
+    if (reply.type === 'error') throw new Error(`${reply.code}: ${reply.message}`);
+    throw new Error(`the daemon answered ${reply.type} to a resume`);
+  }
+  throw new Error(`the daemon on ${socketPath} did not take the resume`);
+}
+
 /** The state of every connection the daemon on a socket holds to a remote host. */
 export async function relayStatus(socketPath: string, timeoutMs = START_TIMEOUT_MS): Promise<RelayHostState[]> {
   const reply = await askOnce(socketPath, formatRequest({ type: 'relay-status', id: 's1' }), timeoutMs);

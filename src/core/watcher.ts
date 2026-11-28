@@ -24,7 +24,7 @@ import { childLabel } from './label.ts';
 import { spoolPath } from './paths.ts';
 import { realRetireOps, reapChild, retirementPending, type RetireOps } from './retire.ts';
 import { isMoving } from './move-plan.ts';
-import type { AgentStatus, ChildEventKind, ChildMessage, ChildRecord, DialogDecision, OutboxEntry, RelayHostState, SpoolReport } from './types.ts';
+import type { AgentStatus, ChildEventKind, ChildMessage, ChildRecord, DialogDecision, OutboxEntry, PaneEnd, RelayHostState, SpoolReport } from './types.ts';
 import { unreadSessionMessages } from './send.ts';
 import { backInPane } from './adopt.ts';
 import { parsePane, type HerdrPane } from './herdr-client.ts';
@@ -358,7 +358,7 @@ export class Watcher {
             if (child.paneId) addressable.push(child);
             continue;
           }
-          this.markExited(child, undefined);
+          this.markExited(child, undefined, undefined, 'missing');
         }
         await this.ensureSubscription(host, client, addressable, signal);
         this.foundHost(host);
@@ -451,6 +451,7 @@ export class Watcher {
     if (readParent(this.parentId)?.children.find((entry) => entry.id === child.id)?.tabClosedAt) return;
     updateChild(this.parentId, child.id, (entry) => {
       entry.tabClosedAt = new Date().toISOString();
+      entry.paneEnd = { pane: entry.paneId, ...(entry.workspaceId ? { workspaceId: entry.workspaceId } : {}), how: 'closed', at: entry.tabClosedAt };
     });
     removeChildFiles(child.id, hostOf(child) === LOCAL_HOST ? child.cwd : undefined, { briefs: !this.keepsBriefs(child) });
     void this.releaseWorkspace(child);
@@ -532,7 +533,7 @@ export class Watcher {
     void this.reconcileAndSubscribe();
   }
 
-  private markExited(child: ChildRecord, code: number | undefined, ended?: 'in-pane'): void {
+  private markExited(child: ChildRecord, code: number | undefined, ended?: 'in-pane', how: PaneEnd['how'] = ended ? 'harness-ended' : 'closed'): void {
     // One exit can arrive twice: the reconcile after a subscribe finds the pane
     // gone, and the pane_closed event for it lands too. agent_stop also marks
     // the exit before herdr's event arrives. The record decides, so the exit is
@@ -558,6 +559,8 @@ export class Watcher {
       entry.exitedAt = new Date().toISOString();
       entry.exitCode = code;
       entry.lastStatus = 'unknown';
+      // What became of the pane, for agent_list and doctor (issue #187).
+      entry.paneEnd = { pane: entry.paneId, ...(entry.workspaceId ? { workspaceId: entry.workspaceId } : {}), how, at: entry.exitedAt, ...(code === undefined ? {} : { code }) };
       if (harnessEnded) entry.harnessEnded = harnessEnded;
       if (awaitsResume) entry.awaitsResume = entry.exitedAt;
       // A message in the session that the model never received is undelivered, and the exit event says so.
@@ -662,7 +665,7 @@ export class Watcher {
       if (child.awaitsResume) this.stopAwaiting(child, 'its pane closed');
       // A harness that already ended in this pane was reported then; the tab closing says nothing new.
       if (child.exitedAt && child.harnessEnded) this.closeQuietly(child);
-      else this.markExited(child, code);
+      else this.markExited(child, code, undefined, event.event === 'pane.exited' || event.event === 'pane_exited' ? 'exited' : 'closed');
       // The subscription named that pane, so it has to be rebuilt without it.
       this.dropLink(host);
       void this.reconcileAndSubscribe();

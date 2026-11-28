@@ -61,6 +61,23 @@ export interface DialogDecision {
 }
 
 /**
+ * How an agent's last pane ended, as herdr told the watcher (issue #187):
+ * - `exited`: herdr reported the pane's process exit, with its code when it gave one.
+ * - `closed`: herdr closed the pane or its tab.
+ * - `missing`: a reconcile found the pane no longer listed, so no event said how it went.
+ * - `harness-ended`: the harness ended and the pane stayed open on its shell.
+ * - `restart`: a restart closed the pane and then failed to start the session again.
+ */
+export interface PaneEnd {
+  pane: string;
+  /** The workspace the pane was in, which herdr may have removed with it. */
+  workspaceId?: string;
+  how: 'exited' | 'closed' | 'missing' | 'harness-ended' | 'restart';
+  at: string;
+  code?: number;
+}
+
+/**
  * A restart that closed the old pane and then failed to start the session
  * again, so the session is gone. It stays on the record until the session
  * returns, for `bellwether doctor` and, for a child, for its parent's event.
@@ -383,6 +400,8 @@ export interface ChildRecord {
   /** Set once the child is gone, so its events stop. */
   exitedAt?: string;
   exitCode?: number;
+  /** How the pane the child last ran in ended, for agent_list (issue #187). It counts only while `exitedAt` is set. */
+  paneEnd?: PaneEnd;
   /**
    * When herdr first saw the harness run in the child's pane: a detected
    * agent, or a status other than unknown. A child without it after its start
@@ -561,6 +580,10 @@ export interface ParentRecord {
   restartWait?: RestartWait;
   /** Why the last self-restart gave up without acting, until the next request (issue #188). */
   restartStalled?: RestartStall;
+  /** When the session's last connection to the daemon closed, cleared by its next hello (issue #187). */
+  disconnectedAt?: string;
+  /** The herdr tab label the session last ran under, which a restart or a resume gives its new tab. */
+  label?: string;
   /** The roster line this parent last received with an alert, without its age, and when (issue #146). */
   rosterSent?: { at: string; line: string };
   updatedAt: string;

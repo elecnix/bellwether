@@ -1,5 +1,6 @@
 // The Bellwether tools, in one list, so the Pi extension and the Claude
 // MCP channel server register exactly the same names and schemas.
+import { childPaneEnd, herdrView, type HerdrView } from '../core/pane-fate.ts';
 import os from 'node:os';
 import type { HerdrClient } from '../core/herdr-client.ts';
 import { BLANK_SCREEN, shownScreen } from '../core/screen.ts';
@@ -387,7 +388,7 @@ function hostColumn(child: ChildRecord, relayState: ToolContext['relayState']): 
   return `${host} (not heard from: ${state.status}${state.lastError ? `, ${state.lastError}` : ''})`;
 }
 
-function describeChild(child: ChildRecord, watcher: Watcher, relayState?: ToolContext['relayState']): string {
+function describeChild(child: ChildRecord, watcher: Watcher, relayState?: ToolContext['relayState'], view?: HerdrView): string {
   const unread = watcher.outboxEntries().filter((entry) => !entry.read && entry.childId === child.id).length;
   const age = Math.max(0, Math.round((Date.now() - Date.parse(child.startedAt)) / 1000));
   const restart = child.restartRequestedAt ? ', restart pending' : '';
@@ -395,9 +396,11 @@ function describeChild(child: ChildRecord, watcher: Watcher, relayState?: ToolCo
   const away = child.exitedAt ? undefined : watcher.unreachable(hostOf(child));
   const live = away ? `unreachable since ${away.since} (last seen ${child.lastStatus})` : child.lastStatus;
   const state = `${child.exitedAt ? `exited${child.exitCode === undefined ? '' : ` (${child.exitCode})`}` : live}${restart}${retire}`;
+  // An exited child names what became of its last pane, in a column of its own at the end (issue #187).
+  const ended = childPaneEnd(child, hostOf(child) === LOCAL_HOST ? view : undefined) ?? '-';
   const name = child.agentName ? `${child.name} (${child.agentName})` : child.name;
   const kind = child.model ? `${child.kind} (${child.model.provider}/${child.model.id})` : child.kind;
-  return `${name}\t${kind}\t${routeLabel(child.route)}\t${state}\t${age}s\t${hostColumn(child, relayState)}\t${workspaceColumn(child)}\t${child.paneId}\t${child.depth}/${ceilingOf(child)}\tunread ${unread}\t${child.cwd ?? ''}`;
+  return `${name}\t${kind}\t${routeLabel(child.route)}\t${state}\t${age}s\t${hostColumn(child, relayState)}\t${workspaceColumn(child)}\t${child.paneId}\t${child.depth}/${ceilingOf(child)}\tunread ${unread}\t${child.cwd ?? ''}\t${ended}`;
 }
 
 /**
@@ -563,11 +566,13 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
 
   if (name === 'agent_list') {
     if (!record.children.length) return 'No children yet. Start one with agent_spawn.';
-    const header = 'name\tkind\troute\tstate\tage\thost\tworkspace\tpane\tdepth\tunread\tcwd';
+    const header = 'name\tkind\troute\tstate\tage\thost\tworkspace\tpane\tdepth\tunread\tcwd\tlast pane';
     const depth = record.children.flatMap((child) => describeDepth(child));
     const briefs = record.children.flatMap((child) => describeBrief(child));
     const messages = record.children.flatMap((child) => describeMessages(child));
-    return [header, ...record.children.map((child) => describeChild(child, ctx.watcher, ctx.relayState)), ...(depth.length ? ['', 'Depth requests and grants:', ...depth] : []), ...(briefs.length ? ['', `Each child's newest brief and how it arrived (on the record, children[].briefs[].delivery):`, ...briefs] : []), ...(messages.length ? ['', 'Messages to children, newest three each:', ...messages] : [])].join('\n');
+    // One look at herdr says whether an exited child's workspace went with its pane.
+    const view = record.children.some((child) => child.exitedAt && hostOf(child) === LOCAL_HOST) ? await herdrView(ctx.client) : undefined;
+    return [header, ...record.children.map((child) => describeChild(child, ctx.watcher, ctx.relayState, view)), ...(depth.length ? ['', 'Depth requests and grants:', ...depth] : []), ...(briefs.length ? ['', `Each child's newest brief and how it arrived (on the record, children[].briefs[].delivery):`, ...briefs] : []), ...(messages.length ? ['', 'Messages to children, newest three each:', ...messages] : [])].join('\n');
   }
 
   if (name === 'agent_move') {

@@ -47,6 +47,7 @@ import { HerdrApiError, HerdrClient, resolveSocketPath, type HerdrEvent, type He
 import { LOCAL_HOST, hostOf } from './machine.ts';
 import { bellwetherHome } from './paths.ts';
 import { withSessionCause } from './herdr-integration.ts';
+import { sameSession } from './pane-fate.ts';
 import { readRelayRecord } from './relay-records.ts';
 import { childOfCaller } from './report.ts';
 import { listParents, mutateParent, readParent, recordDecisions, updateChild } from './registry.ts';
@@ -142,6 +143,8 @@ export interface RestartOutcome {
   oldPane: string;
   newPane: string;
   newTab?: string;
+  /** The workspace the new pane opened in. */
+  workspaceId?: string;
   session: string;
   /** The harness kind the restart started. */
   kind: string;
@@ -167,12 +170,7 @@ function matchesChild(record: ParentRecord, target: string): ChildRecord | undef
   return record.children.find((child) => child.id === target || child.name === target || (child.paneId !== '' && child.paneId === target));
 }
 
-function sameSessionValue(reported: string | undefined, wanted: string): boolean {
-  if (!reported) return false;
-  if (reported === wanted) return true;
-  const id = (value: string): string => path.basename(value, '.jsonl');
-  return id(reported) === id(wanted) || id(reported).endsWith(`_${id(wanted)}`) || id(wanted).endsWith(`_${id(reported)}`);
-}
+const sameSessionValue = sameSession;
 
 function agentInfo(result: unknown): Record<string, unknown> {
   const agent = typeof result === 'object' && result !== null ? (result as Record<string, unknown>)['agent'] : undefined;
@@ -330,6 +328,14 @@ export interface RestartOptions {
   /** A change of route. Without one, the restart uses the request on the record, or keeps the child's route. */
   change?: RouteChange;
   waitTimeoutMs?: number;
+  /** The tab label for a parent session whose pane is gone, when its record keeps none. */
+  label?: string;
+  /**
+   * For `bellwether resume`, which has checked that no pane holds the session:
+   * the pane on the parent's record is gone or holds someone else now, so the
+   * start neither closes it nor reads it as the session.
+   */
+  paneGone?: boolean;
 }
 
 /**
@@ -516,7 +522,8 @@ async function restartInPlace(client: HerdrClient, store: RestartStore, child: C
   hooks.reset?.(child.id);
   hooks.log?.(`restart ${child.name}: closed ${oldPane}, opened ${newPane} on session ${session.value}, ${matched ? 'the session matched' : `herdr reported ${reported?.value ?? 'no session'}`}`);
   logRestart({ outcome: 'restarted', target: 'child', parent: parentId, child: child.id, name: child.name, oldPane, newPane, ...(newTab ? { newTab } : {}), session: session.value, sessionMatched: matched, ...(waitedMs !== undefined ? { waitedMs } : {}) });
-  return { target: 'child', id: child.id, name: child.name, oldPane, newPane, ...(newTab ? { newTab } : {}), session: session.value, kind: child.kind, command: commandWords(child.kind, resume, launch), route: routeMove(child.route, launch), sessionMatched: matched, ...(waitedMs !== undefined ? { waitedMs } : {}) };
+  const landed = opened.workspaceId ?? workspaceId;
+  return { target: 'child', id: child.id, name: child.name, oldPane, newPane, ...(newTab ? { newTab } : {}), ...(landed ? { workspaceId: landed } : {}), session: session.value, kind: child.kind, command: commandWords(child.kind, resume, launch), route: routeMove(child.route, launch), sessionMatched: matched, ...(waitedMs !== undefined ? { waitedMs } : {}) };
 }
 
 /** Put on a record that a restart closed the child's pane and could not start it again. */
@@ -527,6 +534,7 @@ function markRestartFailed(entry: ChildRecord, failure: RestartFailure): void {
   entry.exitedAt = failure.at;
   entry.lastStatus = 'unknown';
   entry.restartFailed = failure;
+  entry.paneEnd = { pane: failure.oldPane, ...(failure.workspaceId ? { workspaceId: failure.workspaceId } : {}), how: 'restart', at: failure.at };
   delete entry.startingUntil;
   delete entry.restartRequestedAt;
 }
@@ -544,6 +552,7 @@ function markRestarted(entry: ChildRecord, back: { session: ChildSession; status
   delete entry.startingUntil;
   delete entry.exitedAt;
   delete entry.exitCode;
+  delete entry.paneEnd;
   delete entry.restartRequestedAt;
   delete entry.restartFailed;
   // The new harness has yet to show herdr it runs, and the watcher checks it once after its start window.
@@ -834,7 +843,7 @@ export function restartFailureLines(parents: ParentRecord[]): string[] {
   const where = (failure: RestartFailure): string => `last pane ${failure.oldPane || '(none)'}${failure.workspaceId ? ` in workspace ${failure.workspaceId}` : ''}`;
   for (const parent of parents) {
     const own = parent.restartFailed;
-    if (own) found.push({ at: own.at, line: `fail  restart: session ${parent.id} (${parent.harness}, ${where(own)}) did not come back at ${own.at}: ${own.error}. Reopen it by hand with ${own.reopen}.` });
+    if (own) found.push({ at: own.at, line: `fail  restart: session ${parent.id} (${parent.harness}, ${where(own)}) did not come back at ${own.at}: ${own.error}. Bring it back with ${own.reopen}.` });
     for (const child of parent.children) {
       const failure = child.restartFailed;
       if (failure) found.push({ at: failure.at, line: `fail  restart: ${child.name} (child ${child.id} of ${parent.id}, ${where(failure)}) did not come back at ${failure.at}: ${failure.error}. Bring it back with ${failure.reopen}.` });
@@ -946,7 +955,7 @@ async function restartParentLocked(client: HerdrClient, parentId: string, hooks:
   // A session that was itself started as a child restarts as that child: the
   // same child id and MCP configuration, and its own parent reads the close as
   // part of the restart rather than as an exit.
-  const asChild = sessionAsChild(record.paneId);
+  const asChild = options.paneGone ? undefined : sessionAsChild(record.paneId);
   if (asChild) {
     const outcome = await restartChild(client, asChild.parent.id, asChild.child.id, hooks, options);
     mutateParent(record.id, (entry) => {
@@ -963,7 +972,11 @@ async function restartParentLocked(client: HerdrClient, parentId: string, hooks:
   } catch (error) {
     throw new RestartRefused(`herdr could not list its agents, so agent_restart cannot tell what pane ${record.paneId ?? '(none)'} holds and changed nothing: ${(error as Error).message}`);
   }
-  const live = record.paneId ? agents.find((pane) => pane.paneId === record.paneId) : undefined;
+  const live = record.paneId && !options.paneGone ? agents.find((pane) => pane.paneId === record.paneId) : undefined;
+  // The session running in a pane its record does not name is not this
+  // daemon's to close, and starting it again would make a second copy.
+  const elsewhere = agents.find((pane) => pane.paneId !== live?.paneId && (sameSessionValue(pane.agentSessionId, record.session) || sameSessionValue(pane.agentSessionId, plan.sessionValue)));
+  if (elsewhere) throw new RestartRefused(`session ${record.id} already runs in pane ${elsewhere.paneId} (workspace ${elsewhere.workspaceId}), not in pane ${record.paneId ?? '(none)'} that its record names, so agent_restart closed nothing and started nothing. Its record follows it to pane ${elsewhere.paneId} once its Bellwether adapter connects from there.`);
   if (live) {
     // The pane on the record must still be this session, or closing it would
     // end something else.
@@ -972,7 +985,7 @@ async function restartParentLocked(client: HerdrClient, parentId: string, hooks:
       throw new RestartRefused(`pane ${live.paneId} now holds session ${live.agentSessionId}, not ${record.session}, so agent_restart closed nothing and started nothing.`);
     }
   }
-  const label = live?.label ?? live?.name ?? record.harness;
+  const label = live?.label ?? live?.name ?? options.label ?? record.label ?? record.harness;
   let waitedMs: number | undefined;
   if (options.wait && live) {
     const wait = await waitForTurnEnd(client, label, { paneId: live.paneId, tabId: live.tabId }, { timeoutMs: options.waitTimeoutMs ?? hooks.waitTimeoutMs ?? RESTART_WAIT_MS, signal: hooks.signal });
@@ -983,6 +996,7 @@ async function restartParentLocked(client: HerdrClient, parentId: string, hooks:
   const workspaceNow = live?.workspaceId ?? record.workspaceId;
   const args = plan.kind === 'claude' ? [PARENT_CHANNEL_ARG, ...plan.resume] : plan.resume;
   const reopen = `${plan.kind} ${args.join(' ')}`;
+  const bringBack = `\`bellwether resume ${record.id}\`, or by hand with \`${reopen}\` in ${record.cwd}`;
   // Open the new tab while the old pane still holds its workspace open (issue
   // #185): herdr closes a workspace with its last pane, so a session alone in
   // its workspace that closed first had nowhere left to open. Nothing has
@@ -1025,7 +1039,7 @@ async function restartParentLocked(client: HerdrClient, parentId: string, hooks:
     startup?.close();
     await undoChildTab(client, opened);
     const message = (error as Error).message;
-    const failure: RestartFailure = { at: new Date().toISOString(), oldPane, ...(workspaceNow ? { workspaceId: workspaceNow } : {}), session: record.session, error: message, reopen: `\`${reopen}\` in ${record.cwd}` };
+    const failure: RestartFailure = { at: new Date().toISOString(), oldPane: oldPane || record.paneId || record.restartFailed?.oldPane || '', ...(workspaceNow ? { workspaceId: workspaceNow } : {}), session: record.session, error: message, reopen: bringBack };
     mutateParent(record.id, (entry) => {
       delete entry.paneId;
       entry.restartFailed = failure;
@@ -1033,7 +1047,7 @@ async function restartParentLocked(client: HerdrClient, parentId: string, hooks:
     hooks.log?.(`restart of session ${record.id} failed${oldPane ? ` after closing ${oldPane}` : ''}: ${message}`);
     logRestart({ outcome: 'failed', target: 'parent', parent: record.id, oldPane, session: record.session, error: message });
     const closed = oldPane ? `Its old pane ${oldPane} is closed, so` : 'It had no pane, so';
-    throw new RestartRefused(`Restarting session ${record.id} failed: ${message}. ${closed} reopen it by hand with \`${reopen}\` in ${record.cwd}.`);
+    throw new RestartRefused(`Restarting session ${record.id} failed: ${message}. ${closed} bring it back with ${bringBack}.`);
   }
 
   let reported: ChildSession | undefined;
@@ -1048,12 +1062,14 @@ async function restartParentLocked(client: HerdrClient, parentId: string, hooks:
     entry.paneId = newPane;
     const workspace = opened.workspaceId ?? workspaceNow;
     if (workspace) entry.workspaceId = workspace;
+    entry.label = label;
     entry.restartedAt = at;
     delete entry.restartFailed;
   });
   hooks.log?.(`restart session ${record.id}: ${oldPane ? `closed ${oldPane}, ` : ''}opened ${newPane} on ${plan.sessionValue}, ${matched ? 'the session matched' : 'herdr reported another session'}`);
   logRestart({ outcome: 'restarted', target: 'parent', parent: record.id, oldPane, newPane, ...(newTab ? { newTab } : {}), session: record.session, sessionMatched: matched, ...(waitedMs !== undefined ? { waitedMs } : {}) });
-  return { target: 'parent', id: record.id, name: label, oldPane, newPane, ...(newTab ? { newTab } : {}), session: record.session, kind: plan.kind, command: plan.resume.join(' '), sessionMatched: matched, ...(waitedMs !== undefined ? { waitedMs } : {}) };
+  const landed = opened.workspaceId ?? workspaceNow;
+  return { target: 'parent', id: record.id, name: label, oldPane, newPane, ...(newTab ? { newTab } : {}), ...(landed ? { workspaceId: landed } : {}), session: record.session, kind: plan.kind, command: plan.resume.join(' '), sessionMatched: matched, ...(waitedMs !== undefined ? { waitedMs } : {}) };
 }
 
 /** The wait a caller asked for, kept inside the daemon client's own timeout. */

@@ -799,8 +799,12 @@ test('agent_stop says so when it cannot remove the files on the child\'s machine
   w.ssh.plan(['refuse']);
   const watcher = new Watcher({ client, parentId: parent.id, onEntries: () => {} });
   const reply = await runBellwetherTool({ client, clientFor: async () => client, parentId: parent.id, watcher, remote: ops }, 'agent_stop', { child: 'cut-off', force: true });
-  assert.match(reply, /^Closed cut-off\. Its brief, MCP config and relay record on machine child-box could not be removed, .*relay-cleanup --child [^ ]+ .*255/s);
+  assert.match(reply, /^Closed cut-off\. Its brief, MCP config and relay record on machine child-box could not be removed: .*255.*\. Bellwether tries again for 5 minutes, and on each relay connection to that machine; `bellwether relay-cleanup --child [^ ]+` on that machine removes them by hand\.$/s);
   assert.ok(reply.includes(child.id));
+  // The watcher owns the retry (issue #258).
+  const pending = readParent(parent.id)?.children.find((entry) => entry.id === child.id)?.cleanupPending;
+  assert.equal(pending?.host, 'child-box');
+  assert.match(pending?.reason ?? '', /255/);
 });
 
 test('a relay record whose reports still wait outlives relay-cleanup, and goes with the last of them', (t) => {

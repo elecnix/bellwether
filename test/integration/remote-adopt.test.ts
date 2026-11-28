@@ -16,7 +16,8 @@ import { pickMachine, type MachineProfile } from '../../src/core/machine.ts';
 import { emptyParent, readParent, saveParent, upsertChild } from '../../src/core/registry.ts';
 import { claimPane } from '../../src/core/pane-claims.ts';
 import { RELAY_SCHEMA, readRelayRecord, removeRelayRecord, saveRelayRecord } from '../../src/core/relay-records.ts';
-import { claimUnconfirmedLines, reclaimRemote, remoteOps } from '../../src/core/remote.ts';
+import { claimUnconfirmedLines, cleanupPendingLines, reclaimRemote, remoteOps } from '../../src/core/remote.ts';
+import { RESTART_DEFER_MS } from '../../src/core/restart.ts';
 import type { ChildRecord, OutboxEntry } from '../../src/core/types.ts';
 import { Watcher } from '../../src/core/watcher.ts';
 import { DaemonClient } from '../../src/daemon/client.ts';
@@ -171,7 +172,7 @@ async function world(t: test.TestContext, options: { farDaemon?: (socketPath: st
   watcher.start();
   // As createHerdrService does: each relay connection confirms the claims this parent holds there (issue #257).
   links.onConnected((host, fresh) => {
-    if (fresh) watcher.confirmClaims(host);
+    if (fresh) watcher.relayUp(host);
   });
   const ctx: ToolContext = { client: nearClient, clientFor, parentId: PARENT_ID, watcher, remote, relayState: (host) => links.state(host) };
 
@@ -876,4 +877,50 @@ test('a parent whose relay comes back to a machine that cannot confirm a claim k
   assert.equal(lines.length, 1, lines.join('\n'));
   assert.match(lines[0] ?? '', /^warn  unconfirmed claim: first-mate \(child child-old of claude-code-the-parent\) on machine child-box: /);
   assert.match(lines[0] ?? '', /run agent_adopt child-box:w1:p5 to ask again\.$/);
+});
+
+// Issue #258, and RouteToWatcher and RouteUnambiguous in model/Claims.tla with
+// CleanupFails. Trace: FarAdopt, SessionChange, WatcherExit whose relay-cleanup
+// fails, then the watcher's retry.
+test('a claim whose relay-cleanup failed at the child\'s exit leaves the far machine once the watcher tries again, and the record keeps nothing pending', async (t) => {
+  const w = await world(t);
+  await adopt(w);
+  const id = child(w)!.id;
+  await until('the watcher to subscribe on child-box', () => subscribed(w));
+  await until('the claim to be confirmed', () => w.logs.some((line) => line.includes(`confirmed the claim on pane ${PANE}`)), 10_000, () => w.logs.slice(-5));
+
+  // The next ssh call, the exit's relay-cleanup, is refused.
+  w.ssh.plan(['refuse']);
+  w.pane.resume('sess-two-0002');
+  await until('the adopted child to exit', () => child(w)?.exitedAt !== undefined, 10_000, () => w.logs.slice(-5));
+  await until('the claim to leave child-box', () => !inHome(w.childHome, () => readRelayRecord(id)), 20_000, () => w.logs.slice(-6));
+  await until('the record to keep nothing pending', () => child(w)?.cleanupPending === undefined, 5_000, () => child(w)?.cleanupPending);
+  assert.ok(w.logs.some((line) => line.includes(`removed what child ${id} left on machine child-box`)), w.logs.slice(-8).join('\n'));
+});
+
+test('a relay-cleanup that keeps failing past the deadline stops retrying on the tick, doctor names the claim left behind, and the next relay connection removes it', async (t) => {
+  const w = await world(t);
+  await adopt(w);
+  const id = child(w)!.id;
+  await until('the watcher to subscribe on child-box', () => subscribed(w));
+  await until('the claim to be confirmed', () => w.logs.some((line) => line.includes(`confirmed the claim on pane ${PANE}`)), 10_000, () => w.logs.slice(-5));
+
+  w.ssh.plan(Array.from({ length: 10_000 }, () => 'refuse' as const));
+  w.pane.resume('sess-two-0002');
+  await until('the cleanup to be pending', () => child(w)?.cleanupPending !== undefined, 10_000, () => w.logs.slice(-5));
+  assert.equal(child(w)?.cleanupPending?.host, 'child-box');
+  // The deadline passes on the watcher's clock.
+  w.advance(RESTART_DEFER_MS + 60_000);
+  await until('the cleanup to expire', () => child(w)?.cleanupPending?.expiredAt !== undefined, 10_000, () => child(w)?.cleanupPending);
+  const lines = cleanupPendingLines([readParent(PARENT_ID)!]);
+  assert.equal(lines.length, 1, lines.join('\n'));
+  assert.match(lines[0] ?? '', new RegExp(`^warn  claim left behind: first-mate \\(child ${id} of ${PARENT_ID}\\) exited, and machine child-box still holds its claim on pane ${PANE} for session ${SESSION}`));
+  assert.match(lines[0] ?? '', new RegExp(`Run \`bellwether relay-cleanup --child ${id}\` on child-box to remove it\\.$`));
+  assert.ok(inHome(w.childHome, () => readRelayRecord(id)), 'the claim is still on child-box');
+
+  // The relay comes up again, and its first connection removes the claim.
+  w.ssh.plan([]);
+  await w.ssh.drop();
+  await until('the claim to leave child-box', () => !inHome(w.childHome, () => readRelayRecord(id)), 20_000, () => w.logs.slice(-6));
+  await until('the record to keep nothing pending', () => child(w)?.cleanupPending === undefined, 5_000, () => child(w)?.cleanupPending);
 });

@@ -117,6 +117,10 @@ When that machine refuses the claim, or holds the pane for this parent under ano
 
 If that machine does not answer at all, as when its Bellwether predates `relay-adopt`, the child stays as it is and its record keeps `claimUnconfirmed`. The watcher asks again, up to once a minute. Until the machine answers, `bellwether doctor` prints a `warn` line for that child.
 
+A `relay-cleanup` can fail at a child's exit, as when the relay is down (issue #258). The claim, or a started child's files, then remain on that machine, and the child's record keeps `cleanupPending`. The parent's watcher runs `relay-cleanup` again, waiting longer after each failure, up to a minute, for 5 minutes after the first failure. That is the same bound a deferred restart waits.
+
+Each time the relay to that machine comes up, the watcher tries once more, even after those 5 minutes. The child remains exited either way. Once the 5 minutes pass, `bellwether doctor` prints a `warn` line that lists what remains there and the command that removes it by hand. While a claim remains, a later run of the same session in that pane reports to a parent whose child exited.
+
 ## Restarting a child there
 
 An `agent_restart` of a child on another machine travels over the relay connection that carries its reports. The request goes out as a `relay-restart`, and the daemon on that machine restarts the child as it would one of its own. It opens a new tab in the child's workspace and closes the old pane. Then it writes the child's start files again and resumes the same session under the same child id.

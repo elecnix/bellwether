@@ -7,7 +7,7 @@
 // The child gets no address to call back on, because the parent's daemon
 // connects to it. Reading the child's last message goes over that same
 // connection, which the daemon's relay links hold.
-import { reclaimsFarRecord } from './authority.ts';
+import { heldByAdoption, reclaimsFarRecord } from './authority.ts';
 import { harnessFor } from './harnesses/index.ts';
 import type { DroppedVariable } from './relay-env.ts';
 import { resolveMachine, type MachineResolver } from './machine.ts';
@@ -215,6 +215,25 @@ export function claimUnconfirmedLines(parents: ParentRecord[]): string[] {
       const open = child.claimUnconfirmed;
       if (!open || child.exitedAt) continue;
       lines.push(`warn  unconfirmed claim: ${child.name} (child ${child.id} of ${parent.id}) on machine ${open.host}: since ${open.at}, that machine has not confirmed it still holds pane ${child.paneId} for this child, so another parent may watch the pane (${open.reason}). Bellwether asks again; run agent_adopt ${open.host}:${child.paneId} to ask again.`);
+    }
+  }
+  return lines;
+}
+
+/**
+ * The doctor lines for each exited child whose \`relay-cleanup\` failed on its
+ * machine, so its claim or its files stay there (issue #258). The watcher
+ * tries again until the deadline, and on each relay connection to that machine.
+ */
+export function cleanupPendingLines(parents: ParentRecord[]): string[] {
+  const lines: string[] = [];
+  for (const parent of parents) {
+    for (const child of parent.children) {
+      const left = child.cleanupPending;
+      if (!left) continue;
+      const what = heldByAdoption(child) ? `its claim on pane ${child.paneId}${child.session ? ` for session ${child.session.value}` : ''}` : 'its brief, MCP config and relay record';
+      const when = left.expiredAt ? `Bellwether stopped trying at ${left.expiredAt}, and tries once more on the next relay connection.` : `Bellwether tries again until ${left.until}, and on each relay connection.`;
+      lines.push(`warn  claim left behind: ${child.name} (child ${child.id} of ${parent.id}) exited, and machine ${left.host} still holds ${what} since ${left.at} (${left.reason}). ${when} Run \`bellwether relay-cleanup --child ${child.id}\` on ${left.host} to remove it.`);
     }
   }
   return lines;

@@ -629,6 +629,13 @@ export interface ChildRecord {
    */
   readonly claimUnconfirmed?: { at: string; host: string; reason: string };
   /**
+   * For a child that ran on another machine: its exit's `relay-cleanup`
+   * failed there, so its claim or its files stay (issue #258). The watcher
+   * tries again until `until`, and each time the relay to that machine comes
+   * up. `expiredAt` says the tick stopped trying, and doctor names what stays.
+   */
+  cleanupPending?: { at: string; host: string; reason: string; until: string; expiredAt?: string };
+  /**
    * For an adopted child that exited: the child id that now stands for its
    * session, because the machine that runs it holds the session under that id
    * rather than this one (issue #191). Written only by src/core/authority.ts.

@@ -287,30 +287,40 @@ function piSettings(settings: Record<string, unknown>): string {
   return file;
 }
 
-test('with the pair unknown and no session file yet, the reply names the account pi will fall back to, unverified', async (t) => {
+test("with the pair unknown, the spawn passes pi's saved default rather than the first entry of enabledModels, and says so (issue #189)", async (t) => {
   const space = await room(t);
-  // The drill's settings: a saved default outside enabledModels, so pi takes the first entry.
+  // The drill's settings: a saved default outside enabledModels, where pi on its own takes the first entry.
   const file = piSettings({ defaultProvider: 'example-cloud', defaultModel: 'example-large', enabledModels: ['example-hosted/deepseek-v4.1-flash', 'example-backup/deepseek-v4.1-flash'] });
   const reply = await runBellwetherTool(context(space), 'agent_spawn', { kind: 'pi', name: 'unseen', prompt: 'go' }, {});
-  assert.deepEqual(modelFlags(startArgs(space.fake)), []);
-  assert.match(reply, /provider account example-hosted, model deepseek-v4.1-flash/);
+  assert.deepEqual(modelFlags(startArgs(space.fake)), ['--provider', 'example-cloud', '--model', 'example-large']);
+  assert.match(reply, /passed pi's saved default, defaultProvider and defaultModel in [^:]+: unseen runs on provider account example-cloud, model example-large\./);
   assert.ok(reply.includes(file), `the reply names where the default is set: ${reply}`);
-  assert.match(reply, /enabledModels/);
-  assert.match(reply, /unverified until pi writes its session file/);
+  assert.match(reply, /Without those flags pi would have started it on example-hosted \/ deepseek-v4\.1-flash, the first entry of enabledModels/);
+  assert.doesNotMatch(reply, /unverified/);
   const child = readParent(space.parentId)?.children.find((entry) => entry.name === 'unseen');
-  assert.equal(child?.model, undefined, 'an unverified pair is not recorded as the child\'s');
+  assert.deepEqual(child?.model && { provider: child.model.provider, id: child.model.id, source: child.model.source }, { provider: 'example-cloud', id: 'example-large', source: 'saved' });
 });
 
-test('with the pair unknown and a saved default in enabledModels or no enabledModels, the reply names the saved default, unverified', async (t) => {
+test('with the pair unknown and a saved default that pi would take anyway, the spawn passes it and names no other pair', async (t) => {
   const space = await room(t);
   piSettings({ defaultProvider: 'example-cloud', defaultModel: 'example-large', enabledModels: ['example-hosted/deepseek-v4.1-flash', 'example-cloud/example-large'] });
   const inScope = await runBellwetherTool(context(space), 'agent_spawn', { kind: 'pi', name: 'scoped', prompt: 'go' }, {});
-  assert.match(inScope, /provider account example-cloud, model example-large/);
+  assert.deepEqual(modelFlags(startArgs(space.fake)), ['--provider', 'example-cloud', '--model', 'example-large']);
+  assert.match(inScope, /scoped runs on provider account example-cloud, model example-large\./);
+  assert.doesNotMatch(inScope, /Without those flags/);
   piSettings({ defaultProvider: 'example-cloud', defaultModel: 'example-large' });
   const plain = await runBellwetherTool(context(space), 'agent_spawn', { kind: 'pi', name: 'plain', prompt: 'go' }, {});
-  assert.match(plain, /provider account example-cloud, model example-large/);
-  assert.match(plain, /defaultProvider/);
-  assert.match(plain, /unverified/);
+  assert.match(plain, /passed pi's saved default, defaultProvider and defaultModel in .*: plain runs on provider account example-cloud, model example-large\./);
+  assert.doesNotMatch(plain, /Without those flags/);
+});
+
+test('with the pair unknown and enabledModels but no saved default, the spawn passes no flag and the reply names the first entry, unverified', async (t) => {
+  const space = await room(t);
+  piSettings({ enabledModels: ['example-hosted/deepseek-v4.1-flash'] });
+  const reply = await runBellwetherTool(context(space), 'agent_spawn', { kind: 'pi', name: 'listed', prompt: 'go' }, {});
+  assert.deepEqual(modelFlags(startArgs(space.fake)), []);
+  assert.match(reply, /provider account example-hosted, model deepseek-v4\.1-flash: the first entry of enabledModels/);
+  assert.match(reply, /unverified until pi writes its session file/);
 });
 
 test('with the pair unknown and no pi settings, the reply says pi takes the first model it has a key for', async (t) => {

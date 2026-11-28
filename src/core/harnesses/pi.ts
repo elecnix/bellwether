@@ -4,7 +4,7 @@
 // the caller names both.
 import { argValue } from '../args.ts';
 import { LOCAL_HOST } from '../machine.ts';
-import { piExtensionEntry, piFallback, resolvePiExtension } from '../pi-extension.ts';
+import { piExtensionEntry, piFallback, piSavedDefault, resolvePiExtension } from '../pi-extension.ts';
 import { locatePiTranscript, piSessionModel } from '../transcript.ts';
 import type { ModelPair } from '../types.ts';
 import { modelFlag } from './shared.ts';
@@ -49,6 +49,9 @@ export const pi: HarnessEntry = {
   // has no key for, then waits at its prompt without taking the brief.
   startupFatal: /^\s*Error: \S/,
   movable: true,
+  // With no pair from the caller or the parent, the spawn passes pi's saved
+  // default, so the child never lands on the first entry of enabledModels by accident (issue #189).
+  savedPair: (cwd) => piSavedDefault(cwd),
   /**
    * Which provider account and model a pi child runs on, since the account is
    * what pays. With no pair passed and no session file yet, it names the
@@ -60,6 +63,11 @@ export const pi: HarnessEntry = {
     const on = (pair: ModelPair): string => `provider account ${pair.provider}, model ${pair.id}`;
     if (model?.source === 'caller') return `${child.name} runs on ${on(model)}, as the spawn named.`;
     if (model?.source === 'parent') return `${child.name} runs on ${on(model)}, the same account and model as this session.`;
+    if (model?.source === 'saved') {
+      const where = model.setting ? `, defaultProvider and defaultModel in ${model.setting}` : '';
+      const instead = model.over ? ` Without those flags pi would have started it on ${model.over}.` : '';
+      return `This session did not say which provider and model it runs on, so Bellwether passed pi's saved default${where}: ${child.name} runs on ${on(model)}.${instead}`;
+    }
     const head = 'This session did not say which provider and model it runs on, so Bellwether passed none.';
     if (model) return `${head} ${child.name} runs on ${on(model)}, pi's own default, read from its session file.`;
     const tail = 'This is unverified until pi writes its session file, and agent_list shows the pair pi chose once it does.';

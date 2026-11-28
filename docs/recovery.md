@@ -55,7 +55,13 @@ Killing its own caller mid-call would leave a tool with nowhere to send its answ
 
 A busy session may never end a turn, because each message it takes starts the next one. So while the restart waits, the daemon keeps that session's Bellwether events in the outbox, unread, and the new session receives them when it connects. The wait lasts 5 minutes, and the first reply states that limit. A second call while the restart waits reports what it waits for. It specifies the pane and the status herdr reports for it, with the time that status began. It also lists the held events and the children still working, along with messages delivered to the session by the daemon. `bellwether doctor` prints the same as an `info` line.
 
-When the 5 minutes run out, the restart closes nothing. The record keeps `restartStalled` with the time and the cause. The cause specifies the live turn and the children that were working, and it includes messages delivered to the session during the wait. `restart.log` records `outcome: timeout` with the same cause, and the held events go to the session. The next `agent_restart` call starts a new wait.
+When the 5 minutes run out, the daemon reads the pane from herdr once, because herdr doesn't send an event for a pane whose status stays the same. An idle pane restarts. Any other status closes nothing. The record then keeps `restartStalled`, with the time, the request time, the pane and the cause. The cause identifies the live turn, or states that herdr didn't send a status for the pane.
+
+The record also lists the children that were working and the messages delivered to the session during the wait. `restart.log` records `outcome: timeout` with the same cause, and the held events go to the session. The next `agent_restart` call starts a new wait.
+
+Every request ends by its deadline, whatever it waits for (issue #220). An act refused after the turn ended, such as a pane that now runs another session, records `restartStalled` with the refusal, and `restart.log` records `outcome: refused`. A daemon that finds a request with no pane on its record gives up on it at once.
+
+An older daemon could leave a request with no wait on its record. The next call replaces that request. `bellwether doctor` prints a `warn` line for each restart that gave up, with its pane and request time, until the session restarts. It prints a `warn` line too for a request that nothing waits on.
 
 That reply includes the new pane, the tab and the session id, so the caller can report them instead of "restart requested".
 

@@ -10,7 +10,8 @@ import { claimPane, decideClaim, type Claimant } from '../../src/core/pane-claim
 import { emptyParent, saveParent } from '../../src/core/registry.ts';
 import { RELAY_SCHEMA, readRelayRecord, removeRelayRecord, saveRelayRecord, type RelayRecord } from '../../src/core/relay-records.ts';
 import { parseRequest } from '../../src/daemon/protocol.ts';
-import { adoptTarget } from '../../src/integrations/tools.ts';
+import { Watcher } from '../../src/core/watcher.ts';
+import { adoptTarget, runBellwetherTool, type ToolContext } from '../../src/integrations/tools.ts';
 
 /** A claim a parent on another machine left here. */
 const relay = (record: Partial<RelayRecord> = {}): RelayRecord => ({ schema: RELAY_SCHEMA, childId: 'kid-a', name: 'mate', kind: 'claude', parentId: 'parent-a', registeredAt: '2026-11-27T00:00:00.000Z', paneId: 'w1:p5', adopted: true, session: 's1', ...record });
@@ -67,13 +68,48 @@ test('a remote adoption without a relay is refused before any record', async () 
 });
 
 test('an adoption target names its machine before the pane, and a bare pane id names none', () => {
-  assert.deepEqual(adoptTarget('w32:p1'), { host: 'local', target: 'w32:p1' });
+  assert.deepEqual(adoptTarget('w32:p1'), { host: 'local', target: 'w32:p1', otherReading: { host: 'w32', target: 'p1' } });
   assert.deepEqual(adoptTarget('w32:p1', 'child-box'), { host: 'child-box', target: 'w32:p1' });
   assert.deepEqual(adoptTarget('child-box:w32:p1'), { host: 'child-box', target: 'w32:p1' });
   assert.deepEqual(adoptTarget('child-box:first-mate'), { host: 'child-box', target: 'first-mate' });
   assert.deepEqual(adoptTarget('first-mate'), { host: 'local', target: 'first-mate' });
   assert.deepEqual(adoptTarget('child-box:w32:p1', 'child-box'), { host: 'child-box', target: 'w32:p1' });
   assert.throws(() => adoptTarget('child-box:w32:p1', 'other-box'), /names machine other-box, but its target child-box:w32:p1 names machine child-box/);
+});
+
+// Issue #233: a fleet past a hundred workspaces gets ids such as w7R, and
+// a pane there is w7R:p1. Every other fixture uses w1, where the old pattern,
+// w and digits, never failed.
+test('a pane id from a workspace with a letter, as w7R:p1, is a pane on this machine, not the agent p1 on a machine w7R (issue #233)', () => {
+  assert.deepEqual(adoptTarget('w7R:p1'), { host: 'local', target: 'w7R:p1', otherReading: { host: 'w7R', target: 'p1' } });
+  assert.deepEqual(adoptTarget('w7R:p1', 'child-box'), { host: 'child-box', target: 'w7R:p1' });
+  assert.deepEqual(adoptTarget('child-box:w7R:p1'), { host: 'child-box', target: 'w7R:p1' });
+  assert.deepEqual(adoptTarget('child-box:w7R:pB'), { host: 'child-box', target: 'w7R:pB' });
+  // Halves that are not a pane id name a machine and an agent, as before.
+  assert.deepEqual(adoptTarget('w7R:first-mate'), { host: 'w7R', target: 'first-mate' });
+  assert.deepEqual(adoptTarget('web-box:p1'), { host: 'web-box', target: 'p1' });
+});
+
+/** A tool context whose herdr on this machine shows these panes, and whose saved machines are these. */
+function adoptContext(panes: HerdrPane[], hosts: string[]): ToolContext {
+  const client = { agentList: async () => panes, paneList: async () => panes } as unknown as HerdrClient;
+  const parentId = saveParent(emptyParent('pi', `adopt-${hosts.join('-')}-${panes.length}`, '/work', {})).id;
+  return { client, clientFor: async () => client, parentId, watcher: new Watcher({ client, parentId, onEntries: () => {} }), knownHosts: async () => hosts };
+}
+
+test('agent_adopt w7R:p1 adopts pane w7R:p1 on this machine (issue #233)', async () => {
+  const pane: HerdrPane = { paneId: 'w7R:p1', workspaceId: 'w7R', tabId: 'w7R:t1', terminalId: 't71', focused: false, revision: 0, agent: 'claude', agentStatus: 'idle', name: 'deep-diver' };
+  const text = await runBellwetherTool(adoptContext([pane], ['local']), 'agent_adopt', { target: 'w7R:p1' });
+  assert.match(text, /^Adopted deep-diver, a claude agent in pane w7R:p1, as child /);
+});
+
+test('agent_adopt w7R:p1 with no such pane here and a saved machine labelled w7R refuses, naming both readings (issue #233)', async () => {
+  await assert.rejects(
+    runBellwetherTool(adoptContext([], ['local', 'w7R']), 'agent_adopt', { target: 'w7R:p1' }),
+    /^Error: w7R:p1 reads two ways: pane w7R:p1 on this machine, which herdr does not show \(No pane or live agent on local matches w7R:p1\), or the agent p1 on the saved machine w7R\. Name the machine to adopt there/,
+  );
+  // With no machine of that label, the pane reading stands, and its own error comes back.
+  await assert.rejects(runBellwetherTool(adoptContext([], ['local']), 'agent_adopt', { target: 'w7R:p1' }), /^Error: No pane or live agent on local matches w7R:p1\.$/);
 });
 
 test('relay-adopt parses with its claim, and refuses one without a pane', () => {

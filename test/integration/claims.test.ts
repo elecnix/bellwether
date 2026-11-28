@@ -15,6 +15,7 @@ import { fakeWorld, type FakeWorld } from '../fixtures/fake-world.ts';
 import { isolate } from '../fixtures/isolated.ts';
 
 const X = 'w1:p1';
+const Y = 'w1:p2';
 const S1 = '3f1c2a9e-0000-4000-8000-000000000001';
 const S2 = '3f1c2a9e-0000-4000-8000-000000000002';
 
@@ -34,6 +35,7 @@ async function rig(t: test.TestContext): Promise<Rig> {
   const world = fakeWorld('w1');
   world.add({ pane_id: 'w1:p0', agent: 'claude', name: 'parent', agent_session: sess('parent-session') });
   world.add({ pane_id: X, agent: 'claude', name: 'hand-x', agent_session: sess(S1) });
+  world.add({ pane_id: Y });
   const fake = await startFakeHerdr({ respond: (request) => world.respond(request) });
   world.emit = (frame) => fake.send(frame);
   t.after(() => fake.stop());
@@ -127,3 +129,48 @@ test('a local adoption over a far claim whose session left the pane removes that
   assert.equal(on(m.pane, () => adoptedParentOf({ paneId: PANE, session: 's1' })), undefined);
   assert.deepEqual(liveOnPane(m.pane, 'local').map((entry) => entry.session), ['s2']);
 });
+
+// IdStableBySession. Trace: LocalAdopt(l1, x), SessionChange(x, none), SessionChange(y, s1), LocalAdopt(l1, y).
+// No watcher runs, so the first child is still recorded live on x, as the trace leaves it.
+test('a session resumed by hand in another pane, adopted again while its first record still shows it live in the old pane, keeps its first id and moves to the new pane', async (t) => {
+  const r = await rig(t);
+  const first = (await adoptPane(r.client, readParent(r.parentId)!, { target: X })).child.id;
+  quitQuietly(r, X);
+  runsQuietly(r, Y, S1);
+  const second = await adoptPane(r.client, readParent(r.parentId)!, { target: Y });
+  assert.equal(second.child.id, first, `adopting session ${S1} again gave id ${second.child.id}, not its first id ${first}`);
+  assert.equal(second.revived, true);
+  assert.equal(second.from, X, 'the reply says which pane ran the session before');
+  assert.deepEqual(readParent(r.parentId)!.children.map((entry) => [entry.id, entry.paneId, entry.session?.value, entry.exitedAt ? 'exited' : 'live']), [[first, Y, S1, 'live']]);
+});
+
+test('a session resumed by hand in another pane after its exit was recorded is adopted again under its first id', async (t) => {
+  const { r, first, watcher } = await adoptAndWatch(t);
+  quit(r, X);
+  await until('the exit', () => r.child(first)?.exitedAt !== undefined);
+  watcher.stop();
+  runsQuietly(r, Y, S1);
+  const second = await adoptPane(r.client, readParent(r.parentId)!, { target: Y });
+  assert.equal(second.child.id, first, `adopting session ${S1} in pane ${Y} gave id ${second.child.id}, not its first id ${first}`);
+  const record = r.child(first)!;
+  assert.equal(record.paneId, Y);
+  assert.equal(record.exitedAt, undefined);
+  assert.equal(record.awaitsResume, undefined, 'the child no longer waits in its old pane');
+});
+
+/** The harness in the pane quits, and no watcher hears it. */
+function quitQuietly(r: Rig, pane: string): void {
+  const entry = r.world.panes.get(pane)!;
+  delete entry.agent;
+  delete entry.agent_session;
+  entry.agent_status = 'unknown';
+}
+
+/** A harness in the pane runs `session` now, and no watcher hears it. */
+function runsQuietly(r: Rig, pane: string, session: string): void {
+  const entry = r.world.panes.get(pane)!;
+  entry.agent = 'claude';
+  entry.name = `hand-${pane}`;
+  entry.agent_session = sess(session);
+  entry.agent_status = 'idle';
+}

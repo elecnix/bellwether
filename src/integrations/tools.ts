@@ -551,7 +551,7 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
       throw new Error(`Cannot adopt ${target} on machine ${host}: ${(error as Error).message}`);
     }
     const claim = ctx.remote?.claim?.bind(ctx.remote);
-    const { child, link, already, revived, replaced, restored, unconfirmed, session: farReach, messages: farMessages } = await adoptPane(client, record, { target, host, name: optionalString(args['name']), stuckMinutes: typeof args['stuck_minutes'] === 'number' ? (args['stuck_minutes'] as number) : undefined, ...(claim ? { claim } : {}) });
+    const { child, link, already, revived, from, replaced, restored, unconfirmed, session: farReach, messages: farMessages } = await adoptPane(client, record, { target, host, name: optionalString(args['name']), stuckMinutes: typeof args['stuck_minutes'] === 'number' ? (args['stuck_minutes'] as number) : undefined, ...(claim ? { claim } : {}) });
     if (already) {
       const held = `${child.name} in pane ${child.paneId} is already a child of this session.`;
       // Issue #219: the claim on the child's machine was asked for again.
@@ -566,7 +566,7 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
     const messages = host === LOCAL_HOST ? ctx.sessionMessages?.(child.paneId) : farMessages;
     // Issue #191: a harness that resumed the session of a child adopted before is that child, under its id.
     const first = revived
-      ? `Adopted ${child.name} again, as the same child ${child.id}: its harness resumed session ${child.session?.value ?? 'unknown'} in pane ${child.paneId}. Bellwether watches it from now on.${outage}`
+      ? `Adopted ${child.name} again, as the same child ${child.id}: its harness resumed session ${child.session?.value ?? 'unknown'} in pane ${child.paneId}${from ? `, where pane ${from} ran it before` : ''}. Bellwether watches it from now on.${outage}`
       : `Adopted ${child.name}, a ${child.kind} agent${where} in pane ${child.paneId}, as child ${child.id}. Bellwether watches it from now on.${session}${outage}${replaced ? ` Machine ${host} holds session ${child.session?.value ?? 'unknown'} in pane ${child.paneId} as child ${child.id}, so that child id replaces ${replaced}, which stays exited.` : ''}`;
     return [first, adoptedReach(reach, host, messages, child.kind), `herdr link: ${link}`].join('\n');
   }

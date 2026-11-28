@@ -29,6 +29,8 @@ const PARAMETERS: [string, string[]][] = [
   ['requests', ['core/requests.ts']],
   ['delivery', ['core/delivery.ts']],
   ['authority', ['core/authority.ts']],
+  ['placement', ['core/placement.ts']],
+  ['turn', ['core/turn.ts']],
   ['relayrec', ['core/relay-records.ts']],
   ['proto', ['daemon/features.ts', 'daemon/protocol.ts']],
   ['departures', ['core/departures.ts']],

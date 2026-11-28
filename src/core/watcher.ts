@@ -35,6 +35,8 @@ import { removeRelayRecord } from './relay-records.ts';
 import { ClaimHeldElsewhere } from './remote.ts';
 import { releaseWorkspace } from './workspace.ts';
 import { harnessSeen, reportPending, runEnds, sessionSeen, statusSeen, stopAwaiting, tabClosed, viewOf } from './incarnation.ts';
+import { agentNamed } from './placement.ts';
+import { busyAt, inactiveNoticed, stateSeqSeen, statusChanged, toldAs, transcriptFound, turnNumbered, turnTold } from './turn.ts';
 import { cleanupDone, cleanupExpired, cleanupLeft, cleanupSuperseded } from './cleanup-pending.ts';
 import { ChildBusyError, withChildLock } from './child-lock.ts';
 
@@ -732,20 +734,16 @@ export class Watcher {
       // end on: a later snapshot that reads the same turn finds it already known.
       const seq = typeof event.data['completion_seq'] === 'number' ? (event.data['completion_seq'] as number) : undefined;
       updateChild(this.parentId, child.id, (entry) => {
-        if (seq !== undefined && (seq !== entry.completionSeq || entry.completionPane !== entry.paneId)) {
-          entry.completionSeq = seq;
-          entry.completionPane = entry.paneId;
-          entry.lastBusyAt = new Date().toISOString();
-        }
+        if (seq !== undefined && (seq !== entry.completionSeq || entry.completionPane !== entry.paneId)) turnNumbered(entry, seq, new Date().toISOString());
         if (status !== 'unknown') harnessSeen(entry, new Date().toISOString());
         if (entry.prompt?.source === 'screen' && (entry.lastStatus !== status || (stateSeq !== undefined && stateSeq !== entry.stateChangeSeq))) delete entry.prompt;
         if (hookDialogClosed(entry.prompt, entry.lastStatus, status)) delete entry.prompt;
         if (entry.lastStatus !== status) {
-          entry.statusChangedAt = new Date().toISOString();
+          statusChanged(entry, new Date().toISOString());
           // herdr 0.9.5 sends no state_change_seq on this event, so a seq
           // read before the change no longer describes the status.
-          entry.stateChangeSeq = stateSeq;
-        } else if (stateSeq !== undefined) entry.stateChangeSeq = stateSeq;
+          stateSeqSeen(entry, stateSeq);
+        } else if (stateSeq !== undefined) stateSeqSeen(entry, stateSeq);
         statusSeen(entry, status);
       });
       // A pi child can reach herdr's detection after the spawn looked, and
@@ -803,7 +801,7 @@ export class Watcher {
     if (!session && !agentName) return;
     updateChild(this.parentId, child.id, (entry) => {
       if (session) sessionSeen(entry, session);
-      if (agentName) entry.agentName = agentName;
+      agentNamed(entry, agentName);
     });
     if (session && host === LOCAL_HOST && !child.transcript) this.recordTranscript(child, session.value);
   }
@@ -870,21 +868,18 @@ export class Watcher {
           // A dialog read off the screen holds only until herdr says something new.
           if (entry.prompt?.source === 'screen' && (status !== entry.lastStatus || (seq !== undefined && seq !== entry.completionSeq) || (stateSeq !== undefined && stateSeq !== entry.stateChangeSeq))) delete entry.prompt;
           if (hookDialogClosed(entry.prompt, entry.lastStatus, status)) delete entry.prompt;
-          if (entry.lastStatus !== status) entry.statusChangedAt = at;
+          if (entry.lastStatus !== status) statusChanged(entry, at);
           // A new turn is activity even when the status did not change. The
           // record keeps it, so a restarted parent does not lose the period.
-          if (seq !== undefined && seq !== entry.completionSeq) entry.lastBusyAt = at;
+          if (seq !== undefined && seq !== entry.completionSeq) busyAt(entry, at);
           statusSeen(entry, status);
-          if (seq !== undefined) {
-            entry.completionSeq = seq;
-            entry.completionPane = entry.paneId;
-          }
-          if (stateSeq !== undefined) entry.stateChangeSeq = stateSeq;
+          if (seq !== undefined) turnNumbered(entry, seq);
+          if (stateSeq !== undefined) stateSeqSeen(entry, stateSeq);
           if (session) sessionSeen(entry, session);
-          if (agentName) entry.agentName = agentName;
+          agentNamed(entry, agentName);
         });
         // A new session is a new file to read, and for pi the session is the file.
-        if (session && sessionChanged && hostOf(child) === LOCAL_HOST) this.recordTranscript({ ...child, transcript: undefined }, session.value);
+        if (session && sessionChanged && hostOf(child) === LOCAL_HOST) this.recordTranscript(child, session.value, true);
       }
     }
     await this.evaluate();
@@ -969,7 +964,7 @@ export class Watcher {
         // Written before the offer, so a restart cannot send the same period again.
         const notifiedFor = new Date(next.lastActivityAt).toISOString();
         updateChild(this.parentId, child.id, (entry) => {
-          entry.inactiveNotifiedFor = notifiedFor;
+          inactiveNoticed(entry, notifiedFor);
         });
       }
       // Bellwether reports a dialog and never answers it, apart from the
@@ -1073,20 +1068,10 @@ export class Watcher {
     updateChild(this.parentId, child.id, (entry) => {
       // The record moved to another pane since this pass read it: that pane counts its own turns.
       if (entry.paneId !== child.paneId) return;
-      if (crossing) {
-        if (told !== undefined) entry.turnNotified = { paneId: child.paneId, seq: told };
-        if (baseline) entry.turnBaseline = baseline;
-        else delete entry.turnBaseline;
-      } else if (state.reportedFor === undefined) delete entry.turnNotified;
-      else {
-        entry.turnNotified = { paneId: child.paneId, seq: state.reportedFor };
-        delete entry.turnBaseline;
-      }
+      turnTold(entry, child.paneId, crossing ? { crossing, seq: told, baseline } : { crossing, seq: state.reportedFor, baseline: undefined });
       reportPending(entry, pending);
     });
-    const fresh = readParent(this.parentId)?.children.find((entry) => entry.id === child.id);
-    child.turnNotified = fresh?.turnNotified;
-    child.turnBaseline = fresh?.turnBaseline;
+    toldAs(child, readParent(this.parentId)?.children.find((entry) => entry.id === child.id));
     reportPending(child, pending);
   }
 
@@ -1177,22 +1162,21 @@ export class Watcher {
    * found to the record: the path, or why there is none. The registry is
    * written only when that changes.
    */
-  private recordTranscript(child: ChildRecord, session: string): string | undefined {
+  private recordTranscript(child: ChildRecord, session: string, newSession = false): string | undefined {
     const conversation = harnessFor(child.kind)?.conversation;
     const found = conversation ? conversation.locate(session, child.cwd) : { missing: `Bellwether knows no ${child.kind} harness` };
     if (found.path) {
       // A pi child started on pi's default names it in its session file.
       const model = !child.model ? conversation?.modelOf?.(found.path) : undefined;
       updateChild(this.parentId, child.id, (entry) => {
-        entry.transcript = found.path;
-        delete entry.transcriptMissing;
+        transcriptFound(entry, found);
         if (model && !entry.model) entry.model = { ...model, source: 'session' };
       });
       return found.path;
     }
     if (found.missing !== child.transcriptMissing) {
       updateChild(this.parentId, child.id, (entry) => {
-        entry.transcriptMissing = found.missing;
+        transcriptFound(entry, found, newSession);
       });
     }
     return undefined;
@@ -1210,7 +1194,7 @@ export class Watcher {
       this.storeStamps.set(child.id, stamp);
       if (previous === undefined || stamp <= previous) return false;
       updateChild(this.parentId, child.id, (entry) => {
-        entry.lastBusyAt = new Date().toISOString();
+        busyAt(entry, new Date().toISOString());
       });
       return true;
     }
@@ -1224,7 +1208,7 @@ export class Watcher {
         if (previous === undefined || size <= previous) return false;
         if (!conversationGrowth(readRange(transcript, previous, size))) return false;
         updateChild(this.parentId, child.id, (entry) => {
-          entry.lastBusyAt = new Date().toISOString();
+          busyAt(entry, new Date().toISOString());
         });
         return true;
       } catch {
@@ -1249,7 +1233,7 @@ export class Watcher {
       this.lastScreen.set(child.id, lines.join('\n'));
       if (previous !== undefined && previous !== lines.join('\n')) {
         updateChild(this.parentId, child.id, (entry) => {
-          entry.lastBusyAt = new Date().toISOString();
+          busyAt(entry, new Date().toISOString());
         });
         return true;
       }
@@ -1436,7 +1420,7 @@ export class Watcher {
     if (!child) return;
     updateChild(this.parentId, child.id, (entry) => {
       entry.lastReport = { status: report.status, text: report.text, at: report.at, seq: report.seq, ...(report.via ? { via: report.via } : {}), ...(report.toolOffered !== undefined ? { toolOffered: report.toolOffered } : {}) };
-      entry.lastBusyAt = report.at;
+      busyAt(entry, report.at);
     });
     // A child this watcher has not evaluated yet starts from its record, so the
     // report covers the right turn either way.

@@ -38,6 +38,7 @@ import type { CallerIdentity, ChildRecord, RelayHostState, ReportStatus } from '
 import type { SessionReach } from '../core/adopted-session.ts';
 import { FEATURES, featureNamed, serves, type DaemonOffer, type Feature } from '../daemon/features.ts';
 import { runEnds } from '../core/incarnation.ts';
+import { transcriptFound } from '../core/turn.ts';
 import { cleanupLeft } from '../core/cleanup-pending.ts';
 
 export interface ToolContext {
@@ -906,8 +907,7 @@ function transcriptFromSession(parentId: string, child: ChildRecord): string | u
   const found = locateTranscript(child.harness, child.session.value, child.cwd);
   if (!found.path) return undefined;
   updateChild(parentId, child.id, (entry) => {
-    entry.transcript = found.path;
-    delete entry.transcriptMissing;
+    transcriptFound(entry, found);
   });
   return found.path;
 }

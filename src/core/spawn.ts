@@ -29,6 +29,8 @@ import { BARE, RoutesFileError, bareLaunch, launchLine, readRoutes, resolveRoute
 import { openChildTab, parseWorkspaces, placeChild, undoChildTab, type ChildTab, type WorkspaceEntry } from './workspace.ts';
 import type { ChildRecord, ChildRoute, DialogDecision, ModelPair, ParentRecord } from './types.ts';
 import { firstRun, holdEvents, paneOpened, releaseEvents, sessionSeen, statusSeen } from './incarnation.ts';
+import { agentNamed, firstPlacement, tabLanded } from './placement.ts';
+import { busyAt, firstTurn, statusChanged, toolsChosen, transcriptFound } from './turn.ts';
 
 /** How deep a Bellwether child may spawn. The design starts at 2. */
 export { DEFAULT_MAX_DEPTH } from './depth.ts';
@@ -330,9 +332,8 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
     harness: entry.harness,
     ...firstRun({ paneId: '', host, cwd: options.cwd, ...(store?.mint ? { session: { kind: 'id' as const, value: store.mint() } } : {}) }),
     ...acquired('spawn'),
-    startedAt: now,
-    statusChangedAt: now,
-    lastBusyAt: now,
+    ...firstPlacement({ at: now }),
+    ...firstTurn({ at: now }),
     depth,
     maxDepth,
     stuckMs: options.stuckMinutes === undefined ? undefined : Math.max(1_000, Math.round(options.stuckMinutes * 60_000)),
@@ -359,7 +360,7 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
     const { briefFile } = files;
     registered = there;
     envNote = droppedNote(child.name, host, envDropped);
-    if (files.toolSource) child.toolSource = files.toolSource;
+    toolsChosen(child, files.toolSource);
     keptBrief = store ? briefFile : undefined;
 
     // 2. The tab carries the environment the child needs to find its parent,
@@ -372,9 +373,7 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
     if (!tab.paneId) throw new Error('herdr created no pane for the child tab');
 
     paneOpened(child, { paneId: tab.paneId, tabId: tab.tabId });
-    child.workspaceId = tab.workspaceId;
-    if (tab.workspaceLabel) child.workspaceLabel = tab.workspaceLabel;
-    if (tab.ownsWorkspace) child.ownsWorkspace = true;
+    tabLanded(child, tab);
     for (const brief of child.briefs ?? []) brief.paneId = tab.paneId;
     // A harness that opens on dialogs the spawn answers, such as Claude Code,
     // has its events held until then, and the status watch opens before the start.
@@ -488,8 +487,7 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
         // Claude Code writes its file at the first turn, which can come after
         // this look. The watcher looks again until the file appears.
         const found = entry.conversation.locate(session.value, child.cwd);
-        child.transcript = found.path;
-        child.transcriptMissing = found.missing;
+        transcriptFound(child, found);
         // With no pair passed, the session file says which default the harness chose.
         const fromSession = !child.model && found.path ? entry.conversation.modelOf?.(found.path) : undefined;
         if (fromSession) child.model = { ...fromSession, source: 'session' };
@@ -497,7 +495,7 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
     }
     const status = pane['agent_status'];
     if (typeof status === 'string' && status) statusSeen(child, status as ChildRecord['lastStatus']);
-    child.agentName = agentNameOf(pane, child.name);
+    agentNamed(child, agentNameOf(pane, child.name));
   } catch {
     // A missed session id only costs the transcript-based summary until the
     // watcher reads it.
@@ -505,16 +503,13 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
   releaseEvents(child);
   updateChild(parent.id, child.id, (entry) => {
     if (child.session) sessionSeen(entry, child.session);
-    if (child.agentName) entry.agentName = child.agentName;
+    agentNamed(entry, child.agentName);
     if (child.model && !entry.model) entry.model = child.model;
-    if (child.transcript) {
-      entry.transcript = child.transcript;
-      delete entry.transcriptMissing;
-    } else if (child.transcriptMissing) entry.transcriptMissing = child.transcriptMissing;
-    if (statusSeen(entry, child.lastStatus)) entry.statusChangedAt = new Date().toISOString();
+    transcriptFound(entry, { path: child.transcript, missing: child.transcriptMissing });
+    if (statusSeen(entry, child.lastStatus)) statusChanged(entry, new Date().toISOString());
     // The hold ends with the answers, which are activity. The inactivity clock
     // starts here, not at spawn time, so a long dialog does not eat the window.
-    if (startup) entry.lastBusyAt = new Date().toISOString();
+    if (startup) busyAt(entry, new Date().toISOString());
     releaseEvents(entry);
   });
 

@@ -31,6 +31,7 @@ import { readParent } from './registry.ts';
 import { RESTART_DEFER_MS, noteStatus, waitForTurnEnd, type RestartHooks } from './restart.ts';
 import type { RegisterRemote } from './spawn.ts';
 import { statusSeen } from './incarnation.ts';
+import { statusChanged } from './turn.ts';
 import { teleportAnswered, teleportArmed, teleportRequested, teleportStalled } from './requests.ts';
 
 export function teleportLogPath(): string {
@@ -294,7 +295,7 @@ async function deferredSelfTeleport(deps: SelfTeleportDeps, parentId: string, ch
     const seen = entry.teleportRequest?.wait?.status;
     if (entry.lastStatus !== 'working' && entry.lastStatus !== 'blocked') return;
     statusSeen(entry, seen === 'done' ? 'done' : 'idle');
-    entry.statusChangedAt = new Date().toISOString();
+    statusChanged(entry, new Date().toISOString());
   });
   try {
     const { registerFor, ...rest } = deps;

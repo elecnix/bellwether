@@ -16,7 +16,7 @@ import { pickMachine, type MachineProfile } from '../../src/core/machine.ts';
 import { emptyParent, readParent, saveParent, upsertChild } from '../../src/core/registry.ts';
 import { claimPane } from '../../src/core/pane-claims.ts';
 import { RELAY_SCHEMA, readRelayRecord, removeRelayRecord, saveRelayRecord } from '../../src/core/relay-records.ts';
-import { reclaimRemote, remoteOps } from '../../src/core/remote.ts';
+import { claimUnconfirmedLines, reclaimRemote, remoteOps } from '../../src/core/remote.ts';
 import type { ChildRecord, OutboxEntry } from '../../src/core/types.ts';
 import { Watcher } from '../../src/core/watcher.ts';
 import { DaemonClient } from '../../src/daemon/client.ts';
@@ -169,6 +169,10 @@ async function world(t: test.TestContext, options: { farDaemon?: (socketPath: st
     },
   });
   watcher.start();
+  // As createHerdrService does: each relay connection confirms the claims this parent holds there (issue #257).
+  links.onConnected((host, fresh) => {
+    if (fresh) watcher.confirmClaims(host);
+  });
   const ctx: ToolContext = { client: nearClient, clientFor, parentId: PARENT_ID, watcher, remote, relayState: (host) => links.state(host) };
 
   t.after(async () => {
@@ -375,8 +379,10 @@ test('a message to an adopted child on another machine whose claim is gone there
   w.ctx.inbox = (parentId, record, message, options) => relayInbox(w.links, parentId, record, message, options);
   await adopt(w);
   const id = child(w)!.id;
-  inHome(w.childHome, () => removeRelayRecord(id));
   await until('the relay to hold child-box open for the child', () => w.links.state('child-box')?.status === 'connected' && (w.links.state('child-box')?.children ?? []).includes(id));
+  // The link that comes up confirms the claim (issue #257); child-box loses it after that.
+  await until('the claim to be confirmed', () => w.logs.some((line) => line.includes(`confirmed the claim on pane ${PANE}`)), 10_000, () => w.logs.slice(-5));
+  inHome(w.childHome, () => removeRelayRecord(id));
 
   const reply = await runBellwetherTool(w.ctx, 'agent_send', { child: id, text: 'Status?' });
   const why = 'machine child-box answered: first-mate is an adopted session with no Bellwether server or extension connected to this machine\'s daemon, so nothing in it can take a message';
@@ -404,6 +410,7 @@ test('a message to an adopted child whose claim the far machine lost claims the 
   await adopt(w);
   const id = child(w)!.id;
   await until('the relay to hold child-box open for the child', () => w.links.state('child-box')?.status === 'connected' && (w.links.state('child-box')?.children ?? []).includes(id));
+  await until('the claim to be confirmed', () => w.logs.some((line) => line.includes(`confirmed the claim on pane ${PANE}`)), 10_000, () => w.logs.slice(-5));
   // child-box loses the claim, while this parent's record still names the child.
   inHome(w.childHome, () => removeRelayRecord(id));
 
@@ -420,6 +427,8 @@ test('adopting a pane this session already holds asks the far machine, and claim
   const w = await world(t, { accept: () => ({}) });
   await adopt(w);
   const id = child(w)!.id;
+  await until('the relay to hold child-box open for the child', () => w.links.state('child-box')?.status === 'connected' && (w.links.state('child-box')?.children ?? []).includes(id));
+  await until('the claim to be confirmed', () => w.logs.some((line) => line.includes(`confirmed the claim on pane ${PANE}`)), 10_000, () => w.logs.slice(-5));
   inHome(w.childHome, () => removeRelayRecord(id));
 
   const reply = await adopt(w);
@@ -435,6 +444,7 @@ test('a far machine that refuses to take the claim back leaves the message typed
   await adopt(w);
   const id = child(w)!.id;
   await until('the relay to hold child-box open for the child', () => w.links.state('child-box')?.status === 'connected' && (w.links.state('child-box')?.children ?? []).includes(id));
+  await until('the claim to be confirmed', () => w.logs.some((line) => line.includes(`confirmed the claim on pane ${PANE}`)), 10_000, () => w.logs.slice(-5));
   // child-box lost this parent's claim, and another parent there took the pane since.
   inHome(w.childHome, () => {
     removeRelayRecord(id);
@@ -798,4 +808,61 @@ test('a child a parent on another machine started holds its pane on that machine
   }
   assert.match(text, /Adopted/, text);
   assert.ok(inHome(w.childHome, () => readRelayRecord(spawned.id)), 'the record relay-cleanup would remove is still there');
+});
+
+// Issue #257, and NoPaneTwoParentsCurrent and PaneOneLiveChildCurrent in
+// model/Claims.tla. Trace: FarAdopt(f1, x), the relay drops, SessionChange(x, s2),
+// FarAdopt(f2, x), SessionChange(x, s1), LocalAdopt(l1, x), the relay comes back.
+test('a parent whose relay comes back confirms each claim it holds there, and a child whose pane another parent took during the outage ends with the reason', async (t) => {
+  const w = await world(t);
+  await adopt(w);
+  const id = child(w)!.id;
+  await until('the watcher to subscribe on child-box', () => subscribed(w));
+
+  // The outage: neither the relay nor the herdr bridge reaches child-box.
+  w.ssh.plan(Array.from({ length: 10_000 }, () => 'refuse' as const));
+  w.setDown(true);
+  await w.ssh.drop();
+  await until('the relay to drop', () => w.links.state('child-box')?.status !== 'connected', 10_000, () => w.links.state('child-box'));
+
+  // On child-box, unseen by this parent: another session runs in the pane, a
+  // second far parent adopts it, which removes this parent's stale claim, the
+  // first session comes back, and a parent on child-box adopts the pane.
+  w.pane.session = 'sess-two-0002';
+  inHome(w.childHome, () => claimPane({ parentId: 'claude-code-f2', childId: 'child-f2', name: 'f2-copy', kind: 'claude', paneId: PANE, session: 'sess-two-0002' }));
+  assert.equal(inHome(w.childHome, () => readRelayRecord(id)), undefined, 'the second far parent took the stale claim over');
+  w.pane.session = SESSION;
+  const local = inHome(w.childHome, () => saveParent(emptyParent('pi', 'pane-parent', '/far', { paneId: 'w1:p2' })));
+  const farClient = new HerdrClient({ socketPath: w.far.socketPath });
+  const adopted = await inHomeAsync(w.childHome, () => runBellwetherTool({ client: farClient, clientFor: async () => farClient, parentId: local.id, watcher: new Watcher({ client: farClient, parentId: local.id, onEntries: () => {} }) }, 'agent_adopt', { target: PANE }));
+  assert.match(adopted, /^Adopted first-mate/, adopted);
+
+  // The relay comes back. This parent's record matches the pane again, so only the far machine can say it lost the claim.
+  w.ssh.plan([]);
+  w.setDown(false);
+  await until('the child to end', () => child(w)?.exitedAt !== undefined, 20_000, () => w.logs.slice(-6));
+  const ended = child(w)!;
+  assert.equal(ended.paneEnd?.how, 'claim-lost');
+  assert.match(ended.paneEnd?.reason ?? '', new RegExp(`already a child of ${local.id}`), ended.paneEnd?.reason);
+  await until('the exit event', () => w.published.some((entry) => entry.childId === id && entry.event === 'exited'), 5_000, () => w.published);
+  const watchers = [
+    ...(readParent(PARENT_ID)?.children ?? []).filter((entry) => entry.paneId === PANE && !entry.exitedAt).map(() => PARENT_ID),
+    ...inHome(w.childHome, () => readParent(local.id)?.children ?? []).filter((entry) => entry.paneId === PANE && !entry.exitedAt).map(() => local.id),
+  ];
+  assert.deepEqual(watchers, [local.id], 'one parent watches the pane');
+});
+
+test('a parent whose relay comes back to a machine that cannot confirm a claim keeps the child, and doctor says the claim is unconfirmed', async (t) => {
+  const w = await world(t, { farDaemon: olderDaemon });
+  // A far daemon that predates relay-adopt cannot take the claim, so the record is written here directly, as an adoption from that era left it.
+  upsertChild(PARENT_ID, { id: 'child-old', name: 'first-mate', kind: 'claude', harness: 'claude-code', paneId: PANE, tabId: 'w1:t1', workspaceId: 'w1', host: 'child-box', origin: 'adopt', cwd: '/far/work', startedAt: new Date().toISOString(), lastStatus: 'idle', statusChangedAt: new Date().toISOString(), lastBusyAt: new Date().toISOString(), session: { kind: 'id', value: SESSION }, depth: 1 });
+  w.links.sync();
+  await until('the claim to be marked unconfirmed', () => readParent(PARENT_ID)?.children.find((entry) => entry.id === 'child-old')?.claimUnconfirmed !== undefined, 20_000, () => w.logs.slice(-6));
+  const record = readParent(PARENT_ID)!.children.find((entry) => entry.id === 'child-old')!;
+  assert.equal(record.exitedAt, undefined, 'an unanswered confirmation is not an exit');
+  assert.equal(record.claimUnconfirmed?.host, 'child-box');
+  const lines = claimUnconfirmedLines(readParent(PARENT_ID) ? [readParent(PARENT_ID)!] : []);
+  assert.equal(lines.length, 1, lines.join('\n'));
+  assert.match(lines[0] ?? '', /^warn  unconfirmed claim: first-mate \(child child-old of claude-code-the-parent\) on machine child-box: /);
+  assert.match(lines[0] ?? '', /run agent_adopt child-box:w1:p5 to ask again\.$/);
 });

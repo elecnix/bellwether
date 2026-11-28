@@ -127,7 +127,7 @@ export class RelayLinks {
   /** What earlier daemons learnt about each host, kept across a restart. */
   private memory: Record<string, RelayMemory> = {};
   private accept: AcceptRelayed = () => ({ refused: 'this daemon takes no reports' });
-  private readonly connectedHandlers = new Set<(host: string) => void>();
+  private readonly connectedHandlers = new Set<(host: string, fresh: boolean) => void>();
   private sequence = 0;
   private stopped = true;
 
@@ -151,8 +151,13 @@ export class RelayLinks {
     this.sync();
   }
 
-  /** Run once each time the far daemon on a machine answers the relay, after a first connection or a reconnect. */
-  onConnected(handler: (host: string) => void): () => void {
+  /**
+   * Run each time the far daemon on a machine answers the relay. `fresh` is
+   * true for the answer that brings the link up, after a first connection or a
+   * reconnect, and false for one that answers a new subscription on a link
+   * already up.
+   */
+  onConnected(handler: (host: string, fresh: boolean) => void): () => void {
     this.connectedHandlers.add(handler);
     return () => this.connectedHandlers.delete(handler);
   }
@@ -533,7 +538,7 @@ export class RelayLinks {
       }
       this.remember(link);
       for (const waiter of [...link.waiters]) waiter();
-      for (const handler of this.connectedHandlers) handler(link.host);
+      for (const handler of this.connectedHandlers) handler(link.host, was !== 'connected');
       return;
     }
     if (reply.type === 'relay-report') {

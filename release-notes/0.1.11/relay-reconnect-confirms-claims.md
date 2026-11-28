@@ -1,0 +1,1 @@
+When the relay to a machine comes back, the parent's daemon confirms each pane it adopted there. Another parent may have taken the pane during the outage. When that machine refuses the claim, the child exits, and the exit event gives the reason. When that machine can't answer, `bellwether doctor` names the claim as unconfirmed, and Bellwether asks again.

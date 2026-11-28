@@ -1300,6 +1300,7 @@ export class Watcher {
   }
 
   private describeExit(child: ChildRecord, code: number | undefined, beforeStart = false): string {
+    if (child.paneEnd?.how === 'claim-lost') return `${childLabel(child)} is not a child of this session any more: once the relay came back, machine ${hostOf(child)} no longer held this session's claim on pane ${child.paneId} and refused it: ${child.paneEnd.reason ?? 'it gave no reason'}. Bellwether stopped watching the pane.`;
     if (child.paneEnd?.how === 'adopt-refused') return `${childLabel(child)} is not a child of this session: machine ${hostOf(child)} refused the adoption Bellwether was not sure of: ${child.paneEnd.reason ?? 'it gave no reason'}. Bellwether stopped watching pane ${child.paneId}.`;
     if (child.paneEnd?.how === 'session-changed') return `${childLabel(child)} left its pane: herdr reports ${child.paneEnd.session ? `session ${child.paneEnd.session}` : 'another session'} in pane ${child.paneId} now, not ${child.session?.value ?? 'the adopted one'}, the session this parent adopted. Bellwether stopped watching the pane: adopt it again to watch the new session.`;
     const coded = code === undefined ? '' : ` with code ${code}`;
@@ -1440,11 +1441,79 @@ export class Watcher {
     const due = (host: string): boolean => (this.retryAt.get(host)?.at ?? 0) <= Date.now();
     const changed = [...byHost].some(([host, children]) => due(host) && this.links.get(host)?.key !== paneKey(children)) || [...this.links.keys()].some((host) => !byHost.has(host));
     for (const child of record?.children ?? []) if (child.adoptInDoubt && !child.exitedAt) void this.settleAdoption(child);
+    for (const child of record?.children ?? []) if (child.claimUnconfirmed && !child.adoptInDoubt && !child.exitedAt) void this.confirmClaim(child);
     if (changed) {
       await this.reconcileAndSubscribe();
       return;
     }
     await this.evaluate();
+  }
+
+  /**
+   * The relay to a machine is up, after a first connection or a reconnect:
+   * confirm each claim this parent holds there by adoption (issue #257).
+   * While the relay was down, the watcher could not see the pane, and another
+   * parent may have taken the claim over. The pane's session may since have
+   * come back, so the record matches the pane again, and only that machine
+   * can say whether it still holds the claim for this child.
+   */
+  confirmClaims(host: string): void {
+    for (const child of readParent(this.parentId)?.children ?? []) {
+      if (hostOf(child) !== host || child.exitedAt || child.adoptInDoubt || !heldByAdoption(child)) continue;
+      this.doubtRetry.delete(child.id);
+      void this.confirmClaim(child);
+    }
+  }
+
+  /**
+   * Send one child's claim to its machine again. A kept or restored claim
+   * clears the mark. A refusal, or the pane held for this session under
+   * another id, ends the child with the reason. Any other failure leaves the
+   * child as it is, marked unconfirmed for doctor, and the tick asks again,
+   * up to once a minute.
+   */
+  private async confirmClaim(child: ChildRecord): Promise<void> {
+    if (!this.reclaimRemote || this.settling.has(child.id)) return;
+    const retry = this.doubtRetry.get(child.id);
+    if (retry && retry.at > Date.now()) return;
+    this.settling.add(child.id);
+    try {
+      await this.reclaimRemote(child);
+      this.doubtRetry.delete(child.id);
+      updateChild(this.parentId, child.id, (entry) => {
+        delete entry.claimUnconfirmed;
+        delete entry.farRecordLost;
+      });
+      this.log(`machine ${hostOf(child)} confirmed the claim on pane ${child.paneId} for ${child.name}, as child ${child.id}`);
+    } catch (error) {
+      if (error instanceof ClaimRefused || error instanceof ClaimHeldElsewhere) {
+        this.doubtRetry.delete(child.id);
+        this.endRefusedClaim(child, error, 'claim-lost');
+        return;
+      }
+      const delay = Math.min((retry?.delay ?? 500) * 2, 60_000);
+      this.doubtRetry.set(child.id, { at: Date.now() + delay, delay });
+      const reason = (error as Error).message.trim().replace(/\.$/, '');
+      updateChild(this.parentId, child.id, (entry) => {
+        entry.claimUnconfirmed = { at: entry.claimUnconfirmed?.at ?? new Date().toISOString(), host: hostOf(child), reason };
+      });
+      this.log(`could not confirm the claim on pane ${child.paneId} for ${child.name} on machine ${hostOf(child)}: ${reason}`);
+    } finally {
+      this.settling.delete(child.id);
+    }
+  }
+
+  /** End a child whose machine refused its claim, or holds the pane for this session under another id. */
+  private endRefusedClaim(child: ChildRecord, error: ClaimRefused | ClaimHeldElsewhere, how: 'adopt-refused' | 'claim-lost'): void {
+    const reason = error instanceof ClaimHeldElsewhere ? `it holds pane ${child.paneId} for this session as child ${error.childId}; adopt the pane again to watch it under that id` : error.message.trim().replace(/\.$/, '');
+    updateChild(this.parentId, child.id, (entry) => {
+      delete entry.adoptInDoubt;
+      delete entry.claimUnconfirmed;
+      if (error instanceof ClaimHeldElsewhere) entry.replacedBy = error.childId;
+    });
+    this.markExited({ ...child, adoptInDoubt: undefined, claimUnconfirmed: undefined }, undefined, undefined, how, { reason });
+    this.dropLink(hostOf(child));
+    void this.reconcileAndSubscribe();
   }
 
   /**
@@ -1472,12 +1541,7 @@ export class Watcher {
     } catch (error) {
       if (error instanceof ClaimRefused || error instanceof ClaimHeldElsewhere) {
         this.doubtRetry.delete(child.id);
-        const reason = error instanceof ClaimHeldElsewhere ? `it holds pane ${child.paneId} for this session as child ${error.childId}; adopt the pane again to watch it under that id` : error.message.trim().replace(/\.$/, '');
-        updateChild(this.parentId, child.id, (entry) => {
-          delete entry.adoptInDoubt;
-          if (error instanceof ClaimHeldElsewhere) entry.replacedBy = error.childId;
-        });
-        this.markExited({ ...child, adoptInDoubt: undefined }, undefined, undefined, 'adopt-refused', { reason });
+        this.endRefusedClaim(child, error, 'adopt-refused');
         return;
       }
       const delay = Math.min((retry?.delay ?? 500) * 2, 60_000);

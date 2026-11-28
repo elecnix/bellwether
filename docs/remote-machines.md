@@ -109,6 +109,14 @@ The parent's record and the claim on that machine record the same fact, and that
 
 When that machine refuses the claim, because another parent holds the pane there, herdr types it into the pane. The record keeps `farRecordLost` with the reason, and `bellwether doctor` prints a `warn` line until the two agree. A spawned child's record there needs files only a spawn writes, so doctor names the child and how to re-register it. On a pane this parent adopted, `agent_adopt` asks that machine too, and reclaims the pane there if it has lost the claim.
 
+A relay outage hides the pane from the parent's watcher. Another parent on that machine can take the claim (issue #257).
+
+The session may also return to the pane, so the parent's record can match the pane again. Each time the relay comes back up, the parent's daemon sends `relay-adopt` again for each child it holds by adoption on that machine. A kept or restored claim leaves the child as it is.
+
+When that machine refuses the claim, or holds the pane for this parent under another id, the child exits, and its exit event gives the reason.
+
+If that machine does not answer at all, as when its Bellwether predates `relay-adopt`, the child stays as it is and its record keeps `claimUnconfirmed`. The watcher asks again, up to once a minute. Until the machine answers, `bellwether doctor` prints a `warn` line for that child.
+
 ## Restarting a child there
 
 An `agent_restart` of a child on another machine travels over the relay connection that carries its reports. The request goes out as a `relay-restart`, and the daemon on that machine restarts the child as it would one of its own. It opens a new tab in the child's workspace and closes the old pane. Then it writes the child's start files again and resumes the same session under the same child id.

@@ -106,6 +106,12 @@ export function createHerdrService(parent: ParentHello, id: string, deps: Servic
   const context: ToolContext = { client, clientFor, parentId: record.id, watcher, remote, relayState, restart, log: deps.log, inbox: deps.inbox, ...(deps.sessionReach ? { sessionReach: deps.sessionReach } : {}), ...(deps.sessionMessages ? { sessionMessages: deps.sessionMessages } : {}) };
   const paneWatches = new Set<{ close: () => void }>();
   watcher.start();
+  // Each time the relay to a machine comes up, confirm the claims this parent holds there by
+  // adoption (issue #257). A link already up when the service starts counts as just connected.
+  const stopConfirming = deps.links?.onConnected((host, fresh) => {
+    if (fresh) watcher.confirmClaims(host);
+  });
+  for (const state of deps.links?.states() ?? []) if (state.status === 'connected') watcher.confirmClaims(state.host);
   // Finish a restart a daemon stopped part of the way through.
   armPendingRestarts(client, record, restart);
   // A teleport this session asked for itself, which a stopped daemon never ran (issue #226).
@@ -171,6 +177,7 @@ export function createHerdrService(parent: ParentHello, id: string, deps: Servic
     },
     stop: () => {
       restartStop.abort();
+      stopConfirming?.();
       for (const watch of paneWatches) watch.close();
       paneWatches.clear();
       watcher.stop();

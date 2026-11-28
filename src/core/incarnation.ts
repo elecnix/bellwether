@@ -145,6 +145,7 @@ export const LIFETIMES = {
   awaitsResume: 'end',
   farRecordLost: 'child',
   adoptInDoubt: 'child',
+  claimUnconfirmed: 'child',
   replacedBy: 'child',
   retireRequestedAt: 'child',
   retireIntent: 'child',

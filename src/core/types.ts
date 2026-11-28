@@ -75,7 +75,7 @@ export interface PaneEnd {
   pane: string;
   /** The workspace the pane was in, which herdr may have removed with it. */
   workspaceId?: string;
-  how: 'exited' | 'closed' | 'missing' | 'harness-ended' | 'restart' | 'session-changed' | 'adopt-refused';
+  how: 'exited' | 'closed' | 'missing' | 'harness-ended' | 'restart' | 'session-changed' | 'adopt-refused' | 'claim-lost';
   at: string;
   code?: number;
   /** For `session-changed`: the session herdr reported in the pane instead. */
@@ -616,6 +616,13 @@ export interface ChildRecord {
    * clears this once it answers.
    */
   adoptInDoubt?: { at: string; host: string; reason: string };
+  /**
+   * For a child held by adoption on another machine: the relay came back,
+   * and the pane's machine could not confirm the claim this parent holds
+   * there (issue #257). The watcher asks again, and doctor names it until
+   * that machine answers.
+   */
+  claimUnconfirmed?: { at: string; host: string; reason: string };
   /**
    * For an adopted child that exited: the child id that now stands for its
    * session, because the machine that runs it holds the session under that id

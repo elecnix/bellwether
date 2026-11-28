@@ -190,6 +190,23 @@ export function farRecordLines(parents: ParentRecord[]): string[] {
   return lines;
 }
 
+/**
+ * The doctor lines for each live child whose machine could not confirm the
+ * claim this parent holds there by adoption, once the relay came back (issue
+ * #257). The watcher asks again, and the line goes once that machine answers.
+ */
+export function claimUnconfirmedLines(parents: ParentRecord[]): string[] {
+  const lines: string[] = [];
+  for (const parent of parents) {
+    for (const child of parent.children) {
+      const open = child.claimUnconfirmed;
+      if (!open || child.exitedAt) continue;
+      lines.push(`warn  unconfirmed claim: ${child.name} (child ${child.id} of ${parent.id}) on machine ${open.host}: since ${open.at}, that machine has not confirmed it still holds pane ${child.paneId} for this child, so another parent may watch the pane (${open.reason}). Bellwether asks again; run agent_adopt ${open.host}:${child.paneId} to ask again.`);
+    }
+  }
+  return lines;
+}
+
 export async function reclaimRemote(remote: RemoteOps, parentId: string, child: ChildRecord): Promise<void> {
   const host = hostOf(child);
   if (!remote.claim) throw new Error(`this session holds no connection to machine ${host}`);

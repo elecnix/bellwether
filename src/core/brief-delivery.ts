@@ -12,10 +12,14 @@
 // Neither alone is proof: a read says only that the message entered the
 // session (issue #176), and a `working` names no message, so a redraw or a
 // hook while the brief is in flight looks the same as a turn on it (issue
-// #211). When the two don't both come, the brief goes once more, and when the
+// #211). When the read doesn't come, the brief goes once more, and when the
 // second copy fares no better, the start fails with BriefNotTaken. A copy
-// the session never answered does not go again, because the session may
-// still take it.
+// whose read came never goes again, even without a turn, because a second
+// copy would enter that session twice (issue #246): herdr can miss a turn
+// shorter than its status cycle. The record checks for that read once more
+// right before a resend, in the same turn of the event loop as the push. A
+// copy the session never answered does not go again either, because the
+// session may still take it.
 //
 // When the session path is not available, herdr types the brief into the pane
 // instead: a harness with no adapter, a session that never connects, or one
@@ -28,7 +32,7 @@ import type { HerdrClient } from './herdr-client.ts';
 import { BLANK_SCREEN } from './screen.ts';
 import { BRIEF_SESSION_WAIT_MS, BRIEF_TURN_WAIT_MS, messageChild, type Inbox, type MessageOutcome } from './send.ts';
 import { HarnessStartFailed, processInfoOf, startupQuote } from './start-check.ts';
-import { updateChild } from './registry.ts';
+import { readParent, updateChild } from './registry.ts';
 import type { BriefDelivery, ChildBrief, ChildRecord } from './types.ts';
 
 export interface BriefInput {
@@ -82,8 +86,11 @@ export function briefHoldMs(inbox: Inbox | undefined): number {
 
 const STATUS_EVENTS = new Set(['pane.agent_status_changed', 'pane_agent_status_changed']);
 
-/** When the model took a copy: its read receipt and a turn both seen, or nothing when the wait ran out. */
-type Taken = { at: string; readAt: string } | undefined;
+/** What a wait on one copy saw: the read receipt and which message it named, and a turn since the push. */
+interface Signs {
+  read?: { id: string; at: string };
+  turn?: string;
+}
 
 /** Hand a just-started child its brief, by its session where it can, and record which path carried it. */
 export async function deliverBrief(input: BriefInput): Promise<BriefOutcome> {
@@ -166,11 +173,25 @@ export async function deliverBrief(input: BriefInput): Promise<BriefOutcome> {
   // Which sign the newest copy got, so a failure says what was missing.
   let readSeen = false;
   const signsSeen = (): string => (readSeen && turnAt ? 'both signs' : readSeen ? "its adapter's read receipt but no turn from herdr" : turnAt ? "a turn from herdr but no read receipt from its adapter, which a Claude Code channel sends only once it finds the session's transcript" : 'neither a read receipt nor a turn');
-  // Wait for both facts on one copy: its read receipt, and a turn since its push.
-  const taken = async (messageId: string): Promise<Taken> => {
+  // The read the record holds for a message. A read reaches the record in
+  // the daemon's handler of the adapter's acknowledgement, so this sees one
+  // that landed after the wait ran out.
+  const recorded = (id: string): { id: string; at: string } | undefined => {
+    const at = readParent(input.parentId)?.children.find((entry) => entry.id === child.id)?.messages?.find((entry) => entry.id === id)?.readAt;
+    return at ? { id, at } : undefined;
+  };
+  const deadline = input.inbox?.deadline ?? ((ms: number, signal: AbortSignal) => new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    signal.addEventListener('abort', () => clearTimeout(timer), { once: true });
+  }));
+  // Wait for both facts: a read receipt on one of `ids`, and a turn since the
+  // newest push. It returns what came by the deadline, so the caller decides
+  // on the read alone whether another copy may go.
+  const watch = async (ids: string[]): Promise<Signs> => {
     readSeen = false;
+    const seen: Signs = {};
     const read = input.inbox?.read;
-    if (!read) return undefined;
+    if (!read) return seen;
     const waiting = new AbortController();
     const stop = (): void => waiting.abort();
     controller.signal.addEventListener('abort', stop, { once: true });
@@ -180,15 +201,15 @@ export async function deliverBrief(input: BriefInput): Promise<BriefOutcome> {
         : new Promise<string>((resolve) => {
             onTurn = () => resolve(turnAt!);
           });
-      const both = Promise.all([read(input.parentId, child.id, messageId, waiting.signal).then((at) => ((readSeen = true), at)), turn]).then(([readAt, at]): Taken => ({ readAt, at: Date.parse(readAt) > Date.parse(at) ? readAt : at }));
-      return await Promise.race<Taken>([
-        both,
-        new Promise<Taken>((resolve) => {
-          const timer = setTimeout(() => resolve(undefined), waitMs);
-          waiting.signal.addEventListener('abort', () => clearTimeout(timer), { once: true });
-        }),
-        gone,
-      ]);
+      const reads = Promise.race(ids.map((id) => read(input.parentId, child.id, id, waiting.signal).then((at) => ({ id, at })))).then((found) => {
+        seen.read ??= found;
+        readSeen = true;
+      });
+      await Promise.race([Promise.all([reads, turn]), deadline(waitMs, waiting.signal), gone]);
+      // A read that landed after the deadline, before the caller decides.
+      for (const id of ids) seen.read ??= recorded(id);
+      if (turnAt) seen.turn = turnAt;
+      return seen;
     } finally {
       onTurn = () => {};
       controller.signal.removeEventListener('abort', stop);
@@ -202,29 +223,41 @@ export async function deliverBrief(input: BriefInput): Promise<BriefOutcome> {
     let delivery = deliveryOf(outcome);
     if (outcome.message.path === 'session') {
       const first = outcome.message;
-      let sign = await taken(first.id);
+      let seen = await watch([first.id]);
       // A copy the session never answered may still enter it, so a second
       // copy could reach the model twice. Only a read could prove this one.
-      if (!sign && outcome.unanswered) {
+      if (!seen.read && outcome.unanswered) {
         const why = `${child.name}'s session was pushed ${what} as message ${first.id}, but ${outcome.unanswered.replace(/\.$/, '')}, and its model did not read it and begin a turn on it within ${seconds(waitMs)} s more. A second copy could enter its session twice, so none went`;
         if (!input.notice) throw new BriefNotTaken(`${why}, the spawn failed and its pane is closed.`);
         notTaken = `${why}. Its session is offered the notice again when it next connects.`;
-      } else if (!sign) {
-        // The model did not read the first copy and begin a turn on it: it may
-        // have reached the adapter before the session could take a message. The first copy
-        // leaves the replay, so a reconnect does not hand it over a third time.
+      } else if (!seen.read) {
+        // No read came for the first copy: it may have reached the adapter
+        // before the session could take a message. The record's check at the
+        // end of watch() and the push below are separated only by microtasks,
+        // so for a child on this machine no read lands between them. The
+        // first copy leaves the replay, so a reconnect does not hand it over
+        // a third time.
         outcome = await send();
         markResent(input.parentId, child.id, first.id, `its model did not read it and begin a turn on it within ${seconds(waitMs)} s (Bellwether saw ${signsSeen()}), so ${input.brief && !input.notice ? `brief ${input.brief.n}` : 'the notice'} went again as message ${outcome.message.id}`);
         delivery = { ...deliveryOf(outcome), resentFrom: first.id };
         if (outcome.message.path === 'session') {
-          sign = await taken(outcome.message.id);
-          if (!sign && !input.notice) throw new BriefNotTaken(`${child.name}'s ${viaLabel(first.via)} received its brief twice, as messages ${first.id} and ${outcome.message.id}, but its model did not read and begin a turn on either within ${seconds(waitMs)} s of each, so the spawn failed and its pane is closed. Of the second copy, Bellwether saw ${signsSeen()}.`);
-          if (!sign) notTaken = `${child.name}'s ${viaLabel(first.via)} received its teleport notice twice, as messages ${first.id} and ${outcome.message.id}, but its model did not read it and begin a turn on it within ${seconds(waitMs)} s of either. Of the second copy, Bellwether saw ${signsSeen()}.`;
-        } else if (input.notice) {
-          notTaken = `${child.name}'s model did not read its teleport notice and begin a turn on it, and the second copy found no session: ${outcome.unanswered ?? 'the session path was not available'}.`;
+          // A read on the first copy can still come, from a child on another
+          // machine whose receipt was on its way back: it settles the brief,
+          // and no third copy goes.
+          seen = await watch([outcome.message.id, first.id]);
+          if (!seen.read && !input.notice) throw new BriefNotTaken(`${child.name}'s ${viaLabel(first.via)} received its brief twice, as messages ${first.id} and ${outcome.message.id}, but its model did not read and begin a turn on either within ${seconds(waitMs)} s of each, so the spawn failed and its pane is closed. Of the second copy, Bellwether saw ${signsSeen()}.`);
+          if (!seen.read) notTaken = `${child.name}'s ${viaLabel(first.via)} received its teleport notice twice, as messages ${first.id} and ${outcome.message.id}, but its model did not read it and begin a turn on it within ${seconds(waitMs)} s of either. Of the second copy, Bellwether saw ${signsSeen()}.`;
+        } else {
+          seen = {};
+          if (input.notice) notTaken = `${child.name}'s model did not read its teleport notice and begin a turn on it, and the second copy found no session: ${outcome.unanswered ?? 'the session path was not available'}.`;
         }
       }
-      if (sign) delivery = { ...delivery, readAt: sign.readAt, takenAt: sign.at, takenBy: 'turn' };
+      if (seen.read) {
+        delivery = { ...delivery, readAt: seen.read.at, ...(seen.read.id !== delivery.message ? { readFrom: seen.read.id } : {}) };
+        // Taken only on both facts (issue #211): a read with no turn keeps its read and no takenAt.
+        if (seen.turn) delivery = { ...delivery, takenAt: Date.parse(seen.read.at) > Date.parse(seen.turn) ? seen.read.at : seen.turn, takenBy: 'turn' };
+        else if (input.notice) notTaken = `${child.name}'s model read its teleport notice, but herdr reported no turn on it within ${seconds(waitMs)} s. It did not go again, because a second copy would enter its session twice.`;
+      }
     }
     if (input.brief) recordDelivery(input.parentId, child.id, input.brief.n, delivery);
     const note = input.brief ? deliveryNote(child, input.brief, delivery, waitMs) : delivery.takenAt ? `${child.name}'s model read its teleport notice and began a turn on it; nothing was typed into its pane.` : (notTaken ?? `${child.name} did not take its teleport notice.`);
@@ -286,9 +319,12 @@ function viaLabel(via: string | undefined): string {
 export function deliveryNote(child: Pick<ChildRecord, 'name'>, brief: Pick<ChildBrief, 'file'>, delivery: BriefDelivery, waitMs = BRIEF_TURN_WAIT_MS): string {
   const kept = `The brief stays at ${brief.file}.`;
   if (delivery.path === 'session') {
-    const lag = delivery.takenAt && delivery.receivedAt ? seconds(Math.max(0, Date.parse(delivery.takenAt) - Date.parse(delivery.receivedAt))) : undefined;
+    const settled = delivery.takenAt ?? delivery.readAt;
+    const lag = settled && delivery.receivedAt ? seconds(Math.max(0, Date.parse(settled) - Date.parse(delivery.receivedAt))) : undefined;
     if (delivery.unanswered) return `${child.name}'s session was pushed its brief as message ${delivery.message}, but ${delivery.unanswered}, and its model read it and began a turn on it${lag ? ` ${lag} s later` : ''}; nothing was typed into its pane. ${kept}`;
-    const sign = delivery.takenBy === 'read' ? `its model read it${lag ? ` ${lag} s later` : ''}` : delivery.takenBy === 'turn' ? `its model ${delivery.readAt ? 'read it and ' : ''}began a turn on it${lag ? ` ${lag} s later` : ''}` : 'Bellwether did not see its model take it';
+    const readOnly = !delivery.takenBy && delivery.readAt ? `its model read it${lag && !delivery.readFrom ? ` ${lag} s later` : ''}, but herdr reported no turn on it within ${seconds(waitMs)} s; Bellwether did not send it again, because a second copy would enter its session twice` : undefined;
+    const sign = delivery.takenBy === 'read' ? `its model read it${lag ? ` ${lag} s later` : ''}` : delivery.takenBy === 'turn' ? `its model ${delivery.readAt ? 'read it and ' : ''}began a turn on it${lag && !delivery.readFrom ? ` ${lag} s later` : ''}` : (readOnly ?? 'Bellwether did not see its model take it');
+    if (delivery.resentFrom && delivery.readFrom) return `${child.name}'s model did not read its brief within ${seconds(waitMs)} s of its ${viaLabel(delivery.via)} receiving it as message ${delivery.resentFrom}, so Bellwether sent the brief once more as message ${delivery.message}; the read receipt for message ${delivery.readFrom} arrived after message ${delivery.message} went out, so its session holds both copies, and ${delivery.takenBy ? `its model began a turn at ${delivery.takenAt}` : 'herdr reported no turn'}. Nothing was typed into its pane. ${kept}`;
     if (delivery.resentFrom) return `${child.name}'s model did not read its brief and begin a turn on it within ${seconds(waitMs)} s of its ${viaLabel(delivery.via)} receiving its brief as message ${delivery.resentFrom}, so Bellwether sent the brief once more as message ${delivery.message}, and ${sign}; nothing was typed into its pane. ${kept}`;
     return `${child.name}'s ${viaLabel(delivery.via)} received its brief as message ${delivery.message}, and ${sign}; nothing was typed into its pane. ${kept}`;
   }
@@ -312,8 +348,9 @@ export function describeBrief(child: Pick<ChildRecord, 'name' | 'briefs'>): stri
   let how: string;
   if (delivery.path === 'session') {
     const twice = delivery.resentFrom ? `, sent twice because its model did not read message ${delivery.resentFrom} and begin a turn on it` : '';
-    const taken = delivery.takenBy === 'read' ? `its model read it at ${delivery.takenAt}` : delivery.takenBy === 'turn' ? `its model ${delivery.readAt ? 'read it and ' : ''}began a turn on it at ${delivery.takenAt}` : 'Bellwether did not see its model take it';
-    how = `into its session through its ${viaLabel(delivery.via)} as message ${delivery.message}${twice}; ${taken}`;
+    const taken = delivery.takenBy === 'read' ? `its model read it at ${delivery.takenAt}` : delivery.takenBy === 'turn' ? `its model ${delivery.readAt ? 'read it and ' : ''}began a turn on it at ${delivery.takenAt}` : delivery.readAt ? `its model read it at ${delivery.readAt}, and herdr reported no turn on it` : 'Bellwether did not see its model take it';
+    const both = delivery.readFrom ? `, and the read receipt for message ${delivery.readFrom} arrived after this copy went out, so its session holds both` : '';
+    how = `into its session through its ${viaLabel(delivery.via)} as message ${delivery.message}${twice}${both}; ${taken}`;
   } else if (delivery.path === 'launch') {
     how = `as the first prompt on its launch line, because ${(delivery.reason ?? 'no reason was recorded').replace(/\.$/, '')}`;
   } else {

@@ -246,10 +246,12 @@ export interface BriefDelivery {
   readAt?: string;
   /** For the session path: when the model took it, the later of its read receipt and its first turn. */
   takenAt?: string;
-  /** For the session path: `turn` once the adapter's read receipt and a `working` status both came for one copy. Before 0.1.10, either fact alone settled it: `turn` for the status, `read` for the receipt. */
+  /** For the session path: `turn` once the adapter's read receipt and a `working` status both came for one copy. Before 0.1.10, either fact alone settled it: `turn` for the status, `read` for the receipt. A read with no turn leaves it out and keeps `readAt` (issue #246). */
   takenBy?: 'turn' | 'read';
-  /** The message that carried the first copy, when the model took no turn on it and the brief went again. */
+  /** The message that carried the first copy, when no read came for it and the brief went again. */
   resentFrom?: string;
+  /** The message whose read settled the brief, when it is not `message`: the first copy's read arrived after the second copy went out (issue #246). */
+  readFrom?: string;
   /** For keystrokes and launch: why the brief did not go into the session. */
   reason?: string;
   /** The message under `messages` that carried it, for the session path and keystrokes. */

@@ -1,0 +1,1 @@
+A spawn no longer sends a brief again once the child's model has read it. A read with no turn from herdr used to send a second copy beside the first, because herdr can miss a turn shorter than its status cycle. The brief is now one copy. The reply says herdr never reported a turn. A late read of the first copy settles the brief, and the record names that copy.

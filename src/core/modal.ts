@@ -5,6 +5,17 @@
 // raises it. The line lets a parent tell a trust question from a permission
 // question without reading the whole screen.
 //
+// What counts as a dialog is one rule, shared with the herdr skill's
+// herdr-box-state.sh (issue #164): a dialog is a question with its options
+// under it, and either a solid selection marker or a y/n prompt. A numbered
+// selection needs another numbered option lined up with it. An unnumbered
+// selection needs an option on the line before or after it, and a confirm or
+// cancel hint under the list. Anything else is not a dialog, whatever it
+// looks like: two lines typed into an input box line up like options, but
+// they have no number and no hint. A screen this module calls a dialog has no
+// input box (src/core/screen.ts), so a draft read as a dialog would vanish
+// from agent_read and turn a finished turn into a blocked event.
+//
 // This module only reads text. Nothing here, nor in the watcher path that
 // calls it, answers a dialog: approving a permission question is the
 // operator's decision, not Bellwether's.
@@ -22,6 +33,18 @@ const YES_NO = /\[(?:y\/n|Y\/n|y\/N)\]|\((?:y\/n|Y\/n|y\/N|yes\/no)\)/;
 const RULE = /^[\s─━═╭╮╰╯┌┐└┘-]{3,}$/u;
 /** A box's side borders, which are not part of the text. */
 const BORDER = /^\s*[│┃]\s?|\s?[│┃]\s*$/gu;
+/** A numbered option's text, such as `1. Yes` or `2) No`. */
+const NUMBERED = /^\d+[.)]\s/;
+/**
+ * A key hint that confirms or cancels a selection, as a list draws it under
+ * its options: Claude Code's `Enter to confirm · Esc to cancel`, pi's `enter
+ * select  esc cancel`.
+ */
+const HINT = /\b(?:enter|return)\b(?: to)? (?:confirm|select|submit|choose)|\besc(?:ape)?\b(?: to)? (?:cancel|exit|go back|dismiss)/i;
+/** How far a numbered option may sit from the selected one, past a description under each option. */
+const NUMBERED_REACH = 12;
+/** How far under the selected option an unnumbered list's hint may sit. */
+const HINT_REACH = 8;
 
 function clip(line: string): string {
   const flat = line.replace(/\s+/g, ' ').trim();
@@ -35,6 +58,25 @@ function isOption(line: string, column: number): boolean {
 }
 
 /**
+ * Whether the marked line at `at`, whose text `text` starts at `column`, is
+ * the selected option of a list, by the rule at the top of this module.
+ */
+function isSelection(lines: string[], at: number, column: number, text: string): boolean {
+  if (NUMBERED.test(text)) {
+    for (const step of [-1, 1]) {
+      for (let index = at + step; index >= 0 && index < lines.length && Math.abs(index - at) <= NUMBERED_REACH; index += step) {
+        const line = lines[index] ?? '';
+        if (RULE.test(line)) break;
+        if (isOption(line, column) && NUMBERED.test(line.slice(column))) return true;
+      }
+    }
+    return false;
+  }
+  if (!isOption(lines[at - 1] ?? '', column) && !isOption(lines[at + 1] ?? '', column)) return false;
+  return lines.slice(at + 1, at + 1 + HINT_REACH).some((line) => HINT.test(line));
+}
+
+/**
  * A screen in its two views: `plain` holds every character, and `content`
  * holds the same lines with faint text blanked (src/core/screen.ts). A bare
  * string is both.
@@ -43,15 +85,18 @@ export type ModalView = string | { plain: string; content: string };
 
 /**
  * The one-line name of the modal dialog at the bottom of `screen`, or
- * undefined when the screen shows none. A dialog is either a selection list
- * with at least two aligned options, one of them marked, or a question that
- * asks for y/n. The name is the dialog's first line and its question, when
- * they differ, cut to MODAL_LINE_LIMIT.
+ * undefined when the screen shows none. A dialog is a question that asks for
+ * y/n, or a question above a selection list: a marked numbered option with
+ * another numbered option lined up with it, or a marked option with one
+ * lined up beside it and a confirm or cancel hint under the list. The name
+ * is the dialog's first line and its question, when they differ, cut to
+ * MODAL_LINE_LIMIT. A list with no text above it, only a rule, asks no
+ * question and is no dialog.
  *
  * The selection marker and the y/n question must be drawn solid: a faint one
  * is a suggestion in an input box, such as Claude Code's, and not a question
- * the screen asks. The other options and the header may be faint, because a
- * dialog often dims the options it has not selected.
+ * the screen asks. The other options, the hint and the header may be faint,
+ * because a dialog often dims what it has not selected.
  */
 export function detectModal(screen: ModalView): string | undefined {
   const view = typeof screen === 'string' ? { plain: screen, content: screen } : screen;
@@ -72,9 +117,7 @@ export function detectModal(screen: ModalView): string | undefined {
     const match = SELECTED.exec(solid[index] ?? '');
     if (!match) continue;
     const column = (match[1]?.length ?? 0) + (match[2]?.length ?? 0) + (match[3]?.length ?? 0);
-    const before = plain[index - 1] ?? '';
-    const after = plain[index + 1] ?? '';
-    if (!isOption(before, column) && !isOption(after, column)) continue;
+    if (!isSelection(plain, index, column, match[4] ?? '')) continue;
     let first = index;
     while (first > 0 && isOption(plain[first - 1] ?? '', column)) first -= 1;
     return nameAbove(plain, first);

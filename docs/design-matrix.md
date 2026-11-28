@@ -4,7 +4,7 @@ In axiomatic design, each functional requirement (FR) is a row, and each design 
 
 A lower-triangular matrix decouples its modules. They change in a fixed order, and a change moves only forward along that order. Any other matrix couples its modules, so a fix to one module can break a requirement that another module serves.
 
-Bellwether at `f3fe3a7` on `main` has a coupled matrix.
+Bellwether at `f3fe3a7` on `main` has a coupled matrix. After step 6, `scripts/design-matrix.ts` finds that no coupled set remains: see [Is any cell above the diagonal left?](#is-any-cell-above-the-diagonal-left).
 
 ## Verdict
 
@@ -276,15 +276,42 @@ A transition into waiting takes the bound as an argument, so the typecheck refus
 
 `carry.ts` now calls `keepRetirement` in `retire.ts`, so `retire.ts` is the only writer of `retireRequestedAt`, `retireIntent`, `retireStage`, `retiredAt`, `retireOutcome`, `retireReason` and `retireProof`. `test/unit/retirement-owner.test.ts` fails on a write anywhere else. Every intent passes through `intentFor`, which adds each worktree the child has on another machine, so each intent lists all of them ([#273](https://github.com/elecnix/bellwether/issues/273)).
 
+### Step 6, the placement and turn families
+
+Steps 1 to 5 left one coupled set of 20 modules, held together by twelve fields outside the five families. Spawn, resume, restart, adopt, carry, recover-crossing, teleport and the watcher each wrote some of those fields. The fields split along two questions, and each question now has its own module.
+
+`src/core/placement.ts` answers where a run is. It owns `workspaceId`, `workspaceLabel`, `ownsWorkspace`, `startedAt` and `agentName`. A workspace this parent opened is its to close, and a workspace it did not open never is ([#225](https://github.com/elecnix/bellwether/issues/225)). Only a tab that created its workspace sets `ownsWorkspace`. A run that moves into any other workspace loses it, whether a tab placed it there (`tabLanded`) or herdr shows it there (`workspaceSeen`).
+
+`src/core/turn.ts` answers what a turn leaves behind. It owns `statusChangedAt`, `lastBusyAt`, `completionSeq`, `turnNotified`, `transcript`, `transcriptMissing` and `toolSource`. The same question also governs `completionPane`, `stateChangeSeq`, `turnBaseline` and `inactiveNotifiedFor`, and each has one writer.
+
+A pane a child crossed into starts fresh, and a turn there counts only once the child works in it ([#271](https://github.com/elecnix/bellwether/issues/271)). A turn number goes on the record only with the pane that gave it (`turnNumbered`), and what the parent heard goes on with its pane (`turnTold`).
+
+Each question changes for its own reasons.
+
+Workspace release and the return of a child read placement, while the classifier, the roster and `agent_read` read the turn. One module would make a change to either question reach the readers of both, so each has its own owner.
+
+Each module keeps a table of its fields, with what each means and which transition sets and clears it. `ChildRecord` declares every field of both families `readonly`. `test/unit/placement-owner.test.ts` and `test/unit/turn-owner.test.ts` fail on a write anywhere else, on the scanner in `test/fixtures/field-owner.ts`. Each gate exempts, by file and receiver, same-named fields on other objects. Those objects include a parent record's workspace, the classifier's own state, a registration answer and a transcript reader.
+
 ## Is any cell above the diagonal left?
 
-Yes. With the five families owned, `scripts/design-matrix.ts` still finds one coupled set. Fields that no family owns now hold it together.
+The answer is no. Before step 6, at `bbfd396`, `node scripts/design-matrix.ts` reported this:
 
-- **Their fields no longer couple anything.** Each of those fields has one writer. Give each field outside the five families a writer of its own, and the script doesn't find a coupled set. On `origin/main` before steps 4 and 5, the same routing leaves a set of nine modules, bound by `moving`, `retireRequestedAt` and `retireIntent`.
-- **What still couples.** Twelve fields, each of which must have one writer before the set breaks up: `workspaceId`, `workspaceLabel`, `ownsWorkspace`, `statusChangedAt`, `lastBusyAt`, `turnNotified`, `completionSeq`, `transcript`, `transcriptMissing`, `toolSource`, `startedAt` and `agentName`. Spawn, resume, restart, adopt, carry, recover-crossing, teleport and the watcher each write some of them, and the incarnation and listing modules read them.
-- **The earlier verdict was too strong.** It said that once the five families had their writers, no coupled set remained, and that the turn bookkeeping does not affect triangularity. The script measures otherwise. The script behind the first verdict isn't in the repository, so the two may differ in what they count.
+```text
+25 design parameters, 1 coupled set
+  20 coupled: teleport, recover, resume, carry, list, restart, watcher, send, brief, delivery, spawn, report, retire, requests, relayrec, claims, authority, adopt, incarnation, record
+```
 
-The next step is a sixth owner, for where a run lands (`workspaceId`, `workspaceLabel`, `ownsWorkspace`) and for what a turn leaves behind (`statusChangedAt`, `lastBusyAt`, `turnNotified`, `completionSeq`, `transcript`, `transcriptMissing`), with `toolSource`, `startedAt` and `agentName` alongside.
+After step 6:
+
+```text
+27 design parameters, 0 coupled sets
+```
+
+Under the order of `PARAMETERS` in the script, the matrix is lower-triangular. Each module depends only on modules that come before it.
+
+Still, `stuckMs` and `inactiveMs` have more than one writer: spawn and adopt both set them as each record begins. No module outside the classifier reads them, and the classifier is not a design parameter, so they couple nothing. A later change could couple the matrix again. If it writes a field from two modules and a third reads it, the script finds that, and the ownership gates catch it for each family's fields.
+
+Earlier counts were too strong twice. The first verdict said five families would end with zero coupled sets, and step 5 measured twelve fields that still bound one. One script produces this verdict, and it counts what Method describes and nothing else. Dependencies that Method leaves out, through herdr and through a spread copy, remain outside it.
 
 ## Reproducing the matrix
 

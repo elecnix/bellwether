@@ -41,6 +41,8 @@ import { processInfoOf } from './start-check.ts';
 import { teleportState, type TeleportRefusalInput, type TeleportState } from './teleport-plan.ts';
 import type { ChildRecord, Crossing } from './types.ts';
 import { crossingFailed, relocated, runEnds, viewOf } from './incarnation.ts';
+import { placementLost } from './placement.ts';
+import { transcriptLeft } from './turn.ts';
 import { crossingBegun, crossingEnded, crossingStep } from './requests.ts';
 import { keepRetirement } from './retire.ts';
 
@@ -385,11 +387,10 @@ export async function carryChild(deps: CarryDeps, parentId: string, request: Car
       relocated(moved, { host: target, cwd: targetCwd, session: byPath ? { kind: 'path', value: sessionFile } : { kind: 'id', value: resumable.value } });
       // The run on the source ended when its tab closed, or before, for a stopped child.
       runEnds(moved, { at: child.exitedAt ?? at });
-      delete moved.transcript;
-      delete moved.transcriptMissing;
+      transcriptLeft(moved);
       // A workspace id belongs to the source machine's herdr. A child with a
       // workspace of its own gets a new one at the destination, under the same label.
-      delete moved.workspaceId;
+      placementLost(moved);
       upsertChild(parentId, moved);
       const parent = readParent(parentId);
       if (!parent) throw new Error(`the registry for ${parentId} disappeared`);

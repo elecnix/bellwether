@@ -13,6 +13,8 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import { acquired, refusal as authorityRefusal } from './authority.ts';
+import { firstPlacement } from './placement.ts';
+import { firstTurn } from './turn.ts';
 import { withChildLock } from './child-lock.ts';
 import { unreadBrief } from './brief-history.ts';
 import { LOCAL_HOST, hostOf } from './machine.ts';
@@ -181,7 +183,7 @@ export interface PeerSelf {
 /** A freed child's session, as the daemon's inbox addresses it. */
 function sessionOf(entry: PeerEntry): ChildRecord {
   const at = new Date().toISOString();
-  return { id: entry.address, name: entry.name, kind: entry.kind ?? 'claude', harness: entry.kind ?? 'claude', paneId: '', host: entry.host ?? LOCAL_HOST, ...acquired('spawn'), startedAt: at, lastStatus: 'idle', statusChangedAt: at, lastBusyAt: at, depth: 1 };
+  return { id: entry.address, name: entry.name, kind: entry.kind ?? 'claude', harness: entry.kind ?? 'claude', paneId: '', host: entry.host ?? LOCAL_HOST, ...acquired('spawn'), ...firstPlacement({ at }), lastStatus: 'idle', ...firstTurn({ at }), depth: 1 };
 }
 
 /**

@@ -23,6 +23,8 @@ import type { ChildRecord, ParentRecord } from './types.ts';
 import { resolveInactiveMs } from './inactivity.ts';
 import type { SessionReach } from './adopted-session.ts';
 import { firstRun, runStarts, stopAwaiting } from './incarnation.ts';
+import { firstPlacement, workspaceSeen } from './placement.ts';
+import { busyAt, firstTurn, statusChanged, turnsAlreadyDone } from './turn.ts';
 
 export interface AdoptOptions {
   /** A pane id, or the name of a live agent, on the host. */
@@ -96,13 +98,10 @@ export function backInPane(entry: ChildRecord, pane: Pick<HerdrPane, 'paneId' | 
   clearRetirement(entry);
   // The process in the pane is not one Bellwether started, so runStarts, given no
   // launchedAt, leaves the parent holding the child by adoption again (issue #256).
-  entry.statusChangedAt = now;
-  entry.lastBusyAt = now;
-  if (pane.workspaceId) entry.workspaceId = pane.workspaceId;
-  if (pane.completionSeq !== undefined) {
-    entry.completionSeq = pane.completionSeq;
-    entry.turnNotified = { paneId: entry.paneId, seq: pane.completionSeq };
-  }
+  statusChanged(entry, now);
+  busyAt(entry, now);
+  if (pane.workspaceId) workspaceSeen(entry, pane.workspaceId);
+  turnsAlreadyDone(entry, pane.completionSeq);
 }
 
 /**
@@ -229,17 +228,12 @@ export async function adoptPane(client: HerdrClient, parent: ParentRecord, optio
     kind,
     harness,
     ...firstRun({ paneId: pane.paneId, tabId: pane.tabId, host, cwd: pane.cwd, session: pane.agentSessionId ? { kind: pane.agentSessionId.includes('/') ? 'path' : 'id', value: pane.agentSessionId } : undefined, status: pane.agentStatus }),
-    workspaceId: pane.workspaceId,
+    // Bellwether did not make the pane's workspace, so the child never owns it.
+    ...firstPlacement({ at: now, workspaceId: pane.workspaceId }),
     ...acquired('adopt', doubt),
-    startedAt: now,
-    statusChangedAt: now,
-    completionSeq: pane.completionSeq,
     // The turns the pane finished before this parent adopted it are not news.
     // The first event is the end of the next turn, as for a spawned child.
-    ...(pane.completionSeq === undefined ? {} : { turnNotified: { paneId: pane.paneId, seq: pane.completionSeq } }),
-    transcript: found?.path,
-    transcriptMissing: found?.missing,
-    lastBusyAt: now,
+    ...firstTurn({ at: now, transcript: found, done: { paneId: pane.paneId, seq: pane.completionSeq } }),
     depth: parent.depth + 1,
     stuckMs: options.stuckMinutes === undefined ? undefined : Math.max(1_000, Math.round(options.stuckMinutes * 60_000)),
     inactiveMs: resolveInactiveMs(undefined),

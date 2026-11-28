@@ -317,7 +317,7 @@ export interface ChildRecord {
    * as a pi naming extension does. A tool call may use it too, unless two
    * children answer to it.
    */
-  agentName?: string;
+  readonly agentName?: string;
   /**
    * The provider and model a pi child runs on, and where the pair came from:
    * the spawn's caller, the parent session, or the child's own session file
@@ -343,15 +343,15 @@ export interface ChildRecord {
   readonly paneId: string;
   readonly tabId?: string;
   /** The herdr workspace that holds the child's tab, on the child's machine. */
-  workspaceId?: string;
+  readonly workspaceId?: string;
   /** That workspace's label, when the spawn knew it. */
-  workspaceLabel?: string;
+  readonly workspaceLabel?: string;
   /**
    * Set when Bellwether created the workspace for this child, with
    * `workspace: "new"`. Only such a workspace is ever closed, and only once
    * it holds no tab.
    */
-  ownsWorkspace?: boolean;
+  readonly ownsWorkspace?: boolean;
   /**
    * The herdr server the child runs on: `local` for this machine's, or the
    * label of a saved herdr machine. Pane ids are scoped to one server, so
@@ -375,40 +375,40 @@ export interface ChildRecord {
   /** When the child was last brought back by a spawn with a resume target. */
   readonly resumedAt?: string;
   readonly cwd?: string;
-  startedAt: string;
+  readonly startedAt: string;
   /** The last status herdr reported for the pane. */
   readonly lastStatus: AgentStatus;
   /** Set when the status last changed, for the settle time. */
-  statusChangedAt: string;
+  readonly statusChangedAt: string;
   /** herdr's completion_seq for the last finished turn. */
-  completionSeq?: number;
+  readonly completionSeq?: number;
   /**
    * The pane whose herdr gave `completionSeq`. herdr numbers each pane's turns
    * on its own, so a number from an earlier pane says nothing about the pane
    * the child runs in after a restart, resume, move or teleport (issue #271).
    * A record without it holds a number from the pane its `turnNotified` names.
    */
-  completionPane?: string;
+  readonly completionPane?: string;
   /** The child's transcript file, when its harness keeps one. Kept after exit. */
-  transcript?: string;
+  readonly transcript?: string;
   /**
    * Why a child on this machine has no transcript yet, such as a Claude Code
    * session that has not had its first turn. Cleared once the file is found.
    */
-  transcriptMissing?: string;
+  readonly transcriptMissing?: string;
   /**
    * Which server gives a Claude Code child its Bellwether tools, and each
    * other Bellwether server its environment held that the spawn kept out.
    * Written at each start, so a resume or restart says what that start chose.
    */
-  toolSource?: ToolSource;
+  readonly toolSource?: ToolSource;
   /**
    * The harness session, recorded as soon as herdr reports it and kept after
    * the child exits, so a retired child can still be resumed.
    */
   readonly session?: ChildSession;
   /** herdr's state_change_seq for the newest status Bellwether has read. */
-  stateChangeSeq?: number;
+  readonly stateChangeSeq?: number;
   /** How many Bellwether generations deep this child is. */
   depth: number;
   /**
@@ -449,7 +449,7 @@ export interface ChildRecord {
    * raises no second event. `seq` is herdr's completion_seq, or the watcher's
    * own count of turns ends for a pane herdr does not number.
    */
-  turnNotified?: { paneId: string; seq: number };
+  readonly turnNotified?: { paneId: string; seq: number };
   /**
    * Set when the child runs in a pane where the parent has heard of no turn
    * yet, after a restart, resume, move or teleport gave it that pane (issue
@@ -460,9 +460,9 @@ export interface ChildRecord {
    * next ready status ends a turn. The field goes once a turn in this pane is
    * notified, which `turnNotified` then names. It never proves a brief read.
    */
-  turnBaseline?: { paneId: string; seq?: number; worked?: true };
+  readonly turnBaseline?: { paneId: string; seq?: number; worked?: true };
   /** The last time the child's transcript or screen moved. */
-  lastBusyAt: string;
+  readonly lastBusyAt: string;
   /**
    * The dialog the child waits on while one is open, which herdr can report
    * as idle. `pi` comes from the child's own pi extension, on pi's
@@ -514,7 +514,7 @@ export interface ChildRecord {
   /** This child's inactivity threshold in milliseconds. Set at spawn; the default when absent. */
   inactiveMs?: number;
   /** The quiet period whose inactive event already went out, as an ISO time. Survives a restart. */
-  inactiveNotifiedFor?: string;
+  readonly inactiveNotifiedFor?: string;
   /**
    * Set when the child asked to be restarted, and cleared once the daemon has
    * restarted it. The deferral is on the record, not in a timer, so a daemon

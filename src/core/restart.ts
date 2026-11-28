@@ -58,6 +58,8 @@ import { resumeArgs, sessionOf, type HarnessSession } from './resume.ts';
 import { clearRetirement } from './retire.ts';
 import { RESTART_DEFER_MS, restartAnswered, restartArmed, restartDisarmed, restartFailedEnds, restartPhase, restartRanSince, restartRequested, restartStalled, restartTaken, waitStatusSeen } from './requests.ts';
 import { answerLost, closingPane, firstRun, doubtSettled, holdEvents, paneClosed, paneOpened, releaseEvents, reportPending, runFailedToRestart, runStarts, type Place } from './incarnation.ts';
+import { firstPlacement, tabLanded } from './placement.ts';
+import { busyAt, firstTurn, statusChanged, toolsChosen, transcriptFound } from './turn.ts';
 import { STARTUP_HOLD_MS, STARTUP_TIMEOUT_MS, childArgs, childEnv, childStartFiles, farChildFiles, herdrLink, readsRefusal, hostName, nextLaunch, startHarness, startWithRetry, type NextLaunch, type RouteChange } from './spawn.ts';
 import { launchLine, routeLabel, routeLaunch } from './routes.ts';
 import { watchStartup, type StartupWatch } from './startup-dialogs.ts';
@@ -533,10 +535,8 @@ async function restartInPlace(client: HerdrClient, store: RestartStore, child: C
     store.update((entry) => {
       paneOpened(entry, { paneId: newPane, tabId: opened.tabId }, false);
       paneClosed(entry);
-      if (toolSource) entry.toolSource = toolSource;
-      if (opened.workspaceId) entry.workspaceId = opened.workspaceId;
-      if (opened.workspaceLabel) entry.workspaceLabel = opened.workspaceLabel;
-      if (opened.ownsWorkspace) entry.ownsWorkspace = true;
+      toolsChosen(entry, toolSource);
+      tabLanded(entry, opened);
     });
     const dialogs = requireHarness(child.kind).startup;
     if (dialogs) {
@@ -581,7 +581,7 @@ async function restartInPlace(client: HerdrClient, store: RestartStore, child: C
   store.update((entry) => {
     markRestarted(entry, { session: reported ?? { kind: session.kind, value: session.value }, ...(status ? { status } : {}), launch });
     const transcript = requireHarness(entry.kind).conversation.locate(entry.session?.value, entry.cwd).path;
-    if (transcript) entry.transcript = transcript;
+    if (transcript) transcriptFound(entry, { path: transcript });
   });
   hooks.reset?.(child.id);
   hooks.log?.(`restart ${child.name}: closed ${oldPane}, opened ${newPane} on session ${session.value}, ${matched ? 'the session matched' : `herdr reported ${reported?.value ?? 'no session'}`}`);
@@ -600,8 +600,8 @@ function markRestartFailed(entry: ChildRecord, failure: RestartFailure): void {
 /** Put on a record that the child runs again on its session, after a restart on whichever machine it runs on. */
 function markRestarted(entry: ChildRecord, back: { session: ChildSession; status?: ChildRecord['lastStatus']; launch: NextLaunch; where?: Place }): void {
   const at = new Date().toISOString();
-  if (back.status && entry.lastStatus !== back.status) entry.statusChangedAt = at;
-  entry.lastBusyAt = at;
+  if (back.status && entry.lastStatus !== back.status) statusChanged(entry, at);
+  busyAt(entry, at);
   restartAnswered(entry, at);
   applyLaunch(entry, back.launch);
   // Every field of the run before goes. The new harness has yet to show herdr
@@ -782,10 +782,9 @@ function settleRemoteRestart(parentId: string, child: ChildRecord, host: string,
   }
   const { record, outcome } = answer;
   updateChild(parentId, child.id, (entry) => {
-    if (record.workspaceId) entry.workspaceId = record.workspaceId;
-    if (record.workspaceLabel) entry.workspaceLabel = record.workspaceLabel;
-    if (record.ownsWorkspace) entry.ownsWorkspace = true;
-    if (record.toolSource) entry.toolSource = record.toolSource;
+    // The far daemon's placement decided the workspace there, as tabLanded does here.
+    if (record.workspaceId) tabLanded(entry, record);
+    toolsChosen(entry, record.toolSource);
     // A remote child's transcript stays on its own machine's disk.
     markRestarted(entry, { session: record.session ?? { kind: child.session?.kind ?? 'id', value: sessionValue }, ...(record.lastStatus ? { status: record.lastStatus } : {}), launch, where: { paneId: record.paneId, tabId: record.tabId || undefined } });
   });
@@ -866,13 +865,10 @@ export async function restartForRelay(parentId: string, childId: string, wanted:
     kind: wanted.kind,
     harness: wanted.harness,
     ...firstRun({ paneId: wanted.paneId, tabId: wanted.tabId || undefined, host: LOCAL_HOST, cwd: cwd || undefined, session: { kind: session.kind, value: session.value } }),
-    ...(wanted.workspaceId ? { workspaceId: wanted.workspaceId } : {}),
-    ...(wanted.workspaceLabel ? { workspaceLabel: wanted.workspaceLabel } : {}),
-    ...(wanted.ownsWorkspace ? { ownsWorkspace: true } : {}),
+    // The parent's record of the child decided its workspace, so the far restart keeps it.
+    ...firstPlacement({ at: relay.registeredAt, workspaceId: wanted.workspaceId, workspaceLabel: wanted.workspaceLabel, ownsWorkspace: wanted.ownsWorkspace }),
     ...acquired('spawn'),
-    startedAt: relay.registeredAt,
-    statusChangedAt: at,
-    lastBusyAt: at,
+    ...firstTurn({ at }),
     depth: wanted.depth,
     ...(wanted.maxDepth === undefined ? {} : { maxDepth: wanted.maxDepth }),
     ...(wanted.reads?.length ? { reads: wanted.reads } : {}),

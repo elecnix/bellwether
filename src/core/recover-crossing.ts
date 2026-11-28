@@ -38,6 +38,8 @@ import { holdsSession, resumeChild, type HarnessSession } from './resume.ts';
 import type { ChildRecord, Crossing, ParentRecord } from './types.ts';
 import { crossingEnded, withoutCrossing } from './requests.ts';
 import { crossingFailed, relocated, releaseEvents, runContinues, runEnds, runStarts, viewOf } from './incarnation.ts';
+import { workspaceSeen } from './placement.ts';
+import { transcriptFound, transcriptLeft } from './turn.ts';
 
 /** What a recovery did with one crossing, for the daemon log and the tests. */
 export interface Recovery {
@@ -134,9 +136,8 @@ async function recoverOne(deps: CarryDeps, parentId: string, childId: string, in
       relocated(entry, { host: crossing.to, ...(crossing.target ? { cwd: crossing.target.cwd } : {}), ...(crossing.target?.session ? { session: crossing.target.session } : {}) });
       // The session runs at the destination: a new run, and nothing of the source's stays.
       runStarts(entry, { paneId: there.paneId, tabId: there.tabId || undefined, status: there.agentStatus, launchedAt: new Date().toISOString() });
-      if (there.workspaceId) entry.workspaceId = there.workspaceId;
-      else delete entry.workspaceId;
-      delete entry.transcript;
+      workspaceSeen(entry, there.workspaceId);
+      transcriptLeft(entry);
       recordDeparture(entry, { host: crossing.from, at, ...(crossing.source?.cwd ? { cwd: crossing.source.cwd } : {}), verb, ...(crossing.reason ? { reason: crossing.reason } : {}) });
       crossingEnded(entry, { ran: true });
     });
@@ -159,10 +160,8 @@ async function recoverOne(deps: CarryDeps, parentId: string, childId: string, in
   updateChild(parentId, childId, (entry) => {
     const tab = here ? here.tabId : source?.tabId;
     relocated(entry, { host: crossing.from, ...(source?.cwd ? { cwd: source.cwd } : {}), ...(source?.session ? { session: source.session } : {}), paneId: here ? here.paneId : (source?.paneId ?? entry.paneId), tabId: tab || undefined });
-    if (source?.transcript) entry.transcript = source.transcript;
-    const workspace = here ? here.workspaceId : source?.workspaceId;
-    if (workspace) entry.workspaceId = workspace;
-    else delete entry.workspaceId;
+    if (source?.transcript) transcriptFound(entry, { path: source.transcript });
+    workspaceSeen(entry, here ? here.workspaceId : source?.workspaceId);
     releaseEvents(entry);
     // The source still runs the session: the run never ended. Otherwise it
     // stays stopped where it was, or comes back below through a resume.

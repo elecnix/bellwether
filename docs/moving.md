@@ -80,6 +80,10 @@ From the moment a move marks the child until it runs on the target, the child is
 
 A child left `stranded` keeps `crossingFailed` on its record, with the step, the error, the session file on the source and the resume that brings it back. `agent_list` adds `on neither machine since a crossing failed` to its state, and `bellwether doctor` prints a `fail` line until the child runs again.
 
+A resume keeps the child recorded as not running until its new tab reports a pane. When a rollback or a recovery resumes the child on the source, it first writes `crossingFailed` to the record. The resume clears that flag once the tab exists.
+
+If the daemon stops in between, the child remains exited. Doctor then prints its `fail` line, along with the resume that brings the child back. Without this, the record could end up with an empty pane and nothing to mark it as exited. Nothing would read it.
+
 ## Recovering a move after the daemon stops
 
 The mark on the child record names the daemon process that runs the move, the last step it finished, the files it copied and where the child ran before. A daemon that starts and finds a mark from another daemon process finishes or undoes that move. It goes by what the two machines show, because the old daemon may have stopped between an act and the mark for it:

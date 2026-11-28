@@ -21,6 +21,7 @@ import { RelayOutbox } from './relay.ts';
 import { RelayAnswerLost } from '../core/relay-answer.ts';
 import { learnRelayRestart, restartForRelay, type RelayRestartAnswer } from '../core/restart.ts';
 import { RelayLinks, relayInbox } from './relay-links.ts';
+import { departuresOf } from '../core/departures.ts';
 import { LOCAL_HOST, hostOf, knownHosts } from '../core/machine.ts';
 import { acceptLocalReport, isReportStatus, localParentOf, routeReport, type ReportInput } from '../core/report.ts';
 import { readRelayRecord, updateRelayRecord } from '../core/relay-records.ts';
@@ -817,8 +818,8 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
   const acceptRelayed = (host: string, report: RelayReport): { refused?: string } | Promise<{ answer: string }> => {
     const route = routeReport({ parentId: report.parentId, childId: report.childId });
     if (route.kind !== 'local') return { refused: `this machine holds no parent ${report.parentId} with child ${report.childId}` };
-    // A report the child left on the machine it moved away from still counts.
-    if (hostOf(route.child) !== host && route.child.movedFrom?.host !== host) return { refused: `child ${report.childId} runs on machine ${hostOf(route.child)}, not ${host}` };
+    // A report the child left on any machine it moved away from still counts (issue #241).
+    if (hostOf(route.child) !== host && !departuresOf(route.child).some((place) => place.host === host)) return { refused: `child ${report.childId} runs on machine ${hostOf(route.child)}, not ${host}` };
     // Not a report: the child asks from that machine to be retired.
     if (report.retire) return acceptRetire(host, route.parent.id, route.child.id, report.retire.reason);
     // Not a report: the child asks from that machine to be teleported.

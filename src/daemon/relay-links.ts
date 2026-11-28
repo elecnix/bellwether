@@ -15,6 +15,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { departuresOf } from '../core/departures.ts';
 import { LOCAL_HOST, hostOf, resolveMachine, type MachineResolver } from '../core/machine.ts';
 import { relayHostsPath } from '../core/paths.ts';
 import { listParents, updateChild } from '../core/registry.ts';
@@ -334,8 +335,16 @@ export class RelayLinks {
       for (const child of parent.children) {
         // A child that moved away left its old machine as an exited child leaves
         // its own: that machine is drained once more, for a report it left there.
+        // Each machine it left counts, not only the last (issue #241): a quick
+        // chain of moves must not strand a report on the first machine.
         const places: { host: string; left?: number }[] = [{ host: hostOf(child), left: child.exitedAt ? Date.parse(child.exitedAt) : undefined }];
-        if (child.movedFrom && child.movedFrom.host !== places[0]?.host) places.push({ host: child.movedFrom.host, left: Date.parse(child.movedFrom.at) || 0 });
+        for (const departure of departuresOf(child)) {
+          if (departure.host === places[0]?.host) continue;
+          const left = Date.parse(departure.at) || 0;
+          const known = places.find((place) => place.host === departure.host);
+          if (!known) places.push({ host: departure.host, left });
+          else if (known.left !== undefined) known.left = Math.max(known.left, left);
+        }
         for (const { host, left } of places) {
           if (host === LOCAL_HOST) continue;
           const want = wanted.get(host) ?? { parentIds: new Set<string>(), children: [], exitedSinceDrain: 0 };

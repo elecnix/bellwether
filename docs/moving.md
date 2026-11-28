@@ -46,7 +46,7 @@ A session crosses to the other machine, but its processes and worktrees remain o
 
 Bellwether refuses too when it cannot tell, which happens if herdr does not report the pane's shell and foreground process, or if Bellwether on the source predates this check.
 
-After the move, a `request_retirement` from the child reaches the parent's daemon and retires the worktree it left on the parent's machine. The record keeps that directory as `movedFrom.cwd` ([Retiring a child there](remote-machines.md#retiring-a-child-there)).
+After the move, a `request_retirement` from the child reaches the parent's daemon. That daemon retires each worktree the child left on the parent's machine, including one from an earlier move. The record keeps every place the child left under `departures`, and the newest as `movedFrom` ([Retiring a child there](remote-machines.md#retiring-a-child-there)).
 
 To move anyway, pass `accept_loss`, or `--accept-loss` to `bellwether move`. With that flag, the reply lists what the move left behind, and the `moved` line in `move.log` keeps the same list under `leftBehind`. Bellwether never changes a worktree or stops a job during a move.
 
@@ -59,7 +59,7 @@ To move anyway, pass `accept_loss`, or `--accept-loss` to `bellwether move`. Wit
 5. Bellwether closes the child's tab on the source, then checks that herdr no longer shows the session there. The watcher ignores that close, so the parent hears no exit. Bellwether then reads the session again and copies it once more if the child wrote to it as it stopped.
 6. It starts the child on the target with its harness's resume flag, under the same child id and name, and answers Claude Code's startup dialogs as a spawn does. A Claude Code child gets its MCP config from the target machine, which also records the child for the relay.
 7. If the start fails, Bellwether removes the copy and starts the child again on the source. It uses the session file there, which the move never changed. The reply says the move failed and gives the child's pane.
-8. On success, Bellwether keeps the copy and points the record at the new machine. From then on, the parent's daemon collects the child's reports there. Bellwether also removes the child's brief and MCP config from the machine it left. It drains the old machine once more, so a report the child left there still arrives. Each outcome goes to `~/.bellwether/move.log` as one JSON line. The line includes both machines, the reason and the session paths.
+8. On success, Bellwether keeps the copy and points the record at the new machine. From then on, the parent's daemon collects the child's reports there. Bellwether also removes the child's brief and MCP config from the machine it left. It drains each machine the child left once more, so a report the child left there still arrives, even after a quick chain of moves. Each outcome goes to `~/.bellwether/move.log` as one JSON line. The line includes both machines, the reason and the session paths.
 
 The source machine keeps its copy of the session after a successful move, as history.
 

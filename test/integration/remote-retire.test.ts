@@ -178,6 +178,72 @@ test("a moved child's request_retirement reaches its parent's daemon, and the wo
   assert.equal(childOf('c-moved')?.retireOutcome, 'removed');
 });
 
+/** The worktree a child left on the middle machine of a chain, where the parent's daemon cannot take a proof. */
+const MID = '/mid/x/feat-x';
+/** A second worktree on the parent's machine, which the child came back to and left again. */
+const LEFT2 = '/work/x/feat-y';
+
+test("a child that moved twice, from the parent's machine to mid-box and on to child-box, still has its first worktree retired, and the answer names the one on mid-box (issue #241)", async (t) => {
+  const w = world(t);
+  const git = mergedWorktree();
+  const first = new Date(Date.now() - 60_000).toISOString();
+  const second = new Date().toISOString();
+  // As this release writes it: every place the child left, and movedFrom naming the last for an older daemon.
+  parentHolds('c-twice', { departures: [{ host: 'local', at: first, cwd: LEFT, verb: 'move' }, { host: 'mid-box', at: second, cwd: MID, verb: 'teleport' }], movedFrom: { host: 'mid-box', at: second, cwd: MID, verb: 'teleport' } });
+  childHolds(w, 'c-twice');
+  const links = await parentDaemon(w, git);
+  await until(() => links.state('child-box')?.status === 'connected', 'the parent to connect to child-box');
+
+  const client = await childSession(w, 'c-twice');
+  const answer = await client.tool('request_retirement', { reason: 'merged' });
+  assert.match(answer, /Retirement requested for child-c-twice/, answer);
+  assert.ok(answer.includes(LEFT), `the answer names the worktree the parent will retire: ${answer}`);
+  assert.ok(answer.includes(MID) && answer.includes('mid-box'), `the answer names the worktree left on mid-box, and the machine: ${answer}`);
+  assert.ok(answer.includes(FAR_CWD), `the answer says the worktree on child-box stays: ${answer}`);
+  assert.equal(childOf('c-twice')?.retireIntent?.worktree, LEFT);
+
+  updateChild(PARENT_ID, 'c-twice', (entry) => {
+    entry.exitedAt = new Date().toISOString();
+  });
+  const result = await reapChild(PARENT_ID, 'c-twice', { ops: git, paneOrTabLive: async () => false, busyRetries: 0 });
+  assert.equal(result.outcome, 'removed');
+  assert.deepEqual(git.calls, [`worktree remove ${LEFT}`, `branch -D feat-x`]);
+  const after = childOf('c-twice');
+  assert.deepEqual(after?.departures?.map((entry) => entry.host), ['mid-box'], 'the retired place leaves the list, and the one on mid-box stays for its own machine');
+  assert.equal(after?.movedFrom?.host, 'mid-box');
+});
+
+test("a child that left two worktrees on the parent's machine has both retired, and one that fails its proofs is refused by name while the other goes (issue #241)", async (t) => {
+  const w = world(t);
+  const git = mergedWorktree();
+  git.add(LEFT2, { repo: REPO, branch: 'feat-y', dirty: ['notes.md'] });
+  git.merged.add(`${REPO}:feat-y`);
+  const at = (minutes: number): string => new Date(Date.now() - minutes * 60_000).toISOString();
+  // Parent's machine, then mid-box, then back to the parent's machine in another worktree, then child-box.
+  parentHolds('c-three', { departures: [{ host: 'local', at: at(3), cwd: LEFT }, { host: 'mid-box', at: at(2), cwd: MID }, { host: 'local', at: at(1), cwd: LEFT2 }], movedFrom: { host: 'local', at: at(1), cwd: LEFT2 } });
+  childHolds(w, 'c-three');
+  const links = await parentDaemon(w, git);
+  await until(() => links.state('child-box')?.status === 'connected', 'the parent to connect to child-box');
+
+  const client = await childSession(w, 'c-three');
+  const answer = await client.tool('request_retirement', {});
+  assert.ok(answer.includes(LEFT) && answer.includes(LEFT2), `the answer names both worktrees on the parent's machine: ${answer}`);
+  assert.match(answer, /uncommitted/, `the answer warns now about the dirty one: ${answer}`);
+  assert.ok(answer.includes(MID), answer);
+
+  updateChild(PARENT_ID, 'c-three', (entry) => {
+    entry.exitedAt = new Date().toISOString();
+  });
+  const result = await reapChild(PARENT_ID, 'c-three', { ops: git, paneOrTabLive: async () => false, busyRetries: 0 });
+  assert.equal(result.outcome, 'refused', 'a worktree left in place makes the retirement a refusal');
+  assert.ok(result.reason?.includes(LEFT2), `the refusal names the worktree it left: ${result.reason}`);
+  assert.deepEqual(git.calls, [`worktree remove ${LEFT}`, `branch -D feat-x`], 'the clean worktree goes, the dirty one stays');
+  const after = childOf('c-three');
+  assert.deepEqual(after?.departures?.map((entry) => [entry.host, entry.cwd]), [['mid-box', MID], ['local', LEFT2]]);
+  const log = fs.readFileSync(path.join(w.parentHome, 'retire.log'), 'utf8');
+  assert.ok(log.includes(LEFT) && log.includes(LEFT2), log);
+});
+
 test("the parent's daemon refuses cleanly when the child's worktree is only on the far machine, and writes nothing", async (t) => {
   const w = world(t);
   const git = mergedWorktree();

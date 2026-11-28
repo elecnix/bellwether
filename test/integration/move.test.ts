@@ -351,6 +351,33 @@ test('a pi child moves the other way, from the other machine to this one, into a
   assert.ok(w.ssh.remoteCalls().some((call) => call.argv[0] === 'move-export'), 'the session was read on the machine that held it');
 });
 
+test('a child moved twice keeps both places it left, in order, and movedFrom names the last (issue #241)', async (t) => {
+  const w = await world(t);
+  harness(w.here, { pi: '1.6.1', models: ['example-hosted/deepseek-v4.1-flash'] });
+  harness(w.box, { pi: '1.6.1', models: ['example-hosted/deepseek-v4.1-flash'] });
+  const boxCwd = dir(w.box.user, 'work', 'repo');
+  const hereCwd = dir(w.here.user, 'Source', 'repo', 'main');
+  const boxCwd2 = dir(w.box.user, 'work', 'repo-2');
+  const name = '2026-11-16T01-38-19-939Z_01a1e201.jsonl';
+  const boxFile = path.join(dir(w.box.pi, 'sessions', piSessionDirName(boxCwd)), name);
+  fs.writeFileSync(boxFile, [JSON.stringify({ type: 'session', version: 3, id: '01a1e201', cwd: boxCwd }), '{"type":"model_change","provider":"example-hosted","modelId":"deepseek-v4.1-flash"}', ''].join('\n'));
+  w.box.world.add({ pane_id: 'w9:p4', tab_id: 'w9:t4', agent: 'pi', name: 'worker', agent_status: 'idle', agent_session: { agent: 'pi', kind: 'path', source: 'herdr:pi', value: boxFile } });
+  upsertChild(w.parentId, child({ kind: 'pi', harness: 'pi', host: 'box', paneId: 'w9:p4', tabId: 'w9:t4', cwd: boxCwd, session: { kind: 'path', value: boxFile } }));
+
+  await moveChild(w.deps, w.parentId, { child: 'worker', machine: 'local', cwd: hereCwd, reason: 'closer to the data' });
+  await moveChild(w.deps, w.parentId, { child: 'worker', machine: 'box', cwd: boxCwd2, reason: 'more memory' });
+
+  const moved = record(w);
+  assert.equal(moved?.host, 'box');
+  assert.equal(moved?.cwd, boxCwd2);
+  assert.deepEqual(moved?.departures?.map((entry) => [entry.host, entry.cwd, entry.verb, entry.reason]), [
+    ['box', boxCwd, 'move', 'closer to the data'],
+    [LOCAL_HOST, hereCwd, 'move', 'more memory'],
+  ]);
+  assert.equal(moved?.movedFrom?.host, LOCAL_HOST, 'an older daemon reads the last move where it always did');
+  assert.equal(moved?.movedFrom?.cwd, hereCwd);
+});
+
 test('a pi child whose provider and model the target lacks is refused before anything moves', async (t) => {
   const w = await world(t);
   harness(w.here, { pi: '1.6.1', models: ['openrouter/deepseek-v4.1-flash'] });

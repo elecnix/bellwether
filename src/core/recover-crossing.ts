@@ -23,6 +23,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { DAEMON_INSTANCE, where, type CarryDeps } from './carry.ts';
 import { withChildLock } from './child-lock.ts';
+import { recordDeparture } from './departures.ts';
 import type { HerdrPane } from './herdr-client.ts';
 import { LOCAL_HOST } from './machine.ts';
 import { removeChildFiles } from './mcp-config.ts';
@@ -111,7 +112,7 @@ async function recoverOne(deps: CarryDeps, parentId: string, childId: string, in
       delete entry.exitedAt;
       delete entry.startingUntil;
       entry.lastStatus = there.agentStatus;
-      entry.movedFrom = { host: crossing.from, at, ...(crossing.source?.cwd ? { cwd: crossing.source.cwd } : {}) };
+      recordDeparture(entry, { host: crossing.from, at, ...(crossing.source?.cwd ? { cwd: crossing.source.cwd } : {}), verb, ...(crossing.reason ? { reason: crossing.reason } : {}) });
       delete entry.moving;
     });
     appendLog(crossing, { ...base, outcome: verb === 'teleport' ? 'teleported-untold' : 'moved', pane: there.paneId, ...(verb === 'teleport' ? { undelivered: 'the daemon that ran the teleport stopped before it saw the notice taken' } : {}) });

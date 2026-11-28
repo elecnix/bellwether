@@ -141,9 +141,11 @@ Each answer starts with `Not this machine's child` and the parent's id, then say
 - Waiting, when no connection from the parent's daemon is open: the request stays on disk under `retireRequest` on the child's relay record. Meanwhile `bellwether doctor` on that machine prints a `warn` line for it. Closing the tab is safe, since the parent's daemon retires the child once it collects the request.
 - Refused as an entry: the request stays on disk, and `bellwether doctor` prints a `fail` line.
 
-Retirement's proofs run only on the parent's machine. A child that moved from that machine left its worktree there. Once herdr on the other machine drops the child's pane, the parent's daemon retires that left worktree, with the same checks as before the move. On the record, `movedAway` in the intent gives the sending machine.
+Retirement's proofs run only on the parent's machine, where a child that moved away left its worktree. Every place the child left goes on its record, oldest first, under `departures` ([#241](https://github.com/elecnix/bellwether/issues/241)). So after a move to a second machine and on to a third, the worktree on the parent's machine is still on record. Once herdr on the other machine drops the child's pane, the parent's daemon retires each worktree the child left on its own machine, newest first, with the same checks as before the move. Each worktree has its own outcome: one that fails a check stays, and the others still go. On the record, `movedAway` in the intent gives the sending machine, and `left` lists the other worktrees with their outcomes.
 
-A moved child's current worktree stays on the other machine, and the answer tells the child to remove it there by hand. A child that started on the other machine, or moved there from a third one, didn't leave a worktree on the parent's machine. Its request doesn't change the record, and the answer says why.
+The child's current worktree stays on the other machine, as does each worktree it left on a third machine. For each of them, the answer gives the directory and its machine, and tells the child to remove it there by hand. When a child never ran on the parent's machine, its request doesn't change the record, and the answer says why.
+
+Once retired, a worktree leaves `departures`, and so does a place the child comes back to. That way the list contains one entry for each place that still has something left. Older releases read only `movedFrom`, so it keeps the newest entry.
 
 Older Bellwether on the parent's machine takes the request as a `needs-input` report whose text asks the parent to close the child with `agent_stop`.
 

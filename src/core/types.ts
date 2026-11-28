@@ -518,13 +518,20 @@ export interface ChildRecord {
   /** Why the last teleport the child asked for itself did not run, until its next request. */
   teleportStalled?: RestartStall & { machine?: string };
   /**
-   * The machine the child last moved away from, and when. The parent's daemon
-   * keeps collecting from that machine until it has drained it once since the
-   * move, so a report the child left there still arrives. `cwd` is the
-   * directory the child ran in there, so a retirement the child asks for after
-   * the move can find the worktree it left behind (issue #227).
+   * The place the child last moved away from: the newest entry of
+   * `departures`. A daemon from before issue #241 reads only this field, so
+   * every daemon that writes the list writes it too.
    */
-  movedFrom?: { host: string; at: string; cwd?: string };
+  movedFrom?: Departure;
+  /**
+   * Every place the child left by a move or a teleport, oldest first, one
+   * entry per place (issue #241). The parent's daemon drains each machine in
+   * it once after the child left, and retires each worktree in it that sits on
+   * its own machine. A retired worktree leaves the list, and so does a place
+   * the child comes back to. Read it with `departuresOf`, which also counts a
+   * `movedFrom` an older daemon wrote.
+   */
+  departures?: Departure[];
   /** Each teleport of this child, newest last (issue #226): where from and to, who asked, how the notice arrived, and the proof it runs. */
   teleports?: TeleportEntry[];
   /** Set once the child is gone, so its events stop. */
@@ -687,6 +694,38 @@ export interface DepthGrant {
   reason: string;
 }
 
+/** One place a child left by a move or a teleport (issues #227 and #241). */
+export interface Departure {
+  host: string;
+  /** When the child finished leaving. */
+  at: string;
+  /** The directory the child ran in there, so a retirement can find the worktree it left. */
+  cwd?: string;
+  /** Which act took it away. A record from before issue #241 lacks it. */
+  verb?: 'move' | 'teleport';
+  /** Why, in the caller's words. */
+  reason?: string;
+}
+
+/**
+ * A worktree the child left on the parent's machine by an earlier move,
+ * beside the one its retirement names first (issue #241). Each one goes
+ * through the same checks, and keeps its own stage and outcome.
+ */
+export interface LeftWorktree {
+  worktree: string;
+  repo: string;
+  branch: string;
+  head: string;
+  defaultBranch?: string;
+  stage?: 'worktree-removed' | 'branch-deleted';
+  outcome?: 'removed' | 'refused';
+  /** Why the retirement left it in place. */
+  refusal?: string;
+  /** What showed its work safe, once removed. */
+  proof?: string;
+}
+
 /** The worktree and branch a child asked to have removed once it is gone. */
 export interface RetireIntent {
   /** The worktree root. */
@@ -707,6 +746,8 @@ export interface RetireIntent {
    * (issue #227).
    */
   movedAway?: string;
+  /** The other worktrees the child left on this machine by earlier moves, retired after this one (issue #241). */
+  left?: LeftWorktree[];
 }
 
 /** The registry layout this code writes. Version 2 added the child host. */

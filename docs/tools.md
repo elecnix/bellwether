@@ -89,6 +89,8 @@ The reply gives the reason for the pane fallback. Each message takes exactly one
 
 A session that holds the message but doesn't answer within 5 seconds keeps it, and herdr types nothing, because a late answer would leave the child a second copy. The reply says so, and a session that reconnects receives the message again.
 
+A closed connection works the same way: herdr types nothing when the session's connection to the daemon closes between the push and its answer.
+
 A busy child takes a session message after the tool calls in flight and before its next model call. Typed input reaches the child at that same point, so a correction arrives mid-turn instead of after the turn ends. Claude Code queues a channel message the way it queues a typed prompt. The pi extension steers it with `deliverAs: 'steer'`. An idle child starts a turn on the message.
 
 The child record keeps the newest 20 messages. Each entry records its id, its path and, for a typed message, the reason. `agent_list` prints the newest three per child.

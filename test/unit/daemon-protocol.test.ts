@@ -98,6 +98,7 @@ test('a relay message carries the parent, the child and the message, and one wit
   // A start's brief asks the far daemon to wait for the child's session (issue #162); only true carries.
   assert.deepEqual(parseRequest(JSON.stringify({ type: 'relay-message', id: 'r1', parentId: 'p', childId: 'c', message, awaitSession: true })), { type: 'relay-message', id: 'r1', parentId: 'p', childId: 'c', message, awaitSession: true });
   assert.deepEqual(parseRequest(JSON.stringify({ type: 'relay-message', id: 'r1', parentId: 'p', childId: 'c', message, awaitSession: 'yes' })), { type: 'relay-message', id: 'r1', parentId: 'p', childId: 'c', message });
+  assert.deepEqual(parseRequest(JSON.stringify({ type: 'relay-message-again', id: 'r2', parentId: 'p', childId: 'c', message })), { type: 'relay-message-again', id: 'r2', parentId: 'p', childId: 'c', message });
   assert.throws(() => parseRequest(JSON.stringify({ type: 'relay-message', id: 'r1', parentId: 'p', childId: 'c', message: { ...message, text: ' ' } })), (error: unknown) => error instanceof ProtocolError && error.code === 'invalid_message');
   assert.throws(() => parseRequest(JSON.stringify({ type: 'relay-message', id: 'r1', childId: 'c', message })), (error: unknown) => error instanceof ProtocolError && error.code === 'invalid_message');
 });

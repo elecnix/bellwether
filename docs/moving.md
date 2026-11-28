@@ -100,6 +100,10 @@ Before the move types the launch line at the target, the mark records the tab it
 
 When the target doesn't run the session and the mark records such a tab, the next daemon closes that tab before it does anything else. If the tab won't close, the daemon leaves everything as it is. It tries again at its next start. A session that was still loading there never comes up beside the one the daemon resumes on the source.
 
+The target keeps its own list of the files each copy writes for the child. It writes that list to `~/.bellwether/move-imports/<child id>.json` on that machine, before it writes the first file.
+
+Removing a copy or keeping it settles each file on that list, along with the files named in the mark. So if a daemon stops after the copy and before the mark lists its files, the next daemon can still remove those files.
+
 ## Trying a move across two machines
 
 On the parent's machine, with Bellwether installed on both:

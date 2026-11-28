@@ -22,8 +22,8 @@ import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
-import { crossingLines } from '../../src/core/recover-crossing.ts';
-import { readParent } from '../../src/core/registry.ts';
+import { crossingLines, recoverCrossings } from '../../src/core/recover-crossing.ts';
+import { readParent, updateChild } from '../../src/core/registry.ts';
 import { claudeProjectDir } from '../../src/core/transcript.ts';
 import type { ChildRecord } from '../../src/core/types.ts';
 import { DaemonClient } from '../../src/daemon/client.ts';
@@ -348,6 +348,32 @@ test('a rollback whose daemon stops before the source tab opens leaves a record 
   assert.equal(stranded(left), false, `the record names a pane, an exit, a mark or crossingFailed: ${JSON.stringify({ paneId: left.paneId, exitedAt: left.exitedAt, crossingFailed: left.crossingFailed })}`);
   assert.ok(left.exitedAt, 'with no pane, the record says the child is not running');
   assert.match(crossingLines([readParent(w.parentId)!])[0] ?? '', /^fail  crossing: worker \(child child-worker\) runs on neither machine .*Bring it back with agent_spawn with resume worker/);
+});
+
+test('a daemon that stops after the copy reached the destination and before its mark listed the files leaves nothing the next daemon cannot remove', async (t) => {
+  const w = await twoMachines(t);
+  harness(w.here, { claude: '2.1.300' });
+  harness(w.box, { claude: '2.1.300' });
+  const hereCwd = dir(w.here.user, 'src', 'repo');
+  claudeHere(w, hereCwd);
+  const boxCwd = dir(w.box.user, 'repo');
+  // The state the carry leaves between importSession's answer and the mark that lists its files:
+  // a mark at the step "checked" with no files, from a daemon that is gone, and the copy on box.
+  updateChild(w.parentId, 'child-worker', (entry) => {
+    const now = new Date().toISOString();
+    entry.moving = { from: 'local', to: 'box', since: now, until: now, verb: 'move', daemon: 'a-daemon-that-stopped', stage: 'checked', state: 'live', source: { cwd: hereCwd, paneId: 'w1:p3', tabId: 'w1:t3', session: { kind: 'id', value: 'sess-1' } }, target: { cwd: boxCwd } };
+  });
+  const bundle = await w.deps.endpointFor('local').exportSession({ harness: 'claude-code', session: 'sess-1', cwd: hereCwd });
+  await w.deps.endpointFor('box').importSession({ harness: 'claude-code', childId: 'child-worker', cwd: boxCwd, fileName: bundle.fileName, files: bundle.files });
+  assert.ok(fs.existsSync(boxCopy(w, boxCwd)), 'the copy is on box');
+  assert.deepEqual(record(w)?.moving?.files, undefined, 'and the mark names none of its files');
+
+  const [recovery] = await recoverCrossings(w.deps, w.parentId, 'the-next-daemon');
+  assert.equal(recovery?.outcome, 'undone', recovery?.detail);
+  assert.equal(fs.existsSync(boxCopy(w, boxCwd)), false, 'the copy the mark never listed is gone');
+  const project = path.dirname(boxCopy(w, boxCwd));
+  assert.deepEqual(fs.existsSync(project) ? fs.readdirSync(project, { recursive: true }).filter((name) => !fs.statSync(path.join(project, String(name))).isDirectory()) : [], [], 'no file of the session is left on box');
+  assert.equal(record(w)?.paneId, 'w1:p3', 'the child still runs on the source');
 });
 
 test('doctor fails on a child a crossing left on neither machine, and names the resume that brings it back', () => {

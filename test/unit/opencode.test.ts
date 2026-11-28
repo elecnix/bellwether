@@ -21,6 +21,7 @@ import {
 } from '../../src/core/opencode.ts';
 import { channelEntry } from '../../src/core/mcp-config.ts';
 import { addSession, openCodeStore } from '../fixtures/opencode-db.ts';
+import { stablePath } from '../../src/core/stable-path.ts';
 
 function scratch(t: test.TestContext): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bellwether-opencode-'));
@@ -70,7 +71,7 @@ test('a child gets one local MCP server under mcp.servers, naming its child id',
   const server = config.mcp.servers['bellwether'];
   assert.ok(server, 'no bellwether server in the configuration');
   assert.equal(server.type, 'local');
-  assert.deepEqual(server.command, [process.execPath, '--disable-warning=ExperimentalWarning', channelEntry(), '--child', 'c-123']);
+  assert.deepEqual(server.command, [stablePath(process.execPath), '--disable-warning=ExperimentalWarning', stablePath(channelEntry()), '--child', 'c-123']);
   assert.deepEqual(server.environment, { BELLWETHER_PARENT: 'p-1', BELLWETHER_CHILD: 'c-123' });
 });
 

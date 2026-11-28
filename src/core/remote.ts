@@ -19,6 +19,8 @@ import { adoptionClaim } from './adopt.ts';
 import { hostOf } from './machine.ts';
 import type { RelayRestartAnswer, RelayRestartAsk } from './restart.ts';
 import { heldByAdoption } from './acquisition.ts';
+import type { RelayFreeAsk } from './free.ts';
+import type { InboxMessage, RelayMessageAnswer } from '../daemon/protocol.ts';
 
 /** What the child's machine wrote when it registered the child. */
 export interface RemoteRegistration {
@@ -57,6 +59,10 @@ export interface RemoteOps {
   claim?(host: string, claim: PaneClaim): Promise<{ childId: string; held: boolean; session?: SessionReach; messages?: boolean }>;
   /** Ask the child's machine to restart the child there. Absent when the session holds no relay. */
   restart?(host: string, ask: RelayRestartAsk): Promise<RelayRestartAnswer>;
+  /** Ask a freed child's machine to write its record of the freeing (issue #262). Absent when the session holds no relay. */
+  free?(host: string, ask: RelayFreeAsk): Promise<void>;
+  /** Put a peer's message in a freed child's session on its machine, with the pair's token (issue #262). */
+  peerMessage?(host: string, parentId: string, childId: string, message: InboxMessage, peer: { from: string; token: string }): Promise<RelayMessageAnswer>;
 }
 
 /** The arguments `bellwether relay-register` takes on the child's machine. */
@@ -122,6 +128,10 @@ export interface RemoteReader {
   adopt?(host: string, claim: PaneClaim): Promise<{ childId: string; held: boolean; session?: SessionReach; messages?: boolean }>;
   /** Restart a child on its own machine, over the same connection. */
   restart?(host: string, ask: RelayRestartAsk): Promise<RelayRestartAnswer>;
+  /** Record a freeing on the child's machine, over the same connection. */
+  free?(host: string, ask: RelayFreeAsk): Promise<void>;
+  /** A peer's message to a freed child there, over the same connection. */
+  message?(host: string, parentId: string, childId: string, message: InboxMessage, options?: { peer?: { from: string; token: string } }): Promise<RelayMessageAnswer>;
 }
 
 export function remoteOps(resolve: MachineResolver = resolveMachine, options: SshOptions = {}, reader?: RemoteReader): RemoteOps {
@@ -150,6 +160,8 @@ export function remoteOps(resolve: MachineResolver = resolveMachine, options: Ss
       return reader.adopt(host, claim);
     },
     ...(reader?.restart ? { restart: (host: string, ask: RelayRestartAsk) => (reader.restart as NonNullable<RemoteReader['restart']>).call(reader, host, ask) } : {}),
+    ...(reader?.free ? { free: (host: string, ask: RelayFreeAsk) => (reader.free as NonNullable<RemoteReader['free']>).call(reader, host, ask) } : {}),
+    ...(reader?.message ? { peerMessage: (host: string, parentId: string, childId: string, message: InboxMessage, peer: { from: string; token: string }) => (reader.message as NonNullable<RemoteReader['message']>).call(reader, host, parentId, childId, message, { peer }) } : {}),
   };
 }
 

@@ -26,6 +26,8 @@ import { isMoving } from '../core/move-plan.ts';
 import { crossingState } from '../core/recover-crossing.ts';
 import { compareVersions } from '../core/move-plan.ts';
 import { requestSelfTeleport, teleportChild, teleportReply } from '../core/teleport.ts';
+import { FREE_TOOL, PEER_SEND_TOOL, freeChild, freedEntry, freedNotice, peerSend, type FreeHooks } from '../core/free.ts';
+import { freedOf, freedRefusal, readPeerBook, sessionAddress } from '../core/peers.ts';
 import { predates } from '../daemon/relay-links.ts';
 import { routeLabel } from '../core/routes.ts';
 import { parseWorkspaces, releaseWorkspace, workspaceColumn, workspaceName } from '../core/workspace.ts';
@@ -218,6 +220,30 @@ export const parentTools: ToolDefinition[] = [
         force: { type: 'boolean', description: 'Close the tab even while the child is working or blocked.' },
       },
       required: ['child'],
+    },
+  },
+  {
+    name: FREE_TOOL,
+    description: "Free a child: it stops being your child and becomes a peer with an address, its child id. Its events no longer start your turns, its briefs leave your record for its own, and it reports to nobody: parent_report and the depth and retirement requests leave its tools. You and it each keep the other's address and one token for the pair, and reach each other with peer_send; nobody else gets either address, and no call lists anyone's peers. The child hears of it in its session, with your address. A child on another machine keeps the relay link this machine's daemon holds, which now carries only messages between the two of you. It refuses an adopted child, a child that has exited, a child that is moving, restarting, teleporting or asking to be retired, and a child whose newest brief nothing shows it read. Freeing cannot be undone: there is no call that takes a freed child back.",
+    schema: {
+      type: 'object',
+      properties: {
+        child: { type: 'string', description: 'The child\'s name, its pane id, or the id agent_spawn returned.' },
+        reason: { type: 'string', description: 'Why, which the child reads in its notice and both records keep.' },
+      },
+      required: ['child'],
+    },
+  },
+  {
+    name: PEER_SEND_TOOL,
+    description: "Send a message to a peer: an agent you hold an address for, because one of you freed the other. The daemon that holds the peer's record checks the token your record keeps for the pair, and a message whose token does not match goes nowhere. A freed child gets the message in its session, never typed into its pane; a session that does not take it gets nothing, and the reply says why. A former parent gets it as an event at its next turn. An address you do not hold is refused, and the refusal names only your own contacts.",
+    schema: {
+      type: 'object',
+      properties: {
+        to: { type: 'string', description: 'The peer\'s address, as the freeing gave it, or the name your record keeps for it.' },
+        text: { type: 'string', description: 'The message.' },
+      },
+      required: ['to', 'text'],
     },
   },
   {
@@ -477,6 +503,20 @@ function describeLastReports(children: readonly ChildRecord[]): string[] {
 export async function runBellwetherTool(ctx: ToolContext, name: string, args: Record<string, unknown>, caller: CallerIdentity = {}): Promise<string> {
   // Checked first, so a tool from a newer client gets a refusal the client can name, not a complaint about its arguments.
   if (!daemonCallNames().includes(name)) throw new UnknownTool(name);
+  // A freed agent has no parent to report to, to grant its depth or to retire it (issue #262).
+  const freedSelf = freedOf(caller.childId);
+  if (freedSelf && (name === 'parent_report' || name === REQUEST_DEPTH_TOOL || name === RETIRE_TOOL)) throw new Error(freedRefusal(name, freedSelf));
+
+  if (name === PEER_SEND_TOOL) {
+    const to = optionalString(args['to']);
+    const text = optionalString(args['text']);
+    if (!to || !text) throw new Error('peer_send needs both to and text');
+    const own = readParent(ctx.parentId);
+    const address = own ? sessionAddress(own, caller.childId) : (caller.childId ?? ctx.parentId);
+    const selfName = readPeerBook(address)?.name ?? address;
+    return peerSend(freeHooks(ctx), { address, registryId: ctx.parentId, name: selfName }, to, text);
+  }
+
   if (name === 'parent_report') {
     const status = optionalString(args['status']) as ReportStatus | undefined;
     const text = optionalString(args['text']);
@@ -535,6 +575,8 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
   if (!record) throw new Error(`No Bellwether registry for ${ctx.parentId}. Start a session with the Bellwether extension loaded.`);
 
   if (name === 'agent_spawn' && optionalString(args['resume'])) {
+    const freed = freedEntry(record, optionalString(args['resume']) ?? '');
+    if (freed && !record.children.some((entry) => entry.id === freed.id)) throw new Error(freedNotice(freed));
     const result = await spawnResume((host) => clientFor(ctx, host), ctx.parentId, {
       target: optionalString(args['resume']) ?? '',
       prompt: optionalString(args['prompt']),
@@ -673,6 +715,12 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
     return [header, ...record.children.map((child) => describeChild(child, ctx.watcher, ctx.relayState, view)), ...(depth.length ? ['', 'Depth requests and grants:', ...depth] : []), ...(briefs.length ? ['', `Each child's newest brief and how it arrived (on the record, children[].briefs[].delivery):`, ...briefs] : []), ...(messages.length ? ['', 'Messages to children, newest three each:', ...messages] : []), ...(reports.length ? ['', 'Last reports:', ...reports] : [])].join('\n');
   }
 
+  if (name === FREE_TOOL) {
+    const target = optionalString(args['child']);
+    if (!target) throw new Error('agent_free needs a child');
+    return freeChild(freeHooks(ctx), ctx.parentId, caller, { child: target, reason: optionalString(args['reason']) });
+  }
+
   if (name === 'agent_move') {
     const target = optionalString(args['child']);
     if (!target) throw new Error('agent_move needs a child');
@@ -734,7 +782,11 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
   const target = optionalString(args['child']);
   if (!target) throw new Error(`${name} needs a child`);
   const child = resolve(record, target);
-  if (!child) throw new Error(`No child of this session matches "${target}". Call agent_list to see them.`);
+  if (!child) {
+    const freed = freedEntry(record, target);
+    if (freed) throw new Error(freedNotice(freed));
+    throw new Error(`No child of this session matches "${target}". Call agent_list to see them.`);
+  }
   // Pane ids are scoped to one herdr server, so every call goes to the child's host.
   const herdr = await clientFor(ctx, hostOf(child));
 
@@ -876,6 +928,18 @@ async function tellChild(ctx: ToolContext, child: ChildRecord, text: string): Pr
   } catch (error) {
     ctx.log?.(`depth: could not tell ${child.name} in pane ${child.paneId}: ${(error as Error).message}`);
   }
+}
+
+/** What a freeing and a peer message need from the daemon: the inbox, the relay link and the watcher. */
+function freeHooks(ctx: ToolContext): FreeHooks {
+  const remote = ctx.remote;
+  return {
+    ...(ctx.inbox ? { inbox: ctx.inbox } : {}),
+    ...(remote?.free ? { relayFree: (host: string, ask: Parameters<NonNullable<typeof remote.free>>[1]) => (remote.free as NonNullable<typeof remote.free>)(host, ask) } : {}),
+    ...(remote?.peerMessage ? { relayPeer: (...given: Parameters<NonNullable<typeof remote.peerMessage>>) => (remote.peerMessage as NonNullable<typeof remote.peerMessage>)(...given) } : {}),
+    forget: (childId) => ctx.watcher.forget(childId),
+    ...(ctx.log ? { log: ctx.log } : {}),
+  };
 }
 
 function registrar(ctx: ToolContext, record: { id: string }): RegisterRemote | undefined {

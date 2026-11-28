@@ -19,8 +19,8 @@ import path from 'node:path';
 import { LOCAL_HOST, hostOf } from './machine.ts';
 import { bellwetherHome } from './paths.ts';
 import { childOfCaller } from './report.ts';
-import { readParent, updateChild } from './registry.ts';
-import type { CallerIdentity, ChildRecord, RetireIntent } from './types.ts';
+import { listParents, readParent, updateChild } from './registry.ts';
+import type { CallerIdentity, ChildRecord, ParentRecord, RetireIntent } from './types.ts';
 
 /** What git says about the worktree a path sits in. */
 export interface WorktreeFacts {
@@ -134,6 +134,8 @@ export async function requestRetirement(caller: CallerIdentity, ops: RetireOps, 
   (stashes.length ? failing : passed).push(stashes.length ? `${stashes.length} stash entr${stashes.length === 1 ? 'y' : 'ies'} on ${facts.branch}` : 'no stash on the branch');
   const safety = await ops.safety({ repo: facts.repo, worktree: facts.worktree, branch: facts.branch, defaultBranch: facts.defaultBranch });
   (safety.safe ? passed : failing).push(safety.how);
+  const others = liveChildrenIn(facts.worktree, child.id);
+  (others.length ? failing : passed).push(others.length ? `${describeStanding(others)} in it, and the daemon never removes a directory a live child stands in` : 'no other live child stands in it');
 
   const intent: RetireIntent = { worktree: facts.worktree, repo: facts.repo, branch: facts.branch, head: facts.head, ...(facts.defaultBranch ? { defaultBranch: facts.defaultBranch } : {}), ...(reason ? { reason } : {}) };
   const now = new Date().toISOString();
@@ -298,8 +300,15 @@ export async function reapChild(parentId: string, childId: string, deps: ReapDep
     proof = safety.how;
   }
 
-  // 4. No process works inside the path. A shell can take a moment to leave
-  // after its pane exits, so look a few times before refusing.
+  // 4. No live child stands inside the path, and no process works there. The
+  // registry is read first: a live child's working directory is protected the
+  // way a lock is, whatever the process table shows at this moment (issue #189).
+  if (!worktreeDone) {
+    const standing = liveChildrenIn(intent.worktree, child.id);
+    if (standing.length) return refuse(`condition 4 (no live child inside): ${describeStanding(standing)} in ${intent.worktree}, and removing it would leave that child with no directory for its commands. Remove the worktree by hand once that child exits.`);
+  }
+  // A shell can take a moment to leave after its pane exits, so look a few
+  // times before refusing.
   if (!worktreeDone) {
     const tries = (deps.busyRetries ?? 3) + 1;
     let pids: number[] | undefined = [];
@@ -336,6 +345,24 @@ export async function reapChild(parentId: string, childId: string, deps: ReapDep
   finish(parentId, child, 'removed', undefined, proof);
   log(`retire ${child.name}: removed ${intent.worktree} and branch ${intent.branch}${proof ? `, because ${proof}` : ''}`);
   return { outcome: 'removed' };
+}
+
+/**
+ * Every live child on this machine, under any parent, whose working directory
+ * is `dir` or sits inside it, other than `except`. A child that has not exited
+ * stands in its directory, and its harness starts each command there.
+ */
+export function liveChildrenIn(dir: string, except: string): { parent: ParentRecord; child: ChildRecord }[] {
+  const root = realpath(dir);
+  return listParents().flatMap((parent) =>
+    parent.children.filter((entry) => entry.id !== except && !entry.exitedAt && hostOf(entry) === LOCAL_HOST && entry.cwd && inside(realpath(entry.cwd), root)).map((entry) => ({ parent, child: entry })),
+  );
+}
+
+/** The live children standing in a directory, by name, id, pane and parent session, for a refusal. */
+function describeStanding(standing: { parent: ParentRecord; child: ChildRecord }[]): string {
+  const names = standing.map(({ parent, child }) => `${child.name} (child ${child.id} in pane ${child.paneId}, of the ${parent.harness} session ${parent.session})${child.cwd ? ` at ${child.cwd}` : ''}`);
+  return `live child${standing.length === 1 ? '' : 'ren'} ${names.join(', ')} still ${standing.length === 1 ? 'stands' : 'stand'}`;
 }
 
 /** Record the outcome on the child record first, then append the log line. */

@@ -122,7 +122,7 @@ test('a clean, merged child that asks to be retired is removed once its pane is 
   w.git.merged.add(`${REPO}:feat/x`);
   const { watcher, text } = await requested(w);
   assert.match(text, /Retirement requested for feat-x: \/work\/x\/feat-x on branch feat\/x\. Nothing has been removed\./);
-  assert.match(text, /Passed now: the worktree is clean; no stash on the branch; branch feat\/x is merged into origin\/main\./);
+  assert.match(text, /Passed now: the worktree is clean; no stash on the branch; branch feat\/x is merged into origin\/main; no other live child stands in it\./);
   assert.doesNotMatch(text, /Failing now/);
   assert.ok(w.child().retireRequestedAt);
   assert.deepEqual(w.child().retireIntent, { worktree: WORKTREE, repo: REPO, branch: 'feat/x', head: 'abc123def456', defaultBranch: 'origin/main', reason: 'merged' });
@@ -209,6 +209,40 @@ test('a process still working inside the worktree is refused, naming it', async 
   await watcher.retirements();
   assert.match(w.child().retireReason ?? '', /^condition 4 \(no process inside\): process\(es\) 4242 have their working directory in \/work\/x\/feat-x/);
   assert.deepEqual(w.git.calls, []);
+});
+
+test("a worktree that another parent's live child stands in is refused, naming that child, and nothing is removed (issue #189)", async (t) => {
+  const w = await world(t);
+  w.git.merged.add(`${REPO}:feat/x`);
+  // Another session's child runs in a folder inside the worktree, with no process the table shows there.
+  const other = emptyParent('pi', `other-${path.basename(w.parentId)}`, '/work', { paneId: 'w1:p8' });
+  const long = new Date(Date.now() - 60_000).toISOString();
+  other.children.push({ id: 'c-tenant', name: 'scratch-kid', kind: 'pi', harness: 'pi', paneId: 'w1:p9', tabId: 'w1:t9', host: 'local', origin: 'spawn', cwd: `${WORKTREE}/scratchpad`, startedAt: long, lastStatus: 'working', statusChangedAt: long, lastBusyAt: long, depth: 1 });
+  saveParent(other);
+  const { watcher, text } = await requested(w);
+  assert.match(text, /Failing now: .*live child scratch-kid \(child c-tenant in pane w1:p9, of the pi session other-[^)]+\) at \/work\/x\/feat-x\/scratchpad still stands in it/);
+  w.exit();
+  await until('the outcome', () => w.child().retireOutcome);
+  await watcher.retirements();
+  assert.equal(w.child().retireOutcome, 'refused');
+  assert.match(w.child().retireReason ?? '', /^condition 4 \(no live child inside\): live child scratch-kid \(child c-tenant in pane w1:p9, of the pi session other-[^)]+\) at \/work\/x\/feat-x\/scratchpad still stands in \/work\/x\/feat-x/);
+  assert.deepEqual(w.git.calls, [], 'nothing removed while a live child stands in the worktree');
+  assert.ok(w.git.worktrees.has(WORKTREE));
+});
+
+test('a child that stood in the worktree and has exited no longer holds it', async (t) => {
+  const w = await world(t);
+  w.git.merged.add(`${REPO}:feat/x`);
+  const long = new Date(Date.now() - 60_000).toISOString();
+  const record = readParent(w.parentId);
+  assert.ok(record);
+  record.children.push({ id: 'c-gone', name: 'gone-kid', kind: 'pi', harness: 'pi', paneId: 'w1:p9', tabId: 'w1:t9', host: 'local', origin: 'spawn', cwd: WORKTREE, startedAt: long, lastStatus: 'idle', statusChangedAt: long, lastBusyAt: long, depth: 1, exitedAt: long });
+  saveParent(record);
+  const { watcher } = await requested(w);
+  w.exit();
+  await until('the outcome', () => w.child().retireOutcome);
+  await watcher.retirements();
+  assert.equal(w.child().retireOutcome, 'removed');
 });
 
 test('a child whose pane is still alive gets no cleanup', async (t) => {

@@ -166,7 +166,7 @@ test('doctor states the pairing: an older daemon refuses the newer tools by name
   const report = describeUpgrade({ installed, lock: { pid: 4242, startedAt: 0, protocol: 3, version: '0.1.4', socket: '/h/daemon.sock' }, lockAlive: true, sockets: [{ name: 'daemon.sock', answers: true }], daemonSocket: 'daemon.sock', sessions: { error: 'unknown_type: unknown request type "sessions"' } });
   const text = report.lines.join('\n');
   assert.match(text, /pairing on this machine: this install speaks protocol 4, the daemon 3 \(Bellwether 0\.1\.4\); they speak protocol 3/);
-  assert.match(text, /degraded on this machine: the daemon refuses agent_restart, agent_move, agent_request_depth, agent_grant_depth \(protocol 4, Bellwether 0\.1\.5\) by name; every other tool works\. Upgrading the daemon there gains them, when convenient\./);
+  assert.match(text, /degraded on this machine: the daemon refuses agent_restart, agent_move, agent_request_depth, agent_grant_depth \(protocol 4, Bellwether 0\.1\.5\); agent_teleport \(protocol 4, Bellwether 0\.1\.10\) by name; every other tool works\. Upgrading the daemon there gains them, when convenient\./);
 });
 
 test('doctor says a daemon newer than this install leaves it behind, not finished, and names what updating gains', () => {
@@ -193,5 +193,5 @@ test('doctor names, per relay machine, its daemon and what updating that machine
   const base = { host: 'far', status: 'connected' as const, since: 't', attempts: 0, children: [] };
   assert.equal(farPairing(base), '');
   assert.equal(farPairing({ ...base, farProtocol: 4, farVersion: '0.1.5' }), ', on protocol 4; nothing to gain by updating it');
-  assert.equal(farPairing({ ...base, farProtocol: 3, farVersion: '0.1.4' }), ', on protocol 3; updating that machine gains agent_restart, agent_move, agent_request_depth, agent_grant_depth (protocol 4, Bellwether 0.1.5), when convenient');
+  assert.equal(farPairing({ ...base, farProtocol: 3, farVersion: '0.1.4' }), ', on protocol 3; updating that machine gains agent_restart, agent_move, agent_request_depth, agent_grant_depth (protocol 4, Bellwether 0.1.5); agent_teleport (protocol 4, Bellwether 0.1.10), when convenient');
 });

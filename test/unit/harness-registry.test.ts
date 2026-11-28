@@ -24,7 +24,6 @@ const ALLOWED: Record<string, { lines: RegExp; why: string }> = {
   [path.join('src', 'daemon', 'protocol.ts')]: { lines: /harness !== 'pi' && harness !== 'claude-code'/, why: 'a parent session runs in pi or Claude Code, the two harnesses with a Bellwether adapter' },
   [path.join('src', 'core', 'restart.ts')]: { lines: /record\.harness|plan\.kind/, why: 'restarting a parent session, which runs in pi or Claude Code' },
   [path.join('src', 'core', 'move-plan.ts')]: { lines: /harness/, why: "agent_move's session layouts, for the harnesses whose entries say movable" },
-  [path.join('src', 'core', 'move.ts')]: { lines: /harness === 'pi'/, why: "agent_move's session layouts, for the harnesses whose entries say movable" },
   [path.join('src', 'core', 'session-state.ts')]: { lines: /harness/, why: "agent_move's session layouts, for the harnesses whose entries say movable" },
   [path.join('src', 'cli.ts')]: { lines: /harness === 'pi'/, why: "doctor's check of agent_move, for the harnesses whose entries say movable" },
 };

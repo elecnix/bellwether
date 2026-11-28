@@ -1,4 +1,5 @@
 import type { ToolSource } from './tool-source.ts';
+import type { TeleportEntry } from './teleport-plan.ts';
 /** The lifecycle states herdr reports for an agent in a pane. */
 export type AgentStatus = 'idle' | 'working' | 'blocked' | 'done' | 'unknown';
 
@@ -441,6 +442,8 @@ export interface ChildRecord {
    * the move can find the worktree it left behind (issue #227).
    */
   movedFrom?: { host: string; at: string; cwd?: string };
+  /** Each teleport of this child, newest last (issue #226): where from and to, who asked, how the notice arrived, and the proof it runs. */
+  teleports?: TeleportEntry[];
   /** Set once the child is gone, so its events stop. */
   exitedAt?: string;
   exitCode?: number;

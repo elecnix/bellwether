@@ -176,6 +176,26 @@ test('a Claude Code child takes its brief through its channel after the startup 
   assert.equal(fs.readFileSync(child.briefs?.[0]?.file ?? '', 'utf8'), BRIEF);
 });
 
+test("agent_list says how each child's newest brief arrived, and names the record path where the delivery sits (issue #189)", async (t) => {
+  const space = await room(t, { sessionWaitMs: 300 });
+  await space.parent.tool('agent_spawn', { kind: FAKE_KIND, name: 'plain', prompt: BRIEF });
+  const pushes: { id: string; text: string; replay: boolean; at: number }[] = [];
+  space.world.onStart = (pane) => {
+    const child = childInPane(space, pane);
+    if (child) void bareSession(t, space, child, 'pi', 'pi-message', pushes);
+  };
+  await space.parent.tool('agent_spawn', { kind: 'pi', name: 'listener', prompt: BRIEF });
+  const plain = childNamed(space, 'plain');
+  const listener = childNamed(space, 'listener');
+  assert.ok(plain && listener);
+  const list = await space.parent.tool('agent_list', {});
+  assert.match(list, /Each child's newest brief and how it arrived \(on the record, children\[\]\.briefs\[\]\.delivery\):/);
+  assert.ok(list.includes(`plain: brief 1 at ${plain.briefs?.[0]?.at}, typed into its pane as message ${plain.briefs?.[0]?.delivery?.message}, because fake-agent is a test harness with no inbound path; Bellwether cannot tell when its model read it. The brief stays at ${plain.briefs?.[0]?.file}.`), list);
+  const taken = listener.briefs?.[0]?.delivery;
+  assert.equal(taken?.takenBy, 'turn');
+  assert.ok(list.includes(`listener: brief 1 at ${listener.briefs?.[0]?.at}, into its session through its Bellwether pi extension as message ${taken?.message}; its model began a turn on it at ${taken?.takenAt}.`), list);
+});
+
 test('a child with no adapter gets its brief typed, and the record says so with the reason', async (t) => {
   const space = await room(t);
   const reply = await space.parent.tool('agent_spawn', { kind: FAKE_KIND, name: 'plain', prompt: BRIEF });

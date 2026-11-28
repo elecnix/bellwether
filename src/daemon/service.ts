@@ -66,7 +66,10 @@ export function createHerdrService(parent: ParentHello, id: string, deps: Servic
   const clientFor = machineClients(client);
   const remote = remoteOps(undefined, {}, deps.links);
   const relayState = deps.links ? (host: string) => deps.links?.state(host) : undefined;
-  const watcher = new Watcher({ client, clientFor, parentId: record.id, onEntries: (entries) => handler?.(entries), cleanupRemote: (child) => remote.cleanup(child), reclaimRemote: (child) => reclaimRemote(remote, record.id, child), childrenChanged: () => deps.links?.sync(), relayState });
+  // While this session's own restart waits for a quiet turn end, its events
+  // stay unread in the outbox: each one would start another turn (issue #188).
+  let holding = false;
+  const watcher = new Watcher({ client, clientFor, parentId: record.id, onEntries: (entries) => (holding ? undefined : handler?.(entries)), cleanupRemote: (child) => remote.cleanup(child), reclaimRemote: (child) => reclaimRemote(remote, record.id, child), childrenChanged: () => deps.links?.sync(), relayState });
   // A remote child's reports and reads both go over the connection the daemon holds to its machine.
   // A restart the caller asked for runs after the tool answered, and stops
   // with the service. One act per target, so a second request joins the first.
@@ -75,6 +78,14 @@ export function createHerdrService(parent: ParentHello, id: string, deps: Servic
   const restart: RestartHooks = {
     signal: restartStop.signal,
     reset: (childId) => watcher.reset(childId),
+    hold: (held) => {
+      if (holding === held) return;
+      holding = held;
+      // A restart that gave up hands the session what waited.
+      const waiting = held ? [] : watcher.pendingEntries();
+      if (waiting.length) handler?.(waiting);
+    },
+    held: () => (holding ? watcher.pendingEntries().length : 0),
     defer: (key, job) => {
       if (restartJobs.has(key)) return;
       const running = job()

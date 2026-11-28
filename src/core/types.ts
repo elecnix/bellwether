@@ -79,6 +79,27 @@ export interface RestartFailure {
   told?: boolean;
 }
 
+/**
+ * A self-restart waiting for its session's turn to end. A busy session may
+ * never end one, so the wait gives up at `until` (issue #188).
+ */
+export interface RestartWait {
+  /** When the wait gives up. */
+  until: string;
+  /** The pane whose turn it waits on. */
+  paneId: string;
+  /** The status herdr last reported for that pane, and since when. */
+  status?: string;
+  statusSince?: string;
+}
+
+/** A self-restart that gave up because its session never ended a turn in time. */
+export interface RestartStall {
+  at: string;
+  /** What held it: the live turn, the messages that reached the session, its working children. */
+  reason: string;
+}
+
 /** What the parent is told about a child. */
 export type ChildEventKind = 'report' | 'idle' | 'blocked' | 'stuck' | 'inactive' | 'exited';
 
@@ -336,6 +357,10 @@ export interface ChildRecord {
   restartedAt?: string;
   /** Set when a restart closed the child's pane and could not start it again (issue #185). A later restart or resume clears it. */
   restartFailed?: RestartFailure;
+  /** What a pending self-restart waits for, while `restartRequestedAt` is set (issue #188). */
+  restartWait?: RestartWait;
+  /** Why the last self-restart gave up without acting, until the next request (issue #188). */
+  restartStalled?: RestartStall;
   /**
    * Set while agent_move carries the child to another machine. The watcher
    * ignores the close of the child's old pane while it is set, so the parent
@@ -527,6 +552,10 @@ export interface ParentRecord {
   restartedAt?: string;
   /** Set when a restart closed this session's pane and could not start it again (issue #185). The session's return clears it. */
   restartFailed?: RestartFailure;
+  /** What a pending self-restart waits for, while `restartRequestedAt` is set (issue #188). */
+  restartWait?: RestartWait;
+  /** Why the last self-restart gave up without acting, until the next request (issue #188). */
+  restartStalled?: RestartStall;
   /** The roster line this parent last received with an alert, without its age, and when (issue #146). */
   rosterSent?: { at: string; line: string };
   updatedAt: string;

@@ -7,6 +7,7 @@ import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { executables, installCandidates, pathCandidates } from './binaries.ts';
 import { claudeConfigDir } from './transcript.ts';
 import { locateTranscript } from './harnesses/index.ts';
 import { BELLWETHER_VERSION } from './version.ts';
@@ -23,40 +24,9 @@ function expandHome(value: string): string {
   return value === '~' ? os.homedir() : value.startsWith('~/') ? path.join(os.homedir(), value.slice(2)) : value;
 }
 
-/**
- * Where a harness binary may sit. A non-interactive SSH shell often has a
- * shorter PATH than the login shell herdr starts a tab with, so the usual
- * install places are tried after PATH. BELLWETHER_HARNESS_DIRS, when set,
- * replaces those places with its own list, and an empty value leaves PATH
- * alone, which is how a test makes a harness absent on a machine that has it.
- */
-function binaryCandidates(name: string): string[] {
-  const home = os.homedir();
-  const fromPath = (process.env['PATH'] ?? '').split(path.delimiter).filter(Boolean).map((dir) => path.join(dir, name));
-  const override = process.env['BELLWETHER_HARNESS_DIRS'];
-  if (override !== undefined) return [...fromPath, ...override.split(path.delimiter).filter(Boolean).map((dir) => path.join(dir, name))];
-  const nvm = path.join(home, '.nvm', 'versions', 'node');
-  let nvmBins: string[] = [];
-  try {
-    nvmBins = fs.readdirSync(nvm).sort().reverse().map((version) => path.join(nvm, version, 'bin', name));
-  } catch {
-    // No nvm here.
-  }
-  return [...fromPath, path.join(home, '.local', 'bin', name), path.join(home, 'bin', name), path.join(home, '.npm-global', 'bin', name), '/home/linuxbrew/.linuxbrew/bin/' + name, '/opt/homebrew/bin/' + name, '/usr/local/bin/' + name, ...nvmBins];
-}
-
-/** Every executable file named `name` in the places binaryCandidates lists, in order. */
+/** Every executable file named `name` on PATH, then in the usual install directories (binaries.ts), in order. */
 export function findBinaries(name: string): string[] {
-  const found: string[] = [];
-  for (const candidate of binaryCandidates(name)) {
-    try {
-      fs.accessSync(candidate, fs.constants.X_OK);
-      if (fs.statSync(candidate).isFile() && !found.includes(candidate)) found.push(candidate);
-    } catch {
-      // Not here.
-    }
-  }
-  return found;
+  return executables([...pathCandidates(name, process.env['PATH']), ...installCandidates(name)]);
 }
 
 function run(file: string, args: string[], timeoutMs = 30_000, signal?: AbortSignal): Promise<{ code: number; stdout: string; stderr: string }> {

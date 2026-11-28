@@ -13,7 +13,7 @@ import path from 'node:path';
 import { HerdrClient, resolveSocketPath } from './core/herdr-client.ts';
 import { bellwetherHome } from './core/paths.ts';
 import { emptyParent, listParents, readParent, saveParent } from './core/registry.ts';
-import { restartFailureLines } from './core/restart.ts';
+import { restartFailureLines, restartWaitLines } from './core/restart.ts';
 import { PROMPT_NOTICE, isReportStatus } from './core/report.ts';
 import { HOOK_COMMAND, dialogFromHook } from './core/claude-hooks.ts';
 import { hostName } from './core/spawn.ts';
@@ -23,7 +23,7 @@ import { removeBriefAt, writeBrief, writeBriefIn } from './core/brief.ts';
 import { removeChildFiles } from './core/mcp-config.ts';
 import { farEnvironment } from './core/relay-env.ts';
 import { harnessFor, harnessNamed } from './core/harnesses/index.ts';
-import { describeUpgrade, farPairing, gatherUpgrade } from './daemon/upgrade-status.ts';
+import { daemonHerdrLine, describeUpgrade, farPairing, gatherUpgrade } from './daemon/upgrade-status.ts';
 import { describeState } from './core/hygiene.ts';
 import { HEARTBEAT_MISSES } from './core/ssh.ts';
 import { DaemonClient, REFUSED_EXIT, ReportRefused, daemonAncestry, drainDaemon, ensureDaemon, postReport, relayStatus } from './daemon/client.ts';
@@ -210,6 +210,11 @@ async function doctor(): Promise<number> {
   // The upgrade report: which code the daemon and each session run, and whether a hand-over has finished.
   const upgrade = await gatherUpgrade(bellwetherHome(), daemonSocket);
   for (const line of describeUpgrade(upgrade).lines) console.log(`  ${line}`);
+  const herdrLine = daemonHerdrLine(upgrade.sessions);
+  if (herdrLine) {
+    console.log(`  ${herdrLine.line}`);
+    if (herdrLine.failed) failures += 1;
+  }
   failures += checkPackaging();
   failures += checkToolSources();
   failures += await checkRelay(daemonLive, daemonSocket);
@@ -245,6 +250,8 @@ async function doctor(): Promise<number> {
   const lostRestarts = restartFailureLines(listParents());
   for (const line of lostRestarts) console.log(`  ${line}`);
   failures += lostRestarts.length;
+  // What each pending self-restart waits for, and why one gave up (issue #188).
+  for (const line of restartWaitLines(listParents())) console.log(`  ${line}`);
   await checkMoves(socket);
   return failures;
 }

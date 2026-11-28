@@ -250,3 +250,28 @@ export function deliveryNote(child: Pick<ChildRecord, 'name'>, brief: Pick<Child
   const resent = delivery.resentFrom ? `its model began no turn within ${seconds(waitMs)} s of its session receiving message ${delivery.resentFrom}, and then ` : '';
   return `herdr typed ${child.name}'s brief into its pane as message ${delivery.message}, because ${resent}${(delivery.reason ?? '').replace(/\.$/, '')}. Bellwether cannot tell when its model read it. ${kept}`;
 }
+
+/**
+ * One line for agent_list about the newest brief a child started on, and how
+ * it arrived. The record keeps a delivery on each brief rather than on the
+ * child, because each resume that brings a prompt adds a brief with its own
+ * path (issue #189), so this line is where a reader finds it.
+ */
+export function describeBrief(child: Pick<ChildRecord, 'name' | 'briefs'>): string[] {
+  const brief = child.briefs?.at(-1);
+  if (!brief) return [];
+  const delivery = brief.delivery;
+  const head = `${child.name}: brief ${brief.n} at ${brief.at}`;
+  if (!delivery) return [`${head}, with no delivery recorded. A start that failed, or a daemon before 0.1.8, leaves it out. The brief stays at ${brief.file}.`];
+  let how: string;
+  if (delivery.path === 'session') {
+    const twice = delivery.resentFrom ? `, sent twice because its model began no turn on message ${delivery.resentFrom}` : '';
+    const taken = delivery.takenBy === 'read' ? `its model read it at ${delivery.takenAt}` : delivery.takenBy === 'turn' ? `its model began a turn on it at ${delivery.takenAt}` : 'Bellwether did not see its model take it';
+    how = `into its session through its ${viaLabel(delivery.via)} as message ${delivery.message}${twice}; ${taken}`;
+  } else if (delivery.path === 'launch') {
+    how = `as the first prompt on its launch line, because ${(delivery.reason ?? 'no reason was recorded').replace(/\.$/, '')}`;
+  } else {
+    how = `typed into its pane as message ${delivery.message}, because ${(delivery.reason ?? 'no reason was recorded').replace(/\.$/, '')}; Bellwether cannot tell when its model read it`;
+  }
+  return [`${head}, ${how}. The brief stays at ${brief.file}.`];
+}

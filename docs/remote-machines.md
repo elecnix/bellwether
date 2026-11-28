@@ -68,7 +68,7 @@ Bellwether replies that the answer is unknown, marks the message `relayInDoubt` 
 
 ## Adopting an agent on another machine
 
-`agent_adopt` takes a pane on another machine. Name the machine with `machine`, or write the target as `machine:pane`, as in `child-box:w1:p5` or `child-box:first-mate`. The parent's daemon reads the pane from that machine's herdr, through the same `herdr remote-api-bridge` connection that watches a child it spawned there. It then sends `relay-adopt` over its relay connection to that machine, and the daemon there records the adoption as a relay record with the pane, the harness session and `adopted: true`.
+`agent_adopt` takes a pane on another machine. Name the machine with `machine`, or write the target as `machine:pane`, as in `child-box:w1:p5` or `child-box:first-mate`. A target with one colon whose halves form a pane id, such as `w7R:p1`, names a pane on this machine. When this machine has no such pane and a saved machine has the label `w7R`, the call refuses and names both readings. The parent's daemon reads the pane from that machine's herdr, through the same `herdr remote-api-bridge` connection that watches a child it spawned there. It then sends `relay-adopt` over its relay connection to that machine, and the daemon there records the adoption as a relay record with the pane, the harness session and `adopted: true`.
 
 That daemon answers who watches the pane, because its registry lists the children of the parents on that machine, and its relay records list the adoptions of parents on other machines. Bellwether refuses an adoption in four cases, and each refusal says why:
 

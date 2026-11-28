@@ -54,14 +54,18 @@ function record(kid: Kid): ChildRecord {
 }
 
 /** A daemon, a fake herdr with each child's pane, and a parent session whose registry lists the children. */
-async function room(t: test.TestContext, kids: Kid[], options: { messageAckMs?: number } = {}): Promise<Room> {
-  const { messageAckMs } = options;
+async function room(t: test.TestContext, kids: Kid[], options: { messageAckMs?: number; prompt?: () => { error: { code: string; message: string } } } = {}): Promise<Room> {
+  const { messageAckMs, prompt } = options;
   const { root, home } = isolate(t, 'bellwether-message-');
   const world = fakeWorld('w1');
   for (const kid of kids) world.add({ pane_id: kid.pane, agent: kid.kind, agent_status: kid.status ?? 'idle', name: kid.name });
   // herdr refuses a prompt to an agent on a dialog, as the live server does.
   const fake = await startFakeHerdr({
-    respond: (request) => (request.method === 'agent.prompt' && world.panes.get(String(request.params['target']))?.agent_status === 'blocked' ? { error: { code: 'agent_blocked', message: 'the agent is waiting on a dialog' } } : world.respond(request)),
+    respond: (request) => {
+      if (request.method !== 'agent.prompt') return world.respond(request);
+      if (world.panes.get(String(request.params['target']))?.agent_status === 'blocked') return { error: { code: 'agent_blocked', message: 'the agent is waiting on a dialog' } };
+      return prompt ? prompt() : world.respond(request);
+    },
   });
   world.emit = (frame) => fake.send(frame);
   process.env['HERDR_SOCKET_PATH'] = fake.socketPath;
@@ -226,6 +230,26 @@ test('a codex child, with no channel, still gets the message typed into its pane
   assert.equal(message?.path, 'keystrokes');
   assert.match(message?.reason ?? '', /Codex loads Bellwether as an ordinary MCP server/);
   assert.match(await space.parent.tool('agent_list', {}), new RegExp(`coder: message ${id} at .*, typed into its pane, because Codex .*; typed; Bellwether cannot tell when the model read it\\.`));
+});
+
+// Issue #234: herdr can type the text and then fail the request, as a
+// prompt that outlives its wait does. The fake records the request, which is
+// the typing, and answers with an error. The error must not leave the record
+// silent, or a parent that trusts it sends the message a second time.
+test('a typed message whose agent.prompt fails after the request left stays on the record, and the error says it may have arrived (issue #234)', async (t) => {
+  const space = await room(t, [CODER], { prompt: () => ({ error: { code: 'prompt_timeout', message: 'the agent did not take the prompt in time' } }) });
+  let id = '';
+  await assert.rejects(space.parent.tool('agent_send', { child: 'coder', text: 'Run the tests again.' }), (error: Error) => {
+    id = /herdr may have typed message (m-[0-9a-f]{8}) into coder's pane: its agent\.prompt failed after the request left, with herdr the agent did not take the prompt in time\. The record keeps the message, and agent_list shows it\. Read the pane with agent_read before you send it again/.exec(error.message)?.[1] ?? '';
+    return Boolean(id) || assert.fail(error.message);
+  });
+  assert.deepEqual(typed(space.fake, CODER.pane), ['Run the tests again.'], 'herdr took the request, so the text may be in the pane');
+  const [message] = messagesOf(space, CODER.id);
+  assert.equal(message?.id, id, 'the record holds the message the error names');
+  assert.equal(message?.path, 'keystrokes');
+  assert.equal(message?.typedInDoubt, 'herdr the agent did not take the prompt in time');
+  assert.equal(message?.undelivered, undefined, 'nothing says it never arrived');
+  assert.match(await space.parent.tool('agent_list', {}), new RegExp(`coder: message ${id} at .*, typed into its pane, because Codex .*; not known whether herdr typed it, because its agent\\.prompt failed with herdr the agent did not take the prompt in time; read its pane with agent_read before you send it again\\.`));
 });
 
 test('a Claude Code child whose session is not connected gets the message typed, and the reply says why', async (t) => {

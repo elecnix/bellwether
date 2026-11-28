@@ -57,7 +57,13 @@ npm test               # tier 1 unit, then tier 2 and 3 integration
 npm run doctor         # bellwether doctor against the live herdr
 ```
 
-`BELLWETHER_TEST_CONCURRENCY` sets how many integration files run at once, and the default is 4. A machine that also runs agents should not have fifteen Node processes competing with them: four files take 37 s at a 532 MiB peak, where fifteen take 22 s at 1 GiB and two take 67 s at 347 MiB.
+`BELLWETHER_TEST_CONCURRENCY` sets how many unit or integration files run at once, and the default is 4. A machine that also runs agents should not have fifteen Node processes competing with them: four files take 37 s at a 532 MiB peak, where fifteen take 22 s at 1 GiB and two take 67 s at 347 MiB.
+
+A direct `node --test` skips that setting and takes Node's default, one file per core but one, which is fifteen at once on a 16-core machine. Each integration file starts its own daemons, fake machines, ssh stand-ins and `git`, so fifteen of them take the cores from every agent on the machine.
+
+`test/fixtures/isolation.ts` fails each file of a `node --test` run that doesn't pass `--test-concurrency`, and `test/unit/isolation.test.ts` fails on a package script that leaves the flag out. To run one file, pass `--test-concurrency=2`.
+
+`model/check.sh` runs the TLA+ checker under a memory ceiling, `EVERYSTATE_MEMORY`, 4G by default. `everystate` keeps every state it has seen in memory, so a configuration with no bound on its states grows until the machine swaps. On 2026-11-27 one run reached 19.8 GB on a 32 GB machine, filled its swap and froze the desktop for two minutes, until the kernel's OOM killer stopped it. Run the checker through `model/check.sh` or `model/run-all.sh`, never as a bare `everystate`.
 
 The documentation site on GitHub Pages comes from `README.md` and the topic files under `docs/`. `npm run site` writes it to `_site/`, and the `pages` workflow deploys it from `main`. A new topic file reaches the site once it has an entry in `PAGES` in `scripts/build-site.ts`.
 

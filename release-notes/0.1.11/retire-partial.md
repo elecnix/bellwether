@@ -1,5 +1,5 @@
 ---
-prs: []
+prs: [284]
 ---
 Retirement now ends `partial` rather than `removed` when it removes a child's worktree on the parent's machine but the child has another worktree that is still there. That other worktree is on another machine, where the parent's daemon can't run retirement's checks, or the child left it here and it failed them.
 

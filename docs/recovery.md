@@ -163,14 +163,15 @@ A resume, a restart and a move each take the child's lock, and the cleanup takes
 
 The removal runs `git worktree remove` without `--force`, so git itself refuses a worktree that holds changes.
 
-Bellwether leaves a child it adopted, a child on another machine, a detached HEAD and any main worktree in place. The one exception is the worktree a child left on the parent's machine when it moved away. [Retiring a child there](remote-machines.md#retiring-a-child-there) covers it: a request from the moved child retires that worktree, and a parent's `agent_stop` does the same. A worktree counts as main when its git directory is the repository itself, when git lists it first, when it has the default branch checked out, or when its name is `main` or `master`.
+Bellwether leaves a child it adopted, a detached HEAD and any main worktree in place. A worktree on another machine goes through the daemon there, on the parent's request, after the same checks on that machine, as [Retiring a child there](remote-machines.md#retiring-a-child-there) describes. That section also covers the worktree a moved child left on the parent's machine. A worktree counts as main when its git directory is the repository itself, when git lists it first, when it has the default branch checked out, or when its name is `main` or `master`.
 
 `agent_stop` waits up to 10 seconds for the cleanup, and its reply ends with one line about the worktree:
 
 | Case | The line |
 | --- | --- |
 | Removed | `Retired: removed worktree <dir> and branch <branch>, because <proof>.` |
-| Removed, with a worktree left elsewhere | `Retired in part: removed worktree <dir> and branch <branch>, because <proof>. Its worktree <far dir> on <machine> (which it left by a move) stays in place, because this daemon cannot take retirement's proofs on another machine. Remove it by hand there once its work is safe.` |
+| Removed, with a worktree on another machine retired there | `Retired: removed worktree <dir> and branch <branch>, because <proof>. On <machine>, the daemon there removed worktree <far dir> and branch <far branch>, because <proof there>.` |
+| Removed, with a worktree that stays on another machine | `Retired in part: removed worktree <dir> and branch <branch>, because <proof>. <far dir> on <machine> stays in place: <why>.` |
 | No proof | `Retirement left worktree <dir> and branch <branch> in place, because Bellwether could not prove the work merged: <what git found>. Push the branch or merge it, then remove the worktree and the branch by hand.` |
 | Another check failed | `Retirement left worktree <dir> and branch <branch> in place, because <the check and what to do>` |
 | Pane still listed | `Retirement pending: Bellwether removes worktree <dir> and branch <branch> once herdr no longer lists the pane, if it can still prove the work merged. agent_list and retire.log show the outcome.` |
@@ -180,7 +181,7 @@ Bellwether leaves a child it adopted, a child on another machine, a detached HEA
 
 On the child record, `retireOutcome` shows `removed`, `partial` or `refused`. After a removal, `retireProof` records the proof. After a refusal, `retireReason` states the failed check and what a person would do about it.
 
-`removed` means retirement removed every worktree the record knows of. `partial` means it removed the worktree it set out to remove, but the child has another worktree that is still there. The parent's daemon can't check a worktree on another machine, and a worktree here can fail the checks. Under `retireIntent.far` the record lists each worktree on another machine, the `retire.log` line lists them under `stays`, and `retireReason` describes each worktree still in place.
+`removed` means retirement removed every worktree the record knows of. `partial` means it removed at least one, and another is still there. A worktree here can fail the checks, and so can one on another machine, where that machine's daemon runs them. When the parent's daemon has no connection to a machine, the worktree there stays. Under `retireIntent.far` the record lists each worktree on another machine with its own outcome. The `retire.log` line lists those still in place under `stays`, and `retireReason` describes each worktree that stays.
 
 Each outcome also goes to `~/.bellwether/retire.log` as one JSON line, and `agent_read` puts the line above the child's last message. After a restart mid-retirement, the daemon finishes the remaining steps. Resuming a child cancels its request. Bellwether refuses to resume a child whose retirement removed its worktree until the directory exists again.
 

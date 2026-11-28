@@ -29,6 +29,8 @@ import { BRIEF_SESSION_WAIT_MS, type InboxAnswer, type InboxOptions } from '../c
 import { ClaimRefused, type PaneClaim } from '../core/pane-claims.ts';
 import { STARTUP_TIMEOUT_MS } from '../core/spawn.ts';
 import { RelayAnswerLost } from '../core/relay-answer.ts';
+import type { RelayRetireAnswer, RelayRetireAsk } from '../core/retire.ts';
+import { retireAnswerReceipt } from '../core/relay-records.ts';
 import type { RelayRestartAnswer, RelayRestartAsk } from '../core/restart.ts';
 
 export interface RelayLinksOptions {
@@ -63,7 +65,7 @@ export type RelayOutcome = { refused?: string; answer?: string };
 
 interface PendingRead {
   /** The request type, so a far daemon that does not know it can be answered for the requests it refused. */
-  type: 'relay-read' | 'relay-adopt' | 'relay-message' | 'relay-message-again' | 'relay-restart';
+  type: 'relay-read' | 'relay-adopt' | 'relay-message' | 'relay-message-again' | 'relay-restart' | 'relay-retire';
   resolve: (text: string) => void;
   reject: (error: Error) => void;
   timer: NodeJS.Timeout;
@@ -275,6 +277,36 @@ export class RelayLinks {
     throw new Error(`machine ${host} answered the restart without a new pane or a reason`);
   }
 
+  /**
+   * Ask the daemon on a child's machine to retire the worktree at a directory
+   * the parent's record names, over the open connection (issue #242). That
+   * daemon takes every proof against its own git and process table, and
+   * answers with what it found. A daemon there that predates the request is
+   * refused by name, with the release that brings it.
+   */
+  async retire(host: string, ask: RelayRetireAsk): Promise<RelayRetireAnswer> {
+    if (host === LOCAL_HOST) throw new Error('a worktree on this machine is retired here');
+    // Held open past the answer, for the acknowledgement of the copy the far machine keeps.
+    this.pins.set(host, (this.pins.get(host) ?? 0) + 1);
+    let text: string;
+    try {
+      text = await this.ask(host, 'relay-retire', (id) => ({ type: 'relay-retire', id, ...ask }));
+      // The answer came directly, so the copy kept in that machine's relay outbox has nothing left to carry.
+      const link = this.links.get(host);
+      if (link?.state.status === 'connected') this.write(link, formatRequest({ type: 'relay-ack', receipt: retireAnswerReceipt(ask.requestId) }));
+    } finally {
+      const left = (this.pins.get(host) ?? 1) - 1;
+      if (left > 0) this.pins.set(host, left);
+      else this.pins.delete(host);
+      this.sync();
+    }
+    const answer = JSON.parse(text) as Partial<RelayRetireAnswer> & { reason?: unknown; worktree?: unknown; branch?: unknown };
+    if (answer.outcome === 'gone') return { outcome: 'gone' };
+    if (answer.outcome === 'removed' && typeof answer.worktree === 'string' && typeof answer.branch === 'string') return answer as RelayRetireAnswer;
+    if (answer.outcome === 'refused' && typeof answer.reason === 'string' && answer.reason) return answer as RelayRetireAnswer;
+    throw new Error(`machine ${host} answered the retirement without an outcome`);
+  }
+
   /** Send one request over a host's connection, opening it for the call when no child holds it open, and wait for its result. */
   private async ask(host: string, type: PendingRead['type'], build: (id: string) => DaemonRequest, timeoutMs = this.readTimeoutMs): Promise<string> {
     const known = this.links.get(host);
@@ -288,7 +320,7 @@ export class RelayLinks {
       return await new Promise<string>((resolve, reject) => {
         const timer = setTimeout(() => {
           link.reads.delete(id);
-          reject(new RelayAnswerLost(`machine ${host} did not answer ${type === 'relay-read' ? 'a read' : type === 'relay-adopt' ? 'an adoption' : type === 'relay-restart' ? 'a restart' : 'a message'} within ${timeoutMs} ms`));
+          reject(new RelayAnswerLost(`machine ${host} did not answer ${type === 'relay-read' ? 'a read' : type === 'relay-adopt' ? 'an adoption' : type === 'relay-restart' ? 'a restart' : type === 'relay-retire' ? 'a retirement' : 'a message'} within ${timeoutMs} ms`));
         }, timeoutMs);
         timer.unref?.();
         link.reads.set(id, { type, resolve, reject, timer });

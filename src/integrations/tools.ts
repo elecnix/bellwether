@@ -18,7 +18,7 @@ import { spawnResume } from '../core/spawn-resume.ts';
 import { describeBrief } from '../core/brief-delivery.ts';
 import { describeMessages, messageChild, type Inbox } from '../core/send.ts';
 import { RESTART_TOOL, runAgentRestart, type RestartHooks } from '../core/restart.ts';
-import { RETIRE_TOOL, farWorktreesLine, goneCwdLine, realRetireOps, requestRetirement, retireLine, retireOnStop, type RetireOps } from '../core/retire.ts';
+import { RETIRE_TOOL, goneCwdLine, realRetireOps, requestRetirement, retireLine, retireOnStop, type RetireOps } from '../core/retire.ts';
 import type { RemoteOps } from '../core/remote.ts';
 import { lastAssistantMessage } from '../core/transcript.ts';
 import { moveChild } from '../core/move.ts';
@@ -797,8 +797,9 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
     await Promise.race([ctx.watcher.childStopped(child.id), new Promise<void>((done) => (waited = setTimeout(done, STOP_RETIRE_WAIT_MS)))]);
     clearTimeout(waited);
     const settled = readParent(ctx.parentId)?.children.find((entry) => entry.id === child.id) ?? child;
-    const lines = [leftAlone ?? retireLine(settled), farWorktreesLine(settled)].filter(Boolean);
-    const retireNote = lines.length ? ` ${lines.join(' ')}` : '';
+    // The line covers each worktree on another machine too, which the daemon there retires on this one's request (issue #242).
+    const line = leftAlone ?? retireLine(settled);
+    const retireNote = line ? ` ${line}` : '';
     // A child on another machine has its brief, config and relay record there.
     if (hostOf(child) !== LOCAL_HOST && ctx.remote) {
       try {

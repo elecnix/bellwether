@@ -173,13 +173,12 @@ test("a moved child's request_retirement reaches its parent's daemon, and the wo
   updateChild(PARENT_ID, 'c-moved', (entry) => {
     runEnds(entry, { at: new Date().toISOString() });
   });
-  const result = await reapChild(PARENT_ID, 'c-moved', { ops: git, paneOrTabLive: async () => false, busyRetries: 0 });
-  // The worktree the child runs in on child-box stays, so the outcome is partial, never removed (issue #273).
-  assert.equal(result.outcome, 'partial');
-  assert.ok(result.outcome === 'partial' && result.reason.includes(FAR_CWD), JSON.stringify(result));
+  // The worktree on child-box goes to the daemon there (issue #242), which finds no directory at that path in this case.
+  const result = await reapChild(PARENT_ID, 'c-moved', { ops: git, paneOrTabLive: async () => false, busyRetries: 0, retireFar: (host, ask) => links.retire(host, ask) });
+  assert.deepEqual(result, { outcome: 'removed' });
   assert.deepEqual(git.calls, [`worktree remove ${LEFT}`, `branch -D feat-x`]);
-  assert.equal(childOf('c-moved')?.retireOutcome, 'partial');
-  assert.deepEqual(childOf('c-moved')?.retireIntent?.far, [{ host: 'child-box', worktree: FAR_CWD, runs: true }]);
+  assert.equal(childOf('c-moved')?.retireOutcome, 'removed');
+  assert.deepEqual(childOf('c-moved')?.retireIntent?.far?.map((entry) => [entry.host, entry.worktree, entry.outcome]), [['child-box', FAR_CWD, 'gone']]);
 });
 
 /** The worktree a child left on the middle machine of a chain, where the parent's daemon cannot take a proof. */
@@ -209,8 +208,11 @@ test("a child that moved twice, from the parent's machine to mid-box and on to c
   updateChild(PARENT_ID, 'c-twice', (entry) => {
     runEnds(entry, { at: new Date().toISOString() });
   });
-  const result = await reapChild(PARENT_ID, 'c-twice', { ops: git, paneOrTabLive: async () => false, busyRetries: 0 });
-  assert.equal(result.outcome, 'partial', 'the worktrees on mid-box and child-box stay (issue #273)');
+  // mid-box cannot be asked, so its worktree stays, refused by machine and directory (issue #242), and the outcome is partial (issue #273).
+  const result = await reapChild(PARENT_ID, 'c-twice', { ops: git, paneOrTabLive: async () => false, busyRetries: 0, retireFar: (host, ask) => (host === 'child-box' ? links.retire(host, ask) : Promise.reject(new Error(`machine ${host} is unreachable: ssh exited 255`))) });
+  assert.equal(result.outcome, 'partial');
+  assert.ok(result.outcome === 'partial' && result.reason.includes(MID) && result.reason.includes('mid-box'), JSON.stringify(result));
+  assert.equal(childOf('c-twice')?.retireOutcome, 'partial', 'the worktree on the parent\'s machine is removed, and the one on mid-box stays');
   assert.deepEqual(git.calls, [`worktree remove ${LEFT}`, `branch -D feat-x`]);
   const after = childOf('c-twice');
   assert.deepEqual(after?.retireIntent?.far?.map((item) => item.host), ['child-box', 'mid-box']);
@@ -249,7 +251,7 @@ test("a child that left two worktrees on the parent's machine has both retired, 
   assert.ok(log.includes(LEFT) && log.includes(LEFT2), log);
 });
 
-test("the parent's daemon refuses cleanly when the child's worktree is only on the far machine, and writes nothing", async (t) => {
+test("a child whose only worktree is on the far machine has its request taken, and the answer says the daemon there retires it once its pane is gone (issue #242)", async (t) => {
   const w = world(t);
   const git = mergedWorktree();
   // Spawned on child-box: its only worktree is there, where the parent's daemon cannot take a proof.
@@ -263,10 +265,12 @@ test("the parent's daemon refuses cleanly when the child's worktree is only on t
   assert.match(answer, new RegExp(PARENT_ID));
   assert.ok(answer.includes(FAR_CWD), answer);
   assert.match(answer, /child-box/);
-  assert.match(answer, /Nothing was written/);
-  assert.equal(childOf('c-far')?.retireRequestedAt, undefined);
-  assert.equal(childOf('c-far')?.retireIntent, undefined);
-  await until(() => inHome(w.childHome, () => listForwards()).length === 0, 'the refusal to clear the child machine, since no resend changes it');
+  assert.doesNotMatch(answer, /Nothing was written/, answer);
+  assert.match(answer, /asks the daemon on child-box to retire/, answer);
+  assert.ok(childOf('c-far')?.retireRequestedAt);
+  assert.equal(childOf('c-far')?.retireIntent?.worktree, undefined, 'no worktree on the parent\'s machine');
+  assert.deepEqual(childOf('c-far')?.retireIntent?.far, [{ host: 'child-box', worktree: FAR_CWD, runs: true }]);
+  await until(() => inHome(w.childHome, () => listForwards()).length === 0, 'the child machine to drop its copy once acknowledged');
   assert.deepEqual(git.calls, []);
 });
 

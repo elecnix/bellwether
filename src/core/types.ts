@@ -621,10 +621,10 @@ export interface ChildRecord {
   retiredAt?: string;
   /**
    * `removed` only when nothing the record knows of stays in place. `partial`
-   * when the worktree the intent names was removed, but another one stays: a
-   * worktree on a machine this daemon cannot take a proof on, or one the child
-   * left here that failed its proofs (issue #273). The named worktree is gone
-   * after either.
+   * when a worktree was removed but another one stays: one the child left
+   * here that failed its proofs, or one on another machine whose daemon
+   * refused it or has not answered (issues #273, #242). `refused` when
+   * nothing was removed.
    */
   retireOutcome?: 'removed' | 'partial' | 'refused';
   /** For a refusal: the condition that failed, and what a person would do about it. For a partial retirement: what stays. */
@@ -751,15 +751,44 @@ export interface LeftWorktree {
   proof?: string;
 }
 
-/** The worktree and branch a child asked to have removed once it is gone. */
+/**
+ * A worktree a child has on another machine, which the daemon there retires
+ * on the parent's request once the child's pane is gone (issue #242). The
+ * parent's daemon names the directory its record holds; the daemon there
+ * takes the proofs and answers with what it found.
+ */
+export interface FarWorktree {
+  host: string;
+  /** The directory the child ran in, or left by a move, on that machine. */
+  worktree: string;
+  /** Set for the worktree the child runs in there, rather than one it left. */
+  runs?: true;
+  /** The worktree root and branch the daemon there found, once it answered. */
+  root?: string;
+  branch?: string;
+  /** `gone` when the directory no longer existed there, so nothing was left to retire. */
+  outcome?: 'removed' | 'refused' | 'gone';
+  /** Why the worktree stays, with its machine and directory. */
+  refusal?: string;
+  /** What showed its work safe, once removed. */
+  proof?: string;
+  /** The request sent to that machine whose answer has not come back. */
+  requestId?: string;
+}
+
+/**
+ * The worktree and branch a child asked to have removed once it is gone. The
+ * worktree fields name one on the parent's machine; an intent for a child that
+ * never ran there names none, and only `far` (issue #242).
+ */
 export interface RetireIntent {
   /** The worktree root. */
-  worktree: string;
+  worktree?: string;
   /** The repository's common git directory. */
-  repo: string;
-  branch: string;
+  repo?: string;
+  branch?: string;
   /** The commit the branch pointed at when the child asked. */
-  head: string;
+  head?: string;
   /** The default branch the work must be merged into, as `origin/main`. */
   defaultBranch?: string;
   /** Why the child asked, in its own words. */
@@ -773,20 +802,8 @@ export interface RetireIntent {
   movedAway?: string;
   /** The other worktrees the child left on this machine by earlier moves, retired after this one (issue #241). */
   left?: LeftWorktree[];
-  /**
-   * The worktrees the child has on other machines, where this daemon cannot
-   * take a proof, as the cleanup found them when it finished. Each one stays
-   * in place, and the outcome is then `partial` (issue #273).
-   */
+  /** The worktrees the child has on other machines, which the daemon on each retires on this daemon's request (issue #242). */
   far?: FarWorktree[];
-}
-
-/** A worktree a child has on a machine other than the parent's: the one it runs in, or one it left there by a move. */
-export interface FarWorktree {
-  host: string;
-  worktree: string;
-  /** Set for the worktree the child runs in there, rather than one it left. */
-  runs?: true;
 }
 
 /** The registry layout this code writes. Version 2 added the child host. */

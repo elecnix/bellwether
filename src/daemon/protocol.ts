@@ -7,6 +7,7 @@ import type { AncestryAnswer } from '../core/ancestry.ts';
 import type { RosterChild } from '../core/roster.ts';
 import type { SessionReach } from '../core/adopted-session.ts';
 import type { RelayRestartAnswer, RelayRestartChild } from '../core/restart.ts';
+import type { RelayRetireAnswer } from '../core/retire.ts';
 
 export type { RelayHostState, RelayLinkStatus } from '../core/types.ts';
 
@@ -52,6 +53,11 @@ export type { RelayHostState, RelayLinkStatus } from '../core/types.ts';
 //    names `teleport` (issue #226). The parent's daemon writes the request on
 //    the child's record and answers it in the relay-ack; one that predates the
 //    field takes it as a needs-input report.
+//    Later still, without a bump: a parent's daemon asks the daemon on a
+//    child's far machine to retire a worktree there (relay-retire, issue
+//    #242), and that daemon keeps its answer in the relay outbox as a relay
+//    report that names `retireAnswer`. A far daemon that predates it answers
+//    unknown_type, and the parent leaves that worktree in place by name.
 //
 // Change the wire additively: a new request type, or a new optional field,
 // needs no bump, because a daemon answers a request it does not know with
@@ -309,6 +315,27 @@ export interface RelayMessageRequest {
  * `RelayRestartAnswer`. Added without a protocol bump: a daemon that predates
  * it answers unknown_type, and the parent refuses the restart by name.
  */
+/**
+ * From a parent's daemon on another machine: retire the worktree at `dir`, a
+ * directory the parent's record names for a child that ran on this machine
+ * (issue #242). The daemon here runs retirement's conditions against its own
+ * git, process table, registry and relay records, and removes the worktree
+ * only when they pass. The answer is a result whose text is the JSON of
+ * `RelayRetireAnswer`, and it also waits in the relay outbox, as a relay
+ * report that names `retireAnswer`, until the parent's daemon takes it. A
+ * repeat of the same `requestId` gets the answer kept for it. Added without a
+ * protocol bump: a daemon that predates it answers unknown_type, and the
+ * parent leaves the worktree in place, refused by name.
+ */
+export interface RelayRetireRequest {
+  type: 'relay-retire';
+  id: string;
+  parentId: string;
+  childId: string;
+  dir: string;
+  requestId: string;
+}
+
 export interface RelayRestartRequest {
   type: 'relay-restart';
   id: string;
@@ -427,7 +454,7 @@ export interface ResumeRequest {
   label?: string;
 }
 
-export type DaemonRequest = HelloRequest | CallRequest | ReceiptRequest | ByeRequest | DrainRequest | WatchRequest | ReportRequest | RelaySubscribeRequest | RelayAckRequest | RelayReadRequest | RelayAdoptRequest | RelayStatusRequest | SessionsRequest | AncestryRequest | MessageAckRequest | RelayMessageRequest | RelayRestartRequest | ResumeRequest;
+export type DaemonRequest = HelloRequest | CallRequest | ReceiptRequest | ByeRequest | DrainRequest | WatchRequest | ReportRequest | RelaySubscribeRequest | RelayAckRequest | RelayReadRequest | RelayAdoptRequest | RelayStatusRequest | SessionsRequest | AncestryRequest | MessageAckRequest | RelayMessageRequest | RelayRestartRequest | RelayRetireRequest | ResumeRequest;
 
 export interface HelloReply {
   type: 'hello';
@@ -641,6 +668,11 @@ export interface RelayReport {
    * that predates the field.
    */
   teleport?: { machine?: string; cwd?: string; reason?: string };
+  /**
+   * Set on an entry that carries no report but the answer of a relay-retire,
+   * kept until the parent's daemon takes it (issue #242).
+   */
+  retireAnswer?: { requestId: string; answer: RelayRetireAnswer };
 }
 
 
@@ -741,6 +773,15 @@ export function parseRequest(line: string): DaemonRequest {
       const body = typeof message['text'] === 'string' ? message['text'] : '';
       if (!messageId || !body.trim()) throw new ProtocolError('invalid_message', 'a relay message needs a message id and text');
       return { type: value['type'] === 'relay-message-again' ? 'relay-message-again' : 'relay-message', id, parentId, childId, message: { id: messageId, text: body, from: text(message['from']) || 'your parent', at: text(message['at']) || new Date().toISOString() }, ...(value['awaitSession'] === true ? { awaitSession: true } : {}) };
+    }
+    case 'relay-retire': {
+      const id = text(value['id']);
+      const parentId = text(value['parentId']);
+      const childId = text(value['childId']);
+      const dir = text(value['dir']);
+      const requestId = text(value['requestId']);
+      if (!id || !parentId || !childId || !dir.startsWith('/') || !/^[A-Za-z0-9._-]{1,120}$/.test(requestId)) throw new ProtocolError('invalid_retire', 'a relay retirement needs an id, a parent id, a child id, an absolute directory and a request id');
+      return { type: 'relay-retire', id, parentId, childId, dir, requestId };
     }
     case 'relay-restart': {
       const id = text(value['id']);

@@ -31,7 +31,7 @@ import { lastAssistantMessage } from '../core/transcript.ts';
 import { harnessFor, resolveTranscript } from '../core/harnesses/index.ts';
 import type { CallerIdentity, OutboxEntry } from '../core/types.ts';
 import { TeleportRefusedError, acceptTeleportFromAfar } from '../core/teleport.ts';
-import { RETIRE_TOOL, RetireRefused, realRetireOps, requestRetirementFromAfar, retirementPending, type RetireOps } from '../core/retire.ts';
+import { RETIRE_TOOL, RetireRefused, learnRelayRetire, realRetireOps, requestRetirementFromAfar, retireForRelay, retirementPending, type RelayRetireAnswer, type RetireOps } from '../core/retire.ts';
 import type { RosterChild } from '../core/roster.ts';
 import type { InboxMessage, MessageAckRequest, RelayHostState, RelayMessageAnswer, RelayMessageRequest, RelayReport, ServedTool } from './protocol.ts';
 import { BRIEF_SESSION_WAIT_MS, BRIEF_TURN_WAIT_MS, unreadSessionMessages, type Inbox, type InboxAnswer } from '../core/send.ts';
@@ -796,6 +796,30 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
    * service start when no session of that parent is connected. A refusal
    * writes nothing and goes back as the answer, so the far end drops it.
    */
+  /**
+   * The far side of relay-retire (issue #242). A repeat of a request still
+   * waiting in the relay outbox gets its kept answer, and a repeat that
+   * arrives while the first runs joins it, so the checks and the removal run
+   * once per request.
+   */
+  const retiring = new Map<string, Promise<RelayRetireAnswer>>();
+  const retireHere = (request: { parentId: string; childId: string; dir: string; requestId: string }): Promise<RelayRetireAnswer> => {
+    const kept = outbox.keptRetireAnswer(request.requestId);
+    if (kept) return Promise.resolve(kept);
+    const running = retiring.get(request.requestId);
+    if (running) return running;
+    const job = retireForRelay(request, { ops: retireOps })
+      .catch((error: unknown): RelayRetireAnswer => ({ outcome: 'refused', reason: `the retirement there failed before it removed anything: ${(error as Error).message}` }))
+      .then((answer) => {
+        log(`relay-retire of ${request.dir} for child ${request.childId} of ${request.parentId}: ${answer.outcome}${answer.outcome === 'refused' ? `: ${answer.reason}` : ''}`);
+        outbox.retireAnswer(request.parentId, request.childId, request.requestId, answer);
+        return answer;
+      })
+      .finally(() => retiring.delete(request.requestId));
+    retiring.set(request.requestId, job);
+    return job;
+  };
+
   const acceptRetire = async (host: string, parentId: string, childId: string, reason: string | undefined): Promise<{ answer: string }> => {
     try {
       const answer = await requestRetirementFromAfar(parentId, childId, host, retireOps, reason);
@@ -824,6 +848,11 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
     if (report.retire) return acceptRetire(host, route.parent.id, route.child.id, report.retire.reason);
     // Not a report: the child asks from that machine to be teleported.
     if (report.teleport) return acceptTeleport(host, route.parent.id, route.child.id, report.teleport);
+    if (report.retireAnswer) {
+      // Not a report: the answer of a far retirement this daemon asked for there, kept after a lost connection (issue #242).
+      log(learnRelayRetire(route.parent.id, route.child.id, host, report.retireAnswer.requestId, report.retireAnswer.answer, log));
+      return {};
+    }
     if (report.restartAnswer) {
       // Not a report: the answer of a restart this daemon asked for there, kept after a lost connection.
       log(learnRelayRestart(route.parent.id, route.child.id, host, report.restartAnswer.requestId, report.restartAnswer.answer, { log }));
@@ -984,6 +1013,12 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
         // A parent's daemon on another machine, for a child this machine holds a relay record for.
         const answer = await relayMessage(request);
         log(`${request.type} ${request.message.id} for child ${request.childId}: ${answer.delivered ? (answer.unanswered ? `pushed to its session, which ${answer.unanswered.replace(/^its session /, '')}` : `taken by its session (${answer.via})`) : answer.reason}`);
+        reply({ type: 'result', id: request.id, text: JSON.stringify(answer) });
+        return;
+      }
+      if (request.type === 'relay-retire') {
+        // A parent's daemon on another machine asks this one to retire a worktree its record names (issue #242).
+        const answer = await retireHere(request);
         reply({ type: 'result', id: request.id, text: JSON.stringify(answer) });
         return;
       }

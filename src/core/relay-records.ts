@@ -10,6 +10,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { relayChildPath, relayChildrenDir, relayOutboxDir, relayOutboxPath } from './paths.ts';
 import type { RelayRestartAnswer } from './restart.ts';
+import type { RelayRetireAnswer } from './retire.ts';
 import type { ReportStatus, ReportVia } from './types.ts';
 
 export const RELAY_SCHEMA = 1;
@@ -96,9 +97,16 @@ export interface ForwardEntry {
   retire?: { reason?: string };
   /** Set on an entry that asks the parent's daemon to teleport the child once its turn ends (issue #226). */
   teleport?: { machine?: string; cwd?: string; reason?: string };
+  /** Set on an entry that carries no report but the answer of a relay-retire, kept until the parent's daemon takes it (issue #242). */
+  retireAnswer?: { requestId: string; answer: RelayRetireAnswer };
 }
 
 /** A receipt that names one report, so a retried forward is accepted once. */
+/** The receipt of the relay outbox entry that keeps a relay-retire answer, named after its request (issue #242). */
+export function retireAnswerReceipt(requestId: string): string {
+  return `rr-${requestId}`;
+}
+
 export function newReportReceipt(): string {
   return `rp-${crypto.randomBytes(8).toString('hex')}`;
 }

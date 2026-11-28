@@ -354,24 +354,54 @@ export function retireLine(child: ChildRecord): string | undefined {
  * give the parent when there is nothing for the cleanup to do: a working
  * directory that is gone, not a git worktree, a main worktree, or out of
  * bounds. A child that already asked keeps its own request.
+ *
+ * A child on another machine that moved away from this one left worktrees
+ * here, and the stop retires them as the child's own request does
+ * (issue #243): the record, the worktrees and their proofs are all on this
+ * machine. The worktree it runs in there is not this daemon's to judge.
  */
 export async function retireOnStop(parentId: string, child: ChildRecord, ops: RetireOps): Promise<string | undefined> {
-  if (retirementPending(child) || !child.cwd) return undefined;
-  // An adopted child's directory, and one on another machine, are not this daemon's to retire.
-  if (outOfBounds(child)) return undefined;
-  if (!ops.dirExists(child.cwd)) return `${child.name}'s working directory ${child.cwd} no longer exists, so retirement had no worktree left to remove.`;
-  const facts = await ops.inspect(child.cwd);
-  if ('error' in facts) return `Its working directory ${child.cwd} is not a git worktree, so retirement leaves it in place.`;
+  if (retirementPending(child) || child.origin === 'adopt') return undefined;
+  const runsHere = hostOf(child) === LOCAL_HOST;
+  const here = leftHere(child);
+  if (runsHere && !child.cwd) return undefined;
+  const [dir, ...others] = runsHere ? [child.cwd as string, ...here] : here;
+  if (!dir) return undefined;
+  const subject = runsHere ? `Its working directory ${dir}` : `The worktree ${child.name} left on this machine when it moved away, ${dir},`;
+  if (!ops.dirExists(dir)) return runsHere ? `${child.name}'s working directory ${dir} no longer exists, so retirement had no worktree left to remove.` : `${subject} no longer exists, so retirement had nothing left to remove here.`;
+  const facts = await ops.inspect(dir);
+  if ('error' in facts) return `${subject} is not a git worktree, so retirement leaves it in place.`;
   if (facts.main) return `Retirement leaves ${facts.worktree} in place: it is the repository's main worktree (${facts.main}), and Bellwether never removes a main worktree.`;
   if (!facts.branch) return `Retirement leaves ${facts.worktree} in place: it has a detached HEAD at ${facts.head.slice(0, 12)}, so Bellwether cannot tell whether its work merged.`;
-  const intent: RetireIntent = { worktree: facts.worktree, repo: facts.repo, branch: facts.branch, head: facts.head, ...(facts.defaultBranch ? { defaultBranch: facts.defaultBranch } : {}), reason: STOP_REASON };
+  const earlier = await leftWorktrees(child, facts.worktree, others, ops);
+  const intent: RetireIntent = { worktree: facts.worktree, repo: facts.repo, branch: facts.branch, head: facts.head, ...(facts.defaultBranch ? { defaultBranch: facts.defaultBranch } : {}), reason: STOP_REASON, ...(runsHere ? {} : { movedAway: hostOf(child) }), ...(earlier.left.length ? { left: earlier.left } : {}) };
   const now = new Date().toISOString();
   updateChild(parentId, child.id, (entry) => {
     if (entry.retireOutcome) clearRetirement(entry);
     entry.retireRequestedAt = now;
     entry.retireIntent = intent;
+    for (const gone of earlier.gone) dropDeparture(entry, LOCAL_HOST, gone);
   });
   return undefined;
+}
+
+/**
+ * One sentence for the parent on the worktrees a stopped child has on other
+ * machines, or undefined when it has none: the one it runs in, and each one it
+ * left on a machine other than this one. This daemon cannot take a proof there.
+ */
+export function farWorktreesLine(child: ChildRecord): string | undefined {
+  if (child.origin === 'adopt') return undefined;
+  const runsOn = hostOf(child) === LOCAL_HOST ? undefined : hostOf(child);
+  const far = [
+    ...(runsOn && child.cwd ? [`${child.cwd} on ${runsOn}`] : []),
+    ...departuresOf(child)
+      .filter((entry) => entry.host !== LOCAL_HOST && entry.cwd)
+      .map((entry) => `${entry.cwd} on ${entry.host}, which it left by a move`),
+  ];
+  if (!far.length) return undefined;
+  const list = far.length === 1 ? (far[0] as string) : `${far.slice(0, -1).join(', ')} and ${far.at(-1)}`;
+  return `Its worktree${far.length === 1 ? '' : 's'} ${list} ${far.length === 1 ? 'stays' : 'stay'} in place, because this daemon cannot take retirement's proofs on another machine. Remove ${far.length === 1 ? 'it' : 'each one'} by hand there once its work is safe.`;
 }
 
 /** Whether a child has asked to be retired and the cleanup has not finished. */

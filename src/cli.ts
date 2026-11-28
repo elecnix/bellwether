@@ -29,6 +29,7 @@ import { harnessFor, harnessNamed } from './core/harnesses/index.ts';
 import { daemonHerdrLine, describeUpgrade, farPairing, gatherUpgrade } from './daemon/upgrade-status.ts';
 import { describeState } from './core/hygiene.ts';
 import { HEARTBEAT_MISSES } from './core/ssh.ts';
+import { relayAgentLine } from './core/ssh-agent.ts';
 import { DaemonClient, REFUSED_EXIT, ReportRefused, daemonAncestry, daemonResume, drainDaemon, ensureDaemon, postReport, relayStatus } from './daemon/client.ts';
 import { ancestry, type AncestryAnswer, type AncestryLevel } from './core/ancestry.ts';
 import { readMemory, runsOn } from './daemon/relay-links.ts';
@@ -807,7 +808,10 @@ async function relayBridge(argv: string[]): Promise<number> {
   const heartbeatMs = Number(exactFlags(argv, ['heartbeat-ms'])['heartbeat-ms'] ?? 0);
   const home = bellwetherHome();
   const socketPath = process.env['BELLWETHER_DAEMON_SOCKET'] ?? path.join(home, 'daemon.sock');
-  await ensureDaemon(home, socketPath);
+  const handedOver = await ensureDaemon(home, socketPath);
+  // Run by hand, with no heartbeat, the bridge is the hand-over a person reads. Run by a parent's
+  // daemon, its standard error explains a failed connection, so it stays clear of this sentence.
+  if (handedOver.notice && !(heartbeatMs > 0)) console.error(`bellwether relay-bridge: ${handedOver.notice}`);
   const socket = await new Promise<net.Socket>((resolve, reject) => {
     const connection = net.createConnection(socketPath);
     connection.once('error', reject);
@@ -888,6 +892,9 @@ async function checkRelay(daemonLive: boolean, daemonSocket: string): Promise<nu
         else {
           bad(label, detail);
           failures += 1;
+          // A public-key refusal never says the daemon's ssh had no agent; this line does (issue #245).
+          const agentLine = relayAgentLine(state);
+          if (agentLine) console.log(`  info  ${agentLine}`);
         }
       }
     } catch (error) {

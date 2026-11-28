@@ -920,3 +920,36 @@ test('a registration from a release that hands back no environment is refused fo
   assert.throws(() => parseRegistration('child-box', old, ENV_KIND), /bellwether relay-register on child-box, version 0\.1\.5 build example-build, handed back no environment, and an Env Agent child cannot start without ENV_AGENT_READY\. Upgrade @elecnix\/bellwether on child-box\./);
   assert.doesNotThrow(() => parseRegistration('child-box', old, 'claude'), 'a harness that needs none starts as before');
 });
+
+test('doctor names a relay whose ssh ran with no agent because the daemon started without SSH_AUTH_SOCK, and says what to add to ~/.ssh/config (issue #245)', async (t) => {
+  const w = world(t);
+  parentHolds(w, 'c-agentless');
+  childHolds(w, 'c-agentless');
+  // The daemon's environment is a non-interactive SSH session's: no SSH_AUTH_SOCK.
+  const noAgent: NodeJS.ProcessEnv = { ...process.env };
+  delete noAgent['SSH_AUTH_SOCK'];
+  w.ssh.plan(Array.from({ length: 10_000 }, () => 'deny' as const));
+  const { links: relayLinks } = await parentDaemon(w, links(w, { env: noAgent }));
+  await until(() => /Permission denied/.test(relayLinks.state('child-box')?.lastError ?? ''), 'a public-key refusal');
+  assert.equal(relayLinks.state('child-box')?.sshAgent, false);
+  const down = await doctor(w);
+  assert.match(down, /fail\s+relay child-box: reconnecting/);
+  assert.match(down, /Permission denied \(publickey/);
+  assert.match(down, /info\s+relay child-box: the daemon started without SSH_AUTH_SOCK, so its ssh to child-box ran with no agent/);
+  assert.match(down, /add an IdentityAgent or IdentityFile line under Host child-box in ~\/\.ssh\/config/);
+});
+
+test('doctor says nothing about the agent for a failing relay whose ssh had one', async (t) => {
+  const w = world(t);
+  parentHolds(w, 'c-agent');
+  childHolds(w, 'c-agent');
+  const agent = path.join(w.root, 'agent.sock');
+  fs.writeFileSync(agent, '');
+  w.ssh.plan(Array.from({ length: 10_000 }, () => 'deny' as const));
+  const { links: relayLinks } = await parentDaemon(w, links(w, { env: { ...process.env, SSH_AUTH_SOCK: agent } }));
+  await until(() => /Permission denied/.test(relayLinks.state('child-box')?.lastError ?? ''), 'a public-key refusal');
+  assert.equal(relayLinks.state('child-box')?.sshAgent, true);
+  const down = await doctor(w);
+  assert.match(down, /fail\s+relay child-box: reconnecting/);
+  assert.doesNotMatch(down, /SSH_AUTH_SOCK/);
+});

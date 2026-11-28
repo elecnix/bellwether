@@ -21,6 +21,23 @@ A session you start by hand after the upgrade runs the new code and hands the da
 
 Leave the sessions that are already open alone. Then run `bellwether doctor` from the new install, and check that its `versions:` line shows the daemon on the new release.
 
+### A hand-over over SSH and the SSH agent
+
+The daemon that `relay-bridge` starts inherits the environment of the shell that ran it. A non-interactive SSH session and a service manager both start it without `SSH_AUTH_SOCK`, so the daemon has no SSH agent. Its ssh then finds only the keys that `~/.ssh/config` names. When a host's key lives only in an agent, its relay fails with `Permission denied (publickey)` at the next reconnect.
+
+For each host that the daemon dials, add one of these lines to that host's entry in `~/.ssh/config`. The next retry then connects, with no restart:
+
+```text
+Host mac
+  IdentityAgent ~/.ssh/agent.sock
+  # or a key file of its own:
+  IdentityFile ~/.ssh/id_ed25519
+```
+
+Give `IdentityAgent` an agent socket path that stays the same across logins, such as the one a password manager's agent or a `launchd` agent sets up. ssh then finds the agent even when `SSH_AUTH_SOCK` is unset. The path that an SSH session forwards changes with each login, so it doesn't work there.
+
+`relay-bridge` warns when it starts a daemon without an agent and a relay needs one, and names each such host. `bellwether doctor` adds an `info` line under each failing relay whose ssh ran without an agent. Until `~/.ssh/config` names a key, `bellwether drain` and then `bellwether relay-bridge < /dev/null`, run from a shell that has the agent, start the daemon with it.
+
 ## What happens next
 
 One daemon runs per machine. Any client from a newer install hands it over on connecting, so the install that connects newest sets the daemon's code. Each of these is such a client:

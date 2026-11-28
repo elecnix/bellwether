@@ -11,6 +11,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
+import { spawnSync } from 'node:child_process';
 import { DaemonClient, daemonSessions, ensureDaemon, handOverDaemon } from '../../src/daemon/client.ts';
 import { isAlive, readLock } from '../../src/daemon/lock.ts';
 import { DAEMON_PROTOCOL } from '../../src/daemon/protocol.ts';
@@ -24,6 +25,7 @@ import { daemonsUnder, stopDaemonsUnder } from '../fixtures/daemons.ts';
 import { makeInstall } from '../fixtures/installs.ts';
 
 const OLD_VERSION = '0.0.9';
+const CLI = path.resolve(import.meta.dirname, '../../src/cli.ts');
 
 interface Space {
   root: string;
@@ -245,4 +247,44 @@ test('a child an older daemon starts runs that daemon\'s adapter and keeps it, u
   assert.equal(after?.version, BELLWETHER_VERSION);
   assert.notEqual(after?.pid, oldDaemonPid);
   await until(async () => (childSession.pid === after?.pid && (await childSession.tool('agent_list', {}).catch(() => undefined)) ? true : undefined), 'the child to reach the new daemon');
+});
+
+test('relay-bridge that hands over to a daemon without SSH_AUTH_SOCK says which relay will fail, and the new lock records no agent (issue #245)', async (t) => {
+  const machine = space(t);
+  const old = makeInstall(machine.root, 'old-install', OLD_VERSION, DAEMON_PROTOCOL - 1);
+  const oldModule = await old.client();
+  // The outgoing daemon starts from a shell that has an agent.
+  const agent = path.join(machine.root, 'agent.sock');
+  fs.writeFileSync(agent, '');
+  const savedAgent = process.env['SSH_AUTH_SOCK'];
+  process.env['SSH_AUTH_SOCK'] = agent;
+  try {
+    machine.track(await oldModule.DaemonClient.connect(parent('old-parent', machine.herdr), { home: machine.home, socketPath: machine.socket }));
+  } finally {
+    if (savedAgent === undefined) delete process.env['SSH_AUTH_SOCK'];
+    else process.env['SSH_AUTH_SOCK'] = savedAgent;
+  }
+  assert.equal(readLock(machine.home)?.sshAgent, true);
+  // That daemon dials two machines: mac takes its key from the agent, box names a key file of its own.
+  const relayDir = path.join(machine.home, 'relay');
+  fs.mkdirSync(relayDir, { recursive: true });
+  fs.writeFileSync(path.join(relayDir, 'hosts.json'), JSON.stringify({ mac: { target: 'mac' }, box: { target: 'box' } }));
+  const key = path.join(machine.root, 'box_key');
+  fs.writeFileSync(key, '');
+  const bin = path.join(machine.root, 'bin');
+  fs.mkdirSync(bin);
+  fs.writeFileSync(path.join(bin, 'ssh'), `#!/bin/sh\n[ "$1" = -G ] || exit 255\necho "host $2"\nif [ "$2" = box ]; then echo "identityfile ${key}"; else echo "identityfile ~/.ssh/id_absent_for_this_case"; fi\n`, { mode: 0o755 });
+
+  // The operator runs the new install's relay-bridge over an SSH session that has no agent.
+  const env: NodeJS.ProcessEnv = { ...process.env, BELLWETHER_HOME: machine.home, BELLWETHER_DAEMON_SOCKET: machine.socket, PATH: `${bin}${path.delimiter}${process.env['PATH'] ?? ''}` };
+  delete env['SSH_AUTH_SOCK'];
+  const bridge = spawnSync(process.execPath, ['--disable-warning=ExperimentalWarning', CLI, 'relay-bridge'], { env, input: '', encoding: 'utf8', timeout: 60_000 });
+  assert.equal(bridge.status, 0, bridge.stderr);
+  const after = readLock(machine.home);
+  assert.equal(after?.version, BELLWETHER_VERSION);
+  assert.equal(after?.sshAgent, false);
+  assert.match(bridge.stderr, /starts without SSH_AUTH_SOCK, though the daemon it replaces had one/);
+  assert.match(bridge.stderr, /relay to mac will fail with Permission denied/);
+  assert.match(bridge.stderr, /Add an IdentityAgent or IdentityFile line under Host mac in ~\/\.ssh\/config/);
+  assert.doesNotMatch(bridge.stderr, /relay to box/);
 });

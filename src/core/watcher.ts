@@ -30,11 +30,11 @@ import type { AgentStatus, ChildEventKind, ChildMessage, ChildRecord, DialogDeci
 import { backInPane } from './adopt.ts';
 import { parsePane, type HerdrPane } from './herdr-client.ts';
 import { ClaimRefused, claimantOf, decideClaim } from './pane-claims.ts';
+import { AuthorityConflict, acquiredBy, adoptionSettled, claimSettled, claimUnconfirmed, farRecordHeld, heldByAdoption, answersDialogs, awaitsReturn, checksStart, endsOnNewSession, replaced, settledCopy } from './authority.ts';
 import { removeRelayRecord } from './relay-records.ts';
 import { ClaimHeldElsewhere } from './remote.ts';
 import { releaseWorkspace } from './workspace.ts';
 import { harnessSeen, reportPending, runEnds, sessionSeen, statusSeen, stopAwaiting, tabClosed, viewOf } from './incarnation.ts';
-import { heldByAdoption } from './acquisition.ts';
 
 /** herdr's status for a pane, or the child's last known status. */
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -432,7 +432,7 @@ export class Watcher {
    * parent hears it as an exit. Returns true when the child turned out gone.
    */
   private async endedBeforeSeen(child: ChildRecord): Promise<boolean> {
-    if (child.harnessSeenAt || heldByAdoption(child) || !child.paneId || this.startChecked.has(child.id)) return false;
+    if (child.harnessSeenAt || !checksStart(child) || !child.paneId || this.startChecked.has(child.id)) return false;
     const since = Date.parse(child.resumedAt ?? child.startedAt);
     if (!(Date.now() - since >= this.startConfirmMs)) return false;
     this.startChecked.add(child.id);
@@ -538,7 +538,15 @@ export class Watcher {
       // A parent on another machine may have adopted the pane before this
       // watcher heard the session come back. Its claim stands, as a far
       // child's reclaim yields to one, so the session answers to one parent (issue #244).
-      const holder = claimantOf(child.paneId);
+      // Two holders that disagree leave the pane to neither, and the record says which two (issue #279).
+      let holder: ReturnType<typeof claimantOf>;
+      try {
+        holder = claimantOf(child.paneId);
+      } catch (error) {
+        if (!(error instanceof AuthorityConflict)) throw error;
+        this.stopAwaiting(child, error.message.replace(/\.$/, ''));
+        return;
+      }
       const decision = decideClaim({ parentId: this.parentId, paneId: child.paneId, session: agent.agentSessionId }, holder);
       if (decision.kind === 'refuse') {
         this.stopAwaiting(child, decision.reason);
@@ -552,7 +560,7 @@ export class Watcher {
       } catch (error) {
         if (error instanceof ClaimHeldElsewhere) {
           updateChild(this.parentId, child.id, (entry) => {
-            entry.replacedBy = error.childId;
+            replaced(entry, error.childId);
             stopAwaiting(entry);
           });
           this.log(`${child.name} came back in pane ${child.paneId}, and ${error.message}; adopt the pane again to watch it under that id`);
@@ -591,7 +599,7 @@ export class Watcher {
     // An adopted harness that ended in its open pane may come back there, as a
     // quit and a resume of the same session do, and it is the same child then (issue #191).
     // A pane that went to another session holds another agent, so nothing waits there.
-    const awaitsResume = Boolean(harnessEnded) && heldByAdoption(child) && how !== 'session-changed';
+    const awaitsResume = Boolean(harnessEnded) && awaitsReturn(child) && how !== 'session-changed';
     let unread: ChildMessage[] = [];
     updateChild(this.parentId, child.id, (entry) => {
       const at = new Date().toISOString();
@@ -831,7 +839,7 @@ export class Watcher {
       // the pane and session are the child's whole identity. Another session in
       // the pane, after a /clear, a /resume or herdr reusing the pane id, is
       // another agent, which no parent adopted (issue #211, item 7).
-      if (heldByAdoption(child) && child.session && session && session.value !== child.session.value) {
+      if (endsOnNewSession(child) && child.session && session && session.value !== child.session.value) {
         this.markExited(child, undefined, 'in-pane', 'session-changed', { session: session.value });
         this.dropLink(hostOf(child));
         void this.reconcileAndSubscribe();
@@ -1116,7 +1124,7 @@ export class Watcher {
    * dialogs reaches the parent as blocked.
    */
   private answers(child: ChildRecord): boolean {
-    return !heldByAdoption(child) && Boolean(harnessFor(child.kind)?.startup);
+    return answersDialogs(child) && Boolean(harnessFor(child.kind)?.startup);
   }
 
   /**
@@ -1495,8 +1503,8 @@ export class Watcher {
       await this.reclaimRemote(child);
       this.doubtRetry.delete(child.id);
       updateChild(this.parentId, child.id, (entry) => {
-        delete entry.claimUnconfirmed;
-        delete entry.farRecordLost;
+        claimSettled(entry);
+        farRecordHeld(entry);
       });
       this.log(`machine ${hostOf(child)} confirmed the claim on pane ${child.paneId} for ${child.name}, as child ${child.id}`);
     } catch (error) {
@@ -1509,7 +1517,7 @@ export class Watcher {
       this.doubtRetry.set(child.id, { at: Date.now() + delay, delay });
       const reason = (error as Error).message.trim().replace(/\.$/, '');
       updateChild(this.parentId, child.id, (entry) => {
-        entry.claimUnconfirmed = { at: entry.claimUnconfirmed?.at ?? new Date().toISOString(), host: hostOf(child), reason };
+        claimUnconfirmed(entry, { host: hostOf(child), reason });
       });
       this.log(`could not confirm the claim on pane ${child.paneId} for ${child.name} on machine ${hostOf(child)}: ${reason}`);
     } finally {
@@ -1521,11 +1529,11 @@ export class Watcher {
   private endRefusedClaim(child: ChildRecord, error: ClaimRefused | ClaimHeldElsewhere, how: 'adopt-refused' | 'claim-lost'): void {
     const reason = error instanceof ClaimHeldElsewhere ? `it holds pane ${child.paneId} for this session as child ${error.childId}; adopt the pane again to watch it under that id` : error.message.trim().replace(/\.$/, '');
     updateChild(this.parentId, child.id, (entry) => {
-      delete entry.adoptInDoubt;
-      delete entry.claimUnconfirmed;
-      if (error instanceof ClaimHeldElsewhere) entry.replacedBy = error.childId;
+      adoptionSettled(entry);
+      claimSettled(entry);
+      if (error instanceof ClaimHeldElsewhere) replaced(entry, error.childId);
     });
-    this.markExited({ ...child, adoptInDoubt: undefined, claimUnconfirmed: undefined }, undefined, undefined, how, { reason });
+    this.markExited(settledCopy(child), undefined, undefined, how, { reason });
     this.dropLink(hostOf(child));
     void this.reconcileAndSubscribe();
   }
@@ -1545,9 +1553,7 @@ export class Watcher {
     try {
       await this.reclaimRemote(child);
       this.doubtRetry.delete(child.id);
-      updateChild(this.parentId, child.id, (entry) => {
-        delete entry.adoptInDoubt;
-      });
+      updateChild(this.parentId, child.id, adoptionSettled);
       this.log(`machine ${hostOf(child)} confirmed the adoption of ${child.name} in pane ${child.paneId}, as child ${child.id}`);
       this.childrenChanged?.();
       this.dropLink(hostOf(child));
@@ -1666,7 +1672,7 @@ export function silence(child: ChildRecord): string {
   const started = child.resumedAt ?? child.startedAt;
   const reportedAt = child.lastReport ? Date.parse(child.lastReport.at) : NaN;
   if (Number.isFinite(reportedAt) && reportedAt >= Date.parse(started)) return '';
-  const since = child.resumedAt ? 'it resumed' : heldByAdoption(child) ? 'Bellwether adopted it' : 'it started';
+  const since = child.resumedAt ? 'it resumed' : acquiredBy(child) === 'adopt' ? 'Bellwether adopted it' : 'it started';
   return `, and it has not called parent_report since ${since} at ${started}`;
 }
 

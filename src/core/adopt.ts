@@ -11,10 +11,11 @@
 import type { HerdrClient, HerdrPane } from './herdr-client.ts';
 import { LOCAL_HOST } from './machine.ts';
 import { newChildId } from './outbox.ts';
-import { ClaimRefused, claimantOf, decideClaim, type PaneClaim } from './pane-claims.ts';
+import { acquired, adoptionInDoubt, adoptionSettled, farRecordHeld, farRecordLost, replaced as markReplaced, resumesAdoption } from './authority.ts';
+import { ClaimRefused, claimantOf, decideClaim, registryHolderOf, type PaneClaim } from './pane-claims.ts';
 import { RelayAnswerLost } from './relay-answer.ts';
 import { removeRelayRecord } from './relay-records.ts';
-import { readParent, updateChild, upsertChild, watcherOfPane } from './registry.ts';
+import { readParent, updateChild, upsertChild } from './registry.ts';
 import { clearRetirement } from './retire.ts';
 import { herdrLink } from './spawn.ts';
 import { harnessFor } from './harnesses/index.ts';
@@ -79,7 +80,7 @@ export function adoptionClaim(parentId: string, child: Pick<ChildRecord, 'id' | 
  */
 export function resumableAdoption(parent: Pick<ParentRecord, 'children'>, host: string, paneId: string, session: string | undefined): ChildRecord | undefined {
   if (!session) return undefined;
-  const same = parent.children.filter((child) => child.origin === 'adopt' && !child.replacedBy && (child.host ?? LOCAL_HOST) === host && child.session?.value === session);
+  const same = parent.children.filter((child) => resumesAdoption(child) && (child.host ?? LOCAL_HOST) === host && child.session?.value === session);
   return same.filter((child) => child.paneId === paneId && child.exitedAt).at(-1) ?? same.filter((child) => child.exitedAt).at(-1) ?? same.filter((child) => child.paneId !== paneId).at(-1);
 }
 
@@ -118,16 +119,15 @@ async function confirmHeld(parentId: string, child: ChildRecord, host: string, c
   } catch (error) {
     const why = (error as Error).message.replace(/\.$/, '');
     if (!(error instanceof ClaimRefused)) return { ...held, unconfirmed: why };
-    updateChild(parentId, child.id, (entry) => {
-      entry.farRecordLost = { at: entry.farRecordLost?.at ?? new Date().toISOString(), host, reason: why };
-    });
+    // That machine holds the pane for someone else: two sources disagree, and every act waits until they agree (issue #279).
+    updateChild(parentId, child.id, (entry) => farRecordLost(entry, { host, reason: why, contested: true }));
     throw new Error(`Pane ${child.paneId} on machine ${host} is a child of this session as ${child.name}, but machine ${host} holds no record of that and refuses to take the claim back: ${why}.`);
   }
   if (answer.childId !== child.id) throw new Error(`Pane ${child.paneId} on machine ${host} is a child of this session as ${child.id}, but machine ${host} holds it for this session as child ${answer.childId}.`);
   if (child.farRecordLost || child.adoptInDoubt) {
     updateChild(parentId, child.id, (entry) => {
-      delete entry.farRecordLost;
-      delete entry.adoptInDoubt;
+      farRecordHeld(entry);
+      adoptionSettled(entry);
     });
   }
   const current = readParent(parentId)?.children.find((entry) => entry.id === child.id) ?? child;
@@ -156,7 +156,7 @@ export async function adoptPane(client: HerdrClient, parent: ParentRecord, optio
   if (!entry) throw new Error(`Pane ${pane.paneId} on ${place(host)} runs ${pane.agent}, which is not an agent kind Bellwether supervises.`);
   if (host === LOCAL_HOST && pane.paneId === parent.paneId) throw new Error('A session cannot adopt its own pane.');
 
-  const owner = watcherOfPane(host, pane.paneId);
+  const owner = registryHolderOf(host, pane.paneId);
   if (owner && owner.parent.id === parent.id) return confirmHeld(parent.id, owner.child, host, options.claim);
   if (owner) throw new Error(`Pane ${pane.paneId} on ${place(host)} is already a child of ${owner.parent.id} as ${owner.child.name}, so this session cannot adopt it.`);
 
@@ -206,7 +206,7 @@ export async function adoptPane(client: HerdrClient, parent: ParentRecord, optio
       // The session runs in this pane now, wherever it ran before.
       backInPane(entry, pane, now);
       entry.name = name;
-      if (doubt) entry.adoptInDoubt = doubt;
+      if (doubt) adoptionInDoubt(entry, doubt);
     });
     const child = readParent(parent.id)?.children.find((entry) => entry.id === earlier.id) ?? earlier;
     return { child, link: herdrLink('pane', child.paneId), already: false, revived: true, ...(from ? { from } : {}), ...extra, ...doubtful };
@@ -215,7 +215,7 @@ export async function adoptPane(client: HerdrClient, parent: ParentRecord, optio
   const replaced = earlier?.id;
   if (replaced) {
     updateChild(parent.id, replaced, (entry) => {
-      entry.replacedBy = id;
+      markReplaced(entry, id);
       stopAwaiting(entry);
     });
   }
@@ -230,7 +230,7 @@ export async function adoptPane(client: HerdrClient, parent: ParentRecord, optio
     harness,
     ...firstRun({ paneId: pane.paneId, tabId: pane.tabId, host, cwd: pane.cwd, session: pane.agentSessionId ? { kind: pane.agentSessionId.includes('/') ? 'path' : 'id', value: pane.agentSessionId } : undefined, status: pane.agentStatus }),
     workspaceId: pane.workspaceId,
-    origin: 'adopt',
+    ...acquired('adopt', doubt),
     startedAt: now,
     statusChangedAt: now,
     completionSeq: pane.completionSeq,
@@ -243,7 +243,6 @@ export async function adoptPane(client: HerdrClient, parent: ParentRecord, optio
     depth: parent.depth + 1,
     stuckMs: options.stuckMinutes === undefined ? undefined : Math.max(1_000, Math.round(options.stuckMinutes * 60_000)),
     inactiveMs: resolveInactiveMs(undefined),
-    ...(doubt ? { adoptInDoubt: doubt } : {}),
   };
   upsertChild(parent.id, child);
   return { child, link: herdrLink('pane', child.paneId), already: false, ...extra, ...(replaced ? { replaced } : {}), ...doubtful };

@@ -6,6 +6,7 @@
 // that parent's record, and a window onto its former siblings. Then the peer
 // exchange itself, which carries the pair's token.
 import assert from 'node:assert/strict';
+import { acquired } from '../../src/core/authority.ts';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -281,7 +282,7 @@ test('freeing refuses an adopted child and a child that has exited', async (t) =
   mutateParent(space.parentId, (parent) => {
     const writer = parent.children.find((child) => child.id === WRITER.id);
     const sibling = parent.children.find((child) => child.id === SIBLING.id);
-    if (writer) writer.origin = 'adopt';
+    if (writer) Object.assign(writer, acquired('adopt'));
     if (sibling) runEnds(sibling, { at: new Date().toISOString() });
   });
   await assert.rejects(space.parent.tool('agent_free', { child: 'writer' }), /adopted/);

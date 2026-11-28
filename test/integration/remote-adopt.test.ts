@@ -438,7 +438,7 @@ test('adopting a pane this session already holds asks the far machine, and claim
   assert.equal(await adopt(w), `first-mate in pane ${PANE} is already a child of this session.`);
 });
 
-test('a far machine that refuses to take the claim back leaves the message typed, and the record and its reason say the two machines disagree (issue #219)', async (t) => {
+test('a far machine that holds the pane for another parent refuses the message, types nothing, and names both sources of authority (issues #219 and #279)', async (t) => {
   const w = await world(t);
   w.ctx.inbox = (parentId, record, message, options) => relayInbox(w.links, parentId, record, message, options);
   await adopt(w);
@@ -451,14 +451,25 @@ test('a far machine that refuses to take the claim back leaves the message typed
     claimPane({ parentId: 'pi-another-parent', childId: 'other-child', name: 'other', kind: 'claude', paneId: PANE, session: SESSION });
   });
 
-  const reply = await runBellwetherTool(w.ctx, 'agent_send', { child: id, text: 'Status?' });
-  assert.match(reply, /^Prompted first-mate: herdr typed message m-[0-9a-f]{8} into its pane, because /, reply);
-  assert.match(reply, new RegExp(`machine child-box holds no running child ${id} for parent ${PARENT_ID}, and refused to take the claim back: pane ${PANE} is already a child of pi-another-parent`), reply);
-  assert.deepEqual(typedFar(w), ['Status?']);
-  const lost = child(w)?.farRecordLost;
-  assert.ok(lost, 'the record keeps the disagreement');
-  assert.equal(lost?.host, 'child-box');
-  assert.match(lost?.reason ?? '', /already a child of pi-another-parent/);
+  // This registry and child-box's claims are two sources that disagree. Typing
+  // would put the message into a pane another parent holds, so nothing goes.
+  const refused = await runBellwetherTool(w.ctx, 'agent_send', { child: id, text: 'Status?' }).then(
+    (reply) => assert.fail(`the message went through: ${reply}`),
+    (error: unknown) => (error as Error).message,
+  );
+  assert.match(refused, /^Two sources of authority disagree about first-mate \(child [0-9a-f]+\): this parent's registry holds it in pane w1:p5 on machine child-box, and that machine's claims answer otherwise since /, refused);
+  assert.match(refused, new RegExp(`machine child-box holds no running child ${id} for parent ${PARENT_ID}, and refused to take the claim back: pane ${PANE} is already a child of pi-another-parent`), refused);
+  assert.match(refused, /Bellwether does not pick one, so it refuses a message for first-mate\. .*Message m-[0-9a-f]{8} was not typed, and stays on the record as never delivered\.$/, refused);
+  assert.deepEqual(typedFar(w), [], 'nothing was typed into the pane another parent holds');
+  const record = child(w);
+  assert.equal(record?.farRecordLost?.contested, true, 'the record keeps the disagreement');
+  assert.equal(record?.farRecordLost?.host, 'child-box');
+  assert.match(record?.messages?.at(-1)?.undelivered ?? '', /Two sources of authority disagree/);
+
+  // Every later act is refused by the same table, before anything leaves this machine.
+  const again = await runBellwetherTool(w.ctx, 'agent_send', { child: id, text: 'Status?' }).catch((error: unknown) => (error as Error).message);
+  assert.match(again, /^Two sources of authority disagree about first-mate/);
+  assert.deepEqual(typedFar(w), []);
 });
 
 /** Every record this parent holds for the adopted pane, live or exited. */

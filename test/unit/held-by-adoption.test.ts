@@ -2,7 +2,7 @@
 // it (issue #256).
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { heldByAdoption } from '../../src/core/acquisition.ts';
+import { heldByAdoption } from '../../src/core/authority.ts';
 import { backInPane } from '../../src/core/adopt.ts';
 import type { ChildRecord } from '../../src/core/types.ts';
 

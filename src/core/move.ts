@@ -60,6 +60,8 @@ const MOVE: CarryPolicy = {
   verb: 'move',
   refuse: (facts) => {
     const reasons = moveRefusals({ ...facts, exited: facts.state === 'stopped' });
+    // Whether this parent may move the child at all is authority's to answer (issue #279).
+    if (facts.authority) reasons.push(facts.authority);
     // A route is this machine's launcher, which the other machine's routes file does not hold.
     if (facts.route && facts.target !== LOCAL_HOST) reasons.push(`${facts.childName} runs on route ${facts.route}, a launcher this machine's routes file defines, so it cannot resume behind it on ${where(facts.target)}. Restart it with agent_restart and via none first, then move it.`);
     return reasons;

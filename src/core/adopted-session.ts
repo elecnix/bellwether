@@ -10,11 +10,11 @@
 // agent in it ends. The adoption recorded the harness session herdr reported
 // in the pane, and the adapter names its own session in its hello, so a
 // session that is not the adopted one is never handed a parent.
+import { AuthorityConflict, answersByPane } from './authority.ts';
 import { harnessNamed } from './harnesses/index.ts';
 import { LOCAL_HOST } from './machine.ts';
 import { claimantOf } from './pane-claims.ts';
 import { listParents } from './registry.ts';
-import { heldByAdoption } from './acquisition.ts';
 
 /**
  * How an adopted session can reach the parent that adopted it: `tools` when a
@@ -63,11 +63,19 @@ export function sameSession(hello: string | undefined, recorded: string | undefi
  */
 export function adoptedParentOf(hello: SessionHello): AdoptedParent | undefined {
   if (hello.childId || hello.reportsTo || !hello.paneId) return undefined;
+  // Two holders that disagree give the session no parent, so its report goes
+  // to neither: the pane's holders are judged before either one answers (issue #279).
+  let holder: ReturnType<typeof claimantOf>;
+  try {
+    holder = claimantOf(hello.paneId);
+  } catch (error) {
+    if (error instanceof AuthorityConflict) return undefined;
+    throw error;
+  }
   for (const parent of listParents()) {
-    const child = parent.children.find((entry) => heldByAdoption(entry) && !entry.exitedAt && entry.paneId === hello.paneId && (entry.host ?? LOCAL_HOST) === LOCAL_HOST);
+    const child = parent.children.find((entry) => answersByPane(entry) && !entry.exitedAt && entry.paneId === hello.paneId && (entry.host ?? LOCAL_HOST) === LOCAL_HOST);
     if (child && sameSession(hello.session, child.session?.value)) return { parentId: parent.id, childId: child.id, name: child.name, where: 'here' };
   }
-  const holder = claimantOf(hello.paneId);
   if (holder?.where !== 'away' || !holder.record.adopted) return undefined;
   if (!sameSession(hello.session, holder.record.session)) return undefined;
   return { parentId: holder.record.parentId, childId: holder.record.childId, name: holder.record.name, where: 'away' };

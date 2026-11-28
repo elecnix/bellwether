@@ -2,6 +2,7 @@
 // first, then create the tab with the Bellwether environment, then ask herdr
 // to start the harness in the tab's root pane, then watch the new pane.
 import { briefDelivered, briefOnLaunch, firstBriefs } from './delivery.ts';
+import { acquired } from './authority.ts';
 import os from 'node:os';
 import { HerdrApiError, type HerdrClient } from './herdr-client.ts';
 import { BLANK_SCREEN } from './screen.ts';
@@ -328,7 +329,7 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
     kind: options.kind,
     harness: entry.harness,
     ...firstRun({ paneId: '', host, cwd: options.cwd, ...(store?.mint ? { session: { kind: 'id' as const, value: store.mint() } } : {}) }),
-    origin: 'spawn',
+    ...acquired('spawn'),
     startedAt: now,
     statusChangedAt: now,
     lastBusyAt: now,

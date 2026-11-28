@@ -1,5 +1,6 @@
 // The Bellwether tools, in one list, so the Pi extension and the Claude
 // MCP channel server register exactly the same names and schemas.
+import { requireAuthority } from '../core/authority.ts';
 import { childPaneEnd, herdrView, type HerdrView } from '../core/pane-fate.ts';
 import os from 'node:os';
 import type { HerdrClient } from '../core/herdr-client.ts';
@@ -807,6 +808,8 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
   }
 
   if (name === 'agent_send') {
+    // Text and keys alike go only to a child this parent may speak for (issue #279).
+    requireAuthority(child, 'message');
     const text = optionalString(args['text']);
     const keys = Array.isArray(args['keys']) ? (args['keys'] as string[]) : undefined;
     if (keys?.length) {

@@ -218,7 +218,6 @@ The parent's brief asked for the smallest change first. The numbers argue agains
 
 Tracked in [#277](https://github.com/elecnix/bellwether/issues/277).
 
-Every write to these fields now goes through `src/core/incarnation.ts`, and `test/unit/incarnation-owner.test.ts` fails on a write anywhere else.
 
 The fields are `paneId`, `tabId`, `host`, `cwd`, `session`, `lastStatus`, `startingUntil`, `exitedAt`, `exitCode`, `harnessEnded`, `harnessSeenAt`, `tabClosedAt`, `paneEnd`, `reportPending`, `resumedAt`, `restartFailed`, `crossingFailed`, `awaitsResume`, `closing` and `restartInDoubt`.
 
@@ -240,7 +239,7 @@ Tracked in [#279](https://github.com/elecnix/bellwether/issues/279).
 
 The fields are `origin`, `replacedBy`, `adoptInDoubt` and `farRecordLost`.
 
-The owner replaces each `origin === 'adopt'` comparison with a named question. The questions cover whether Bellwether may:
+The owner replaces each `origin === 'adopt'` comparison with a named question, covering whether Bellwether may:
 
 - type into the pane
 - close it
@@ -249,7 +248,9 @@ The owner replaces each `origin === 'adopt'` comparison with a named question. T
 - carry the child
 - end it when another session appears in the pane
 
-The decision that [#256](https://github.com/elecnix/bellwether/issues/256) needs then becomes one line in one file. Freeing a child, [#262](https://github.com/elecnix/bellwether/issues/262), belongs after this step.
+With this step, the decision that [#256](https://github.com/elecnix/bellwether/issues/256) needed is one line, `heldByAdoption` in `src/core/authority.ts`. Freeing a child, [#262](https://github.com/elecnix/bellwether/issues/262), belongs after this step.
+
+Every write to these fields and every comparison of `origin` now goes through that module, and `test/unit/authority-owner.test.ts` fails on either anywhere else. Its decision table, given in [authority](authority.md), covers typing into the pane as the message act of `agent_send`.
 
 ### Steps 4 and 5: requests and retirement
 

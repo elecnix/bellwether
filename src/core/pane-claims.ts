@@ -3,8 +3,10 @@
 // pane here leaves a claim in this machine's relay records, because its own
 // registry sits on its own machine. Both count, so this machine's daemon is
 // the one place that can answer for its panes, whichever machine asks.
+import { AuthorityConflict, heldByAdoption, judgeHolders, type PaneHolder } from './authority.ts';
 import { LOCAL_HOST } from './machine.ts';
-import { watcherOfPane } from './registry.ts';
+import type { ChildRecord, ParentRecord } from './types.ts';
+import { watchersOfPane } from './registry.ts';
 import { RELAY_SCHEMA, listRelayRecords, removeRelayRecord, saveRelayRecord, type RelayRecord } from './relay-records.ts';
 
 /** What a parent on another machine asks for when it adopts a pane here. */
@@ -43,14 +45,54 @@ export function childLeft(connection: object): void {
   startedPanes.delete(connection);
 }
 
-/** The holder of a pane on this machine, if any. */
+function registrySource(found: { parent: ParentRecord; child: ChildRecord }): PaneHolder {
+  return { source: 'registry', parentId: found.parent.id, childId: found.child.id, name: found.child.name, ...(found.child.session ? { session: found.child.session.value } : {}) };
+}
+
+/**
+ * The parent whose registry on this machine lists a live child in a pane on a
+ * host. Two parents that both list it disagree, and this throws
+ * AuthorityConflict with both named, because nothing here can tell which one
+ * herdr's pane still belongs to (issue #279).
+ */
+export function registryHolderOf(host: string, paneId: string): { parent: ParentRecord; child: ChildRecord } | undefined {
+  const found = watchersOfPane(host, paneId);
+  if (found.length < 2) return found[0];
+  const judged = judgeHolders(host, paneId, found.map(registrySource));
+  if (judged.kind === 'contested') throw new AuthorityConflict(judged.reason, judged.holders);
+  return found[0];
+}
+
+/**
+ * The holder of a pane on this machine, if any, from every source that can
+ * say: the registries of parents here, the claims parents on other machines
+ * adopted it by, and the live connections of children those parents started
+ * here. An adoption's claim for another session than the pane's holder runs
+ * is stale and counts for nothing. A claim also yields to a child a parent
+ * here started, whose pane Bellwether opened after any claim on its id, and
+ * to a started child whose adapter is connected from the pane now (issue
+ * #244), because that connection proves what runs there. Any other pair of holders disagrees,
+ * and this throws AuthorityConflict with both named (issue #279).
+ */
 export function claimantOf(paneId: string): Claimant | undefined {
-  const local = watcherOfPane(LOCAL_HOST, paneId);
-  if (local) return { where: 'here', parentId: local.parent.id, childId: local.child.id, name: local.child.name };
   const records = listRelayRecords().filter((entry) => !entry.retiredAt);
   // A child a parent on another machine started holds its pane as an adopted one does (issue #244).
   const live = new Set([...startedPanes.values()].filter((entry) => entry.paneId === paneId).map((entry) => entry.childId));
-  const record = records.find((entry) => !entry.adopted && live.has(entry.childId)) ?? records.find((entry) => entry.adopted && entry.paneId === paneId);
+  const started = records.filter((entry) => !entry.adopted && live.has(entry.childId));
+  const registry = watchersOfPane(LOCAL_HOST, paneId);
+  // A pane a parent here started was opened by Bellwether after any claim on its id, so that claim is stale.
+  const startedHere = registry.some((found) => !heldByAdoption(found.child));
+  const adopted = started.length || startedHere ? [] : records.filter((entry) => entry.adopted && entry.paneId === paneId);
+  const sources: PaneHolder[] = [
+    ...registry.map(registrySource),
+    ...[...started, ...adopted].map((record): PaneHolder => ({ source: 'claim', parentId: record.parentId, childId: record.childId, name: record.name, ...(record.adopted ? { adopted: true } : {}), ...(record.session ? { session: record.session } : {}) })),
+  ];
+  const judged = judgeHolders(LOCAL_HOST, paneId, sources);
+  if (judged.kind === 'none') return undefined;
+  if (judged.kind === 'contested') throw new AuthorityConflict(judged.reason, judged.holders);
+  const holder = judged.holder;
+  if (holder.source === 'registry') return { where: 'here', parentId: holder.parentId, childId: holder.childId, name: holder.name };
+  const record = records.find((entry) => entry.childId === holder.childId && entry.parentId === holder.parentId);
   return record ? { where: 'away', record } : undefined;
 }
 

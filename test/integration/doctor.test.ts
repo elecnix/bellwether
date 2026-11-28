@@ -13,6 +13,12 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { MOVE_CHECK_BUDGET_MS } from '../../src/core/move-endpoint.ts';
 import { BELLWETHER_BUILD_ID, BELLWETHER_VERSION } from '../../src/core/version.ts';
 import { DAEMON_ENTRY, originOf, readLock } from '../../src/daemon/lock.ts';
+import { acquired } from '../../src/core/authority.ts';
+import { firstRun } from '../../src/core/incarnation.ts';
+import { LOCAL_HOST } from '../../src/core/machine.ts';
+import { emptyParent, saveParent } from '../../src/core/registry.ts';
+import { RELAY_SCHEMA, saveRelayRecord } from '../../src/core/relay-records.ts';
+import type { ChildRecord } from '../../src/core/types.ts';
 import { startFakeHerdr } from '../fixtures/fake-herdr.ts';
 import { isolate } from '../fixtures/isolated.ts';
 
@@ -212,3 +218,37 @@ test('bellwether daemon in the foreground writes its entry point, version and bu
 function escape(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
+
+test('doctor prints the authority it uses for each live child, and fails on a pane whose two sources disagree, naming both (issue #279)', async (t) => {
+  const space = isolate(t, 'bellwether-doctor-authority-');
+  const herdr = await startFakeHerdr();
+  t.after(() => herdr.stop());
+  const at = '2026-11-28T08:00:00.000Z';
+  const child = (id: string, name: string, extra: Partial<ChildRecord>): ChildRecord => ({
+    id,
+    name,
+    kind: 'claude',
+    harness: 'claude-code',
+    ...firstRun({ paneId: 'w1:p2', host: LOCAL_HOST, cwd: '/work', status: 'idle' }),
+    startedAt: at,
+    statusChangedAt: at,
+    lastBusyAt: at,
+    depth: 1,
+    ...extra,
+  });
+  const parent = emptyParent('claude-code', 'S-doctor', '/work');
+  parent.children.push(
+    child('c-built', 'builder', { ...acquired('spawn'), ...firstRun({ paneId: 'w1:p3', host: LOCAL_HOST, cwd: '/work', status: 'idle' }) }),
+    child('c-hand', 'hand-started', { ...acquired('adopt'), ...firstRun({ paneId: 'w1:p2', host: LOCAL_HOST, cwd: '/work', session: { kind: 'id', value: 'S-pane' }, status: 'idle' }) }),
+  );
+  saveParent(parent);
+  // A parent on another machine claims the same pane on the same session: two sources, one pane.
+  saveRelayRecord({ schema: RELAY_SCHEMA, childId: 'c-far', name: 'far-held', kind: 'claude', parentId: 'pi-far-parent', registeredAt: at, paneId: 'w1:p2', adopted: true, session: 'S-pane' });
+
+  const env: NodeJS.ProcessEnv = { ...process.env, PATH: `${fakeBin(space.root, { machines: [] })}:${path.dirname(process.execPath)}:/usr/bin:/bin`, HERDR_SOCKET_PATH: herdr.socketPath };
+  const result = await run(['doctor'], env);
+  assert.match(result.stdout, new RegExp(`ok {4}authority: builder \\(child c-built\\) on this machine is started, held by parent ${parent.id}; evidence: the registry of parent ${parent.id} on this machine, which started it in pane w1:p3\\.`), result.stdout);
+  assert.match(result.stdout, new RegExp(`ok {4}authority: hand-started \\(child c-hand\\) on this machine is adopted, held by parent ${parent.id}; evidence: the registry of parent ${parent.id} on this machine, which adopted pane w1:p2\\.`), result.stdout);
+  assert.match(result.stdout, new RegExp(`fail  authority: Pane w1:p2 on this machine is held by two sources of authority that disagree: the registry of parent ${parent.id} on this machine, as child c-hand \\(hand-started\\) on session S-pane, and the adoption claim of parent pi-far-parent on another machine, as child c-far \\(far-held\\) on session S-pane\\. Bellwether does not pick one\\.`), result.stdout);
+  assert.notEqual(result.status, 0, 'a conflict between two sources of authority fails doctor');
+});

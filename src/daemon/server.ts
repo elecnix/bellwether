@@ -38,6 +38,10 @@ import { BRIEF_SESSION_WAIT_MS, BRIEF_TURN_WAIT_MS, unreadSessionMessages, type 
 import { updateChild } from '../core/registry.ts';
 import { UnknownTool, servedTools, type ToolScope } from '../integrations/tools.ts';
 import { FEATURES } from './features.ts';
+import crypto from 'node:crypto';
+import { addPeer, findPeer, freedOf, sessionAddress, verifyPeer } from '../core/peers.ts';
+import { PEER_SEND_TOOL, FREE_TOOL } from '../core/free.ts';
+import { spoolHasReceipt, writeReport } from '../core/report.ts';
 
 /**
  * The roster for entries about to reach a parent, when one is due. Only an
@@ -139,6 +143,8 @@ interface Attached {
  * report to.
  */
 function scopeOf(parent: ParentHello): ToolScope {
+  // A freed agent answers to nobody, so it gets no child's tools (issue #262).
+  if (freedOf(parent.childId)) return {};
   if (parent.reportsTo || parent.childId) return { ...(parent.reportsTo ? { reportsTo: parent.reportsTo } : {}), ...(parent.childId ? { childId: parent.childId } : {}) };
   const adopted = adoptedParentOf(parent);
   return adopted ? { reportsTo: adopted.parentId } : {};
@@ -404,6 +410,15 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
     if (running) return running;
     const record = readRelayRecord(request.childId);
     if (!record || record.parentId !== request.parentId || record.retiredAt) return Promise.resolve({ delivered: false, unheld: true, reason: `this machine holds no running child ${request.childId} for parent ${request.parentId}` });
+    // A freed child takes a message only from a peer whose token its record keeps (issue #262).
+    if (record.freed || request.peer) {
+      if (!request.peer) return Promise.resolve({ delivered: false, reason: `${record.name} was freed at ${record.freed?.at}, so a message to it needs the token of a pair it belongs to` });
+      try {
+        verifyPeer(request.childId, request.peer.from, request.peer.token);
+      } catch (error) {
+        return Promise.resolve({ delivered: false, reason: (error as Error).message });
+      }
+    }
     if (request.type === 'relay-message-again') {
       const pushed = record.pushed?.find((entry) => entry.id === id);
       if (pushed) return Promise.resolve({ delivered: true, via: pushed.via });
@@ -413,11 +428,12 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
       // the relay record only once that session is here, so the hello's
       // replay cannot hand the session a second copy.
       if (request.awaitSession) await awaitSession(request.childId, sessionWaitMs);
-      // Kept before the push, so a read that comes back at once finds it.
-      keepRelayMessage(request.childId, request.message);
+      // Kept before the push, so a read that comes back at once finds it. A
+      // peer's message is not kept: its read has no parent's record to land on.
+      if (!request.peer) keepRelayMessage(request.childId, request.message);
       const answer = await sessionInbox({ id: record.childId, name: record.name, kind: record.kind }, request.message);
       if (answer.delivered) notePushed(request.childId, id, answer.via);
-      else keepRelayMessage(request.childId, undefined, id);
+      else if (!request.peer) keepRelayMessage(request.childId, undefined, id);
       return answer;
     })();
     relayMessagesInFlight.set(id, answering);
@@ -721,7 +737,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
   const relayCall = async (args: Record<string, unknown>, caller: CallerIdentity, session: string | undefined): Promise<string | undefined> => {
     const adopted = caller.childId ? undefined : adoptedParentOf({ paneId: caller.paneId, session });
     const childId = caller.childId ?? (adopted?.where === 'away' ? adopted.childId : undefined);
-    if (!childId || !readRelayRecord(childId) || localParentOf(childId)) return undefined;
+    if (!childId || !readRelayRecord(childId) || localParentOf(childId) || freedOf(childId)) return undefined;
     const status = typeof args['status'] === 'string' ? args['status'].trim() : undefined;
     const text = typeof args['text'] === 'string' ? args['text'].trim() : '';
     if (!status || !text) throw new Error('parent_report needs both status and text');
@@ -741,7 +757,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
    */
   const relayRetire = async (args: Record<string, unknown>, caller: CallerIdentity): Promise<string | undefined> => {
     const childId = caller.childId;
-    if (!childId || localParentOf(childId)) return undefined;
+    if (!childId || localParentOf(childId) || freedOf(childId)) return undefined;
     const record = readRelayRecord(childId);
     if (!record || record.adopted || record.retiredAt) return undefined;
     const reason = typeof args['reason'] === 'string' && args['reason'].trim() ? args['reason'].trim() : undefined;
@@ -757,7 +773,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
    */
   const relayTeleport = async (args: Record<string, unknown>, caller: CallerIdentity): Promise<string | undefined> => {
     const childId = caller.childId;
-    if (!childId || localParentOf(childId)) return undefined;
+    if (!childId || localParentOf(childId) || freedOf(childId)) return undefined;
     if (typeof args['child'] === 'string' && args['child'].trim()) return undefined;
     const record = readRelayRecord(childId);
     if (!record || record.retiredAt) return undefined;
@@ -767,6 +783,46 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
     const cwd = field('cwd');
     const reason = field('reason');
     return outbox.teleport(record, { ...(machine ? { machine } : {}), ...(cwd ? { cwd } : {}), ...(reason ? { reason } : {}) });
+  };
+
+  /**
+   * peer_send from a freed child on this machine to a former parent on
+   * another (issue #262). This machine never dials that one, so the message
+   * waits in the relay outbox under the parent's registry id, as a report
+   * did, with the pair's token. A message to anyone else is the tool's.
+   */
+  const relayPeerSend = async (args: Record<string, unknown>, caller: CallerIdentity): Promise<string | undefined> => {
+    const book = freedOf(caller.childId);
+    const to = typeof args['to'] === 'string' ? args['to'].trim() : '';
+    const entry = findPeer(book, to);
+    if (!book || !entry || entry.relation !== 'former-parent' || entry.host || !entry.registryId) return undefined;
+    const record = readRelayRecord(book.address);
+    if (!record) return undefined;
+    const body = typeof args['text'] === 'string' ? args['text'].trim() : '';
+    if (!body) throw new Error('peer_send needs both to and text');
+    const id = `m-${crypto.randomBytes(4).toString('hex')}`;
+    return outbox.peer(record, entry.registryId, { to: entry.address, token: entry.token, id, name: book.name, kind: book.freed?.kind ?? record.kind }, body, entry.name);
+  };
+
+  /**
+   * A freed child's message that crossed from its machine (issue #262). The
+   * record this daemon keeps for the pair must hold the token it carries, and
+   * name that machine, before the message reaches the session's spool once.
+   */
+  const acceptPeer = (host: string, report: RelayReport, peer: NonNullable<RelayReport['peer']>): { refused?: string } => {
+    const parent = readParent(report.parentId);
+    if (!parent || sessionAddress(parent) !== peer.to) return { refused: `this machine holds no session ${peer.to} under registry ${report.parentId}` };
+    let entry;
+    try {
+      entry = verifyPeer(peer.to, report.childId, peer.token);
+    } catch (error) {
+      return { refused: (error as Error).message };
+    }
+    if (entry.relation !== 'freed-child' || entry.host !== host) return { refused: `${peer.to} holds ${report.childId} as a peer on ${entry.host ?? 'no machine'}, not on machine ${host}` };
+    if (spoolHasReceipt(report.parentId, report.receipt)) return {};
+    writeReport({ parentId: report.parentId, childId: report.childId, childName: peer.name, status: 'progress', text: report.text, receipt: report.receipt, peer: { from: report.childId, name: peer.name, kind: peer.kind, id: peer.id } });
+    log(`peer message ${peer.id} from freed child ${report.childId} on machine ${host} accepted for ${report.parentId}`);
+    return {};
   };
 
   /**
@@ -816,6 +872,8 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
    * anything else is refused, which the far end keeps and does not resend.
    */
   const acceptRelayed = (host: string, report: RelayReport): { refused?: string } | Promise<{ answer: string }> => {
+    // Not a report: a freed child's message to its former parent.
+    if (report.peer) return acceptPeer(host, report, report.peer);
     const route = routeReport({ parentId: report.parentId, childId: report.childId });
     if (route.kind !== 'local') return { refused: `this machine holds no parent ${report.parentId} with child ${report.childId}` };
     // A report the child left on any machine it moved away from still counts (issue #241).
@@ -1002,6 +1060,26 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
         reply({ type: 'result', id: request.id, text: JSON.stringify(answer) });
         return;
       }
+      if (request.type === 'relay-free') {
+        // A parent's daemon on another machine frees a child here (issue #262): the child's own record of it goes on this machine.
+        try {
+          const record = readRelayRecord(request.childId);
+          if (!record || record.parentId !== request.parentId || record.retiredAt) throw new Error(`this machine holds no running child ${request.childId} for parent ${request.parentId}`);
+          if (record.adopted) throw new Error(`child ${request.childId} is a session a parent adopted here, which has no record of its own to keep`);
+          const briefs = record.brief ? [{ n: 1, file: record.brief, at: record.registeredAt }] : undefined;
+          addPeer({ address: record.childId, name: record.name }, { address: request.by, name: request.byName, token: request.token, since: request.at, relation: 'former-parent', registryId: request.parentId }, { at: request.at, by: request.by, byName: request.byName, ...(request.reason ? { reason: request.reason } : {}), name: record.name, kind: record.kind, ...(record.cwd ? { cwd: record.cwd } : {}), ...(briefs ? { briefs } : {}) });
+          updateRelayRecord(request.childId, (kept) => {
+            kept.freed = { at: request.at, by: request.by };
+          });
+          log(`relay-free: ${request.parentId} on another machine freed child ${request.childId}`);
+          // The freed child's session, when connected here, loses the child's tools.
+          pushTools();
+          reply({ type: 'result', id: request.id, text: 'freed' });
+        } catch (error) {
+          reply({ type: 'result', id: request.id, error: (error as Error).message });
+        }
+        return;
+      }
       if (request.type === 'message-ack') {
         messageAck(socket, request);
         return;
@@ -1086,13 +1164,13 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
         }
         inFlight += 1;
         try {
-          const relayed = request.tool === 'parent_report' ? await relayCall(request.args, request.caller ?? {}, attached.get(socket)?.parent.session) : request.tool === RETIRE_TOOL ? await relayRetire(request.args, request.caller ?? {}) : request.tool === 'agent_teleport' ? await relayTeleport(request.args, request.caller ?? {}) : undefined;
+          const relayed = request.tool === 'parent_report' ? await relayCall(request.args, request.caller ?? {}, attached.get(socket)?.parent.session) : request.tool === RETIRE_TOOL ? await relayRetire(request.args, request.caller ?? {}) : request.tool === 'agent_teleport' ? await relayTeleport(request.args, request.caller ?? {}) : request.tool === PEER_SEND_TOOL ? await relayPeerSend(request.args, request.caller ?? {}) : undefined;
           const text = relayed ?? (await session.service.tool(request.tool, request.args, request.caller ?? {}));
           reply({ type: 'result', id: request.id, text });
           // A spawn or a stop may have added or removed the last child on a host.
           links.sync();
           // An adoption gives a session here a parent, and a stop takes it away.
-          if (request.tool === 'agent_adopt' || request.tool === 'agent_stop') pushTools();
+          if (request.tool === 'agent_adopt' || request.tool === 'agent_stop' || request.tool === FREE_TOOL) pushTools();
         } catch (error) {
           reply({ type: 'result', id: request.id, error: (error as Error).message, ...(error instanceof UnknownTool ? { code: 'unknown_tool' } : {}) });
         } finally {

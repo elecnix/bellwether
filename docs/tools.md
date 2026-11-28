@@ -11,6 +11,8 @@ Every session with Bellwether gets these tools, in Pi and in Claude Code alike.
 | `agent_send` | any session | sends a child a message, or keys for a dialog. [Messages to a child](#messages-to-a-child) gives the path a message takes |
 | `agent_move` | any session | moves a live claude or pi child to another machine, under the same id and with its session. [moving.md](moving.md) lists the refusals. |
 | `agent_teleport` | any session | carries a live or stopped claude or pi child to another machine under the same id, and the child reads a notice before its first turn. [teleporting.md](teleporting.md) gives the refusals. |
+| `agent_free` | any session | frees a child, which leaves this session's registry and becomes a peer at its child id. Its events, briefs and reports stop being this session's. [liberation.md](liberation.md) gives the refusals and the token |
+| `peer_send` | any session | sends a message to an address this session's record holds, because one of the two freed the other |
 | `agent_stop` | any session | closes a child's tab and retires it, removing its worktree once the work provably merged, and refuses a working child unless you pass `force` |
 | `agent_restart` | any session | closes a child's or a session's pane and reopens the same session in a new one, or restarts the caller when it omits the target |
 | `parent_report` | a child Bellwether started or resumed, and an adopted session that loaded Bellwether at its start | sends `done`, `needs-input` or `progress` to its parent. [Adopted sessions](#adopted-sessions) gives which adopted sessions get it |

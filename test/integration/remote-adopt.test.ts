@@ -445,6 +445,42 @@ test('another session started in the pane of an adopted child that quit is anoth
   assert.ok(w.logs.some((line) => line.includes('now runs session sess-someone-else-0003')), w.logs.slice(-5).join('\n'));
 });
 
+test('an adopted child on another machine whose pane starts another session exits, its claim leaves that machine, and a parent there then adopts the pane as its only watcher (issue #211)', async (t) => {
+  const w = await world(t);
+  await adopt(w);
+  const id = child(w)!.id;
+  await until('the watcher to subscribe on child-box', () => subscribed(w));
+
+  // The harness in the pane starts another session without quitting, as /clear does.
+  w.pane.resume('sess-two-0002');
+  await until('the adopted child to exit', () => child(w)?.exitedAt !== undefined, 10_000, () => w.logs.slice(-5));
+  assert.equal(child(w)?.session?.value, SESSION, 'the record still names the session the parent adopted');
+  await until('the claim to leave child-box', () => !inHome(w.childHome, () => readRelayRecord(id)), 10_000, () => w.logs.slice(-5));
+
+  // A parent on child-box adopts the pane through its own herdr.
+  w.watcher.stop();
+  const local = inHome(w.childHome, () => saveParent(emptyParent('pi', 'pane-parent', '/far', { paneId: 'w1:p2' })));
+  const farClient = new HerdrClient({ socketPath: w.far.socketPath });
+  const text = await inHomeAsync(w.childHome, () => runBellwetherTool({ client: farClient, clientFor: async () => farClient, parentId: local.id, watcher: new Watcher({ client: farClient, parentId: local.id, onEntries: () => {} }) }, 'agent_adopt', { target: PANE }));
+  assert.match(text, /^Adopted first-mate/, text);
+  const watchers = [
+    ...(readParent(PARENT_ID)?.children ?? []).filter((entry) => entry.paneId === PANE && !entry.exitedAt).map(() => PARENT_ID),
+    ...inHome(w.childHome, () => readParent(local.id)?.children ?? []).filter((entry) => entry.paneId === PANE && !entry.exitedAt).map(() => local.id),
+  ];
+  assert.deepEqual(watchers, [local.id], 'one parent watches the pane');
+});
+
+/** Run an async call with another Bellwether home current. */
+async function inHomeAsync<T>(home: string, fn: () => Promise<T>): Promise<T> {
+  const previous = process.env['BELLWETHER_HOME'];
+  process.env['BELLWETHER_HOME'] = home;
+  try {
+    return await fn();
+  } finally {
+    process.env['BELLWETHER_HOME'] = previous;
+  }
+}
+
 test('adopting a pane again after its harness resumed the same session keeps the child id, and a far machine that holds the session under another id says which one it replaced (issue #191)', async (t) => {
   const w = await world(t);
   await adopt(w);

@@ -73,7 +73,7 @@ That daemon answers who watches the pane, because its registry lists the childre
 - a parent already watches that pane, on that machine or through an earlier adoption from a third machine, and the error gives that parent and the child's name;
 - the Bellwether on that machine predates `relay-adopt`, and the error gives the version it runs and the release that brings the request, 0.1.6.
 
-An adoption from a third machine stops counting once herdr shows a different session in that pane, because herdr reused the pane id for another agent.
+An adoption from a third machine stops counting once herdr shows a different session in that pane, because herdr reused the pane id for another agent. An adoption that takes the pane over removes that claim, whether it comes from a parent on the pane's machine or from yet another machine. The parent that left the claim sees the new session through its own watcher: its child exits, and `relay-cleanup` removes whatever claim remains.
 
 The child record on the parent's machine has the machine as `host`, the pane, the session id from that machine's herdr and `origin: adopt`. Its transcript stays on that machine, and `agent_read` reads it over the relay connection.
 

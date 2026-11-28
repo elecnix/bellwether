@@ -56,6 +56,7 @@ export function describePaneEnd(end: PaneEnd, view?: HerdrView): string {
     : end.how === 'closed' ? `pane ${pane} closed at ${end.at}`
     : end.how === 'missing' ? `pane ${pane} gone by ${end.at}, with no event saying how`
     : end.how === 'harness-ended' ? `harness exited at ${end.at}, pane ${pane} left open on its shell`
+    : end.how === 'session-changed' ? `pane ${pane} went to ${end.session ? `session ${end.session}` : 'another session'} at ${end.at}`
     : `pane ${pane} closed by a restart at ${end.at} that did not start the session again`;
   return `${how}${workspaceGone(end.workspaceId, view)}`;
 }

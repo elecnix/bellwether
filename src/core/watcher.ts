@@ -534,7 +534,7 @@ export class Watcher {
     void this.reconcileAndSubscribe();
   }
 
-  private markExited(child: ChildRecord, code: number | undefined, ended?: 'in-pane', how: PaneEnd['how'] = ended ? 'harness-ended' : 'closed'): void {
+  private markExited(child: ChildRecord, code: number | undefined, ended?: 'in-pane', how: PaneEnd['how'] = ended ? 'harness-ended' : 'closed', newSession?: string): void {
     // One exit can arrive twice: the reconcile after a subscribe finds the pane
     // gone, and the pane_closed event for it lands too. agent_stop also marks
     // the exit before herdr's event arrives. The record decides, so the exit is
@@ -554,14 +554,15 @@ export class Watcher {
     const harnessEnded = ended ? (beforeStart ? 'before-start' : 'in-pane') : undefined;
     // An adopted harness that ended in its open pane may come back there, as a
     // quit and a resume of the same session do, and it is the same child then (issue #191).
-    const awaitsResume = Boolean(harnessEnded) && child.origin === 'adopt';
+    // A pane that went to another session holds another agent, so nothing waits there.
+    const awaitsResume = Boolean(harnessEnded) && child.origin === 'adopt' && how !== 'session-changed';
     let unread: ChildMessage[] = [];
     updateChild(this.parentId, child.id, (entry) => {
       entry.exitedAt = new Date().toISOString();
       entry.exitCode = code;
       entry.lastStatus = 'unknown';
       // What became of the pane, for agent_list and doctor (issue #187).
-      entry.paneEnd = { pane: entry.paneId, ...(entry.workspaceId ? { workspaceId: entry.workspaceId } : {}), how, at: entry.exitedAt, ...(code === undefined ? {} : { code }) };
+      entry.paneEnd = { pane: entry.paneId, ...(entry.workspaceId ? { workspaceId: entry.workspaceId } : {}), how, at: entry.exitedAt, ...(code === undefined ? {} : { code }), ...(newSession ? { session: newSession } : {}) };
       if (harnessEnded) entry.harnessEnded = harnessEnded;
       if (awaitsResume) entry.awaitsResume = entry.exitedAt;
       // A message in the session that the model never received is undelivered, and the exit event says so.
@@ -572,7 +573,7 @@ export class Watcher {
         delete message.from;
       }
     });
-    child = { ...child, ...(harnessEnded ? { harnessEnded } : {}) };
+    child = { ...child, ...(harnessEnded ? { harnessEnded } : {}), ...(newSession ? { paneEnd: { pane: child.paneId, how, at: new Date().toISOString(), session: newSession } } : {}) };
     // A brief nothing shows the child read stays for the resume that hands it over (issue #132).
     removeChildFiles(child.id, hostOf(child) === LOCAL_HOST ? child.cwd : undefined, { briefs: !this.keepsBriefs(child) });
     if (hostOf(child) !== LOCAL_HOST && this.cleanupRemote) {
@@ -795,6 +796,17 @@ export class Watcher {
       const stateSeq = typeof pane['state_change_seq'] === 'number' ? (pane['state_change_seq'] as number) : undefined;
       const session = sessionFrom(pane['agent_session']);
       const sessionChanged = session !== undefined && (session.value !== child.session?.value || session.kind !== child.session?.kind);
+      // An adopted child stands for the session it was adopted on: Bellwether
+      // started nothing in the pane, so no child id rides in the session, and
+      // the pane and session are the child's whole identity. Another session in
+      // the pane, after a /clear, a /resume or herdr reusing the pane id, is
+      // another agent, which no parent adopted (issue #211, item 7).
+      if (child.origin === 'adopt' && child.session && session && session.value !== child.session.value) {
+        this.markExited(child, undefined, 'in-pane', 'session-changed', session.value);
+        this.dropLink(hostOf(child));
+        void this.reconcileAndSubscribe();
+        continue;
+      }
       const agentName = agentNameOf(pane, child.name);
       const nameChanged = agentName !== undefined && agentName !== child.agentName;
       const seen = !child.harnessSeenAt && ((typeof pane['agent'] === 'string' && pane['agent'] !== '') || status !== 'unknown');
@@ -1229,6 +1241,7 @@ export class Watcher {
   }
 
   private describeExit(child: ChildRecord, code: number | undefined, beforeStart = false): string {
+    if (child.paneEnd?.how === 'session-changed') return `${childLabel(child)} left its pane: herdr reports ${child.paneEnd.session ? `session ${child.paneEnd.session}` : 'another session'} in pane ${child.paneId} now, not ${child.session?.value ?? 'the adopted one'}, the session this parent adopted. Bellwether stopped watching the pane: adopt it again to watch the new session.`;
     const coded = code === undefined ? '' : ` with code ${code}`;
     const tab = child.harnessEnded ? ' Its tab stays open on the shell the harness ran in, with what the harness printed before it ended: agent_read shows that screen, and agent_stop closes the tab.' : '';
     if (beforeStart) return `${childLabel(child)} never started: its ${child.kind} process ended${coded} before it reported anything, so it did not run its task.${tab}`;

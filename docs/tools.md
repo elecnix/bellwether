@@ -57,6 +57,8 @@ On the same machine, the daemon finds the parent by the pane. On another machine
 
 The adoption compares the harness session in the pane with the one the adapter names. herdr reuses a pane id once its agent ends, so a later session in the same pane doesn't get a parent.
 
+An adopted child stands for the session herdr reported when the parent adopted it. When herdr reports another session in that pane, after a `/clear`, a `/resume` or a reused pane id, the child exits and keeps the adopted session on its record. The exit event gives the new session, and `agent_list` shows `pane <id> went to session <id>`. To watch the new session, adopt the pane again. When the first session comes back to the pane later, adopting the pane gives back the first child id.
+
 The `agent_adopt` reply says which case applies:
 
 | The adopted session | What the parent gets |

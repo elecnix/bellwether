@@ -191,6 +191,25 @@ Settle(c) ==
           /\ relay' = Cleaned(c)
   /\ UNCHANGED <<paneSession, pending, nextId, firstByPane, firstBySess, sessOfId>>
 
+\* confirmClaims: the relay to the pane machine comes up, and the far parent sends the claim of
+\* each child it holds by adoption there again (#257). A kept or retaken claim keeps the child;
+\* a refusal, or the pane held for this parent under another id, ends it. Taking the step late
+\* stands for an outage: while the relay is down, nothing confirms the claim.
+Reconfirm(c) ==
+  LET dec == Decide(c.parent, c.pane, c.session)
+      mine == \E r \in Claim(c.pane) : r.parent = c.parent /\ r.id = c.id
+  IN
+  /\ c \in children
+  /\ c.live /\ c.adopted /\ ~c.doubt
+  /\ c.parent \in FarParents
+  /\ IF dec = "take" \/ (dec = "held" /\ mine)
+     THEN /\ children' = children
+          /\ relay' = IF dec = "take" THEN {r \in relay \ Claim(c.pane) : r.id /= c.id} \cup {[id |-> c.id, parent |-> c.parent, pane |-> c.pane, session |-> c.session, adopted |-> TRUE]}
+                                      ELSE relay
+     ELSE /\ children' = (children \ {c}) \cup {[c EXCEPT !.live = FALSE, !.replaced = (dec = "held")]}
+          /\ relay' = Cleaned(c)
+  /\ UNCHANGED <<paneSession, pending, nextId, firstByPane, firstBySess, sessOfId>>
+
 \* markExited, watcher.ts. Taking the step late stands for a daemon that was down.
 WatcherExit(c) ==
   /\ c \in children
@@ -277,7 +296,7 @@ Next ==
   \/ \E p \in Parents, x \in Panes : LocalAdopt(p, x)
   \/ \E p \in Parents, x \in Panes, b \in (IF AnswersLost THEN BOOLEAN ELSE {FALSE}) : FarAdopt(p, x, b)
   \/ \E x \in Panes, s \in Sessions \cup {NoSession} : SessionChange(x, s)
-  \/ \E c \in children : WatcherLearn(c) \/ WatcherLeave(c) \/ WatcherExit(c) \/ ComeBack(c) \/ Settle(c)
+  \/ \E c \in children : WatcherLearn(c) \/ WatcherLeave(c) \/ WatcherExit(c) \/ ComeBack(c) \/ Settle(c) \/ Reconfirm(c)
   \/ \E r \in relay : CleanupRemote(r)
   \/ \E p \in Parents, s \in Sessions : ResumeCheck(p, s)
   \/ \E r \in pending, y \in Panes : ResumeStart(r, y)

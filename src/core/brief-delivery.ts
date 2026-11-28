@@ -36,8 +36,14 @@ export interface BriefInput {
   parentId: string;
   /** The child, with the pane its harness runs in. */
   child: ChildRecord;
-  /** The record entry for the brief, which takes the delivery. */
-  brief: Pick<ChildBrief, 'n' | 'file'>;
+  /** The record entry for the brief, which takes the delivery. A notice carries one only when an unread brief rides behind it. */
+  brief?: Pick<ChildBrief, 'n' | 'file'>;
+  /**
+   * A teleport's notice (issue #226): never typed, and a model that does not
+   * take it leaves the start standing, with the reason in `notTaken`, because
+   * the session it started is intact and live.
+   */
+  notice?: true;
   /** The brief's text, as the child reads it. */
   text: string;
   /** Who sends it, as the child reads it. */
@@ -53,6 +59,8 @@ export interface BriefOutcome {
   delivery: BriefDelivery;
   /** A line for the reply of the start that handed the brief over. */
   note: string;
+  /** For a notice: why Bellwether did not see the model read it and begin a turn on it. */
+  notTaken?: string;
 }
 
 /** A start whose child's adapter received the brief, twice, while its model took neither copy. */
@@ -140,7 +148,9 @@ export async function deliverBrief(input: BriefInput): Promise<BriefOutcome> {
       child,
       text: input.text,
       inbox: input.inbox,
-      brief: { n: input.brief.n },
+      ...(input.brief ? { brief: { n: input.brief.n } } : {}),
+      awaitSession: true,
+      ...(input.notice ? { typing: false } : {}),
       gone,
       // The brief is never typed at a shell: the harness must still hold the
       // pane's foreground. herdr sends no event for a program that ends while
@@ -185,6 +195,8 @@ export async function deliverBrief(input: BriefInput): Promise<BriefOutcome> {
       waiting.abort();
     }
   };
+  const what = input.notice ? 'its teleport notice' : 'its brief';
+  let notTaken: string | undefined;
   try {
     let outcome = await send();
     let delivery = deliveryOf(outcome);
@@ -193,23 +205,30 @@ export async function deliverBrief(input: BriefInput): Promise<BriefOutcome> {
       let sign = await taken(first.id);
       // A copy the session never answered may still enter it, so a second
       // copy could reach the model twice. Only a read could prove this one.
-      if (!sign && outcome.unanswered) throw new BriefNotTaken(`${child.name}'s session was pushed its brief as message ${first.id}, but ${outcome.unanswered}, and its model did not read it and begin a turn on it within ${seconds(waitMs)} s more. A second copy could enter its session twice, so none went, the spawn failed and its pane is closed.`);
-      if (!sign) {
+      if (!sign && outcome.unanswered) {
+        const why = `${child.name}'s session was pushed ${what} as message ${first.id}, but ${outcome.unanswered.replace(/\.$/, '')}, and its model did not read it and begin a turn on it within ${seconds(waitMs)} s more. A second copy could enter its session twice, so none went`;
+        if (!input.notice) throw new BriefNotTaken(`${why}, the spawn failed and its pane is closed.`);
+        notTaken = `${why}. Its session is offered the notice again when it next connects.`;
+      } else if (!sign) {
         // The model did not read the first copy and begin a turn on it: it may
         // have reached the adapter before the session could take a message. The first copy
         // leaves the replay, so a reconnect does not hand it over a third time.
         outcome = await send();
-        markResent(input.parentId, child.id, first.id, `its model did not read it and begin a turn on it within ${seconds(waitMs)} s (Bellwether saw ${signsSeen()}), so brief ${input.brief.n} went again as message ${outcome.message.id}`);
+        markResent(input.parentId, child.id, first.id, `its model did not read it and begin a turn on it within ${seconds(waitMs)} s (Bellwether saw ${signsSeen()}), so ${input.brief && !input.notice ? `brief ${input.brief.n}` : 'the notice'} went again as message ${outcome.message.id}`);
         delivery = { ...deliveryOf(outcome), resentFrom: first.id };
         if (outcome.message.path === 'session') {
           sign = await taken(outcome.message.id);
-          if (!sign) throw new BriefNotTaken(`${child.name}'s ${viaLabel(first.via)} received its brief twice, as messages ${first.id} and ${outcome.message.id}, but its model did not read and begin a turn on either within ${seconds(waitMs)} s of each, so the spawn failed and its pane is closed. Of the second copy, Bellwether saw ${signsSeen()}.`);
+          if (!sign && !input.notice) throw new BriefNotTaken(`${child.name}'s ${viaLabel(first.via)} received its brief twice, as messages ${first.id} and ${outcome.message.id}, but its model did not read and begin a turn on either within ${seconds(waitMs)} s of each, so the spawn failed and its pane is closed. Of the second copy, Bellwether saw ${signsSeen()}.`);
+          if (!sign) notTaken = `${child.name}'s ${viaLabel(first.via)} received its teleport notice twice, as messages ${first.id} and ${outcome.message.id}, but its model did not read it and begin a turn on it within ${seconds(waitMs)} s of either. Of the second copy, Bellwether saw ${signsSeen()}.`;
+        } else if (input.notice) {
+          notTaken = `${child.name}'s model did not read its teleport notice and begin a turn on it, and the second copy found no session: ${outcome.unanswered ?? 'the session path was not available'}.`;
         }
       }
       if (sign) delivery = { ...delivery, readAt: sign.readAt, takenAt: sign.at, takenBy: 'turn' };
     }
-    recordDelivery(input.parentId, child.id, input.brief.n, delivery);
-    return { delivery, note: deliveryNote(child, input.brief, delivery, waitMs) };
+    if (input.brief) recordDelivery(input.parentId, child.id, input.brief.n, delivery);
+    const note = input.brief ? deliveryNote(child, input.brief, delivery, waitMs) : delivery.takenAt ? `${child.name}'s model read its teleport notice and began a turn on it; nothing was typed into its pane.` : (notTaken ?? `${child.name} did not take its teleport notice.`);
+    return { delivery, note, ...(notTaken ? { notTaken } : {}) };
   } finally {
     ended = true;
     subscription.close();

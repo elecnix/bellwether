@@ -108,6 +108,14 @@ export interface MessageInput {
   gone?: Promise<never>;
   /** Runs before the fallback types, and throws to stop it, as a start does when the harness has exited. */
   beforeTyping?: () => Promise<void>;
+  /** Wait for a just-started child's session to connect, as a brief does, for a message that is not a brief. */
+  awaitSession?: boolean;
+  /**
+   * False for a message that must never be typed, such as a teleport's notice
+   * (issue #226). When the session does not take it, the message stays on the
+   * record for its session's next hello, and the outcome says why.
+   */
+  typing?: boolean;
 }
 
 function preview(text: string): string {
@@ -163,7 +171,7 @@ export async function messageChild(input: MessageInput): Promise<MessageOutcome>
   if (!refusal && input.inbox) {
     // Recorded before the push, so a read that comes back at once finds it.
     remember(parentId, child.id, { id, at, path: 'session', preview: preview(text), text, from: input.from, ...brief });
-    const pushed = input.inbox(parentId, child, { id, from: input.from, text, at }, input.brief ? { awaitSession: true } : {}).catch((error: unknown): InboxAnswer => ({ delivered: false, reason: (error as Error).message }));
+    const pushed = input.inbox(parentId, child, { id, from: input.from, text, at }, input.brief || input.awaitSession ? { awaitSession: true } : {}).catch((error: unknown): InboxAnswer => ({ delivered: false, reason: (error as Error).message }));
     let answer: InboxAnswer;
     try {
       answer = await (input.gone ? Promise.race([pushed, input.gone]) : pushed);
@@ -202,8 +210,20 @@ export async function messageChild(input: MessageInput): Promise<MessageOutcome>
     }
     // A repair on the way, such as a claim restored on the child's machine, still goes in the reply (issue #219).
     reason = answer.note ? `${answer.reason.replace(/\.$/, '')}. ${answer.note}` : answer.reason;
+    // A message that is never typed stays on the record as it was written
+    // before the push, where the session's next hello offers it.
+    if (input.typing === false) {
+      const kept: ChildMessage = { id, at, path: 'session', preview: preview(text), text, from: input.from, ...brief };
+      return { message: kept, unanswered: reason, text: `${child.name}'s session did not take message ${id}, because ${reason.replace(/\.$/, '')}. It is never typed, and its session is offered it when it next connects.` };
+    }
     // The fallback records a message of its own under the same id.
     forget(parentId, child.id, id);
+  }
+  if (input.typing === false) {
+    const why = reason ?? 'the session path was not available';
+    const kept: ChildMessage = { id, at, path: 'session', preview: preview(text), undelivered: why, ...brief };
+    remember(parentId, child.id, kept);
+    return { message: kept, unanswered: why, text: `${child.name}'s session cannot take message ${id}, because ${why.replace(/\.$/, '')}, and it is never typed.` };
   }
   await input.beforeTyping?.();
   return typeInto(input, id, at, reason ?? 'the session path was not available');

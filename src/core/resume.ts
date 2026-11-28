@@ -20,7 +20,7 @@ import { watchStartup, type StartupDialog, type StartupWatch } from './startup-d
 import { sessionFrom } from './transcript.ts';
 import { briefHoldMs, deliverBrief } from './brief-delivery.ts';
 import type { Inbox } from './send.ts';
-import type { ChildRecord, ParentRecord } from './types.ts';
+import type { BriefDelivery, ChildRecord, ParentRecord } from './types.ts';
 import { resolveInactiveMs } from './inactivity.ts';
 
 export type { HarnessSession } from './harnesses/index.ts';
@@ -92,6 +92,20 @@ export interface ResumeOptions {
   inbox?: Inbox;
   /** Who sends the brief, as the child reads it. */
   from?: string;
+  /**
+   * A teleport's notice (issue #226). It is the resumed session's first
+   * input: an unread brief rides behind it in the same message. It goes only
+   * through the session, never typed, and a model that does not take it
+   * leaves the resume standing, with the reason on the result.
+   */
+  notice?: string;
+}
+
+/** How a teleport's notice reached the resumed session. */
+export interface NoticeOutcome {
+  delivery: BriefDelivery;
+  /** Why Bellwether did not see the model read it and begin a turn on it. */
+  notTaken?: string;
 }
 
 export interface ResumeResult {
@@ -104,6 +118,8 @@ export interface ResumeResult {
   brief?: NextBrief;
   /** Which path carried the brief, for the reply. */
   briefNote?: string;
+  /** For a resume that carried a teleport's notice: how it arrived. */
+  notice?: NoticeOutcome;
 }
 
 /** Find the child a resume names: by id, name or pane, then by the session it ran. */
@@ -312,15 +328,22 @@ export async function resumeChild(client: HerdrClient, parent: ParentRecord, tar
   // harness runs, or typed when that path is not available. A harness that
   // exits first fails the resume.
   let briefNote: string | undefined;
-  if (next && !requireHarness(kind).brief.launch) {
+  let notice: NoticeOutcome | undefined;
+  if (options.notice !== undefined || (next && !requireHarness(kind).brief.launch)) {
     const held = new Date(Date.now() + briefHoldMs(options.inbox)).toISOString();
     updateChild(parent.id, child.id, (entry) => {
       entry.startingUntil = held;
     });
     try {
-      const handed = await deliverBrief({ herdr: client, parentId: parent.id, child, brief: next.brief, text: next.text, from: options.from ?? parent.id, inbox: options.inbox, fatal: requireHarness(kind).startupFatal, signal });
-      next.brief.delivery = handed.delivery;
-      briefNote = handed.note;
+      // A notice comes first, so the session reads where it is before the
+      // task it did not take; both go as one message, so nothing lands between.
+      const text = options.notice === undefined ? (next?.text ?? '') : next ? `${options.notice}\n\n---\n\n${next.text}` : options.notice;
+      const handed = await deliverBrief({ herdr: client, parentId: parent.id, child, ...(next ? { brief: next.brief } : {}), text, from: options.from ?? parent.id, inbox: options.inbox, fatal: requireHarness(kind).startupFatal, signal, ...(options.notice === undefined ? {} : { notice: true as const }) });
+      if (next) {
+        next.brief.delivery = handed.delivery;
+        briefNote = handed.note;
+      }
+      if (options.notice !== undefined) notice = { delivery: handed.delivery, ...(handed.notTaken ? { notTaken: handed.notTaken } : {}) };
     } catch (error) {
       await undoChildTab(client, opened ?? { tabId: tabId ?? child.paneId });
       restore();
@@ -360,5 +383,5 @@ export async function resumeChild(client: HerdrClient, parent: ParentRecord, tar
   });
 
   const saved = readParent(parent.id)?.children.find((entry) => entry.id === child.id) ?? child;
-  return { child: saved, session, link: herdrLink('pane', child.paneId), answered, ...(next ? { brief: next } : {}), ...(briefNote ? { briefNote } : {}) };
+  return { child: saved, session, link: herdrLink('pane', child.paneId), answered, ...(next ? { brief: next } : {}), ...(briefNote ? { briefNote } : {}), ...(notice ? { notice } : {}) };
 }

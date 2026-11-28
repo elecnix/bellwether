@@ -7,6 +7,7 @@ import { adoptPane } from '../../src/core/adopt.ts';
 import { adoptedParentOf } from '../../src/core/adopted-session.ts';
 import { HerdrClient } from '../../src/core/herdr-client.ts';
 import { emptyParent, readParent, saveParent, updateChild } from '../../src/core/registry.ts';
+import { claimPane } from '../../src/core/pane-claims.ts';
 import { listRelayRecords } from '../../src/core/relay-records.ts';
 import type { ChildRecord, OutboxEntry } from '../../src/core/types.ts';
 import { Watcher } from '../../src/core/watcher.ts';
@@ -230,4 +231,19 @@ test('a far parent that adopts again a session resumed by hand over its own stal
   assert.deepEqual(rows.sort(), [[a, Y, 's1', 'live'], [b, Y, 's2', 'exited']].sort());
   const claims = on(m.pane, () => listRelayRecords().filter((record) => record.adopted && !record.retiredAt).map((record) => [record.childId, record.paneId, record.session]));
   assert.deepEqual(claims, [[a, Y, 's1']], 'the pane machine holds one claim, for the session pane y runs');
+});
+
+// RouteUnambiguous, with every relay answer and cleanup arriving (issue #244).
+// Trace: LocalAdopt(l1, x), SessionChange(x, none), WatcherExit, SessionChange(x, s1), FarAdopt(f1, x), ComeBack.
+test('a local adopted child that waits for its session yields its pane to a far claim made before the session came back, so the session answers to one parent', async (t) => {
+  const { r, first } = await adoptAndWatch(t);
+  quit(r, X);
+  await until('the exit, waiting for the session', () => r.child(first)?.awaitsResume !== undefined);
+  // The session comes back, and a parent on another machine adopts the pane before this watcher hears of it.
+  runsQuietly(r, X, S1);
+  assert.deepEqual(claimPane({ parentId: 'claude-code-far', childId: 'kid-far', name: 'far-mate', kind: 'claude', paneId: X, session: S1 }), { childId: 'kid-far', held: false });
+  r.fake.send({ event: 'pane_agent_detected', data: { pane_id: X, workspace_id: 'w1', agent: 'claude', agent_status: 'idle', agent_session: sess(S1) } });
+  await until('the wait to end', () => r.child(first)?.awaitsResume === undefined);
+  assert.ok(r.child(first)?.exitedAt, `child ${first} came back in pane ${X} while a parent on another machine holds it`);
+  assert.deepEqual(adoptedParentOf({ paneId: X, session: S1 }), { parentId: 'claude-code-far', childId: 'kid-far', name: 'far-mate', where: 'away' });
 });

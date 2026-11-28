@@ -3,6 +3,7 @@
 // temporary root, and makes any attempt to reach the live daemon socket or
 // the live home throw. A test that forgets its own isolation fails here
 // instead of talking to the operator's daemon or writing to the real registry.
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import module from 'node:module';
 import net from 'node:net';
@@ -20,10 +21,31 @@ export class UnboundedTestRun extends Error {
   }
 }
 
-// The runner hands each file's process its own --test-concurrency, and 0 when
-// nobody gave one, which Node reads as one file per core but one. A run in one
-// process (--test-isolation=none) starts no file processes, so it passes.
-if (process.env['NODE_TEST_CONTEXT']?.startsWith('child') && process.execArgv.includes('--test-concurrency=0')) throw new UnboundedTestRun();
+/** The command line of this process's parent, one word per entry, or undefined when it cannot be read. */
+function parentArgv(): string[] | undefined {
+  try {
+    if (process.platform === 'linux') return fs.readFileSync(`/proc/${process.ppid}/cmdline`, 'utf8').split('\0').filter(Boolean);
+    return execFileSync('ps', ['-o', 'args=', '-p', String(process.ppid)], { encoding: 'utf8' }).trim().split(/\s+/);
+  } catch {
+    return undefined;
+  }
+}
+
+/** Whether a node --test command line sets a positive --test-concurrency, in either spelling. */
+export function boundsConcurrency(argv: string[]): boolean {
+  return argv.some((word, i) => /^--test-concurrency=[1-9]\d*$/.test(word) || (word === '--test-concurrency' && /^[1-9]\d*$/.test(argv[i + 1] ?? '')));
+}
+
+// A file's process runs with NODE_TEST_CONTEXT set, and its parent is the
+// runner. Node 22 hands that process no --test-concurrency when nobody gave
+// one, and Node 24 hands it 0, so the runner's own command line is where the
+// two agree. A process that a test starts inherits NODE_TEST_CONTEXT too, but
+// its parent is the test file, not a node --test runner, so it passes. A run in
+// one process (--test-isolation=none) has no runner above it, so it passes.
+if (process.env['NODE_TEST_CONTEXT']?.startsWith('child')) {
+  const runner = parentArgv();
+  if (runner?.includes('--test') && !boundsConcurrency(runner)) throw new UnboundedTestRun();
+}
 
 // Every process a test starts, from a CLI call through the fake ssh to a
 // detached daemon, loads the same sources again. Node's compile cache keeps

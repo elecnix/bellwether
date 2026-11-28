@@ -12,7 +12,7 @@ import test from 'node:test';
 import { promisify } from 'node:util';
 import { bellwetherHome } from '../../src/core/paths.ts';
 import { defaultDaemonSocket } from '../../src/daemon/client.ts';
-import { LIVE_HOME, LIVE_SOCKET, LiveBellwetherError } from '../fixtures/isolation.ts';
+import { boundsConcurrency, LIVE_HOME, LIVE_SOCKET, LiveBellwetherError } from '../fixtures/isolation.ts';
 
 test('every test script loads the isolation preload', () => {
   assert.ok((globalThis as { __bellwetherIsolation?: string }).__bellwetherIsolation, 'run the tests with --import ./test/fixtures/isolation.ts');
@@ -64,10 +64,27 @@ test('a direct node --test without --test-concurrency fails every file and says 
   assert.match(bare.output, /npm run test:integration/);
   const named = await directRun(['--test-concurrency=1']);
   assert.equal(named.code, 0, named.output);
+  const spaced = await directRun(['--test-concurrency', '2']);
+  assert.equal(spaced.code, 0, spaced.output);
 });
 
-test('a run in one process needs no concurrency', async () => {
-  const inline = await directRun(['--test-isolation=none']);
+test('a command line bounds its concurrency only with a positive number', () => {
+  assert.equal(boundsConcurrency(['node', '--test', '--test-concurrency=4', 'a.test.ts']), true);
+  assert.equal(boundsConcurrency(['node', '--test', '--test-concurrency', '4', 'a.test.ts']), true);
+  assert.equal(boundsConcurrency(['node', '--test', 'a.test.ts']), false);
+  assert.equal(boundsConcurrency(['node', '--test', '--test-concurrency=0', 'a.test.ts']), false);
+});
+
+test('a process a test file starts inherits the runner context and still loads the preload', async () => {
+  const env: NodeJS.ProcessEnv = { ...process.env, NODE_TEST_CONTEXT: 'child-v8' };
+  const { stdout } = await run(process.execPath, ['--import', './test/fixtures/isolation.ts', '--disable-warning=ExperimentalWarning', '-e', 'console.log("started")'], { cwd: root, env });
+  assert.equal(stdout.trim(), 'started');
+});
+
+const isolationFlag = ['--test-isolation', '--experimental-test-isolation'].find((flag) => process.allowedNodeEnvironmentFlags.has(flag));
+
+test('a run in one process needs no concurrency', { skip: isolationFlag ? false : `Node ${process.version} cannot run test files in one process` }, async () => {
+  const inline = await directRun([`${isolationFlag}=none`]);
   assert.equal(inline.code, 0, inline.output);
 });
 

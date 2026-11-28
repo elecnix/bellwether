@@ -1,5 +1,5 @@
 ---
-prs: []
+prs: [304]
 ---
 Each request that a session makes now ends by a deadline, and `bellwether doctor` prints every request still in flight with that deadline and the code that will end it. Doctor prints a `fail` line for a request past its deadline. A request is a restart that a session asked for of itself, a teleport that a child asked for, a move or teleport under way, or a retirement whose pane herdr no longer lists.
 

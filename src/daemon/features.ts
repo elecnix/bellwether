@@ -169,6 +169,7 @@ export const BEHAVIORS: readonly Behavior[] = [
   { version: '0.1.8', prs: [171], summary: 'A refusal for a missing session gives the `herdr integration install` command when herdr on the child\'s machine lacks the integration, and `agent_spawn` warns.' },
   { version: '0.1.9', prs: [177], summary: "Doctor reads pi's models only from the model table. When pi has no provider, doctor says pi doesn't offer a pair, and other output makes the models unknown." },
   { version: '0.1.9', prs: [178], summary: 'Doctor gives each SSH call of its move check 6 s, and reports a machine that does not answer in time as unknown.' },
+  { version: '0.1.9', prs: [179], summary: "Doctor's move line for each machine says whether herdr there has its claude and pi integrations, with the install command for a missing one." },
 ];
 
 /**

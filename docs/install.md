@@ -27,7 +27,7 @@ herdr integration install pi
 herdr integration install claude
 ```
 
-Without the integration a child still starts and reports, but Bellwether never records its session, so `agent_move`, `agent_restart` and a resume by session refuse it. The spawn reply warns when herdr on the child's machine lacks the integration.
+Without the integration a child still starts and reports, but Bellwether never records its session, so `agent_move`, `agent_restart` and a resume by session refuse it. The spawn reply warns when herdr on the child's machine lacks the integration, and `bellwether doctor` lists the state of both integrations for each known machine.
 
 ## Plugin and channel
 

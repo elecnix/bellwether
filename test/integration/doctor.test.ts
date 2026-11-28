@@ -101,9 +101,33 @@ test('doctor reports a machine that answers its two move calls in 0.6 s and 3.4 
   t.after(() => herdr.stop());
   const env: NodeJS.ProcessEnv = { ...process.env, PATH: `${fakeBin(space.root, { ssh: SSH_SLOW_BUT_WORKING })}:${path.dirname(process.execPath)}:/usr/bin:/bin`, HERDR_SOCKET_PATH: herdr.socketPath };
   const result = await run(['doctor'], env);
-  assert.match(result.stdout, /info {2}move machine far \(far-host\): claude 2\.1\.332, pi 0\.99\.0, 1 pi model, bellwether 0\.1\.8/, result.stdout);
+  // The fake ssh carries no herdr bridge, so herdr on that machine reads as unknown, never as missing.
+  assert.match(result.stdout, /info {2}move machine far \(far-host\): claude 2\.1\.332, pi 0\.99\.0, 1 pi model, herdr integrations unknown \(.+\), bellwether 0\.1\.8/, result.stdout);
   assert.doesNotMatch(result.stdout, /move machine far: /);
 });
+
+/** herdr's answer to integration.list, with pi listed in a state or left out, as herdr 0.9.5 lists it. */
+function integrations(pi: string | undefined): { result: unknown } {
+  const claude = { target: 'claude', label: 'claude', command: 'claude', available: true, state: 'current' };
+  return { result: { type: 'integration_list', integrations: pi === undefined ? [claude] : [{ target: 'pi', label: 'pi', command: 'pi', available: true, state: pi }, claude] } };
+}
+
+for (const [pi, expected] of [
+  [undefined, 'herdr pi integration missing (run `herdr integration install pi` on this machine)'],
+  ['current', 'herdr pi integration present'],
+] as const) {
+  test(`doctor reports this machine's herdr pi integration as ${pi === undefined ? 'missing when herdr does not list it' : 'present when herdr lists it'}`, async (t) => {
+    const space = isolate(t, 'bellwether-doctor-integration-');
+    const herdr = await startFakeHerdr({ respond: (request) => (request.method === 'integration.list' ? integrations(pi) : undefined) });
+    t.after(() => herdr.stop());
+    const env: NodeJS.ProcessEnv = { ...process.env, PATH: `${fakeBin(space.root, { machines: [], pi: PI_WITHOUT_MODELS })}:${path.dirname(process.execPath)}:/usr/bin:/bin`, HERDR_SOCKET_PATH: herdr.socketPath };
+    const result = await run(['doctor'], env);
+    const line = result.stdout.split('\n').find((entry) => entry.includes('move this machine')) ?? '';
+    assert.ok(line.includes('herdr claude integration present'), result.stdout);
+    assert.ok(line.includes(expected), result.stdout);
+    assert.ok(herdr.requests.some((request) => request.method === 'integration.list'), 'doctor asked herdr');
+  });
+}
 
 test('--version prints the version and the commit, without asking a daemon that speaks another protocol', async (t) => {
   const space = isolate(t, 'bellwether-version-');

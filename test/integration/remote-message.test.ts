@@ -254,11 +254,17 @@ test("a start's brief waits on the child's machine for its session, enters it ac
   const handed = deliverBrief({ herdr: space.farClient, parentId: PARENT_ID, child, brief: { n: 1, file }, text: brief, from: 'your parent', inbox });
   await delay(300);
   const channel = await farChannel(t, space);
+  const note = await until('the far channel notification', () => channel.notifications.find((entry) => entry.method === 'notifications/claude/channel'));
+  assert.ok(note.params.content.endsWith(brief), note.params.content);
+  // The far channel received it, which proves only the transport (issue #176):
+  // the start waits until Claude Code there records the message reaching its
+  // model, and that read crosses the relay back.
+  fs.appendFileSync(channel.transcript, `${JSON.stringify({ type: 'attachment', attachment: { type: 'queued_command', prompt: note.params.content, commandMode: 'prompt', origin: { kind: 'channel', server: 'bellwether' } } })}\n`);
   const outcome = await handed;
   assert.equal(outcome.delivery.path, 'session', outcome.note);
   assert.equal(outcome.delivery.via, 'claude-channel');
-  const note = await until('the far channel notification', () => channel.notifications.find((entry) => entry.method === 'notifications/claude/channel'));
-  assert.ok(note.params.content.endsWith(brief), note.params.content);
+  assert.equal(outcome.delivery.takenBy, 'read', outcome.note);
+  assert.match(outcome.note, /Bellwether channel received its brief as message m-[0-9a-f]{8}, and its model read it/);
   // The guard that fails if the brief falls back to typing on the far machine.
   assert.deepEqual(typed(space.far), [], 'nothing typed into the far pane of a child whose channel took its brief');
   assert.equal(channel.notifications.filter((entry) => entry.method === 'notifications/claude/channel').length, 1, 'the hello replay did not hand the session a second copy');

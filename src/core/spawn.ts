@@ -9,8 +9,8 @@ import { missingIntegration, noSessionWarning } from './herdr-integration.ts';
 import { newChildId } from './outbox.ts';
 import { PI_EXTENSION_ENV } from './pi-extension.ts';
 import { writeBrief, writeBriefIn } from './brief.ts';
-import { deliverBrief, deliveryNote } from './brief-delivery.ts';
-import { BRIEF_SESSION_WAIT_MS, type Inbox } from './send.ts';
+import { briefHoldMs, deliverBrief, deliveryNote } from './brief-delivery.ts';
+import type { Inbox } from './send.ts';
 import { promptPath } from './paths.ts';
 import { DEFAULT_MAX_DEPTH, tooDeep } from './depth.ts';
 import { droppedNote, type DroppedVariable } from './relay-env.ts';
@@ -125,9 +125,6 @@ export function childArgs(kind: string, options: Pick<SpawnOptions, 'model' | 'p
   const { briefFile: _brief, ...withoutBrief } = files;
   return entry.launchArgs({ model: options.model, provider: options.provider, extra: options.args, files: entry.brief.launch ? files : withoutBrief, ...extra });
 }
-
-/** How long the watcher holds a new child's events while its brief waits for the session, beyond the wait itself. */
-const BRIEF_HOLD_MS = BRIEF_SESSION_WAIT_MS + 20_000;
 
 /**
  * The provider and model a pi child starts with. A caller that names both
@@ -437,7 +434,7 @@ export async function spawnChild(client: HerdrClient, parent: ParentRecord, opti
   // events meanwhile, so a child idle at its prompt is not reported as done.
   const first = child.briefs?.find((brief) => brief.n === 1);
   if (options.prompt && first && !entry.brief.launch) {
-    child.startingUntil = new Date(Date.now() + BRIEF_HOLD_MS).toISOString();
+    child.startingUntil = new Date(Date.now() + briefHoldMs(hooks.inbox)).toISOString();
     updateChild(parent.id, child.id, (record) => {
       record.startingUntil = child.startingUntil;
     });

@@ -18,8 +18,8 @@ import { agentKinds, harnessFor, harnessNamed, requireHarness, type HarnessSessi
 import { routeLaunch } from './routes.ts';
 import { watchStartup, type StartupDialog, type StartupWatch } from './startup-dialogs.ts';
 import { sessionFrom } from './transcript.ts';
-import { deliverBrief } from './brief-delivery.ts';
-import { BRIEF_SESSION_WAIT_MS, type Inbox } from './send.ts';
+import { briefHoldMs, deliverBrief } from './brief-delivery.ts';
+import type { Inbox } from './send.ts';
 import type { ChildRecord, ParentRecord } from './types.ts';
 import { resolveInactiveMs } from './inactivity.ts';
 
@@ -311,7 +311,7 @@ export async function resumeChild(client: HerdrClient, parent: ParentRecord, tar
   // exits first fails the resume.
   let briefNote: string | undefined;
   if (next && !requireHarness(kind).brief.launch) {
-    const held = new Date(Date.now() + BRIEF_SESSION_WAIT_MS + 20_000).toISOString();
+    const held = new Date(Date.now() + briefHoldMs(options.inbox)).toISOString();
     updateChild(parent.id, child.id, (entry) => {
       entry.startingUntil = held;
     });

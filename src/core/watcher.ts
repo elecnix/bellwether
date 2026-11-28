@@ -6,7 +6,7 @@
 // events, so a subscription opened after the snapshot would miss whatever
 // happened in between. After a disconnect the watcher takes a fresh snapshot
 // for the same reason.
-import { restartFailureText } from './restart.ts';
+import { closingNow, restartFailureText } from './restart.ts';
 import fs from 'node:fs';
 import type { HerdrClient, HerdrEvent, Subscription } from './herdr-client.ts';
 import { DEFAULT_LIMITS, advance, limitsFor, markReported, seedFor, type ClassifierState, type SettleLimits } from './classifier.ts';
@@ -351,8 +351,9 @@ export class Watcher {
             else this.stopAwaiting(child, 'its pane closed');
             continue;
           }
-          // A child changing machines closed its old pane on purpose.
-          if (isMoving(child)) continue;
+          // A child changing machines closed its old pane on purpose, and a
+          // restart closing it has yet to name the new one.
+          if (isMoving(child) || closingNow(child)) continue;
           // A record written a moment ago may predate its pane. Leave it be.
           if (!child.paneId || Date.now() - Date.parse(child.startedAt) < 15_000 || live.has(child.paneId)) {
             if (child.paneId) addressable.push(child);
@@ -655,8 +656,9 @@ export class Watcher {
     const child = matching.find((entry) => !entry.exitedAt) ?? matching.find((entry) => entry.awaitsResume) ?? matching[0];
     if (!child) return;
     if (CLOSE_EVENTS.has(event.event)) {
-      // agent_move closed this pane, and the child goes on elsewhere under the same id.
-      if (isMoving(child)) {
+      // agent_move closed this pane, and the child goes on elsewhere under the
+      // same id; or agent_restart closed it, and the child goes on in a new tab.
+      if (isMoving(child) || closingNow(child)) {
         this.dropLink(host);
         void this.reconcileAndSubscribe();
         return;
@@ -714,7 +716,7 @@ export class Watcher {
       // herdr releases a pane's agent when the harness process ends and the
       // shell it ran in stays: the child is gone, though its tab is not.
       if (event.data['released'] === true) {
-        if (!child.exitedAt && !isMoving(child)) {
+        if (!child.exitedAt && !isMoving(child) && !closingNow(child)) {
           this.markExited(child, undefined, 'in-pane');
           this.dropLink(host);
           void this.reconcileAndSubscribe();

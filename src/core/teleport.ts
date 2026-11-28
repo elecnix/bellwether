@@ -13,6 +13,7 @@
 // the agent running at the destination, says so, and keeps the notice for
 // the session's next hello.
 import { noticeOf, noticeState, noticeTaken } from './delivery.ts';
+import { authorityFor } from './authority.ts';
 import path from 'node:path';
 import { carryChild, where, type CarryDeps, type CarryPolicy, type CarryRequest } from './carry.ts';
 import { harnessFor } from './harnesses/index.ts';
@@ -30,7 +31,6 @@ import { readParent } from './registry.ts';
 import { RESTART_DEFER_MS, noteStatus, waitForTurnEnd, type RestartHooks } from './restart.ts';
 import type { RegisterRemote } from './spawn.ts';
 import { statusSeen } from './incarnation.ts';
-import { heldByAdoption } from './acquisition.ts';
 
 export function teleportLogPath(): string {
   return path.join(bellwetherHome(), 'teleport.log');
@@ -238,7 +238,7 @@ async function recordSelfTeleport(parentId: string, child: ChildRecord, request:
   // The saved machines are read only when the request names none: a named destination needs no herdr here to resolve it.
   const target = machine ? (machine === 'local' ? LOCAL_HOST : machine) : pickTarget(await knownHosts(), source);
   const cwd = request.cwd?.trim() || child.cwd;
-  const early = teleportRefusals({ childName: child.name, harness: child.harness, status: 'idle', state: 'live', adopted: heldByAdoption(child), source, target, hasSession: Boolean(child.session), ...(child.route ? { route: child.route.name } : {}) });
+  const early = teleportRefusals({ childName: child.name, harness: child.harness, status: 'idle', state: 'live', ...authorityFor(child, 'teleport', target), source, target, hasSession: Boolean(child.session), ...(child.route ? { route: child.route.name } : {}) });
   if (early.length) throw new TeleportRefusedError(child.name, target, early);
   const now = Date.now();
   updateChild(parentId, child.id, (entry) => {

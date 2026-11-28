@@ -4,6 +4,7 @@
 // receipts read. The daemon starts on demand, drains for an upgrade, and exits
 // when no session needs it.
 import { inRelayDoubt, messagePushed, messageRead as recordRead, messageRefused, relayAnswered } from '../core/delivery.ts';
+import { heldByAdoption } from '../core/authority.ts';
 import { locateHerdr } from '../core/herdr-bin.ts';
 import fs from 'node:fs';
 import net from 'node:net';
@@ -40,7 +41,6 @@ import { updateChild } from '../core/registry.ts';
 import { repairToolFiles } from '../core/tool-files.ts';
 import { UnknownTool, servedTools, type ToolScope } from '../integrations/tools.ts';
 import { FEATURES } from './features.ts';
-import { heldByAdoption } from '../core/acquisition.ts';
 import crypto from 'node:crypto';
 import { addPeer, findPeer, freedOf, sessionAddress, verifyPeer } from '../core/peers.ts';
 import { PEER_SEND_TOOL, FREE_TOOL } from '../core/free.ts';

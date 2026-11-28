@@ -6,6 +6,9 @@
 // literals are records of the family. The scanner then finds every
 // assignment, delete, Object.assign or Reflect call, and copy or literal of
 // such a record that names one of the fields, in any file of src/ but the owner.
+// A gate can also name fields that only its owner may compare, as the
+// authority family (issue #279) does for `origin`: each comparison elsewhere
+// was a policy decided on its own, and the owner answers it by name instead.
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -14,7 +17,7 @@ export const ROOT = path.resolve(import.meta.dirname, '../..');
 export interface Finding {
   file: string;
   line: number;
-  rule: 'write' | 'copy' | 'assign' | 'literal';
+  rule: 'write' | 'copy' | 'assign' | 'literal' | 'compare';
   text: string;
 }
 
@@ -26,6 +29,8 @@ export interface OwnerGate {
   notMine: Record<string, string>;
   /** The types whose literals are records of the family, such as `ChildRecord`. */
   literalTypes: readonly string[];
+  /** Fields that no file but the owner may compare with `===`, `!==`, `==` or `!=`. An exemption in `notMine` covers its receiver here too. */
+  compared?: readonly string[];
 }
 
 /**
@@ -157,6 +162,14 @@ export function ownerScanner(gate: OwnerGate): Scanner {
   const indexed = new RegExp(`\\[\\s*['"\`](${fields})['"\`]\\s*\\]\\s*(=(?![=>])|\\?\\?=)`, 'g');
   const typedBefore = new RegExp(`(:\\s*(${types})\\s*=|\\bas\\s+(${types})|satisfies\\s+(${types})|<(${types})>)\\s*\\(?\\s*$`);
   const typedAfter = new RegExp(`^\\)?\\s*(as|satisfies)\\s+(${types})\\b`);
+  const comparedNames = (gate.compared ?? []).join('|');
+  const receiverPattern = '([\\w$]+(?:\\??\\.[\\w$]+)*)';
+  const compares: [RegExp, number][] = comparedNames
+    ? [
+        [new RegExp(`${receiverPattern}\\s*\\??\\.\\s*(${comparedNames})\\s*(===|!==|==|!=)`, 'g'), 1],
+        [new RegExp(`(===|!==|==|!=)\\s*${receiverPattern}\\s*\\??\\.\\s*(${comparedNames})\\b`, 'g'), 2],
+      ]
+    : [];
 
   const scanSource = (file: string, source: string): Finding[] => {
     if (file === gate.owner) return [];
@@ -194,6 +207,13 @@ export function ownerScanner(gate: OwnerGate): Scanner {
       if (!literalOfRecord && !spreadsRecord(code.slice(at + 1, end))) continue;
       found.push({ file, line: lineOf(code, at), rule: literalOfRecord ? 'literal' : 'copy', text: quoted(at, Math.min(120, end - at + 1)) });
     }
+
+    for (const [pattern, group] of compares) {
+      for (const match of code.matchAll(pattern)) {
+        if (gate.notMine[`${file} ${(match[group] ?? '').trim()}`]) continue;
+        found.push({ file, line: lineOf(code, match.index), rule: 'compare', text: quoted(match.index, match[0].length) });
+      }
+    }
     return found;
   };
 
@@ -205,7 +225,9 @@ export function ownerScanner(gate: OwnerGate): Scanner {
         const [file, ...rest] = exemption.split(' ');
         const receiver = rest.join(' ');
         const code = codeOnly(fs.readFileSync(path.join(ROOT, file ?? ''), 'utf8'));
-        return ![...code.matchAll(write), ...code.matchAll(remove)].some((match) => (match[1] ?? '').trim() === receiver);
+        const written = [...code.matchAll(write), ...code.matchAll(remove)].some((match) => (match[1] ?? '').trim() === receiver);
+        const compared = compares.some(([pattern, group]) => [...code.matchAll(pattern)].some((match) => (match[group] ?? '').trim() === receiver));
+        return !written && !compared;
       }),
   };
 }

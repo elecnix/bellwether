@@ -51,13 +51,13 @@ export interface TeleportEntry {
   alive: { at: string; proof: 'took-notice' | 'detected' };
 }
 
-/** The issue whose fix lets an adopted child teleport: until a parent's record and the far daemon agree on it, a teleport would carry the disagreement along. */
-export const ADOPTED_TELEPORT_ISSUE = 'https://github.com/elecnix/bellwether/issues/219';
+/** The issue whose fix lets an adopted child teleport. src/core/authority.ts holds the refusal, and this name stays for its readers. */
+export { ADOPTED_TELEPORT_ISSUE } from './authority.ts';
 
 export interface TeleportRefusalInput extends Omit<RefusalInput, 'exited'> {
   state: TeleportState;
-  /** Whether the parent holds the child by adoption now (issue #256). */
-  adopted?: boolean;
+  /** Why this parent may not carry the child, from src/core/authority.ts's decision table (issue #279). */
+  authority?: string;
   /** The route the child runs on, which only this machine's routes file defines. */
   route?: string;
   /** Why the destination has no way to put the notice into the agent's session, when it has none. */
@@ -83,13 +83,11 @@ export function teleportRefusals(input: TeleportRefusalInput): string[] {
   // rule about a running child does not apply to it. That is the one rule a
   // teleport loosens, and the reply says so.
   const live = input.state === 'live';
-  const { state: _state, adopted: _adopted, route: _route, inbound: _inbound, targetCwdExists, ...move } = input;
+  const { state: _state, authority: _authority, route: _route, inbound: _inbound, targetCwdExists, ...move } = input;
   const reasons = moveRefusals({ ...move, exited: false, status: live ? input.status : 'idle' });
   // The harness check returns alone: nothing else can be judged about a harness Bellwether cannot carry.
   if (reasons.length === 1 && /Bellwether moves only/.test(reasons[0] ?? '')) return reasons;
-  if (input.adopted) {
-    reasons.push(`${input.childName} is an adopted child. Bellwether did not start it, and its parent's record and the daemon that holds its pane can disagree about it, so a teleport would carry that disagreement to ${where}. Teleporting an adopted child waits on ${ADOPTED_TELEPORT_ISSUE}.`);
-  }
+  if (input.authority) reasons.push(input.authority);
   if (input.route && input.target !== LOCAL_HOST) {
     reasons.push(`${input.childName} runs on route ${input.route}, a launcher this machine's routes file defines, so it cannot resume behind it on ${where}. Restart it with agent_restart and via none first, then teleport it.`);
   }

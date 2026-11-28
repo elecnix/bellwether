@@ -12,6 +12,7 @@
 // parent last held every report that waited there. `bellwether doctor` and
 // the daemon log both show it, and a parent's reads of a remote child's
 // transcript go over the same connection.
+import { contestedRefusal, farRecordHeld as heldAgain, farRecordLost, reclaimsFarRecord } from '../core/authority.ts';
 import { spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -32,7 +33,6 @@ import { RelayAnswerLost } from '../core/relay-answer.ts';
 import type { RelayRetireAnswer, RelayRetireAsk } from '../core/retire.ts';
 import { retireAnswerReceipt } from '../core/relay-records.ts';
 import type { RelayRestartAnswer, RelayRestartAsk } from '../core/restart.ts';
-import { heldByAdoption } from '../core/acquisition.ts';
 import type { RelayFreeAsk } from '../core/free.ts';
 
 export interface RelayLinksOptions {
@@ -766,7 +766,7 @@ export async function relayInbox(links: Pick<RelayLinks, 'message' | 'adopt'>, p
     // An adopted child's record there is a claim, which this daemon can make
     // again; a spawned child's needs the files only a spawn writes there.
     const lost = `machine ${host} holds no running child ${child.id} for parent ${parentId}`;
-    if (!heldByAdoption(child)) {
+    if (!reclaimsFarRecord(child)) {
       farRecordGone(parentId, child, host, answer.reason);
       return { delivered: false, reason: `${lost}, and only a spawn there registers a spawned child, so doctor names it until it is registered again` };
     }
@@ -775,13 +775,20 @@ export async function relayInbox(links: Pick<RelayLinks, 'message' | 'adopt'>, p
       claimed = await links.adopt(host, adoptionClaim(parentId, child));
     } catch (error) {
       const why = (error as Error).message.replace(/\.$/, '');
-      if (error instanceof ClaimRefused) farRecordGone(parentId, child, host, why);
-      return { delivered: false, reason: `${lost}, and ${error instanceof ClaimRefused ? 'refused to take the claim back' : 'the claim could not be made again'}: ${why}` };
+      if (!(error instanceof ClaimRefused)) return { delivered: false, reason: `${lost}, and the claim could not be made again: ${why}` };
+      // That machine holds the pane for someone else. This registry and that
+      // machine's claims are two sources of authority that disagree, and a
+      // typed copy would go into a pane another parent holds (issue #279).
+      const reason = `${lost}, and refused to take the claim back: ${why}`;
+      farRecordGone(parentId, child, host, reason, true);
+      return { delivered: false, reason, refused: contestedRefusal(child, 'message', { host, reason }) };
     }
     if (claimed.childId !== child.id) {
+      // One pane under two child ids of this parent: the two records disagree, and a typed copy could reach either (issue #279).
       const why = `it holds pane ${child.paneId} for this parent as child ${claimed.childId}`;
-      farRecordGone(parentId, child, host, why);
-      return { delivered: false, reason: `${lost}: ${why}. Run agent_adopt on the pane to take that id` };
+      farRecordGone(parentId, child, host, why, true);
+      const reason = `${lost}: ${why}. Run agent_adopt on the pane to take that id`;
+      return { delivered: false, reason, refused: contestedRefusal(child, 'message', { host, reason: why }) };
     }
     farRecordHeld(parentId, child);
     const note = `Machine ${host} had lost its record of child ${child.id}, so Bellwether claimed pane ${child.paneId} there again before sending.`;
@@ -798,16 +805,12 @@ export async function relayInbox(links: Pick<RelayLinks, 'message' | 'adopt'>, p
 }
 
 /** Put on the record that the child's machine holds no record of it (issue #219). */
-function farRecordGone(parentId: string, child: Pick<ChildRecord, 'id'>, host: string, reason: string): void {
-  updateChild(parentId, child.id, (entry) => {
-    entry.farRecordLost = { at: entry.farRecordLost?.at ?? new Date().toISOString(), host, reason };
-  });
+function farRecordGone(parentId: string, child: Pick<ChildRecord, 'id'>, host: string, reason: string, contested = false): void {
+  updateChild(parentId, child.id, (entry) => farRecordLost(entry, { host, reason, contested }));
 }
 
 /** Clear the mark once the child's machine holds the child again. */
 function farRecordHeld(parentId: string, child: Pick<ChildRecord, 'id' | 'farRecordLost'>): void {
   if (!child.farRecordLost) return;
-  updateChild(parentId, child.id, (entry) => {
-    delete entry.farRecordLost;
-  });
+  updateChild(parentId, child.id, heldAgain);
 }

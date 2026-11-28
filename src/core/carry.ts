@@ -19,6 +19,7 @@
 //   6. Commit the copy, point the record, and so the relay, at the new host,
 //      and append the outcome to the policy's log.
 import { noticeTaken, withMessagesOf } from './delivery.ts';
+import { authorityFor } from './authority.ts';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -40,7 +41,6 @@ import { processInfoOf } from './start-check.ts';
 import { teleportState, type TeleportRefusalInput, type TeleportState } from './teleport-plan.ts';
 import type { ChildRecord, Crossing } from './types.ts';
 import { crossingFailed, relocated, runEnds, viewOf } from './incarnation.ts';
-import { heldByAdoption } from './acquisition.ts';
 
 /** How long the watcher ignores the old pane's close. Longer than any carry: two copies, a stop and a start. */
 export const MOVE_WINDOW_MS = 15 * 60_000;
@@ -230,7 +230,7 @@ export async function carryChild(deps: CarryDeps, parentId: string, request: Car
       requestedHarness,
       status: child.lastStatus,
       state,
-      adopted: heldByAdoption(child),
+      ...authorityFor(child, policy.verb, target),
       source,
       target,
       moveInFlight,

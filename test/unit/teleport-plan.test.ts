@@ -4,6 +4,7 @@
 // destination with no inbound path for the notice, and an adopted child. Each
 // has its own case, so a later change cannot drop one silently. The notice is
 // tested here too, because what it says is what the teleported agent knows.
+import { authorityFor } from '../../src/core/authority.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { LOCAL_HOST } from '../../src/core/machine.ts';
@@ -75,7 +76,8 @@ test('contract 3: a destination with no inbound path for the notice is refused, 
 });
 
 test('contract 4: an adopted child is refused by name, with the issue that lifts the refusal', () => {
-  const reasons = teleportRefusals(ready({ adopted: true }));
+  const adopted = { id: 'c-adopted', name: 'worker', paneId: 'w1:p2', host: LOCAL_HOST, origin: 'adopt' as const };
+  const reasons = teleportRefusals(ready(authorityFor(adopted, 'teleport', 'hawthorne')));
   assert.equal(reasons.length, 1, reasons.join('\n'));
   assert.match(reasons[0] ?? '', /worker is an adopted child/);
   assert.match(reasons[0] ?? '', /issues\/219/);

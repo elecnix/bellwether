@@ -3,6 +3,7 @@
 // session's resume flag, and puts the new pane under the same child id. The
 // child's outbox entries and receipts are keyed by that id, so they continue.
 import { briefAdded, briefDelivered, briefsCarried, briefsRestored, type NoticeOutcome } from './delivery.ts';
+import { acquired } from './authority.ts';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { HerdrClient, HerdrPane } from './herdr-client.ts';
@@ -174,7 +175,7 @@ export async function resumeChild(client: HerdrClient, parent: ParentRecord, tar
         kind,
         harness: requireHarness(kind).harness,
         ...firstRun({ paneId: '', host: target.host ?? LOCAL_HOST, cwd: target.cwd }),
-        origin: 'resume',
+        ...acquired('resume'),
         startedAt: now,
         statusChangedAt: now,
         lastBusyAt: now,

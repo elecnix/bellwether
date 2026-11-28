@@ -39,6 +39,7 @@
 // is the caller. For another target the actor waits for herdr to report idle
 // or done, with a bounded timeout, and refuses when the wait runs out.
 import { reachedModel } from './delivery.ts';
+import { acquired, requireAuthority } from './authority.ts';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -65,7 +66,6 @@ import type { ChildFiles } from './harnesses/types.ts';
 import { REGISTRY_SCHEMA, type CallerIdentity, type ChildRecord, type ChildRoute, type ChildSession, type DialogDecision, type ParentRecord, type RestartFailure, type RestartInDoubt, type RestartStall, type RestartWait } from './types.ts';
 import { openReturnTab, parseWorkspaces, returnPlacement, undoChildTab, type ChildTab, type TabRequest, type WorkspacePlacement } from './workspace.ts';
 import { RelayAnswerLost } from './relay-answer.ts';
-import { heldByAdoption } from './acquisition.ts';
 
 export const RESTART_TOOL = 'agent_restart';
 
@@ -405,7 +405,7 @@ async function restartChildLocked(client: HerdrClient, parentId: string, childId
   if (isMoving(child)) throw new RestartRefused(`${child.name} (child ${child.id}) is being moved to ${child.moving?.to === LOCAL_HOST ? 'this machine' : `machine ${child.moving?.to}`}, since ${child.moving?.since}. Wait for the move to finish, then restart it.`);
   // A lost answer leaves the far side's state unknown: the session may already run in a new pane there (issue #211).
   if (child.restartInDoubt) throw new RestartRefused(`the outcome of the last restart of ${child.name} on machine ${child.restartInDoubt.host} is unknown since ${child.restartInDoubt.at}, so a second restart could start the session twice. The daemon there keeps its answer, and this daemon takes it when the connection to ${child.restartInDoubt.host} returns; restart it after that.`);
-  if (heldByAdoption(child)) throw new RestartRefused(`${child.name} (child ${child.id}) was adopted, not started by Bellwether, so agent_restart will not close pane ${child.paneId}: it closes only panes Bellwether started.`);
+  requireAuthority(child, 'restart', {}, (message) => new RestartRefused(message));
   const session = sessionOf(child);
   if (!session) throw new RestartRefused(await withSessionCause(`${child.name} (child ${child.id}, pane ${child.paneId || 'none'}) has no recorded session, so agent_restart cannot reopen it. Resume it once with agent_spawn and resume, which records the session herdr reports.`, client, requireHarness(child.kind), child));
   // Decided before the old pane closes, so a refused route leaves the child running.
@@ -871,7 +871,7 @@ export async function restartForRelay(parentId: string, childId: string, wanted:
     ...(wanted.workspaceId ? { workspaceId: wanted.workspaceId } : {}),
     ...(wanted.workspaceLabel ? { workspaceLabel: wanted.workspaceLabel } : {}),
     ...(wanted.ownsWorkspace ? { ownsWorkspace: true } : {}),
-    origin: 'spawn',
+    ...acquired('spawn'),
     startedAt: relay.registeredAt,
     statusChangedAt: at,
     lastBusyAt: at,
@@ -1302,7 +1302,7 @@ async function deferChildRestart(client: HerdrClient, ownParentId: string, paren
   const orphan = child.restartRequestedAt;
   if (!hooks.defer) throw new RestartRefused('This daemon cannot defer a restart, so it cannot restart the session that asked.');
   if (hostOf(child) !== LOCAL_HOST) throw new RestartRefused(`${child.name} runs on machine ${hostOf(child)}, and this daemon only restarts agents on its own machine.`);
-  if (heldByAdoption(child)) throw new RestartRefused(`${child.name} (child ${child.id}) was adopted, not started by Bellwether, so agent_restart will not close pane ${child.paneId}: it closes only panes Bellwether started.`);
+  requireAuthority(child, 'restart', {}, (message) => new RestartRefused(message));
   const session = sessionOf(child);
   if (!session) throw new RestartRefused(await withSessionCause(`${child.name} (child ${child.id}, pane ${child.paneId || 'none'}) has no recorded session, so agent_restart cannot reopen it. Resume it once with agent_spawn and resume, which records the session herdr reports.`, client, requireHarness(child.kind), child));
   const resume = resumeArgs(child.kind, session);

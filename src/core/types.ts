@@ -360,9 +360,10 @@ export interface ChildRecord {
   /**
    * How the child first came under this parent. An older record means spawn.
    * It stays as provenance: how the parent holds the child now is
-   * `heldByAdoption` in acquisition.ts, which also reads `launchedAt`.
+   * `heldByAdoption` in src/core/authority.ts, which also reads `launchedAt`.
+   * Written only by src/core/authority.ts (issue #279).
    */
-  origin?: 'spawn' | 'adopt' | 'resume';
+  readonly origin?: 'spawn' | 'adopt' | 'resume';
   /**
    * When Bellwether last started this child's harness in a tab it opened, as
    * a resume does. An adopted child with this set is held as one Bellwether
@@ -607,29 +608,32 @@ export interface ChildRecord {
    * The child's machine answered that it holds no record of this child, while
    * this registry still does, and the record could not be restored there
    * (issue #219). Messages to it are typed until then. Cleared once that
-   * machine holds it again.
+   * machine holds it again. `contested` says that machine holds the pane for
+   * someone else, another parent or this parent under another child id, so
+   * the two sources of authority disagree and every act on the child is
+   * refused until they agree (issue #279). Written only by src/core/authority.ts.
    */
-  farRecordLost?: { at: string; host: string; reason: string };
+  readonly farRecordLost?: { at: string; host: string; reason: string; contested?: true };
   /**
    * An adoption on another machine whose answer the relay lost, so the parent
    * does not know whether that machine recorded the claim (issue #211, item 6).
    * The watcher holds the child's events and asks that machine again, and
    * clears this once it answers.
    */
-  adoptInDoubt?: { at: string; host: string; reason: string };
+  readonly adoptInDoubt?: { at: string; host: string; reason: string };
   /**
    * For a child held by adoption on another machine: the relay came back,
    * and the pane's machine could not confirm the claim this parent holds
    * there (issue #257). The watcher asks again, and doctor names it until
    * that machine answers.
    */
-  claimUnconfirmed?: { at: string; host: string; reason: string };
+  readonly claimUnconfirmed?: { at: string; host: string; reason: string };
   /**
    * For an adopted child that exited: the child id that now stands for its
    * session, because the machine that runs it holds the session under that id
-   * rather than this one (issue #191).
+   * rather than this one (issue #191). Written only by src/core/authority.ts.
    */
-  replacedBy?: string;
+  readonly replacedBy?: string;
   /**
    * Set when the child asked to be retired, or its parent stopped it. The daemon cleans up once herdr
    * reports the pane gone. Every retirement field is optional, so an older

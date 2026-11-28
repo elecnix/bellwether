@@ -5,6 +5,7 @@
 // flag, under the same child id. herdr decides which, not the registry, because
 // the registry can be stale. One lock per child covers the decision and the
 // resume, so two callers bring a child back once.
+import { requireAuthority } from './authority.ts';
 import path from 'node:path';
 import type { HerdrClient, HerdrPane } from './herdr-client.ts';
 import { withChildLock } from './child-lock.ts';
@@ -113,6 +114,8 @@ export async function spawnResume(clientFor: (host: string) => Promise<HerdrClie
     }
 
     const child = record.children.find((entry) => entry.id === known.id) ?? known;
+    // Only a child this parent may speak for comes back (issue #279).
+    requireAuthority(child, 'resume');
     // A move outlasts the lock's stale age, so its record mark is checked too.
     if (isMoving(child)) throw new Error(`${child.name} (child ${child.id}) is being moved to ${child.moving?.to === LOCAL_HOST ? 'this machine' : `machine ${child.moving?.to}`}, since ${child.moving?.since}. Wait for the move to finish, then call agent_spawn with resume again.`);
     const session = sessionOf(child);

@@ -7,6 +7,7 @@
 // Code child's channel, or a pi or omp child's extension. Anything else is
 // typed into the child's pane through herdr's agent.prompt, as before. Either
 // way the child record keeps which path carried it and why.
+import { AuthorityRefused } from './authority.ts';
 import crypto from 'node:crypto';
 import { HerdrApiError, type HerdrClient } from './herdr-client.ts';
 import { BLANK_SCREEN, shownScreen } from './screen.ts';
@@ -25,9 +26,11 @@ export type { InboxMessage } from '../daemon/protocol.ts';
  * message must not be typed as well. `inDoubt` marks a message to another
  * machine whose relay answer was lost (issue #218): the far daemon may have
  * pushed it, so nothing is typed, and the parent's daemon asks again once the
- * relay is back. Its `via` is then empty, because no adapter is known.
+ * relay is back. Its `via` is then empty, because no adapter is known. An
+ * answer with `refused` comes from a child's machine that holds its pane for
+ * someone else: authority refuses the message, and nothing is typed (issue #279).
  */
-export type InboxAnswer = ({ delivered: true; via: string; unanswered?: string; inDoubt?: true } | { delivered: false; reason: string }) & {
+export type InboxAnswer = ({ delivered: true; via: string; unanswered?: string; inDoubt?: true } | { delivered: false; reason: string; refused?: string }) & {
   /** What the daemon repaired on the way, for the caller's reply, such as a claim restored on the child's machine (issue #219). */
   note?: string;
 };
@@ -195,6 +198,15 @@ export async function messageChild(input: MessageInput): Promise<MessageOutcome>
         message,
         text: `Delivered to ${child.name}'s session as message ${id}, through its ${label}; nothing was typed into its pane.${answer.note ? ` ${answer.note}` : ''} An idle ${child.name} starts a turn on it, and a busy one takes it after the tool calls in flight, before its next model call. agent_list shows when its model has read it, and if ${child.name} exits first, the exit event says it never did.`,
       };
+    }
+    // Another holder for the pane: nothing is typed into a pane this parent may not hold (issue #279).
+    if (answer.refused) {
+      const refused = answer.refused;
+      updateChild(parentId, child.id, (entry) => {
+        messageDropped(entry, id);
+        messageNeverSent(entry, fresh, refused);
+      });
+      throw new AuthorityRefused(`${answer.refused} Message ${id} was not typed, and stays on the record as never delivered.`);
     }
     // A repair on the way, such as a claim restored on the child's machine, still goes in the reply (issue #219).
     reason = answer.note ? `${answer.reason.replace(/\.$/, '')}. ${answer.note}` : answer.reason;

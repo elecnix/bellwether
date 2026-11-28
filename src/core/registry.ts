@@ -174,13 +174,15 @@ export function childById(record: ParentRecord, childId: string): ChildRecord | 
 }
 
 /**
- * The parent that watches a live pane on a host, if any. A child that exited
- * no longer holds its pane, so it does not count.
+ * Every parent whose registry lists a live child in a pane on a host. A child
+ * that exited no longer holds its pane, so it does not count. More than one
+ * is a conflict, which `registryHolderOf` in src/core/pane-claims.ts refuses
+ * with both named rather than picking the first (issue #279).
  */
-export function watcherOfPane(host: string, paneId: string): { parent: ParentRecord; child: ChildRecord } | undefined {
+export function watchersOfPane(host: string, paneId: string): { parent: ParentRecord; child: ChildRecord }[] {
+  const found: { parent: ParentRecord; child: ChildRecord }[] = [];
   for (const parent of listParents()) {
-    const child = parent.children.find((entry) => !entry.exitedAt && entry.paneId === paneId && (entry.host ?? LOCAL_HOST) === host);
-    if (child) return { parent, child };
+    for (const child of parent.children) if (!child.exitedAt && child.paneId === paneId && (child.host ?? LOCAL_HOST) === host) found.push({ parent, child });
   }
-  return undefined;
+  return found;
 }

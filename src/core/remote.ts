@@ -7,6 +7,7 @@
 // The child gets no address to call back on, because the parent's daemon
 // connects to it. Reading the child's last message goes over that same
 // connection, which the daemon's relay links hold.
+import { reclaimsFarRecord } from './authority.ts';
 import { harnessFor } from './harnesses/index.ts';
 import type { DroppedVariable } from './relay-env.ts';
 import { resolveMachine, type MachineResolver } from './machine.ts';
@@ -18,7 +19,6 @@ import type { SessionReach } from './adopted-session.ts';
 import { adoptionClaim } from './adopt.ts';
 import { hostOf } from './machine.ts';
 import type { RelayRestartAnswer, RelayRestartAsk } from './restart.ts';
-import { heldByAdoption } from './acquisition.ts';
 import type { RelayFreeAsk } from './free.ts';
 import type { InboxMessage, RelayMessageAnswer } from '../daemon/protocol.ts';
 
@@ -194,8 +194,9 @@ export function farRecordLines(parents: ParentRecord[]): string[] {
   for (const parent of parents) {
     for (const child of parent.children) {
       const lost = child.farRecordLost;
-      if (!lost || child.exitedAt) continue;
-      const fix = heldByAdoption(child) ? `Run agent_adopt ${lost.host}:${child.paneId} to claim it there again.` : 'Stop it and resume its session with agent_spawn to register it there again.';
+      // A contested record is refused, not typed to, and its authority line names both sources (issue #279).
+      if (!lost || lost.contested || child.exitedAt) continue;
+      const fix = reclaimsFarRecord(child) ? `Run agent_adopt ${lost.host}:${child.paneId} to claim it there again.` : 'Stop it and resume its session with agent_spawn to register it there again.';
       lines.push(`warn  far record: ${child.name} (child ${child.id} of ${parent.id}) on machine ${lost.host}: that machine has held no record of it since ${lost.at}, so messages to it are typed into its pane (${lost.reason}). ${fix}`);
     }
   }

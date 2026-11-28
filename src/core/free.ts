@@ -12,6 +12,7 @@
 // parent waits in that machine's relay outbox, as a report did.
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import { acquired, refusal as authorityRefusal } from './authority.ts';
 import { withChildLock } from './child-lock.ts';
 import { unreadBrief } from './brief-history.ts';
 import { LOCAL_HOST, hostOf } from './machine.ts';
@@ -68,7 +69,9 @@ function ownName(record: ParentRecord): string {
 
 /** Why a child cannot be freed now, or undefined. */
 function refusal(child: ChildRecord): string | undefined {
-  if (child.origin === 'adopt') return `${child.name} is an adopted child: Bellwether did not start it, so its session holds no record of a parent to leave. Stop watching it with agent_stop instead.`;
+  // Whether this parent may free the child at all is authority's to answer (issue #279).
+  const refused = authorityRefusal(child, 'free');
+  if (refused) return refused;
   if (child.exitedAt) return `${child.name} has exited, so there is no session for an address to reach. Resume it with agent_spawn and resume first.`;
   if (isMoving(child)) return `${child.name} is crossing to another machine. Free it once the crossing ends.`;
   if (child.restartRequestedAt) return `${child.name} has a restart pending. Free it once the restart ends.`;
@@ -178,7 +181,7 @@ export interface PeerSelf {
 /** A freed child's session, as the daemon's inbox addresses it. */
 function sessionOf(entry: PeerEntry): ChildRecord {
   const at = new Date().toISOString();
-  return { id: entry.address, name: entry.name, kind: entry.kind ?? 'claude', harness: entry.kind ?? 'claude', paneId: '', host: entry.host ?? LOCAL_HOST, origin: 'spawn', startedAt: at, lastStatus: 'idle', statusChangedAt: at, lastBusyAt: at, depth: 1 };
+  return { id: entry.address, name: entry.name, kind: entry.kind ?? 'claude', harness: entry.kind ?? 'claude', paneId: '', host: entry.host ?? LOCAL_HOST, ...acquired('spawn'), startedAt: at, lastStatus: 'idle', statusChangedAt: at, lastBusyAt: at, depth: 1 };
 }
 
 /**

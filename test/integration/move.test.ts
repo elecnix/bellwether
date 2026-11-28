@@ -8,6 +8,7 @@
 // The cases follow a move in both directions, the copy and its verification,
 // the resume on the target, and the rollback that starts the child again on
 // the source when the target cannot start it.
+import { acquired } from '../../src/core/authority.ts';
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
@@ -22,7 +23,7 @@ import { writeMcpConfig } from '../../src/core/mcp-config.ts';
 import { moveEndpoints } from '../../src/core/move-endpoint.ts';
 import { piSessionDirName } from '../../src/core/move-plan.ts';
 import { MoveFailedError, MoveRefusedError, moveChild, moveLogPath, type MoveDeps } from '../../src/core/move.ts';
-import { emptyParent, readParent, saveParent, upsertChild } from '../../src/core/registry.ts';
+import { emptyParent, readParent, saveParent, updateChild, upsertChild } from '../../src/core/registry.ts';
 import { readRelayRecord } from '../../src/core/relay-records.ts';
 import { remoteOps } from '../../src/core/remote.ts';
 import { spawnResume } from '../../src/core/spawn-resume.ts';
@@ -410,6 +411,22 @@ test('a harness missing on the target, or a directory that does not exist there,
   assert.match(missing.message, /nowhere does not exist on machine box/);
   await assert.rejects(moveChild(w.deps, w.parentId, { child: 'worker', kind: 'pi' }), /runs claude-code, and the move asked for pi/);
   assert.ok(w.here.world.panes.has('w1:p3'));
+});
+
+test('an adopted child is refused by name, because a move closes the pane it leaves and Bellwether closes only panes it started (issue #279)', async (t) => {
+  const w = await world(t);
+  harness(w.here, { claude: '2.1.300' });
+  harness(w.box, { claude: '2.1.332' });
+  const hereCwd = dir(w.here.user, 'src', 'repo');
+  claudeHere(w, hereCwd);
+  updateChild(w.parentId, 'child-worker', (entry) => Object.assign(entry, acquired('adopt')));
+
+  const refused = await moveChild(w.deps, w.parentId, { child: 'worker', cwd: dir(w.box.user, 'repo') }).catch((error: unknown) => error);
+  assert.ok(refused instanceof MoveRefusedError, String(refused));
+  assert.match(refused.message, /worker \(child child-worker\) was adopted, not started by Bellwether, so agent_move will not close pane w1:p3: a move closes the pane it leaves, and Bellwether closes only panes it started\./);
+  assert.ok(w.here.world.panes.has('w1:p3'), 'the adopted pane stays open');
+  assert.equal(w.here.herdr.requests.filter((request) => request.method === 'tab.close' || request.method === 'pane.close').length, 0, 'nothing was closed');
+  assert.equal(record(w)?.host, LOCAL_HOST);
 });
 
 test('a different conversation already at the target path is never overwritten, and the child keeps running', async (t) => {

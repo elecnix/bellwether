@@ -5,6 +5,8 @@
 // Claude channel run, and prints one line per child event, so a supervisor can
 // read the stream instead of polling herdr.
 import { peerDoctorLines } from './core/peers.ts';
+import { authorityLines } from './core/authority.ts';
+import { listRelayRecords } from './core/relay-records.ts';
 import { describeRoutes, readRoutes } from './core/routes.ts';
 import { checkReads } from './core/reads.ts';
 import { workspaceColumn } from './core/workspace.ts';
@@ -262,6 +264,10 @@ async function doctor(): Promise<number> {
   failures += lostRestarts.length;
   // What each pending self-restart waits for, and why one gave up (issue #188).
   for (const line of restartWaitLines(listParents())) console.log(`  ${line}`);
+  // Who holds each live child, on which machine and by what evidence, and each pane whose sources of authority disagree (issue #279).
+  const authority = authorityLines(listParents(), listRelayRecords());
+  for (const line of authority) console.log(`  ${line}`);
+  failures += authority.filter((line) => line.startsWith('fail')).length;
   // Each child whose machine holds no record of it while this registry does (issue #219).
   for (const line of farRecordLines(listParents())) console.log(`  ${line}`);
   // Each adopted child whose machine could not confirm its claim once the relay came back (issue #257).

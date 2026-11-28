@@ -8,6 +8,7 @@
 // own settings say; a question Bellwether knows answered No and recorded on
 // the child; an adopted child left to its parent; and a question nobody knows
 // failing the spawn by name, at once.
+import { acquired } from '../../src/core/authority.ts';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -363,9 +364,7 @@ test('a dangerous-rm question is answered No and recorded, and an adopted child\
     assert.equal(decision?.question, 'Do you want to proceed?');
 
     // The same question in a pane Bellwether adopted is the parent's to answer.
-    updateChild(r.parent.id, child.id, (entry) => {
-      entry.origin = 'adopt';
-    });
+    updateChild(r.parent.id, child.id, (entry) => Object.assign(entry, acquired('adopt')));
     pane.keys.length = 0;
     pane.ask('dangerous-rm');
     pane.setStatus('blocked');

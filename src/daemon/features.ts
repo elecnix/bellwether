@@ -170,7 +170,7 @@ const BASE: readonly Feature[] = [
   }, [288]),
   // A far daemon that predates it answers unknown_type, and the parent leaves its started child there as it is.
   ...brought('request', 4, '0.1.11', {
-    'relay-confirm': "Each time the relay to a machine comes back, the parent's daemon asks the daemon there whether each child it started there still runs in its pane, and a child whose pane that machine no longer holds ends with the reason.",
+    'relay-confirm': "Once the relay to a machine is back, the daemon there reports whether each child the parent started there still runs in its pane. A child whose pane went elsewhere ends with the reason.",
   }, [306]),
   // A daemon that predates it answers unknown_type, and `bellwether resume` names the release that brought it.
   ...brought('request', 4, '0.1.10', {

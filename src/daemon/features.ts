@@ -133,6 +133,10 @@ const BASE: readonly Feature[] = [
   ...brought('request', 4, '0.1.7', {
     'relay-message': "The daemon on a child's machine puts a parent's message in that child's session, where herdr used to type it into the far pane.",
   }, [144]),
+  // An older daemon ignores the argument, and moves without checking what stays behind.
+  ...brought('argument', 4, '0.1.10', {
+    'agent_move.accept_loss': 'A move goes ahead even though the child would leave a background job or unpushed worktree work behind, and the reply lists them.',
+  }, [232]),
   // A far daemon that predates it answers unknown_type, and the parent refuses the restart by name.
   ...brought('request', 4, '0.1.10', {
     'relay-restart': "`agent_restart` restarts a child on another machine: the daemon there closes its pane, opens a new tab and resumes the same session under the same child id.",

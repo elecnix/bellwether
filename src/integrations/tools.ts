@@ -172,7 +172,7 @@ export const parentTools: ToolDefinition[] = [
   },
   {
     name: 'agent_move',
-    description: 'Move a live claude or pi child to another machine, in either direction, keeping its child id, its name and its conversation: Bellwether copies the harness session to the other machine, checks the copy, closes the child\'s tab, and resumes the session there, and the parent dials the new machine for its reports from then on. If the child cannot start on the other machine, Bellwether starts it again where it was and says the move failed. It refuses, before touching anything: a different harness on the other machine (a session belongs to the harness that wrote it); a harness missing there, or older than the version that wrote the session, which could lose the conversation; a pi child whose provider and model pair the other machine does not offer; a working directory that does not exist there; a child that is working or blocked, because the move would cut its turn short; a child that has exited or has no recorded session; and a child another resume or move holds. It also stops, and removes the copy, when the copy does not read back with the same bytes and checksum. The working directory is not copied: the repository has to be on the other machine already.',
+    description: 'Move a live claude or pi child to another machine, in either direction, keeping its child id, its name and its conversation: Bellwether copies the harness session to the other machine, checks the copy, closes the child\'s tab, and resumes the session there, and the parent dials the new machine for its reports from then on. If the child cannot start on the other machine, Bellwether starts it again where it was and says the move failed. It refuses, before touching anything: a different harness on the other machine (a session belongs to the harness that wrote it); a harness missing there, or older than the version that wrote the session, which could lose the conversation; a pi child whose provider and model pair the other machine does not offer; a working directory that does not exist there; a child that is working or blocked, because the move would cut its turn short; a child that has exited or has no recorded session; a child another resume or move holds; and, unless you pass accept_loss, a child that would leave work behind: a background job its session runs, which ends when its tab closes, or a worktree its session worked in that holds uncommitted changes, a stash or unpushed commits. A session crosses, and its processes and worktrees stay where they are. It also stops, and removes the copy, when the copy does not read back with the same bytes and checksum. The working directory is not copied: the repository has to be on the other machine already.',
     schema: {
       type: 'object',
       properties: {
@@ -181,6 +181,7 @@ export const parentTools: ToolDefinition[] = [
         cwd: { type: 'string', description: 'The directory the child resumes in on the other machine. Defaults to the directory it runs in now, which must exist there.' },
         kind: { type: 'string', enum: ['claude', 'pi'], description: 'The harness to run on the other machine. Defaults to the child\'s own, and any other is refused.' },
         reason: { type: 'string', description: 'Why the child moves, kept in move.log.' },
+        accept_loss: { type: 'boolean', description: 'Move even though the refusal named work that would stay behind: background jobs, which end with the session, or worktree changes and commits that exist only on this machine. The reply names each one again.' },
       },
       required: ['child'],
     },
@@ -596,12 +597,13 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
           log: ctx.log,
         },
         ctx.parentId,
-        { child: target, machine: optionalString(args['machine']), cwd: optionalString(args['cwd']), kind: optionalString(args['kind']), reason: optionalString(args['reason']) },
+        { child: target, machine: optionalString(args['machine']), cwd: optionalString(args['cwd']), kind: optionalString(args['kind']), reason: optionalString(args['reason']), acceptLoss: args['accept_loss'] === true },
       );
       const place = (host: string): string => (host === LOCAL_HOST ? 'this machine' : `machine ${host}`);
       return [
         `${result.child.name} moved from ${place(result.from)} to ${place(result.to)}, as the same child ${result.child.id}, and resumed its session in pane ${result.child.paneId}.`,
         `Its session crossed as ${result.bytes} bytes and was verified at ${result.sessionFile}. Bellwether watches it there, and collects its reports from that machine.`,
+        ...(result.leftBehind.length ? [`Left behind, as accept_loss allowed:`, ...result.leftBehind.map((line) => `- ${line}`)] : []),
         `herdr link: ${result.link}`,
       ].join('\n');
     } finally {

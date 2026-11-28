@@ -11,6 +11,7 @@ import { executables, installCandidates, pathCandidates } from './binaries.ts';
 import { claudeConfigDir } from './transcript.ts';
 import { locateTranscript } from './harnesses/index.ts';
 import { BELLWETHER_VERSION } from './version.ts';
+import { findLeftBehind, type LeftBehind, type LeftBehindRequest } from './move-leftovers.ts';
 import { parsePiModelList, piModelOf, claudeVersionsOf, sha256, targetSessionLayout, type HarnessDirs, type HarnessProbe, type ModelPair, type MovableHarness } from './move-plan.ts';
 
 /** This machine's harness directories, from its environment. */
@@ -81,6 +82,8 @@ export interface ProbeRequest {
   piModels?: boolean;
   /** Pi session files on this machine whose model to read. */
   piSessions?: string[];
+  /** A child on this machine to check for work a move would leave behind (issue #224). */
+  leftBehind?: LeftBehindRequest;
 }
 
 export interface ProbeResult {
@@ -95,6 +98,8 @@ export interface ProbeResult {
   piModelsFile: string;
   /** The pair each named pi session last used, when the file is here. */
   piSessionModels?: Record<string, ModelPair | null>;
+  /** What a move of the child named in the request would leave behind here. A Bellwether before 0.1.10 leaves it out. */
+  leftBehind?: LeftBehind;
 }
 
 /** What this machine offers a move: its harnesses, their versions, a directory and pi's models. An aborted signal stops the commands it runs. */
@@ -114,6 +119,7 @@ export async function probeMachine(request: ProbeRequest = {}, signal?: AbortSig
       else result.piModelsError = listed.error;
     }
   }
+  if (request.leftBehind) result.leftBehind = await findLeftBehind(request.leftBehind);
   if (request.piSessions?.length) {
     result.piSessionModels = {};
     for (const file of request.piSessions) {

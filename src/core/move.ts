@@ -26,7 +26,9 @@ import { harnessFor } from './harnesses/index.ts';
 import { missingIntegration } from './herdr-integration.ts';
 import { removeChildFiles } from './mcp-config.ts';
 import { bellwetherHome } from './paths.ts';
-import { childById, readParent, updateChild, upsertChild } from './registry.ts';
+import { childById, listParents, readParent, updateChild, upsertChild } from './registry.ts';
+import { leftBehindLines } from './move-leftovers.ts';
+import { processInfoOf } from './start-check.ts';
 import { holdsSession, resumeChild, sessionOf, type HarnessSession } from './resume.ts';
 import { harnessOf, herdrLink, type RegisterRemote } from './spawn.ts';
 import { isMoving, moveRefusals, pickTarget, rewriteForTarget, rollbackPlan, sha256, type MovableHarness, type MoveStage, type RefusalInput } from './move-plan.ts';
@@ -52,6 +54,12 @@ export interface MoveRequest {
   kind?: string;
   /** Why the child moves, for move.log. */
   reason?: string;
+  /**
+   * Move even though the child would leave work behind on the source: a
+   * background job that ends with its session there, or a worktree it worked
+   * in that holds uncommitted changes or unpushed commits. The reply names each.
+   */
+  acceptLoss?: boolean;
 }
 
 export interface MoveDeps {
@@ -78,6 +86,8 @@ export interface MoveResult {
   /** The bytes that crossed, every file of the session together. */
   bytes: number;
   link: string;
+  /** What stayed on the source because the caller accepted the loss, one line each. */
+  leftBehind: string[];
 }
 
 /** A move that never started, with every reason. Nothing was touched. */
@@ -201,7 +211,16 @@ export async function moveChild(deps: MoveDeps, parentId: string, request: MoveR
 
     const sourceEnd = deps.endpointFor(base.source);
     const targetEnd = deps.endpointFor(target);
-    const [sourceProbe, targetProbe] = await Promise.all([probeOrRefuse(sourceEnd, { harnesses: [harness] }), probeOrRefuse(targetEnd, { harnesses: [harness], cwd: targetCwd, piModels: harness === 'pi' })]);
+    // The source tells the harness from a background job by the pane's shell and foreground process, which herdr there knows.
+    const pane = await deps
+      .clientFor(base.source)
+      .then((client) => client.request('pane.process_info', { pane_id: child.paneId }))
+      .then(processInfoOf)
+      .catch(() => undefined);
+    // A worktree another live child stands in is that child's work, not this one's.
+    const others = listParents().flatMap((parent) => parent.children.filter((entry) => entry.id !== child.id && !entry.exitedAt && hostOf(entry) === base.source && entry.cwd).map((entry) => entry.cwd as string));
+    const leftBehindRequest = { childId: child.id, harness, session: resumable.value, ...(child.cwd ? { cwd: child.cwd } : {}), ...(pane ? { pane } : {}), others };
+    const [sourceProbe, targetProbe] = await Promise.all([probeOrRefuse(sourceEnd, { harnesses: [harness], leftBehind: leftBehindRequest }), probeOrRefuse(targetEnd, { harnesses: [harness], cwd: targetCwd, piModels: harness === 'pi' })]);
     const unreachable = [sourceProbe, targetProbe].filter((probe): probe is string => typeof probe === 'string');
     if (unreachable.length) throw new MoveRefusedError(child.name, target, unreachable);
     const sourceInfo = sourceProbe as ProbeResult;
@@ -225,6 +244,9 @@ export async function moveChild(deps: MoveDeps, parentId: string, request: MoveR
       targetModelsError: targetInfo.piModelsError,
       targetModelsFile: targetInfo.piModelsFile,
     });
+    // A session crosses, and its processes and worktrees do not (issue #224).
+    const leftBehind = leftBehindLines(child.name, where(base.source), sourceInfo.leftBehind, sourceInfo.bellwether);
+    if (!request.acceptLoss) refusals.push(...leftBehind);
     if (refusals.length) throw new MoveRefusedError(child.name, target, refusals);
 
     const sourceClient = await deps.clientFor(base.source);
@@ -364,9 +386,9 @@ export async function moveChild(deps: MoveDeps, parentId: string, request: MoveR
       delete entry.moving;
       entry.movedFrom = { host: base.source, at: movedAt };
     });
-    appendMoveLog({ at: movedAt, parent: parentId, child: child.id, name: child.name, harness, outcome: 'moved', from: base.source, to: target, reason: request.reason, sourceFile: bundle.sourceFile, targetFile: sessionFile, cwd: targetCwd, bytes, pane: started?.paneId });
+    appendMoveLog({ at: movedAt, parent: parentId, child: child.id, name: child.name, harness, outcome: 'moved', from: base.source, to: target, reason: request.reason, sourceFile: bundle.sourceFile, targetFile: sessionFile, cwd: targetCwd, bytes, pane: started?.paneId, ...(leftBehind.length ? { leftBehind } : {}) });
     log(`move: ${child.name} moved from ${where(base.source)} to ${where(target)}, pane ${started?.paneId}${request.reason ? `, because ${request.reason}` : ''}`);
     const saved = readParent(parentId)?.children.find((entry) => entry.id === child.id) ?? (started as ChildRecord);
-    return { child: saved, from: base.source, to: target, sessionFile, bytes, link: herdrLink('pane', saved.paneId) };
+    return { child: saved, from: base.source, to: target, sessionFile, bytes, link: herdrLink('pane', saved.paneId), leftBehind };
   }, undefined, undefined, { action: 'moved' });
 }

@@ -9,6 +9,7 @@
 // the resume on the target, and the rollback that starts the child again on
 // the source when the target cannot start it.
 import assert from 'node:assert/strict';
+import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
@@ -106,6 +107,8 @@ async function world(t: test.TestContext, respond: { here?: Parameters<typeof ma
   fs.mkdirSync(bin, { recursive: true });
   fs.writeFileSync(path.join(bin, 'claude'), FAKE_CLAUDE, { mode: 0o755 });
   fs.writeFileSync(path.join(bin, 'pi'), FAKE_PI, { mode: 0o755 });
+  // A gh that knows no pull request, so a worktree's proof never reaches GitHub.
+  fs.writeFileSync(path.join(bin, 'gh'), '#!/bin/sh\necho "gh: no GitHub host in this test" >&2\nexit 1\n', { mode: 0o755 });
   // node alone, not the directory it was installed in: npm puts a global
   // claude or pi beside node, and that real harness would answer the probe.
   const nodeBin = path.join(root, 'node-bin');
@@ -488,4 +491,127 @@ test('a move whose rollback also fails leaves the child stranded on the source, 
   assert.equal(record(w)?.exitedAt, undefined);
   const args = startArgs(w.here).at(-1);
   assert.deepEqual(args?.slice(args.indexOf('--resume'), args.indexOf('--resume') + 2), ['--resume', 'sess-1']);
+});
+
+// Issue #224: a session crosses, and its processes and its worktree's
+// uncommitted work do not. A move refuses by default, names what it would
+// leave behind, and goes ahead only for a caller who passes acceptLoss.
+
+const GIT_ENV = { GIT_AUTHOR_NAME: 'Test', GIT_AUTHOR_EMAIL: 'test@example.com', GIT_COMMITTER_NAME: 'Test', GIT_COMMITTER_EMAIL: 'test@example.com', GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' };
+
+function git(cwd: string, ...args: string[]): string {
+  return execFileSync('git', args, { cwd, encoding: 'utf8', env: { ...process.env, ...GIT_ENV }, stdio: ['ignore', 'pipe', 'pipe'] });
+}
+
+/** A repository with a remote, its main worktree, and a linked worktree on its own branch, pushed and clean. */
+function repoWithWorktree(root: string): { main: string; worktree: string } {
+  const origin = path.join(root, 'origin.git');
+  git(root, 'init', '--quiet', '--bare', '-b', 'main', origin);
+  const main = path.join(root, 'repo', 'main');
+  git(root, 'clone', '--quiet', origin, main);
+  git(main, 'commit', '--quiet', '--allow-empty', '-m', 'start');
+  git(main, 'push', '--quiet', 'origin', 'main');
+  git(main, 'remote', 'set-head', 'origin', 'main');
+  const worktree = path.join(root, 'repo', 'feature');
+  git(main, 'worktree', 'add', '--quiet', '-b', 'feature', worktree);
+  fs.writeFileSync(path.join(worktree, 'done.txt'), 'pushed work\n');
+  git(worktree, 'add', 'done.txt');
+  git(worktree, 'commit', '--quiet', '-m', 'pushed work');
+  git(worktree, 'push', '--quiet', '-u', 'origin', 'feature');
+  return { main, worktree: fs.realpathSync(worktree) };
+}
+
+test('a move of a child whose worktree holds an uncommitted file is refused by name, and acceptLoss moves it and says what stayed', async (t) => {
+  const w = await world(t);
+  harness(w.here, { claude: '2.1.300' });
+  harness(w.box, { claude: '2.1.332' });
+  const { worktree } = repoWithWorktree(dir(w.here.user, 'src'));
+  fs.writeFileSync(path.join(worktree, 'new-test.ts'), 'unsaved work\n');
+  claudeHere(w, worktree);
+  const boxCwd = dir(w.box.user, 'repo');
+
+  const refused = await moveChild(w.deps, w.parentId, { child: 'worker', cwd: boxCwd }).catch((error: unknown) => error);
+  assert.ok(refused instanceof MoveRefusedError, String(refused));
+  assert.ok(refused.message.includes(`worktree ${worktree}`), refused.message);
+  assert.match(refused.message, /1 uncommitted path\(s\): \?\? new-test\.ts/);
+  assert.match(refused.message, /acceptLoss|accept_loss/);
+  assert.ok(w.here.world.panes.has('w1:p3'), 'the refused move closed nothing');
+  assert.equal(record(w)?.host, LOCAL_HOST);
+  assert.deepEqual(startArgs(w.box), [], 'nothing started on the target');
+
+  const moved = await moveChild(w.deps, w.parentId, { child: 'worker', cwd: boxCwd, acceptLoss: true });
+  assert.equal(moved.to, 'box');
+  assert.ok(moved.leftBehind.some((line) => line.includes(`worktree ${worktree}`) && line.includes('new-test.ts')), moved.leftBehind.join('\n'));
+  assert.ok(fs.existsSync(path.join(worktree, 'new-test.ts')), 'the move never touches the worktree');
+  const line = moveLog().at(-1);
+  assert.equal(line?.['outcome'], 'moved');
+  assert.ok(Array.isArray(line?.['leftBehind']) && (line['leftBehind'] as string[]).some((entry) => entry.includes(worktree)), JSON.stringify(line));
+});
+
+test('a move of a child that left an unpushed commit in a second worktree it worked in is refused by name', async (t) => {
+  const w = await world(t);
+  harness(w.here, { claude: '2.1.300' });
+  harness(w.box, { claude: '2.1.332' });
+  const { worktree } = repoWithWorktree(dir(w.here.user, 'src'));
+  fs.writeFileSync(path.join(worktree, 'fix.ts'), 'committed, never pushed\n');
+  git(worktree, 'add', 'fix.ts');
+  git(worktree, 'commit', '--quiet', '-m', 'the fix');
+  // The child runs in a plain directory, and its session worked in the worktree, as the transcript records.
+  const hereCwd = dir(w.here.user, 'scratch');
+  const source = claudeHere(w, hereCwd);
+  fs.appendFileSync(source.file, `${JSON.stringify({ type: 'assistant', cwd: worktree, version: '2.1.300', message: { role: 'assistant', content: [{ type: 'tool_use', name: 'Bash', input: { command: 'git commit -m "the fix"' } }] } })}\n`);
+
+  const refused = await moveChild(w.deps, w.parentId, { child: 'worker', cwd: dir(w.box.user, 'repo') }).catch((error: unknown) => error);
+  assert.ok(refused instanceof MoveRefusedError, String(refused));
+  assert.ok(refused.message.includes(`worktree ${worktree}`), refused.message);
+  assert.match(refused.message, /branch feature has 1 commit\(s\) on no remote/);
+  assert.ok(w.here.world.panes.has('w1:p3'), 'the refused move closed nothing');
+  assert.deepEqual(startArgs(w.box), []);
+});
+
+/** The pids of a process's direct children, from ps. */
+function childPids(pid: number): { pid: number; command: string }[] {
+  return execFileSync('ps', ['-A', '-o', 'pid=,ppid=,command='], { encoding: 'utf8' })
+    .split('\n')
+    .map((line) => /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(line))
+    .filter((match): match is RegExpExecArray => Boolean(match) && Number(match?.[2]) === pid)
+    .map((match) => ({ pid: Number(match[1]), command: match[3] ?? '' }));
+}
+
+test('a move of a child whose session runs a background job is refused by name, and its own servers do not count', async (t) => {
+  let pane: { shell_pid: number; foreground_process_group_id: number } | undefined;
+  const w = await world(t, { here: (_world, request) => (request.method === 'pane.process_info' && pane ? { result: { type: 'process_info', process_info: pane } } : undefined) });
+  harness(w.here, { claude: '2.1.300' });
+  harness(w.box, { claude: '2.1.332' });
+  claudeHere(w, dir(w.here.user, 'src', 'repo'));
+
+  // The pane's shell runs the harness, which runs a server of its own and a
+  // shell for a background job, all carrying the child's id as a real tab does.
+  const script = path.join(w.root, 'harness.cjs');
+  fs.writeFileSync(script, "const { spawn } = require('node:child_process');\nspawn('sleep', ['301'], { stdio: 'ignore' });\nspawn('/bin/sh', ['-c', 'sleep 300; :'], { stdio: 'ignore' });\nsetInterval(() => {}, 1000);\n");
+  const shell = spawn('/bin/sh', ['-c', `"${process.execPath}" "${script}"; :`], { env: { ...process.env, BELLWETHER_CHILD: 'child-worker' }, detached: true, stdio: 'ignore' });
+  t.after(() => {
+    try {
+      process.kill(-(shell.pid as number), 'SIGKILL');
+    } catch {
+      // Already gone.
+    }
+  });
+  let harnessPid = 0;
+  let job = 0;
+  for (let tries = 0; tries < 100 && !job; tries += 1) {
+    await delay(50);
+    harnessPid = childPids(shell.pid as number)[0]?.pid ?? 0;
+    job = harnessPid ? (childPids(harnessPid).find((entry) => entry.command.startsWith('/bin/sh'))?.pid ?? 0) : 0;
+  }
+  assert.ok(job, 'the background job started');
+  pane = { shell_pid: shell.pid as number, foreground_process_group_id: harnessPid };
+
+  const refused = await moveChild(w.deps, w.parentId, { child: 'worker', cwd: dir(w.box.user, 'repo') }).catch((error: unknown) => error);
+  assert.ok(refused instanceof MoveRefusedError, String(refused));
+  assert.ok(refused.message.includes(`process ${job}`), refused.message);
+  assert.match(refused.message, /sleep 300/);
+  assert.doesNotMatch(refused.message, /sleep 301/, 'a server the harness runs is not a background job');
+  assert.ok(w.here.world.panes.has('w1:p3'), 'the refused move closed nothing');
+  assert.deepEqual(startArgs(w.box), []);
 });

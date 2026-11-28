@@ -49,7 +49,9 @@ function world(t: test.TestContext): World {
   const childHome = path.join(root, 'child', '.bellwether');
   for (const home of [childHome, parentHome]) fs.mkdirSync(home, { recursive: true });
   const ssh = installFakeSsh(t, root, { 'child-box': { home: childHome, userHome: path.dirname(childHome) } });
-  const saved = { home: process.env['BELLWETHER_HOME'], socket: process.env['BELLWETHER_DAEMON_SOCKET'] };
+  const saved = { home: process.env['BELLWETHER_HOME'], socket: process.env['BELLWETHER_DAEMON_SOCKET'], herdr: process.env['HERDR_BIN_PATH'] };
+  // No herdr answers on the parent's machine, as on CI: a request that names its machine must not need one.
+  process.env['HERDR_BIN_PATH'] = path.join(root, 'no-herdr');
   process.env['BELLWETHER_HOME'] = parentHome;
   process.env['BELLWETHER_DAEMON_SOCKET'] = path.join(parentHome, 'daemon.sock');
   const closers: (() => Promise<void> | void)[] = [];
@@ -59,6 +61,8 @@ function world(t: test.TestContext): World {
     await stopDaemonsUnder(root, childHome);
     process.env['BELLWETHER_HOME'] = saved.home;
     process.env['BELLWETHER_DAEMON_SOCKET'] = saved.socket;
+    if (saved.herdr === undefined) delete process.env['HERDR_BIN_PATH'];
+    else process.env['HERDR_BIN_PATH'] = saved.herdr;
     fs.rmSync(root, { recursive: true, force: true });
   });
   return { root, parentHome, childHome, ssh, logs: [], closers };

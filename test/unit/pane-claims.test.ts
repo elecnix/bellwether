@@ -37,6 +37,12 @@ test('a claim for another session in the same pane id is stale, and one with no 
   assert.equal(decideClaim({ parentId: 'parent-b', paneId: 'w1:p5', session: 's2' }, away({ session: undefined })).kind, 'refuse');
 });
 
+test('the same parent\'s claim for a session that left the pane is stale too, so the parent never gets that child id back for another session (issue #244)', () => {
+  assert.deepEqual(decideClaim({ parentId: 'parent-a', paneId: 'w1:p5', session: 's2' }, away()), { kind: 'take' });
+  assert.deepEqual(decideClaim({ parentId: 'parent-a', paneId: 'w1:p5' }, away()), { kind: 'held', childId: 'kid-a' });
+  assert.deepEqual(decideClaim({ parentId: 'parent-a', paneId: 'w1:p5', session: 's2' }, away({ session: undefined })), { kind: 'held', childId: 'kid-a' });
+});
+
 test('claimPane writes an adopted relay record, and replaces a stale one', () => {
   saveRelayRecord(relay());
   assert.throws(() => claimPane({ parentId: 'parent-b', childId: 'kid-b', name: 'mine', kind: 'claude', paneId: 'w1:p5', session: 's1' }), /already a child of parent-a/);

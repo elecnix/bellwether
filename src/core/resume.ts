@@ -11,7 +11,7 @@ import { removeChildFiles } from './mcp-config.ts';
 import { LOCAL_HOST } from './machine.ts';
 import { newChildId } from './outbox.ts';
 import { readParent, recordDecisions, removeChild, updateChild, upsertChild } from './registry.ts';
-import { clearRetirement } from './retire.ts';
+import { clearRetirement, retiredItsWorktree } from './retire.ts';
 import { openReturnTab, returnPlacement, undoChildTab, type ChildTab } from './workspace.ts';
 import { STARTUP_HOLD_MS, STARTUP_TIMEOUT_MS, childArgs, childEnv, childStartFiles, herdrLink, nextLaunch, startHarness, type RegisterRemote } from './spawn.ts';
 import { agentKinds, harnessFor, harnessNamed, requireHarness, type HarnessSession } from './harnesses/index.ts';
@@ -155,7 +155,7 @@ export async function resumeChild(client: HerdrClient, parent: ParentRecord, tar
   }
   // Retirement removed the worktree this child ran in, and a harness started
   // there would fail every command it runs (issue #143).
-  const removedDir = existing?.retireOutcome === 'removed' ? (existing.cwd ?? existing.retireIntent?.worktree) : undefined;
+  const removedDir = existing && retiredItsWorktree(existing) ? (existing.cwd ?? existing.retireIntent?.worktree) : undefined;
   if (existing && removedDir && !fs.existsSync(removedDir)) {
     throw new Error(`${existing.name}'s working directory ${removedDir} no longer exists: retirement removed it at ${existing.retiredAt}, so Bellwether refused to resume the child there. Create it again, such as a worktree of the same branch, then resume.`);
   }

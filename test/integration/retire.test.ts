@@ -668,9 +668,10 @@ test("agent_stop of a moved child retires the worktree it left on the parent's m
   assert.equal(child.retireIntent?.worktree, WORKTREE);
   assert.equal(child.retireIntent?.movedAway, 'hawthorne');
   assert.equal(child.retireIntent?.reason, 'agent_stop by the parent');
-  assert.equal(child.retireOutcome, 'removed');
+  // The child's worktree on hawthorne stays, so the record must not say the retirement removed everything (issue #273).
+  assert.equal(child.retireOutcome, 'partial');
   assert.deepEqual(w.git.calls, [`worktree remove ${WORKTREE}`, 'branch -D feat/x']);
-  assert.ok(text.startsWith('Closed feat-x. Retired: removed worktree /work/x/feat-x and branch feat/x'), text);
+  assert.ok(text.startsWith('Closed feat-x. Retired in part: removed worktree /work/x/feat-x and branch feat/x'), text);
   assert.ok(text.includes(`${FAR}`) && text.includes('hawthorne'), `the stop names the worktree left on the far machine: ${text}`);
   assert.equal(child.departures, undefined, 'the retired place leaves the list');
 });
@@ -701,4 +702,64 @@ test('agent_stop of a child that only ever ran on another machine writes no inte
   assert.equal(w.child().retireIntent, undefined);
   assert.deepEqual(w.git.calls, []);
   assert.ok(text.includes(FAR) && text.includes('hawthorne'), text);
+});
+
+// A child that crossed machines and came back has a worktree on the machine it
+// left, where this daemon cannot take a proof. Whichever path retires it, the
+// record, retire.log and the reply name that worktree, and none of them says
+// the retirement removed everything (issue #273).
+
+const LEFT_FAR = '/far/x/practice-tele';
+const crossedBack = (): Partial<ChildRecord> => ({ departures: [{ host: 'vandenberg', at: new Date(Date.now() - 60_000).toISOString(), cwd: LEFT_FAR, verb: 'teleport' }] });
+
+test('agent_stop of a child that teleported here never writes removed while the worktree it left on another machine stays, and names it in the reply, the record and retire.log (issue #273)', async (t) => {
+  const w = await world(t, crossedBack());
+  w.git.merged.add(`${REPO}:feat/x`);
+  const watcher = w.watcher();
+  watcher.start();
+  await w.herdr.waitFor('events.subscribe');
+  const text = await stop(w, watcher, () => {
+    w.panes.delete(PANE);
+  });
+  const child = w.child();
+  assert.deepEqual(w.git.calls, [`worktree remove ${WORKTREE}`, 'branch -D feat/x'], 'the worktree here goes');
+  assert.notEqual(child.retireOutcome, 'removed', 'the record must not claim a removal that left a worktree in place');
+  assert.equal(child.retireOutcome, 'partial');
+  assert.deepEqual(child.retireIntent?.far, [{ host: 'vandenberg', worktree: LEFT_FAR }], 'the record names the worktree that stays');
+  assert.ok(text.includes(LEFT_FAR) && text.includes('vandenberg'), `the reply names the worktree on vandenberg: ${text}`);
+  assert.match(text, /Retired in part: removed worktree \/work\/x\/feat-x and branch feat\/x/);
+  assert.equal(text.split(LEFT_FAR).length - 1, 1, `the reply names the far worktree once: ${text}`);
+  const log = w.log();
+  assert.deepEqual(log.map((line) => line['outcome']), ['partial'], 'retire.log has no removed line');
+  assert.deepEqual(log[0]?.['stays'], [{ host: 'vandenberg', worktree: LEFT_FAR }]);
+});
+
+test("a child's own request_retirement after a teleport here ends partial, not removed, and names the worktree on the machine it left (issue #273)", async (t) => {
+  const w = await world(t, crossedBack());
+  w.git.merged.add(`${REPO}:feat/x`);
+  const { watcher, text: asked } = await requested(w);
+  assert.ok(asked.includes(LEFT_FAR), asked);
+  w.exit();
+  await until('the outcome', () => w.child().retireOutcome);
+  await watcher.retirements();
+  assert.equal(w.child().retireOutcome, 'partial');
+  assert.deepEqual(w.log().map((line) => line['outcome']), ['partial']);
+  const listed = await runBellwetherTool(w.ctx(watcher), 'agent_list', {});
+  assert.match(listed, /retired in part/);
+  assert.doesNotMatch(listed, /, retired\t/);
+});
+
+test('a child with no worktree on another machine still ends removed (issue #273)', async (t) => {
+  const w = await world(t);
+  w.git.merged.add(`${REPO}:feat/x`);
+  const watcher = w.watcher();
+  watcher.start();
+  await w.herdr.waitFor('events.subscribe');
+  const text = await stop(w, watcher, () => {
+    w.panes.delete(PANE);
+  });
+  assert.equal(w.child().retireOutcome, 'removed');
+  assert.equal(w.child().retireIntent?.far, undefined);
+  assert.deepEqual(w.log().map((line) => line['outcome']), ['removed']);
+  assert.match(text, /^Closed feat-x\. Retired: removed worktree/);
 });

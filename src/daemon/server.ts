@@ -24,7 +24,7 @@ import { RelayLinks, relayInbox } from './relay-links.ts';
 import { LOCAL_HOST, hostOf } from '../core/machine.ts';
 import { acceptLocalReport, isReportStatus, localParentOf, routeReport, type ReportInput } from '../core/report.ts';
 import { readRelayRecord, updateRelayRecord } from '../core/relay-records.ts';
-import { claimPane, notePaneOfChild } from '../core/pane-claims.ts';
+import { childLeft, childSaidHello, claimPane } from '../core/pane-claims.ts';
 import { adoptedInboxGap, adoptedParentOf, type SessionReach } from '../core/adopted-session.ts';
 import { lastAssistantMessage } from '../core/transcript.ts';
 import { harnessFor, resolveTranscript } from '../core/harnesses/index.ts';
@@ -555,6 +555,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
     }
     sockets.delete(socket);
     attached.delete(socket);
+    childLeft(socket);
     relaySockets.delete(socket);
     for (const stop of paneWatches.get(socket) ?? []) stop();
     paneWatches.delete(socket);
@@ -974,8 +975,8 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
           if (hello.paneId && hello.workspaceId) entry.workspaceId = hello.workspaceId;
           delete entry.disconnectedAt;
         });
-        // A child a parent on another machine started holds the pane it says hello from (issue #244).
-        if (hello.childId && hello.paneId) notePaneOfChild(hello.childId, hello.paneId);
+        // A child a parent on another machine started holds the pane it says hello from while it stays connected (issue #244).
+        if (hello.childId && hello.paneId) childSaidHello(socket, hello.childId, hello.paneId);
         const set = subscribers.get(session.parentId) ?? new Set<net.Socket>();
         set.add(socket);
         subscribers.set(session.parentId, set);

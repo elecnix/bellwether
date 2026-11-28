@@ -11,7 +11,6 @@ import net from 'node:net';
 import path from 'node:path';
 import test from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
-import { adoptPane } from '../../src/core/adopt.ts';
 import { HerdrClient } from '../../src/core/herdr-client.ts';
 import { pickMachine, type MachineProfile } from '../../src/core/machine.ts';
 import { emptyParent, readParent, saveParent, upsertChild } from '../../src/core/registry.ts';
@@ -758,7 +757,7 @@ test('a machine whose Bellwether predates the request is refused with the versio
 
 // NoPaneTwoParentsCurrent and PaneOneLiveChildCurrent in model/Claims.tla (issue #244).
 // Trace: a parent on another machine starts a child in pane x of the pane's machine (ResumeStart), then a parent there adopts x (LocalAdopt).
-test('a child a parent on another machine started holds its pane on that machine, so a parent there cannot adopt the pane as well', async (t) => {
+test('a child a parent on another machine started holds its pane on that machine while it runs there, so a parent there cannot adopt the pane as well', async (t) => {
   const w = await world(t);
   const at = new Date().toISOString();
   const cwd = path.join(w.root, 'work');
@@ -770,16 +769,25 @@ test('a child a parent on another machine started holds its pane on that machine
   const session = await DaemonClient.connect({ harness: 'claude-code', session: SESSION, cwd, host: 'child-box', paneId: PANE, workspaceId: 'w1', depth: 1, childId: spawned.id, herdrSocket: w.far.socketPath, accepts: ['message'] }, { home: w.childHome, socketPath: path.join(w.childHome, 'daemon.sock') });
   t.after(() => session.close());
 
-  const localParent = inHome(w.childHome, () => saveParent(emptyParent('pi', 'pane-box-parent', '/far', { paneId: 'w1:p2' })));
-  const previous = process.env['BELLWETHER_HOME'];
-  process.env['BELLWETHER_HOME'] = w.childHome;
-  try {
-    await assert.rejects(
-      adoptPane(new HerdrClient({ socketPath: w.far.socketPath }), localParent, { target: PANE }),
-      new RegExp(`Pane ${PANE} on local cannot be adopted: pane ${PANE} is already a child of ${PARENT_ID}, a parent on another machine, as far-worker\\.$`),
-    );
-    assert.deepEqual(readParent(localParent.id)?.children ?? [], [], 'the refusal left no record on the pane machine');
-  } finally {
-    process.env['BELLWETHER_HOME'] = previous;
+  // A pi session on child-box itself, in pane w1:p2, asks that machine's daemon to adopt the pane.
+  const local = await DaemonClient.connect({ harness: 'pi', session: 'sess-pane-box-parent', cwd, host: 'child-box', paneId: 'w1:p2', workspaceId: 'w1', depth: 0, herdrSocket: w.far.socketPath }, { home: w.childHome, socketPath: path.join(w.childHome, 'daemon.sock') });
+  t.after(() => local.close());
+  await assert.rejects(
+    local.tool('agent_adopt', { target: PANE }),
+    new RegExp(`Pane ${PANE} on local cannot be adopted: pane ${PANE} is already a child of ${PARENT_ID}, a parent on another machine, as far-worker\\.`),
+  );
+
+  // The child's harness ends, and its parent's relay-cleanup never reaches child-box: its record stays there, and the pane is free.
+  session.close();
+  const deadline = Date.now() + 5_000;
+  let text: string | undefined;
+  while (text === undefined) {
+    text = await local.tool('agent_adopt', { target: PANE }).catch((error: Error) => {
+      if (Date.now() > deadline) throw error;
+      return undefined;
+    });
+    if (text === undefined) await delay(20);
   }
+  assert.match(text, /Adopted/, text);
+  assert.ok(inHome(w.childHome, () => readRelayRecord(spawned.id)), 'the record relay-cleanup would remove is still there');
 });

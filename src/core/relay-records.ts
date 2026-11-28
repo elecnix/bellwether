@@ -35,7 +35,7 @@ export interface RelayRecord {
   unforwarded?: number;
   /** When the parent's daemon last acknowledged one of its reports. */
   lastForwardedAt?: string;
-  /** The pane the child runs in here, so this machine can say who watches it: the adopted pane, or the pane a started child's own adapter said hello from. */
+  /** The pane the child runs in here, for a child a parent on another machine adopted, so this machine can say who watches it. */
   paneId?: string;
   /** Set for a child a parent on another machine adopted rather than spawned: it has no brief, MCP config or child id of its own here. */
   adopted?: boolean;

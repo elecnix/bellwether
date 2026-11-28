@@ -161,7 +161,7 @@ const BASE: readonly Feature[] = [
   // A daemon that predates it does not list the tool, and the client refuses agent_teleport by name.
   ...brought('tool', 4, '0.1.10', {
     agent_teleport: "A parent moves a live or stopped child to another machine, and the child's first input there is a notice that gives where it came from and where it is now.",
-  }),
+  }, [240]),
 ];
 
 /**

@@ -18,7 +18,7 @@ Leave out `machine` when the parent's machine knows exactly one other machine. B
 - An idle child. A move closes the child's tab, and that would cut a turn short.
 - A recorded session, which herdr reports only through its integration for the harness on the child's machine. Run `herdr integration install pi`, or `claude`, on every machine a child may start on, before it starts.
 
-`bellwether doctor` lists, for each known machine, the claude and pi versions, how many pi models it offers and the Bellwether version. For each live claude or pi child, it then says whether each other machine could take it, and why not. It checks the working directory only when the move runs.
+`bellwether doctor` lists, for each known machine, the claude and pi versions, how many pi models it offers and the Bellwether version. When pi on a machine has no provider, doctor says pi there doesn't offer a pair. Other output from `pi --list-models`, such as an error line where the table should be, makes doctor report the models as unknown and quote that line, because it would rather say it does not know than count a sentence as a model. For each live claude or pi child, it then says whether each other machine could take it, and why not. It checks the working directory only when the move runs.
 
 ## What it refuses
 

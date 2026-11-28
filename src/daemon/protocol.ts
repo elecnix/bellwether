@@ -2,7 +2,7 @@
 // version travels in every hello, so a client newer than a running daemon can
 // ask it to drain and start the new one.
 import type { HerdrLocation } from '../core/herdr-bin.ts';
-import type { CallerIdentity, Harness, OutboxEntry, RelayHostState, ReportStatus } from '../core/types.ts';
+import type { CallerIdentity, Harness, OutboxEntry, RelayHostState, ReportStatus, ReportVia } from '../core/types.ts';
 import type { AncestryAnswer } from '../core/ancestry.ts';
 import type { RosterChild } from '../core/roster.ts';
 import type { SessionReach } from '../core/adopted-session.ts';
@@ -213,6 +213,8 @@ export interface ReportRequest {
     receipt?: string;
     status: ReportStatus;
     text: string;
+    /** The path that sent it: the child's tool, or the shell command. Added without a protocol bump. */
+    via?: ReportVia;
   };
 }
 
@@ -605,6 +607,10 @@ export interface RelayReport {
   status: ReportStatus;
   text: string;
   at: string;
+  /** The path that sent the report: the child's tool, or the shell command. Added without a protocol bump. */
+  via?: ReportVia;
+  /** For a shell report: whether a connected session of the child was offered parent_report. Added without a protocol bump. */
+  toolOffered?: boolean;
   /**
    * Set on an entry that carries no report but the read of a parent's
    * message: its id. Only a parent's daemon that sent relay-message gets one.
@@ -677,7 +683,8 @@ export function parseRequest(line: string): DaemonRequest {
       if (!body.trim()) throw new ProtocolError('invalid_report', 'a report needs text');
       const parentId = text(report['parentId']);
       const receipt = text(report['receipt']);
-      return { type: 'report', id, protocol, report: { childId, status, text: body, ...(parentId ? { parentId } : {}), ...(receipt ? { receipt } : {}) } };
+      const via = report['via'];
+      return { type: 'report', id, protocol, report: { childId, status, text: body, ...(parentId ? { parentId } : {}), ...(receipt ? { receipt } : {}), ...(via === 'tool' || via === 'shell' ? { via } : {}) } };
     }
     case 'relay-subscribe': {
       const protocol = value['protocol'];

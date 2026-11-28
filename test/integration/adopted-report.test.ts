@@ -7,6 +7,7 @@
 // already holds, and routes the report by the pane. A session with no
 // adapter has nothing to offer it to, and the adoption says so.
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -24,6 +25,7 @@ import { isolate } from '../fixtures/isolated.ts';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const channelServer = path.join(here, '..', '..', 'bin', 'bellwether-mcp.js');
+const CLI = path.join(here, '..', '..', 'src', 'cli.ts');
 
 const CLAUDE_PANE = 'w1:p7';
 const CLAUDE_SESSION = '3f1c2a9e-0000-4000-8000-00000000c1a0';
@@ -170,7 +172,63 @@ test('an adopted Claude Code session whose Bellwether server is already connecte
   assert.match(result.content[0]?.text ?? '', /Reported done to .*, as first-mate\./);
   const report = await until('the report event at the adopter', () => space.events.find((entry) => entry.event === 'report'));
   assert.equal(report.paneId, CLAUDE_PANE);
-  assert.match(report.text, /first-mate \(w1:p7\) reported done:\nRebased and pushed\./);
+  assert.match(report.text, /first-mate \(w1:p7\) reported done, sent through the parent_report tool:\nRebased and pushed\./);
+});
+
+/** Run `bellwether report` as a child's shell would, against the room's daemon. */
+async function shellReport(space: Room, childId: string, text: string): Promise<void> {
+  const command = await new Promise<{ code: number; stderr: string }>((resolve) => {
+    execFile(process.execPath, ['--disable-warning=ExperimentalWarning', CLI, 'report', '--child', childId, '--status', 'done', '--text', text], {
+      env: { ...process.env, BELLWETHER_HOME: space.home, BELLWETHER_DAEMON_SOCKET: space.socketPath },
+      encoding: 'utf8',
+    }, (error, _stdout, stderr) => resolve({ code: error ? (typeof (error as { code?: unknown }).code === 'number' ? (error as { code: number }).code : 1) : 0, stderr }));
+  });
+  assert.equal(command.code, 0, command.stderr);
+}
+
+test('a report through parent_report and one with the same text from the shell differ in the event and on the record, and the shell one says its session offers the tool (issue #193)', async (t) => {
+  const space = await room(t);
+  const { client, changed } = await handStartedClaude(t, space, CLAUDE_SESSION);
+  await space.parent.tool('agent_adopt', { target: CLAUDE_PANE, name: 'first-mate' });
+  await until('the server to hear the tool list changed', () => changed.includes('notifications/tools/list_changed'), 20_000);
+  const child = readParent(space.parentId)?.children.find((entry) => entry.name === 'first-mate');
+  assert.ok(child);
+  const text = 'The check passed.';
+
+  const result = (await client.callTool({ name: 'parent_report', arguments: { status: 'done', text } })) as { content: { text: string }[]; isError?: boolean };
+  assert.ok(!result.isError, JSON.stringify(result));
+  const tool = await until('the report event from the tool', () => space.events.find((entry) => entry.event === 'report'));
+  assert.equal(tool.via, 'tool');
+  assert.equal(tool.text, `first-mate (${CLAUDE_PANE}) reported done, sent through the parent_report tool:\n${text}`);
+  const afterTool = readParent(space.parentId)?.children.find((entry) => entry.id === child.id)?.lastReport;
+  assert.equal(afterTool?.via, 'tool');
+  assert.equal(afterTool?.toolOffered, undefined);
+
+  await shellReport(space, child.id, text);
+  const shell = await until('the report event from the shell', () => space.events.find((entry) => entry.event === 'report' && entry.via === 'shell'));
+  // The session's server is connected and offers parent_report, so the shell did not stand in for a missing tool.
+  assert.equal(shell.text, `first-mate (${CLAUDE_PANE}) reported done, sent from the shell, although its session offers parent_report:\n${text}`);
+  const afterShell = readParent(space.parentId)?.children.find((entry) => entry.id === child.id)?.lastReport;
+  assert.equal(afterShell?.via, 'shell');
+  assert.equal(afterShell?.toolOffered, true);
+  assert.equal(afterShell?.text, text);
+  const listed = await space.parent.tool('agent_list', {});
+  assert.match(listed, /Last reports:\nfirst-mate: done at \S+, sent from the shell, although its session offers parent_report\./);
+});
+
+test('a shell report from a session with no Bellwether adapter says no connected session offers parent_report, and the record keeps it (issue #193)', async (t) => {
+  const space = await room(t);
+  await space.parent.tool('agent_adopt', { target: BARE_PANE, name: 'bare' });
+  const child = readParent(space.parentId)?.children.find((entry) => entry.name === 'bare');
+  assert.ok(child);
+
+  await shellReport(space, child.id, 'The check passed.');
+  const shell = await until('the report event from the shell', () => space.events.find((entry) => entry.event === 'report'));
+  assert.equal(shell.via, 'shell');
+  assert.equal(shell.text, `bare (${BARE_PANE}) reported done, sent from the shell, because no session of this child that offers parent_report is connected:\nThe check passed.`);
+  const saved = readParent(space.parentId)?.children.find((entry) => entry.id === child.id)?.lastReport;
+  assert.equal(saved?.via, 'shell');
+  assert.equal(saved?.toolOffered, false);
 });
 
 /**

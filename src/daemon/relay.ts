@@ -8,7 +8,7 @@
 import { relayOutboxPath } from '../core/paths.ts';
 import { listForwards, newReportReceipt, readRelayRecord, removeForward, removeRelayRecord, saveForward, updateRelayRecord, type ForwardEntry, type RelayRecord } from '../core/relay-records.ts';
 import type { RelayRestartAnswer } from '../core/restart.ts';
-import type { ReportStatus } from '../core/types.ts';
+import type { ReportStatus, ReportVia } from '../core/types.ts';
 import { MAX_DAEMON_FRAME_BYTES, formatReply, type RelayReport } from './protocol.ts';
 
 export interface RelayOutboxOptions {
@@ -101,8 +101,8 @@ export class RelayOutbox {
    * connected daemon of its parent and wait a little for the acknowledgement.
    * The answer says whether it arrived or waits; either way it is on disk.
    */
-  async report(record: RelayRecord, status: ReportStatus, text: string): Promise<string> {
-    const entry: ForwardEntry = { receipt: newReportReceipt(), childId: record.childId, parentId: record.parentId, status, text, at: new Date(this.now()).toISOString() };
+  async report(record: RelayRecord, status: ReportStatus, text: string, path: { via?: ReportVia; toolOffered?: boolean } = {}): Promise<string> {
+    const entry: ForwardEntry = { receipt: newReportReceipt(), childId: record.childId, parentId: record.parentId, status, text, at: new Date(this.now()).toISOString(), ...(path.via ? { via: path.via } : {}), ...(path.via === 'shell' && path.toolOffered !== undefined ? { toolOffered: path.toolOffered } : {}) };
     // A report kept here past one relay line would cut every connection it was sent on, so it is refused before it is kept.
     const tooLong = overLong(entry);
     if (tooLong) throw new Error(`parent_report ${tooLong} Nothing was saved. Report a shorter summary, and leave the rest in a file the parent can read with agent_read or over SSH.`);
@@ -240,5 +240,5 @@ function overLong(entry: ForwardEntry): string | undefined {
 }
 
 function toReport(entry: ForwardEntry): RelayReport {
-  return { receipt: entry.receipt, childId: entry.childId, parentId: entry.parentId, status: entry.status, text: entry.text, at: entry.at, ...(entry.messageRead ? { messageRead: entry.messageRead } : {}), ...(entry.restartAnswer ? { restartAnswer: entry.restartAnswer } : {}), ...(entry.retire ? { retire: entry.retire } : {}) };
+  return { receipt: entry.receipt, childId: entry.childId, parentId: entry.parentId, status: entry.status, text: entry.text, at: entry.at, ...(entry.via ? { via: entry.via } : {}), ...(entry.toolOffered !== undefined ? { toolOffered: entry.toolOffered } : {}), ...(entry.messageRead ? { messageRead: entry.messageRead } : {}), ...(entry.restartAnswer ? { restartAnswer: entry.restartAnswer } : {}), ...(entry.retire ? { retire: entry.retire } : {}) };
 }

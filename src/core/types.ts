@@ -209,6 +209,13 @@ export type ChildEventKind = 'report' | 'idle' | 'blocked' | 'stuck' | 'inactive
 /** The three things a child can report through parent_report. */
 export type ReportStatus = 'done' | 'needs-input' | 'progress';
 
+/**
+ * Which path sent a report: the child's own `parent_report` tool, or the
+ * `bellwether report` command from its shell. The two are separate
+ * capabilities, so a parent can tell whether the tool reached the session.
+ */
+export type ReportVia = 'tool' | 'shell';
+
 /** The harnesses a parent session runs in, which have a Bellwether adapter. A child's harness is any name in the harness registry. */
 export type Harness = 'pi' | 'claude-code' | 'opencode';
 
@@ -400,8 +407,8 @@ export interface ChildRecord {
   briefs?: ChildBrief[];
   /** The newest messages a parent sent the child, with the path each took. */
   messages?: ChildMessage[];
-  /** The last report the child sent, and when. */
-  lastReport?: { status: ReportStatus; text: string; at: string; seq: number };
+  /** The last report the child sent, when, and the path it took. */
+  lastReport?: { status: ReportStatus; text: string; at: string; seq: number; via?: ReportVia; toolOffered?: boolean };
   /**
    * Set when a final report arrives while its turn still runs, and cleared
    * when that turn ends, so a child that reported does not also produce an
@@ -765,6 +772,8 @@ export interface OutboxEntry {
   status?: AgentStatus;
   /** herdr's state_change_seq for that status, when herdr reported one. */
   stateChangeSeq?: number;
+  /** For a report: the path that sent it. Added without a protocol bump. */
+  via?: ReportVia;
   /**
    * Set when a newer state made this entry stale before it was read. A
    * superseded entry counts as read and is never delivered again.
@@ -783,6 +792,14 @@ export interface SpoolReport {
   text: string;
   at: string;
   seq: number;
+  /** The path that sent this report: the child's tool, or the command in its shell. */
+  via?: ReportVia;
+  /**
+   * For a shell report: whether a connected session of the child was offered
+   * parent_report when the report arrived. The daemon on the child's machine
+   * decides it, never the command.
+   */
+  toolOffered?: boolean;
   /**
    * Names this one report. A report carried from another machine keeps the
    * receipt its child's daemon gave it, so a forward that is retried after it

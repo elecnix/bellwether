@@ -218,6 +218,9 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
   /** The live connections of one child's session, newest last. */
   const childSockets = (childId: string): [net.Socket, Attached][] => [...attached].filter(([socket, entry]) => socket.writable && childIdOf(entry) === childId);
 
+  /** Whether a connected session of this child is offered parent_report now. */
+  const offersReport = (childId: string): boolean => childSockets(childId).some(([, entry]) => sessionTools(entry.parent).some((tool) => tool.name === 'parent_report'));
+
   /** The newest connection of a child's own session that takes messages. */
   const inboxSocket = (childId: string): net.Socket | undefined =>
     childSockets(childId)
@@ -694,9 +697,11 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
    * this daemon holds takes it once per receipt; a relay child's report waits
    * in the relay outbox for its parent's daemon to collect.
    */
-  const postReport = async (input: ReportInput): Promise<{ text: string; duplicate: boolean }> => {
-    const route = routeReport(input);
-    if (route.kind === 'relay') return { text: await outbox.report(route.record, input.status, input.text), duplicate: false };
+  const postReport = async (given: ReportInput): Promise<{ text: string; duplicate: boolean }> => {
+    const route = routeReport(given);
+    // Whether the shell stood in for a missing tool is this daemon's to say, from the sessions connected to it now (issue #193).
+    const input: ReportInput = { ...given, ...(given.via === 'shell' ? { toolOffered: offersReport(route.kind === 'relay' ? route.record.childId : route.child.id) } : {}) };
+    if (route.kind === 'relay') return { text: await outbox.report(route.record, input.status, input.text, { ...(input.via ? { via: input.via } : {}), ...(input.toolOffered !== undefined ? { toolOffered: input.toolOffered } : {}) }), duplicate: false };
     const { duplicate } = acceptLocalReport(route.parent, route.child, input);
     if (duplicate) log(`report ${input.receipt} for child ${route.child.id} was already accepted, so the copy was dropped`);
     else log(`report${input.receipt ? ` ${input.receipt}` : ''} from child ${route.child.id} accepted for parent ${route.parent.id}`);
@@ -720,7 +725,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
     if (!isReportStatus(status)) throw new Error('parent_report status must be done, needs-input or progress');
     const route = routeReport({ childId, paneId: caller.paneId });
     if (route.kind !== 'relay') return undefined;
-    return outbox.report(route.record, status, text);
+    return outbox.report(route.record, status, text, { via: 'tool' });
   };
 
   /**
@@ -793,7 +798,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
       log(`message ${report.messageRead} reached the model of child ${report.childId} on machine ${host}`);
       return {};
     }
-    const { duplicate } = acceptLocalReport(route.parent, route.child, { parentId: report.parentId, childId: report.childId, receipt: report.receipt, status: report.status, text: report.text });
+    const { duplicate } = acceptLocalReport(route.parent, route.child, { parentId: report.parentId, childId: report.childId, receipt: report.receipt, status: report.status, text: report.text, ...(report.via ? { via: report.via } : {}), ...(report.toolOffered !== undefined ? { toolOffered: report.toolOffered } : {}) });
     if (duplicate) log(`report ${report.receipt} for child ${report.childId} from machine ${host} was already accepted, so the copy was dropped`);
     else log(`report ${report.receipt} from child ${report.childId} on machine ${host} accepted for parent ${report.parentId}`);
     return {};

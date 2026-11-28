@@ -10,7 +10,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { relayChildPath, relayChildrenDir, relayOutboxDir, relayOutboxPath } from './paths.ts';
 import type { RelayRestartAnswer } from './restart.ts';
-import type { ReportStatus } from './types.ts';
+import type { ReportStatus, ReportVia } from './types.ts';
 
 export const RELAY_SCHEMA = 1;
 
@@ -72,6 +72,10 @@ export interface ForwardEntry {
   status: ReportStatus;
   text: string;
   at: string;
+  /** The path that sent the report: the child's tool, or the shell command. Added without a protocol bump. */
+  via?: ReportVia;
+  /** For a shell report: whether a connected session of the child was offered parent_report. */
+  toolOffered?: boolean;
   /** Set when the parent's daemon refused the report, which no resend can fix. */
   refused?: string;
   /** Set on an entry that carries no report but the read of a parent's message: its id. */

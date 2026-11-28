@@ -9,7 +9,7 @@ import { agentKinds, harnessFor, harnessNamed, locateTranscript } from '../core/
 import { GRANT_DEPTH_TOOL, REQUEST_DEPTH_TOOL, ceilingOf, childCeiling, describeDepth, grantDepth, raiseTree, requestDepth } from '../core/depth.ts';
 import { keepsBriefs, type NextBrief } from '../core/brief-history.ts';
 import { removeChildFiles } from '../core/mcp-config.ts';
-import { PROMPT_NOTICE, localParentOf, notePromptForCaller, reportForCaller } from '../core/report.ts';
+import { PROMPT_NOTICE, localParentOf, notePromptForCaller, reportForCaller, reportViaLine } from '../core/report.ts';
 import { childById, describeDecisions, mutateParent, readParent, updateChild } from '../core/registry.ts';
 import { checkReads } from '../core/reads.ts';
 import { adoptPane } from '../core/adopt.ts';
@@ -459,6 +459,15 @@ function describeChild(child: ChildRecord, watcher: Watcher, relayState?: ToolCo
   return `${name}\t${kind}\t${routeLabel(child.route)}\t${state}\t${age}s\t${hostColumn(child, relayState)}\t${workspaceColumn(child)}\t${child.paneId}\t${child.depth}/${ceilingOf(child)}\tunread ${unread}\t${child.cwd ?? ''}\t${ended}`;
 }
 
+/** The last report of each child, with the path that sent it. */
+function describeLastReports(children: readonly ChildRecord[]): string[] {
+  return children.flatMap((child) => {
+    const report = child.lastReport;
+    if (!report) return [];
+    return [`${child.name}: ${report.status} at ${report.at}, ${reportViaLine(report.via, report.toolOffered)}.`];
+  });
+}
+
 /**
  * Run one tool for a session. `caller` is the identity the session's adapter
  * sent with the call; parent_report routes by it and by the child records
@@ -659,7 +668,8 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
     const messages = record.children.flatMap((child) => describeMessages(child));
     // One look at herdr says whether an exited child's workspace went with its pane.
     const view = record.children.some((child) => child.exitedAt && hostOf(child) === LOCAL_HOST) ? await herdrView(ctx.client) : undefined;
-    return [header, ...record.children.map((child) => describeChild(child, ctx.watcher, ctx.relayState, view)), ...(depth.length ? ['', 'Depth requests and grants:', ...depth] : []), ...(briefs.length ? ['', `Each child's newest brief and how it arrived (on the record, children[].briefs[].delivery):`, ...briefs] : []), ...(messages.length ? ['', 'Messages to children, newest three each:', ...messages] : [])].join('\n');
+    const reports = describeLastReports(record.children);
+    return [header, ...record.children.map((child) => describeChild(child, ctx.watcher, ctx.relayState, view)), ...(depth.length ? ['', 'Depth requests and grants:', ...depth] : []), ...(briefs.length ? ['', `Each child's newest brief and how it arrived (on the record, children[].briefs[].delivery):`, ...briefs] : []), ...(messages.length ? ['', 'Messages to children, newest three each:', ...messages] : []), ...(reports.length ? ['', 'Last reports:', ...reports] : [])].join('\n');
   }
 
   if (name === 'agent_move') {

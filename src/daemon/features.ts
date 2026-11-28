@@ -149,6 +149,11 @@ const BASE: readonly Feature[] = [
   ...brought('request', 4, '0.1.10', {
     'relay-message-again': "When a connection ends before a message's answer arrives, the parent's daemon sends the message again once the connection returns, and the far machine pushes it only if it never did.",
   }, [221]),
+  // A parent's daemon that predates it takes the entry as a needs-input report, and the child's daemon tells the child so.
+  ...brought('argument', 4, '0.1.10', {
+    'relay-report.retire': "A child on another machine calls request_retirement, and the request waits in that machine's relay outbox for the parent's daemon, which retires the worktree a moved child left on its own machine.",
+    'relay-ack.answer': "The acknowledgement of a retirement request from another machine brings the parent daemon's reply back to the child.",
+  }, [239]),
   // A daemon that predates it answers unknown_type, and `bellwether resume` names the release that brought it.
   ...brought('request', 4, '0.1.10', {
     resume: '`bellwether resume <session>` brings back a session that has lost its pane, from its own record, and reports the pane and tab it opened.',

@@ -79,12 +79,14 @@ From version 0.1.5, doctor also prints the installed version and protocol and co
 
 ### The herdr binary the daemon runs
 
-A daemon inherits the environment of the process that started it. A parent on another machine can start it over SSH, and a non-interactive SSH shell often has a PATH that leaves out the herdr directory. So from version 0.1.9 the daemon looks for herdr in this order, and runs the first it finds:
+Each daemon inherits the environment of the process that started it. When a parent on another machine starts it over SSH, the non-interactive shell often has a PATH that leaves out the herdr directory. So from version 0.1.9 the daemon looks for herdr in this order, and runs the first it finds:
 
-1. `HERDR_BIN_PATH`, when set. A value that is not an executable file is an error, and the search stops there.
+1. `HERDR_BIN_PATH`, when set. If its value is not an executable file, the search stops with an error.
 2. The inherited PATH.
 3. The PATH of your login shell, which reads the profile files an SSH command skips.
-4. `~/.local/bin`, `~/bin`, `~/.npm-global/bin`, `/home/linuxbrew/.linuxbrew/bin`, `/opt/homebrew/bin`, `/usr/local/bin` and the `bin` directory of each nvm Node, the places a move looks for a harness.
+4. The install directories where a move looks for a harness, such as `~/.local/bin`, `/opt/homebrew/bin` and `/usr/local/bin`.
+
+herdr sets `HERDR_BIN_PATH` in each pane it opens, so a daemon started from a herdr tab finds herdr at the first step.
 
 Doctor asks the running daemon which herdr it found and where. When the daemon found none, the `daemon herdr` line fails and lists each place it looked.
 

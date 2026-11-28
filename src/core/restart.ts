@@ -61,7 +61,7 @@ import { sessionFrom } from './transcript.ts';
 import { harnessFor, requireHarness, resolveTranscript } from './harnesses/index.ts';
 import type { ChildFiles } from './harnesses/types.ts';
 import { REGISTRY_SCHEMA, type CallerIdentity, type ChildRecord, type ChildRoute, type ChildSession, type DialogDecision, type ParentRecord, type RestartFailure, type RestartInDoubt, type RestartWait } from './types.ts';
-import { openChildTab, parseWorkspaces, returnPlacement, undoChildTab, type ChildTab, type TabRequest, type WorkspacePlacement } from './workspace.ts';
+import { openReturnTab, parseWorkspaces, returnPlacement, undoChildTab, type ChildTab, type TabRequest, type WorkspacePlacement } from './workspace.ts';
 
 export const RESTART_TOOL = 'agent_restart';
 
@@ -464,7 +464,7 @@ async function restartInPlace(client: HerdrClient, store: RestartStore, child: C
     // A child in a workspace Bellwether made for it goes back there, or to a
     // new one under the same label once herdr has closed it.
     const placement = await returnPlacement(client, child, workspaceId);
-    opened = await openReturnTab(client, placement, { cwd: child.cwd, label: child.name, env: { ...childEnv(store.parent, child, files.piExtension), ...files.env }, focus: false }, child.workspaceLabel || child.name);
+    opened = await openRestartTab(client, placement, { cwd: child.cwd, label: child.name, env: { ...childEnv(store.parent, child, files.piExtension), ...files.env }, focus: false }, child.workspaceLabel || child.name);
   } catch (error) {
     throw new RestartRefused(`the new tab for ${child.name} did not open, so the restart stopped before closing ${oldTab ? `tab ${oldTab}` : `pane ${oldPane || '(none)'}`} and nothing changed: ${(error as Error).message}`);
   }
@@ -944,14 +944,8 @@ async function workspaceLabelOf(client: HerdrClient, workspaceId: string): Promi
  * workspace, the session gets a new one under the old label: a session that
  * comes back somewhere is worth more than a tidy layout (issue #185).
  */
-async function openReturnTab(client: HerdrClient, placement: WorkspacePlacement, tab: TabRequest, label: string): Promise<ChildTab> {
-  let opened: ChildTab;
-  try {
-    opened = await openChildTab(client, placement, tab);
-  } catch (error) {
-    if (placement.mode === 'new' || !(error instanceof HerdrApiError) || error.code !== 'workspace_not_found') throw error;
-    opened = await openChildTab(client, { mode: 'new', label: placement.mode === 'existing' ? (placement.label ?? label) : label }, tab);
-  }
+async function openRestartTab(client: HerdrClient, placement: WorkspacePlacement, tab: TabRequest, label: string): Promise<ChildTab> {
+  const opened = await openReturnTab(client, placement, tab, label);
   if (!opened.paneId) {
     await undoChildTab(client, opened);
     throw new Error('herdr created no pane for the restarted tab');
@@ -1133,7 +1127,7 @@ async function restartParentLocked(client: HerdrClient, parentId: string, hooks:
   let opened: ChildTab;
   try {
     const workspaceLabel = workspaceNow ? await workspaceLabelOf(client, workspaceNow) : undefined;
-    opened = await openReturnTab(client, { mode: 'default', workspaceId: workspaceNow }, { cwd: live?.cwd ?? record.cwd, label, env: {}, focus: false }, workspaceLabel ?? label);
+    opened = await openRestartTab(client, { mode: 'default', workspaceId: workspaceNow }, { cwd: live?.cwd ?? record.cwd, label, env: {}, focus: false }, workspaceLabel ?? label);
   } catch (error) {
     throw new RestartRefused(`the new tab for session ${record.id} did not open, so the restart stopped before closing ${oldPane ? `pane ${oldPane}` : 'anything'} and nothing changed: ${(error as Error).message}`);
   }

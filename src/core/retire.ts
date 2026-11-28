@@ -16,6 +16,7 @@
 import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { ChildBusyError, withChildLock } from './child-lock.ts';
 import { LOCAL_HOST, hostOf } from './machine.ts';
 import { bellwetherHome } from './paths.ts';
 import { childOfCaller } from './report.ts';
@@ -243,9 +244,31 @@ export type ReapResult = { outcome: 'removed' | 'refused'; reason?: string } | {
  */
 export async function reapChild(parentId: string, childId: string, deps: ReapDeps): Promise<ReapResult> {
   const log = deps.log ?? (() => {});
+  const first = readParent(parentId)?.children.find((entry) => entry.id === childId);
+  if (!first || !retirementPending(first) || !first.exitedAt) return { outcome: 'skipped' };
+  // A resume, a restart and a move hold the child's lock while they bring the
+  // child back, so a reap that holds it never removes a worktree under a
+  // child that came back between its checks and its removal (issue #211).
+  try {
+    return await withChildLock(childId, `${first.name} (child ${childId})`, `retirement of ${first.name}`, () => reapLocked(parentId, childId, deps, log), undefined, undefined, { action: 'retired' });
+  } catch (error) {
+    if (!(error instanceof ChildBusyError)) throw error;
+    const reason = `another call holds ${first.name} (${error.holder.purpose}); the retirement waits for the next exit event or daemon start`;
+    log(`retire ${first.name}: ${reason}`);
+    return { outcome: 'pending', reason };
+  }
+}
+
+/** The child, as saved now, when it still asks to be retired and has exited. */
+function stillExited(parentId: string, childId: string): ChildRecord | undefined {
   const child = readParent(parentId)?.children.find((entry) => entry.id === childId);
-  if (!child || !retirementPending(child)) return { outcome: 'skipped' };
-  if (!child.exitedAt) return { outcome: 'skipped' };
+  return child && retirementPending(child) && child.exitedAt ? child : undefined;
+}
+
+async function reapLocked(parentId: string, childId: string, deps: ReapDeps, log: (message: string) => void): Promise<ReapResult> {
+  // Read under the lock: a caller that held it before this one may have brought the child back.
+  const child = stillExited(parentId, childId);
+  if (!child) return { outcome: 'skipped' };
 
   const refuse = (reason: string): ReapResult => {
     finish(parentId, child, 'refused', reason);
@@ -321,7 +344,15 @@ export async function reapChild(parentId: string, childId: string, deps: ReapDep
     if (pids.length) return refuse(`condition 4 (no process inside): process(es) ${pids.join(', ')} have their working directory in ${intent.worktree}. Stop them, then remove the worktree by hand.`);
   }
 
-  // 5. Remove, delete, verify. Each stage is written as it completes, so a
+  // 5. Read the record again after the awaits above. A writer that skips the
+  // lock may have brought the child back, and its record then keeps no
+  // outcome from this pass.
+  if (!stillExited(parentId, childId)) {
+    log(`retire ${child.name}: the child came back while the retirement checked ${intent.worktree}, so it stays`);
+    return { outcome: 'skipped' };
+  }
+
+  // 6. Remove, delete, verify. Each stage is written as it completes, so a
   // restart skips what is done.
   try {
     if (!worktreeDone) {

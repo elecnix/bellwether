@@ -153,6 +153,8 @@ Once herdr reports the pane gone, the daemon removes the worktree and the branch
    A pull request closed without merging doesn't count as a proof.
 4. No live child stands in the worktree or in a folder inside it, under any parent on this machine, and no process works inside it. The registry protects the working directory of a child that has not exited, whatever the process table shows, and the refusal gives that child's name, id, pane and parent session.
 
+A resume, a restart and a move each take the child's lock, and the cleanup takes the same lock from its first check to the removal. A resume that arrives during the checks waits for the verdict. When a resume already has the lock, the cleanup leaves everything in place until the next exit or daemon start. Before it removes anything, it reads the child's record again. A child that came back keeps its worktree, and its record doesn't get an outcome ([#211](https://github.com/elecnix/bellwether/issues/211)).
+
 The removal runs `git worktree remove` without `--force`, so git itself refuses a worktree that holds changes.
 
 Bellwether leaves a child it adopted, a child on another machine, a detached HEAD and any main worktree in place. A worktree counts as main when its git directory is the repository itself, when git lists it first, when it has the default branch checked out, or when its name is `main` or `master`.

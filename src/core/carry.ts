@@ -421,9 +421,15 @@ export async function carryChild(deps: CarryDeps, parentId: string, request: Car
       const restart = plan.restartSource && state === 'live';
       let restoredPane: string | undefined;
       let rollbackError: string | undefined;
+      const reopen = `agent_spawn with resume ${child.name}, which resumes it on ${where(source)} from ${bundle.sourceFile}`;
       if (restart) {
+        // Until the resume names a pane on the source, the record says the
+        // child runs on neither machine, so a daemon that stops in between
+        // leaves a record doctor names rather than one nothing repairs.
         updateChild(parentId, child.id, (record) => {
-          runEnds(record, { at: new Date().toISOString() });
+          const at = new Date().toISOString();
+          runEnds(record, { at });
+          crossingFailed(record, { at, verb, from: source, to: target, stage, error: `${failure.replace(/\.$/, '')}; the daemon stopped before it started it again on ${where(source)}`, sourceFile: bundle.sourceFile, reopen, interrupted: true });
         });
         const restored = readParent(parentId)?.children.find((record) => record.id === child.id);
         const parent = readParent(parentId);
@@ -440,7 +446,6 @@ export async function carryChild(deps: CarryDeps, parentId: string, request: Car
           rollbackError = (fault as Error).message;
         }
       }
-      const reopen = `agent_spawn with resume ${child.name}, which resumes it on ${where(source)} from ${bundle.sourceFile}`;
       updateChild(parentId, child.id, (record) => {
         delete record.moving;
         // A child that runs on neither machine says so until it runs again.

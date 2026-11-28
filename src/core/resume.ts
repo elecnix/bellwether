@@ -12,7 +12,7 @@ import { LOCAL_HOST } from './machine.ts';
 import { newChildId } from './outbox.ts';
 import { readParent, recordDecisions, removeChild, updateChild, upsertChild } from './registry.ts';
 import { clearRetirement, retiredItsWorktree } from './retire.ts';
-import { firstRun, holdEvents, paneOpened, releaseEvents, restoreRun, runStarts, sessionSeen, snapshotRun, statusSeen } from './incarnation.ts';
+import { firstRun, holdEvents, releaseEvents, restoreRun, runAwaitsPane, runOpens, sessionSeen, snapshotRun, statusSeen } from './incarnation.ts';
 import { openReturnTab, returnPlacement, undoChildTab, type ChildTab } from './workspace.ts';
 import { STARTUP_HOLD_MS, STARTUP_TIMEOUT_MS, childArgs, childEnv, childStartFiles, herdrLink, nextLaunch, startHarness, type RegisterRemote } from './spawn.ts';
 import { agentKinds, harnessFor, harnessNamed, requireHarness, type HarnessSession } from './harnesses/index.ts';
@@ -202,11 +202,13 @@ export async function resumeChild(client: HerdrClient, parent: ParentRecord, tar
     if (requireHarness(kind).chosenBy === 'pair' && launch.provider && launch.harnessModel) child.model = { provider: launch.provider, id: launch.harnessModel, source: 'caller' };
   }
 
-  // 1. The record lands first, with no pane, so a crash still says what was asked.
-  // Every field of the run before goes, a failed restart or crossing among
-  // them. The new harness has yet to show herdr it runs, and the watcher
-  // checks it once after its start window.
-  runStarts(child, { paneId: '', tabId: undefined, resumedAt: now });
+  // 1. The record lands first, with no pane, so a crash still says what was
+  // asked. Until the new tab names a pane, the run before stays ended, with
+  // any failed restart or crossing it carries: a daemon that stops here leaves
+  // a record the watcher and doctor read as exited, never one with no pane
+  // and no exit that nothing repairs. The new harness has yet to show herdr it
+  // runs, and the watcher checks it once after its start window.
+  runAwaitsPane(child, { tabId: undefined, resumedAt: now, at: now });
   // A child brought back did not ask for this run to end its worktree.
   clearRetirement(child);
   child.statusChangedAt = now;
@@ -277,7 +279,7 @@ export async function resumeChild(client: HerdrClient, parent: ParentRecord, tar
       const marked = readParent(parent.id)?.children.find((entry) => entry.id === child.id)?.moving;
       if (marked) child.moving = marked;
     }
-    paneOpened(child, { paneId: tab.paneId, tabId: tab.tabId });
+    runOpens(child, { paneId: tab.paneId, tabId: tab.tabId });
     child.workspaceId = tab.workspaceId;
     if (tab.workspaceLabel) child.workspaceLabel = tab.workspaceLabel;
     if (next) {

@@ -27,6 +27,7 @@
 //
 //   field            lifetime  set by                                   cleared by
 //   paneId           start     firstRun, runStarts, paneOpened,         never: a resume starts at '' until its tab opens
+//                              runAwaitsPane, runOpens,
 //                              runFailedToRestart, restoreRun
 //   tabId            start     firstRun, runStarts, paneOpened          runStarts or relocated without a tab, runFailedToRestart
 //   host             start     firstRun, relocated, defaultHost         never
@@ -39,7 +40,7 @@
 //   reportPending    run       reportPending                            every start
 //   closing          run       closingPane                              paneClosed, every start, runFailedToRestart
 //   restartInDoubt   run       answerLost                               doubtSettled, every start
-//   exitedAt         end       runEnds                                  every start, runContinues
+//   exitedAt         end       runEnds, runAwaitsPane                   every start but runAwaitsPane, runContinues, runOpens
 //   exitCode         end       runEnds                                  every start, runContinues
 //   paneEnd          end       runEnds, tabClosed                       every start, runContinues
 //   harnessEnded     end       runEnds                                  every start, runContinues
@@ -50,7 +51,8 @@
 //
 // The five ways a child comes back, and the transition each calls:
 //
-//   resume.ts           runStarts, with an empty pane until its tab opens, then paneOpened
+//   resume.ts           runAwaitsPane, which keeps the run before ended until runOpens names
+//                       the new tab's pane
 //   restart.ts          runStarts, once the session runs in the new pane (local or far)
 //   adopt.ts            runStarts, in backInPane, with seenAt: herdr sees the harness at that moment
 //   recover-crossing.ts runStarts when the destination runs the session, runContinues when the
@@ -293,6 +295,32 @@ export function stopAwaiting(record: ChildRecord): void {
 /** A move or a teleport stopped the child and could not start it on either machine. */
 export function crossingFailed(record: ChildRecord, failure: CrossingFailure): void {
   writable(record).crossingFailed = failure;
+}
+
+/** The fields that last only while one run lasts, which a start whose tab has not opened yet clears. */
+const RUN_ONLY_FIELDS: readonly IncarnationField[] = fieldsWith('run');
+
+/**
+ * A start whose tab has not opened yet, with no pane. The run before stays
+ * ended, with how it ended, until runOpens names the new pane, so a daemon
+ * that stops in between leaves a record that says the child is not running,
+ * with any restartFailed or crossingFailed it carried. Without that, the
+ * record would name no pane and no exit, and the watcher skips a record with
+ * no pane.
+ */
+export function runAwaitsPane(record: ChildRecord, start: Omit<RunStart, 'paneId' | 'seenAt'> & { at: string }): void {
+  clear(record, RUN_ONLY_FIELDS);
+  place(record, { ...start, paneId: '' });
+  const entry = writable(record);
+  entry.lastStatus = start.status ?? 'unknown';
+  if (start.resumedAt) entry.resumedAt = start.resumedAt;
+  if (!entry.exitedAt) entry.exitedAt = start.at;
+}
+
+/** The tab of a start that runAwaitsPane began opened: the run before stops being the record's last word. */
+export function runOpens(record: ChildRecord, tab: { paneId: string; tabId?: string | undefined }): void {
+  clear(record, END_FIELDS);
+  paneOpened(record, tab);
 }
 
 /** The tab a start opened, before its harness starts. A tab left out of `tab` keeps the one on the record unless `replaceTab` says it goes. */

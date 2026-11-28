@@ -26,7 +26,7 @@ import { harnessFor, resolveTranscript } from '../core/harnesses/index.ts';
 import type { CallerIdentity, OutboxEntry } from '../core/types.ts';
 import type { RosterChild } from '../core/roster.ts';
 import type { InboxMessage, MessageAckRequest, RelayHostState, RelayReport, ServedTool } from './protocol.ts';
-import { BRIEF_SESSION_WAIT_MS, unreadSessionMessages, type Inbox, type InboxAnswer } from '../core/send.ts';
+import { BRIEF_SESSION_WAIT_MS, BRIEF_TURN_WAIT_MS, unreadSessionMessages, type Inbox, type InboxAnswer } from '../core/send.ts';
 import { updateChild } from '../core/registry.ts';
 import { UnknownTool, servedTools, type ToolScope } from '../integrations/tools.ts';
 import { FEATURES } from './features.ts';
@@ -81,6 +81,8 @@ export interface DaemonOptions {
   messageAckMs?: number;
   /** How long a start's brief waits for the child's session to connect before it is typed instead. Default 30 s. */
   sessionWaitMs?: number;
+  /** How long a start's brief waits for the child's model after its adapter received it, before it goes once more. Default 20 s. */
+  briefTurnWaitMs?: number;
   /** The tools a session gets, by its hello. Default the feature table's tools for its identity; a test passes a newer table. */
   tools?: (parent: ParentHello) => ServedTool[];
 }
@@ -179,6 +181,14 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
   const lapsed = new Set<string>();
   // A start's brief waits here for the child's session to say hello.
   const sessionWaitMs = options.sessionWaitMs ?? BRIEF_SESSION_WAIT_MS;
+  // A start waits on these for its brief's read receipt (issue #176), from
+  // this machine's adapter or across the relay.
+  const readWaits = new Map<string, Set<(at: string) => void>>();
+  const messageRead = (messageId: string, at: string): void => {
+    const waiting = readWaits.get(messageId);
+    readWaits.delete(messageId);
+    for (const settle of waiting ?? []) settle(at);
+  };
   const arrivals = new Map<string, Set<() => void>>();
 
   /**
@@ -319,6 +329,25 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
       return { delivered: false, reason: (error as Error).message };
     }
   };
+  inbox.turnWaitMs = options.briefTurnWaitMs ?? BRIEF_TURN_WAIT_MS;
+  inbox.read = (parentId, childId, messageId, signal) =>
+    new Promise<string>((resolve) => {
+      // The check and the wait run in one tick, so a read that lands between them cannot slip past.
+      const already = readParent(parentId)?.children.find((entry) => entry.id === childId)?.messages?.find((entry) => entry.id === messageId)?.readAt;
+      if (already) return resolve(already);
+      const waiting = readWaits.get(messageId) ?? new Set();
+      const settle = (at: string): void => resolve(at);
+      waiting.add(settle);
+      readWaits.set(messageId, waiting);
+      signal.addEventListener(
+        'abort',
+        () => {
+          waiting.delete(settle);
+          if (!waiting.size && readWaits.get(messageId) === waiting) readWaits.delete(messageId);
+        },
+        { once: true },
+      );
+    });
 
   /** Keep a message that crossed from the parent's machine on the child's relay record until its model reads it, or drop it. */
   const keepRelayMessage = (childId: string, message: InboxMessage | undefined, drop?: string): void => {
@@ -360,14 +389,16 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
       outbox.messageRead(record, ack.id);
       return;
     }
+    let readAt: string | undefined;
     updateChild(found.parent.id, childId, (child) => {
       const message = child.messages?.find((entry) => entry.id === ack.id);
       if (!message || message.readAt) return;
-      message.readAt = new Date(now()).toISOString();
+      message.readAt = readAt = new Date(now()).toISOString();
       if (ack.via) message.via ??= ack.via;
       delete message.text;
       delete message.from;
     });
+    if (readAt) messageRead(ack.id, readAt);
     log(`message ${ack.id} reached the model of child ${childId}`);
   };
 
@@ -541,13 +572,15 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
     if (hostOf(route.child) !== host && route.child.movedFrom?.host !== host) return { refused: `child ${report.childId} runs on machine ${hostOf(route.child)}, not ${host}` };
     if (report.messageRead) {
       // Not a report: the child's model read a message this daemon sent over the relay.
+      let readAt: string | undefined;
       updateChild(route.parent.id, route.child.id, (child) => {
         const message = child.messages?.find((entry) => entry.id === report.messageRead);
         if (!message || message.readAt) return;
-        message.readAt = report.at;
+        message.readAt = readAt = report.at;
         delete message.text;
         delete message.from;
       });
+      if (readAt) messageRead(report.messageRead, readAt);
       log(`message ${report.messageRead} reached the model of child ${report.childId} on machine ${host}`);
       return {};
     }

@@ -36,7 +36,26 @@ export interface InboxOptions {
  * connected for it: on this machine, or through the daemon on the child's
  * machine over the relay.
  */
-export type Inbox = (parentId: string, child: ChildRecord, message: InboxMessage, options?: InboxOptions) => Promise<InboxAnswer>;
+export interface Inbox {
+  (parentId: string, child: ChildRecord, message: InboxMessage, options?: InboxOptions): Promise<InboxAnswer>;
+  /**
+   * Resolve with the time the child's model read a message this daemon sent,
+   * as its adapter reports it: at once when the record already has the read.
+   * A receipt crosses back over the relay for a child on another machine.
+   */
+  read?: (parentId: string, childId: string, messageId: string, signal: AbortSignal) => Promise<string>;
+  /** How long a start's brief waits for the child's model after its adapter received it, before it goes once more. */
+  turnWaitMs?: number;
+}
+
+/**
+ * How long a start's brief waits, after the child's adapter received it, for
+ * the model behind that adapter to begin a turn or read it (issue #176). The
+ * adapter connects while the harness is still starting, so its receipt says
+ * nothing about the model. A brief that waits this long goes once more, and
+ * a second copy that waits as long fails the start.
+ */
+export const BRIEF_TURN_WAIT_MS = 20_000;
 
 /**
  * How long a daemon waits for a just-started child's session to connect

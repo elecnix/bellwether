@@ -7,6 +7,7 @@
 // already holds, and routes the report by the pane. A session with no
 // adapter has nothing to offer it to, and the adoption says so.
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -172,6 +173,65 @@ test('an adopted Claude Code session whose Bellwether server is already connecte
   assert.match(report.text, /first-mate \(w1:p7\) reported done:\nRebased and pushed\./);
 });
 
+/**
+ * The Claude Code server as an interactive Claude Code starts it with the
+ * Bellwether channel: under a process whose command line carries the channel
+ * flag, and before a resume chooses the session, so CLAUDE_CODE_SESSION_ID
+ * names the fresh one. The wrapper stands in for Claude Code, so it is the
+ * server's parent process, and its pid names its sessions file.
+ */
+async function channelClaude(t: test.TestContext, space: Room, startedAs: string): Promise<{ client: Client; changed: string[]; notes: { method: string; params: unknown }[]; sessionsFile: string }> {
+  const changed: string[] = [];
+  const notes: { method: string; params: unknown }[] = [];
+  const client = new Client({ name: 'claude-code', version: '0.0.0' }, { capabilities: {} });
+  client.fallbackNotificationHandler = async (notification: { method: string; params?: unknown }): Promise<void> => {
+    changed.push(notification.method);
+    notes.push({ method: notification.method, params: notification.params });
+  };
+  const config = process.env['CLAUDE_CONFIG_DIR'] as string;
+  const env: Record<string, string> = {
+    PATH: process.env['PATH'] ?? '',
+    HOME: space.root,
+    BELLWETHER_HOME: space.home,
+    BELLWETHER_DAEMON_SOCKET: space.socketPath,
+    CLAUDE_CONFIG_DIR: config,
+    CLAUDE_CODE_SESSION_ID: startedAs,
+    CLAUDE_PROJECT_DIR: space.root,
+    HERDR_SOCKET_PATH: space.fake.socketPath,
+    HERDR_PANE_ID: CLAUDE_PANE,
+    BW_CHANNEL: channelServer,
+  };
+  const wrapper = "const c=require('node:child_process').spawn(process.execPath,[process.env.BW_CHANNEL],{stdio:'inherit'});c.on('exit',(code)=>process.exit(code??0));process.on('SIGTERM',()=>c.kill('SIGTERM'));";
+  const launcher = path.join(space.root, 'claude-launcher.cjs');
+  fs.writeFileSync(launcher, wrapper);
+  const transport = new StdioClientTransport({ command: process.execPath, args: [launcher, '--dangerously-load-development-channels', 'plugin:bellwether@elecnix-plugins'], env, stderr: 'pipe' });
+  await client.connect(transport);
+  t.after(() => client.close());
+  const sessionsFile = path.join(config, 'sessions', `${transport.pid}.json`);
+  t.after(() => fs.rmSync(sessionsFile, { force: true }));
+  return { client, changed, notes, sessionsFile };
+}
+
+test('a Claude Code session that started with the Bellwether channel and resumed the adopted session gains parent_report and takes a message in its session, with nothing typed (issue #184)', async (t) => {
+  const space = await room(t);
+  const { client, changed, notes, sessionsFile } = await channelClaude(t, space, 'fresh-at-start-0002');
+  await space.parent.tool('agent_adopt', { target: CLAUDE_PANE, name: 'first-mate' });
+  assert.ok(!(await toolNames(client)).includes('parent_report'), 'the server still names the session Claude Code started under, which is not the adopted one');
+
+  // The person picks the adopted session in the resume picker, and Claude Code rewrites its sessions file.
+  fs.mkdirSync(path.dirname(sessionsFile), { recursive: true });
+  fs.writeFileSync(sessionsFile, JSON.stringify({ pid: 1, sessionId: CLAUDE_SESSION, kind: 'interactive' }));
+  await until('the server to hear the tool list changed', () => changed.includes('notifications/tools/list_changed'));
+  await until('parent_report in the tool list', async () => (await toolNames(client)).includes('parent_report'));
+
+  const reply = await space.parent.tool('agent_send', { child: 'first-mate', text: 'Stop after this commit.' });
+  assert.match(reply, /^Delivered to first-mate's session as message m-[0-9a-f]{8}, through its Bellwether channel; nothing was typed into its pane\./, reply);
+  const note = await until('the message as a channel notification', () => notes.find((entry) => entry.method === 'notifications/claude/channel' && JSON.stringify(entry.params).includes('Stop after this commit.')));
+  assert.match(JSON.stringify(note.params), /parent-message/);
+  assert.deepEqual(typed(space.fake, CLAUDE_PANE), []);
+  assert.deepEqual(messagesOf(space, 'first-mate').map((message) => [message.path, message.via]), [['session', 'claude-channel']]);
+});
+
 test('an adopted pi session registers parent_report from the extension it already loaded, and its report reaches the adopter', async (t) => {
   const space = await room(t);
   const pi = await handStartedPi(t, space);
@@ -258,10 +318,10 @@ test('an adopted Claude Code session whose Bellwether server is a tool server, n
   const space = await room(t);
   await handStartedClaude(t, space, CLAUDE_SESSION);
   const adopted = await space.parent.tool('agent_adopt', { target: CLAUDE_PANE, name: 'first-mate' });
-  assert.match(adopted, /a report from it reaches this session\. Claude Code puts a server's message in a session only when the session started with that server as a channel, which a session Bellwether did not start never did, so agent_send types into its pane\./, adopted);
+  assert.match(adopted, /a report from it reaches this session\. Claude Code puts a server's message in a session only when the session started with that server as a channel, and no channel flag on this session's command line names Bellwether, or its server predates 0\.1\.9, so agent_send types into its pane\./, adopted);
 
   const reply = await space.parent.tool('agent_send', { child: 'first-mate', text: 'Stop after this commit.' });
-  assert.match(reply, /^Prompted first-mate: herdr typed message m-[0-9a-f]{8} into its pane, because first-mate is an adopted session whose Bellwether server takes no messages: Claude Code puts a server's message in a session only when the session started with that server as a channel\./, reply);
+  assert.match(reply, /^Prompted first-mate: herdr typed message m-[0-9a-f]{8} into its pane, because first-mate is an adopted session whose Bellwether server takes no messages: Claude Code puts a server's message in a session only when the session started with that server as a channel, and no channel flag on this session's command line names Bellwether, or its server predates 0\.1\.9\./, reply);
   assert.deepEqual(typed(space.fake, CLAUDE_PANE), ['Stop after this commit.']);
 });
 

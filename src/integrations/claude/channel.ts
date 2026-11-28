@@ -30,6 +30,7 @@ import type { InboxMessage } from '../../daemon/protocol.ts';
 import { BELLWETHER_VERSION } from '../../core/version.ts';
 import { fallbackTools } from '../tools.ts';
 import { ReceiptScan, claudeConfigDir } from './transcript.ts';
+import { currentClaudeSession, loadsBellwetherChannel, processArgv } from './launch.ts';
 
 const log = (...args: unknown[]): void => console.error('[bellwether]', ...args);
 
@@ -40,7 +41,16 @@ const SCAN_MS = 500;
 /** How long after a push the parent's own status is judged, before one resend. */
 const RESEND_AFTER_MS = 20_000;
 
-const session = process.env['CLAUDE_CODE_SESSION_ID'] ?? `pid-${process.ppid}`;
+// Claude Code is this server's parent process. It starts its servers before a
+// resume picks a session, and keeps them across a /resume, so the session it
+// shows now comes from its sessions file, and the environment stands in only
+// until that file exists (issue #184).
+const startedAs = process.env['CLAUDE_CODE_SESSION_ID'] ?? `pid-${process.ppid}`;
+let session = currentClaudeSession(claudeConfigDir(), process.ppid, startedAs);
+// Claude Code puts this server's message in its session only when a channel
+// flag on its command line loaded the server as a channel. A child's own
+// server always is one, because the spawn passes the flag.
+const asChannel = loadsBellwetherChannel(processArgv(process.ppid));
 const pane = process.env['HERDR_PANE_ID'];
 const workspace = process.env['HERDR_WORKSPACE_ID'];
 const cwd = process.env['CLAUDE_PROJECT_DIR'] ?? process.cwd();
@@ -224,7 +234,22 @@ function armResendCheck(receipt: string): void {
   settleTimers.set(receipt, timer);
 }
 
-const scan = new ReceiptScan(session, cwd, claudeConfigDir());
+let scan = new ReceiptScan(session, cwd, claudeConfigDir());
+
+/**
+ * Follow a resume to another session: read receipts from that session's
+ * transcript, and say hello to the daemon as that session, which decides the
+ * parent id, the tools and the adoption this server answers to.
+ */
+function followSession(): void {
+  const now = currentClaudeSession(claudeConfigDir(), process.ppid, startedAs);
+  if (now === session) return;
+  log('session changed from', session, 'to', now);
+  session = now;
+  scan = new ReceiptScan(session, cwd, claudeConfigDir());
+  scan.start();
+  void daemon?.reidentify(session).catch((error: Error) => log('could not say hello as session', session, ':', error.message));
+}
 
 /** Mark an entry read, and drop the bookkeeping for its resend. */
 function readReceipt(receipt: string): void {
@@ -238,6 +263,7 @@ function readReceipt(receipt: string): void {
 
 function scanReceipts(): void {
   if (!daemon) return;
+  followSession();
   const unread = daemon.unread().filter((entry) => !entry.read);
   if (!unread.length && !unreadMessages.size) return;
   // One scan for both, because each scan moves the offset past what it read.
@@ -316,9 +342,11 @@ ready = (async () => {
       childId,
       ...(maxDepth === undefined ? {} : { maxDepth }),
       ...(reportsTo ? { reportsTo } : {}),
-      // A child takes its parent's messages through this channel, and any
-      // session takes a new tool list, such as parent_report once a parent adopts it.
-      accepts: childId ? ['message', 'tools'] : ['tools'],
+      // A session that loaded this server as a channel takes its parent's
+      // messages through it: a child always, and an adopted session when its
+      // command line named the channel. Any session takes a new tool list,
+      // such as parent_report once a parent adopts it.
+      accepts: childId || asChannel ? ['message', 'tools'] : ['tools'],
     }, { log });
     daemon.onEvents((entries) => schedule(entries));
     daemon.onTools((served) => {

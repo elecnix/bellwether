@@ -14,13 +14,13 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { HerdrClient } from '../../src/core/herdr-client.ts';
 import { pickMachine, type MachineProfile } from '../../src/core/machine.ts';
 import { emptyParent, readParent, saveParent, upsertChild } from '../../src/core/registry.ts';
-import { RELAY_SCHEMA, readRelayRecord, saveRelayRecord } from '../../src/core/relay-records.ts';
+import { RELAY_SCHEMA, readRelayRecord, removeRelayRecord, saveRelayRecord } from '../../src/core/relay-records.ts';
 import { remoteOps } from '../../src/core/remote.ts';
 import type { ChildRecord, OutboxEntry } from '../../src/core/types.ts';
 import { Watcher } from '../../src/core/watcher.ts';
 import { DaemonClient } from '../../src/daemon/client.ts';
-import type { RelayReport } from '../../src/daemon/protocol.ts';
-import { RelayLinks } from '../../src/daemon/relay-links.ts';
+import type { ParentHello, RelayReport } from '../../src/daemon/protocol.ts';
+import { RelayLinks, relayInbox } from '../../src/daemon/relay-links.ts';
 import { runBellwetherTool, type ToolContext } from '../../src/integrations/tools.ts';
 import { stopDaemonsUnder } from '../fixtures/daemons.ts';
 import { startFakeHerdr, type FakeHerdr, type RecordedRequest } from '../fixtures/fake-herdr.ts';
@@ -293,6 +293,78 @@ test('a message to an adopted session on another machine enters that session ove
   const answer = await w.links.message('child-box', PARENT_ID, id, { id: 'm-0000a168', from: 'your parent', text: 'Rebase onto main before you push.', at: new Date().toISOString() });
   assert.deepEqual(answer, { delivered: true, via: 'pi-message' });
   assert.deepEqual(taken, ['Rebase onto main before you push.']);
+});
+
+/** What herdr on child-box was asked to type into the adopted pane. */
+function typedFar(w: World): string[] {
+  return w.far.requests.filter((request) => request.method === 'agent.prompt' && request.params['target'] === PANE).map((request) => String(request.params['text']));
+}
+
+/** The hello of a Claude Code server in the adopted pane on child-box that Claude Code loaded as a channel, with no child id. */
+function farClaude(w: World, session: string): ParentHello {
+  return { harness: 'claude-code', session, cwd: '/far/work', host: 'child-box', paneId: PANE, depth: 0, herdrSocket: path.join(w.root, 'far-herdr.sock'), accepts: ['message', 'tools'] };
+}
+
+/** Take each message as the channel server does, and answer that the session holds it. */
+function takeMessages(client: DaemonClient, taken: string[]): void {
+  client.onMessage((message, replay) => {
+    taken.push(`${replay ? 'replay: ' : ''}${message.text}`);
+    client.messageAck(message.id, 'queued', { via: 'claude-channel' });
+  });
+}
+
+test('an adopted Claude Code session on another machine whose server started under a session it then left gains parent_report and messages once it names the adopted one, and keeps both across a restart of its harness (issue #184)', async (t) => {
+  const w = await world(t, { accept: () => ({}) });
+  w.ctx.inbox = (parentId, record, message, options) => relayInbox(w.links, parentId, record, message, options);
+  const farHome = { home: w.childHome, socketPath: path.join(w.childHome, 'daemon.sock') };
+  // Claude Code started its servers before the resume picker chose the session, so the server's first hello named the fresh session it started under, before any claim.
+  const first = await DaemonClient.connect(farClaude(w, 'fresh-at-start-0002'), farHome);
+  t.after(() => first.close());
+  const taken: string[] = [];
+  takeMessages(first, taken);
+
+  await adopt(w);
+  const id = child(w)!.id;
+  assert.ok(!first.tools().some((tool) => tool.name === 'parent_report'), 'a session that names another session is not the adopted one');
+
+  // The server reads the session Claude Code shows now and says hello as that session.
+  await first.reidentify(SESSION);
+  await until('the far session to gain parent_report', () => first.tools().some((tool) => tool.name === 'parent_report'));
+  await until('the relay to hold child-box open for the child', () => w.links.state('child-box')?.status === 'connected' && (w.links.state('child-box')?.children ?? []).includes(id));
+  const reply = await runBellwetherTool(w.ctx, 'agent_send', { child: id, text: 'Rebase onto main.' });
+  assert.match(reply, /^Delivered to first-mate's session as message m-[0-9a-f]{8}, through its Bellwether channel; nothing was typed into its pane\./, reply);
+  assert.deepEqual(taken, ['Rebase onto main.']);
+
+  // The harness exits and comes back under the same session id, as a --resume after a reboot does.
+  await first.close();
+  const second = await DaemonClient.connect(farClaude(w, SESSION), farHome);
+  t.after(() => second.close());
+  takeMessages(second, taken);
+  assert.ok(second.tools().some((tool) => tool.name === 'parent_report'), 'the hello of the restarted harness offers parent_report');
+  const again = await runBellwetherTool(w.ctx, 'agent_send', { child: id, text: 'Push when green.' });
+  assert.match(again, /^Delivered to first-mate's session as message m-[0-9a-f]{8}, through its Bellwether channel/, again);
+  assert.ok(taken.includes('Push when green.'), JSON.stringify(taken));
+  const messages = child(w)?.messages ?? [];
+  assert.deepEqual(messages.map((message) => [message.path, message.via]), [['session', 'claude-channel'], ['session', 'claude-channel']]);
+  assert.deepEqual(typedFar(w), [], 'herdr typed nothing into the adopted pane');
+});
+
+test('a message to an adopted child on another machine whose claim is gone there is typed, and both the reply and the record say keystrokes and why (issue #184)', async (t) => {
+  const w = await world(t);
+  w.ctx.inbox = (parentId, record, message, options) => relayInbox(w.links, parentId, record, message, options);
+  await adopt(w);
+  const id = child(w)!.id;
+  inHome(w.childHome, () => removeRelayRecord(id));
+  await until('the relay to hold child-box open for the child', () => w.links.state('child-box')?.status === 'connected' && (w.links.state('child-box')?.children ?? []).includes(id));
+
+  const reply = await runBellwetherTool(w.ctx, 'agent_send', { child: id, text: 'Status?' });
+  const why = `machine child-box answered: this machine holds no running child ${id} for parent ${PARENT_ID}`;
+  assert.match(reply, /^Prompted first-mate: herdr typed message m-[0-9a-f]{8} into its pane, because /, reply);
+  assert.ok(reply.endsWith(`because ${why}.`), reply);
+  assert.deepEqual(typedFar(w), ['Status?']);
+  const message = child(w)?.messages?.at(-1);
+  assert.equal(message?.path, 'keystrokes');
+  assert.equal(message?.reason, why);
 });
 
 test('a session in an adopted pane on another machine whose harness session is not the adopted one gains nothing, and its report is refused there', async (t) => {

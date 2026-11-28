@@ -15,7 +15,7 @@ import { PRUNE_DELAY_MS, PRUNE_EVERY_MS, pruneState } from '../core/hygiene.ts';
 import { defaultServiceFactory, parentIdOf, type ParentService, type ServiceFactory } from './service.ts';
 import { acquire, isAlive, readLock, release } from './lock.ts';
 import { RelayOutbox } from './relay.ts';
-import { RelayLinks } from './relay-links.ts';
+import { RelayLinks, relayInbox } from './relay-links.ts';
 import { LOCAL_HOST, hostOf } from '../core/machine.ts';
 import { acceptLocalReport, isReportStatus, localParentOf, routeReport, type ReportInput } from '../core/report.ts';
 import { readRelayRecord, updateRelayRecord } from '../core/relay-records.ts';
@@ -322,12 +322,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
   const inbox: Inbox = async (parentId, child, message, options = {}) => {
     const host = hostOf(child);
     if (host === LOCAL_HOST) return sessionInbox(child, message, options.awaitSession ? sessionWaitMs : 0);
-    try {
-      const answer = await links.message(host, parentId, child.id, message, options);
-      return answer.delivered ? answer : { delivered: false, reason: `machine ${host} answered: ${answer.reason}` };
-    } catch (error) {
-      return { delivered: false, reason: (error as Error).message };
-    }
+    return relayInbox(links, parentId, child, message, options);
   };
   inbox.turnWaitMs = options.briefTurnWaitMs ?? BRIEF_TURN_WAIT_MS;
   inbox.read = (parentId, childId, messageId, signal) =>

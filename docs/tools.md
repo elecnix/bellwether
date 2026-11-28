@@ -49,7 +49,9 @@ That adapter connects to the daemon on its own machine. It says which herdr pane
 
 Once adoption takes that pane, the daemon on the pane's machine sends the adapter a new tool list, and the list now has `parent_report`. The daemon sends it over the adapter's open connection. Claude Code hears `notifications/tools/list_changed`, and pi registers the new tool. A report from that session goes to the parent that adopted it.
 
-A message from `agent_send` enters that session over the same connection when its adapter takes messages. The pi extension takes them in any session from 0.1.8 on. Claude Code puts a server's message in a session only when the session started with that server as a channel. A Claude Code session that Bellwether didn't start never did, so `agent_send` types into its pane, and the reply says why.
+A message from `agent_send` enters that session over the same connection when its adapter takes messages. The pi extension takes them in any session from 0.1.8 on. Claude Code puts a server's message in a session only when the session started with that server as a channel. The server reads Claude Code's command line, and takes messages from 0.1.9 on when `--channels` or `--dangerously-load-development-channels` names `plugin:bellwether@…` or `server:bellwether`. Without that flag, `agent_send` types into its pane, and the reply says why.
+
+Claude Code starts its servers before an interactive `--resume` picks a session, and keeps them across a `/resume`. So from 0.1.9 on, the server reads the session Claude Code shows now from `sessions/<pid>.json` in Claude Code's config directory, and says hello again when it changes. A session resumed into the adopted one keeps `parent_report` and its messages.
 
 On the same machine, the daemon finds the parent by the pane. On another machine, the daemon there finds the claim that the parent left at the adoption. It keeps the report in its relay outbox for the parent's daemon to collect.
 

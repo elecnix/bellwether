@@ -14,6 +14,7 @@ import { checkReads } from '../core/reads.ts';
 import { adoptPane } from '../core/adopt.ts';
 import { LOCAL_HOST, hostOf, knownHosts, type ClientFor } from '../core/machine.ts';
 import { spawnResume } from '../core/spawn-resume.ts';
+import { describeBrief } from '../core/brief-delivery.ts';
 import { describeMessages, messageChild, type Inbox } from '../core/send.ts';
 import { RESTART_TOOL, runAgentRestart, type RestartHooks } from '../core/restart.ts';
 import { RETIRE_TOOL, goneCwdLine, realRetireOps, requestRetirement, retireLine, retireOnStop, type RetireOps } from '../core/retire.ts';
@@ -126,7 +127,7 @@ export const parentTools: ToolDefinition[] = [
   },
   {
     name: 'agent_list',
-    description: 'List this session\'s children with status, age and unread events, then each child\'s depth requests and its newest messages from you, with the path each took and whether its model has read it.',
+    description: 'List this session\'s children with status, age and unread events, then each child\'s depth requests, how its newest brief arrived, and its newest messages from you, with the path each took and whether its model has read it. The record keeps a brief\'s delivery on the brief, at children[].briefs[].delivery, because each resume that brings a prompt adds a brief of its own.',
     schema: { type: 'object', properties: {} },
   },
   {
@@ -558,8 +559,9 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
     if (!record.children.length) return 'No children yet. Start one with agent_spawn.';
     const header = 'name\tkind\troute\tstate\tage\thost\tworkspace\tpane\tdepth\tunread\tcwd';
     const depth = record.children.flatMap((child) => describeDepth(child));
+    const briefs = record.children.flatMap((child) => describeBrief(child));
     const messages = record.children.flatMap((child) => describeMessages(child));
-    return [header, ...record.children.map((child) => describeChild(child, ctx.watcher, ctx.relayState)), ...(depth.length ? ['', 'Depth requests and grants:', ...depth] : []), ...(messages.length ? ['', 'Messages to children, newest three each:', ...messages] : [])].join('\n');
+    return [header, ...record.children.map((child) => describeChild(child, ctx.watcher, ctx.relayState)), ...(depth.length ? ['', 'Depth requests and grants:', ...depth] : []), ...(briefs.length ? ['', `Each child's newest brief and how it arrived (on the record, children[].briefs[].delivery):`, ...briefs] : []), ...(messages.length ? ['', 'Messages to children, newest three each:', ...messages] : [])].join('\n');
   }
 
   if (name === 'agent_move') {

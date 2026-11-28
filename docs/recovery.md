@@ -53,6 +53,10 @@ Meanwhile, the daemon waits for herdr to report the caller idle or done, and onl
 
 Killing its own caller mid-call would leave a tool with nowhere to send its answer. Anyone watching would see nothing happen. When a daemon stops during the wait, it runs the request again as soon as the session's service starts next.
 
+A busy session may never end a turn, because each message it takes starts the next one. So while the restart waits, the daemon keeps that session's Bellwether events in the outbox, unread, and the new session receives them when it connects. The wait lasts 5 minutes, and the first reply states that limit. A second call while the restart waits reports what it waits for. It specifies the pane and the status herdr reports for it, with the time that status began. It also lists the held events and the children still working, along with messages delivered to the session by the daemon. `bellwether doctor` prints the same as an `info` line.
+
+When the 5 minutes run out, the restart closes nothing. The record keeps `restartStalled` with the time and the cause. The cause specifies the live turn and the children that were working, and it includes messages delivered to the session during the wait. `restart.log` records `outcome: timeout` with the same cause, and the held events go to the session. The next `agent_restart` call starts a new wait.
+
 That reply includes the new pane, the tab and the session id, so the caller can report them instead of "restart requested".
 
 A restart can close the old pane and then fail to start the session, which leaves the session gone. The record keeps `restartFailed`, with the time, the last pane, its workspace, the error and how to bring the session back. A child's parent receives one `exited` event that says the child did not come back from a restart. `bellwether doctor` prints a `fail` line for each such session, naming it and its last pane, until a restart, a resume or the session's own return clears it. The line in `~/.bellwether/restart.log` records `outcome: failed`.

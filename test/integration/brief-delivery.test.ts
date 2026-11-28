@@ -421,3 +421,30 @@ test('TakenMeansTurn: a stray herdr "working" while the brief is sending, with n
   assert.equal(delivery?.takenAt, undefined, `brief recorded as taken with no model turn: ${JSON.stringify(delivery)}`);
   assert.match(outcome, /BriefNotTaken: stray's Bellwether pi extension received its brief twice/, 'the resend and the failure stay');
 });
+
+// Issue #211, item 2: a brief pushed to a session that never answers may still
+// enter it, so it is neither typed nor sent again.
+test('a brief whose session never answers is neither typed nor sent twice, and the spawn fails by name', async (t) => {
+  const space = await room(t, { briefTurnWaitMs: 500 });
+  const pushes: string[] = [];
+  const clients: DaemonClient[] = [];
+  t.after(async () => {
+    for (const client of clients) await client.close();
+  });
+  space.world.onStart = (pane) => {
+    const child = childInPane(space, pane);
+    if (!child) return;
+    const hello: ParentHello = { harness: 'claude-code', session: `session-${child.id}`, cwd: space.root, host: os.hostname(), paneId: child.paneId, depth: 1, herdrSocket: space.fake.socketPath, childId: child.id, reportsTo: space.parentId, accepts: ['message'] };
+    void DaemonClient.connect(hello, { socketPath: space.socketPath, home: space.home, spawn: false }).then((client) => {
+      clients.push(client);
+      client.onMessage((message) => pushes.push(message.id));
+    });
+  };
+  await assert.rejects(space.parent.tool('agent_spawn', { kind: 'claude', name: 'silent', prompt: BRIEF }), (error: Error) => {
+    assert.match(error.message, /BriefNotTaken: silent's session was pushed its brief as message m-[0-9a-f]{8}, but its session had not answered within 2 s, and its model did not read it and begin a turn on it within 0\.5 s more\. A second copy could enter its session twice, so none went/);
+    return true;
+  });
+  assert.equal(pushes.length, 1, 'one copy, never a second');
+  assert.deepEqual(space.fake.requests.filter((request) => request.method === 'agent.prompt'), [], 'nothing typed');
+  assert.equal(childNamed(space, 'silent'), undefined, 'the failed spawn left no record');
+});

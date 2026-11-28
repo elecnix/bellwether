@@ -84,9 +84,10 @@ Even a `claude`, `pi` or `omp` child can receive a message in its pane. That hap
 - The child is `blocked`. herdr refuses the prompt and shows the dialog, as before.
 - No Bellwether session of the child holds a connection to this daemon.
 - The child is an adopted session whose adapter takes no message, and the reason names that adapter.
-- The session doesn't take the message within 5 seconds.
 
 The reply gives the reason for the pane fallback. Each message takes exactly one of the two paths.
+
+A session that holds the message but doesn't answer within 5 seconds keeps it, and herdr types nothing, because a late answer would leave the child a second copy. The reply says so, and a session that reconnects receives the message again.
 
 A busy child takes a session message after the tool calls in flight and before its next model call. Typed input reaches the child at that same point, so a correction arrives mid-turn instead of after the turn ends. Claude Code queues a channel message the way it queues a typed prompt. The pi extension steers it with `deliverAs: 'steer'`. An idle child starts a turn on the message.
 
@@ -102,7 +103,7 @@ If a child exits before it reads a message, Bellwether raises an exit event iden
 
 A `claude`, `pi` or `omp` child starts without a brief on its launch line. After the harness starts, Bellwether waits for herdr to detect it. Startup questions come first: a session that waits on one can't read a message, so the spawn answers them before anything else. Bellwether then sends the brief through the child's own Bellwether server or extension, the same path `agent_send` takes. It waits up to 30 seconds for that session to connect, then up to 5 seconds for the adapter to receive the brief. That receipt shows only that the message arrived at the adapter. The adapter connects while its harness is still starting, before the model can take a turn, so a brief can arrive at the adapter and never get through to the model. Bellwether then waits up to 20 more seconds for two signs on the same copy: the adapter reports that the model read the message, and herdr reports the harness `working`. Either sign alone can mislead. A read shows only that the message entered the session, and a redraw or a hook while the brief is in flight reports the same status as a turn on it. Without both, Bellwether sends the brief once more and says so in the reply, and a second copy that doesn't get both within another 20 seconds fails the spawn with `BriefNotTaken`, which removes its pane and record. Its pane shows the task itself, not a path to a file.
 
-Bellwether types the brief into the pane instead when the session path isn't available. The fallback covers a harness with no way in, a session that never connects or doesn't take the brief in time, and a far machine whose Bellwether predates the wait. A harness that exits before it takes the brief fails the spawn, and the error quotes the line it printed. A failed spawn doesn't keep a record, so nothing claims that the brief arrived. Bellwether never types a brief at the shell a harness left behind.
+Bellwether types the brief into the pane instead when the session path isn't available. The fallback covers a harness with no way in, a session that never connects, and a far machine whose Bellwether predates the wait. A harness that exits before it takes the brief fails the spawn, and the error quotes the line it printed. A failed spawn doesn't keep a record, so nothing claims that the brief arrived. Bellwether never types a brief at the shell a harness left behind.
 
 `codex`, `cline`, `kilo` and `opencode` keep a one-line pointer to the brief file as the first prompt on their launch line. Those harnesses don't take a message in their sessions. Each one's store shows the session with that prompt, which proves the brief arrived.
 

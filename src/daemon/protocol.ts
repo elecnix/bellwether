@@ -305,8 +305,12 @@ export interface RelayRestartRequest {
   requestId?: string;
 }
 
-/** The text of a relay-message result: the child's session took it, through which adapter, or why not. */
-export type RelayMessageAnswer = { delivered: true; via: string } | { delivered: false; reason: string };
+/**
+ * The text of a relay-message result: the child's session took it, through
+ * which adapter, or why not. `unanswered` marks a push the session had not
+ * answered in time, which the parent's daemon must not type a second time.
+ */
+export type RelayMessageAnswer = { delivered: true; via: string; unanswered?: string } | { delivered: false; reason: string };
 
 /** The text of a relay-adopt result: the child id the claim stands under, and whether this parent already held it. */
 export interface RelayAdoptAnswer {

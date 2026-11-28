@@ -60,7 +60,7 @@ herdr on that machine types the message into the far pane instead, with the reas
 
 - That machine runs a Bellwether that predates `relay-message`. Its daemon answers `unknown_type`, and the reason gives the release that brings the request.
 - The connection to that machine is down.
-- The child's session there never connected to that machine's daemon with an inbox, or it didn't take the message within 5 seconds.
+- The child's session there never connected to that machine's daemon with an inbox.
 
 ## Adopting an agent on another machine
 

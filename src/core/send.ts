@@ -17,8 +17,12 @@ import type { InboxMessage } from '../daemon/protocol.ts';
 
 export type { InboxMessage } from '../daemon/protocol.ts';
 
-/** What the child's session said to a message: it holds it, or why it could not take it. */
-export type InboxAnswer = { delivered: true; via: string } | { delivered: false; reason: string };
+/**
+ * What the child's session said to a message: it holds it, or why it could
+ * not take it. `unanswered` is a push the session had not answered within the
+ * bound: it may still take it, so the message must not be typed as well.
+ */
+export type InboxAnswer = { delivered: true; via: string; unanswered?: string } | { delivered: false; reason: string };
 
 /** How a push into a child's session behaves. */
 export interface InboxOptions {
@@ -50,7 +54,7 @@ export interface Inbox {
 
 /**
  * How long a start's brief waits, after the child's adapter received it, for
- * the model behind that adapter to begin a turn or read it (issue #176). The
+ * the model behind that adapter to read it (issue #176). The
  * adapter connects while the harness is still starting, so its receipt says
  * nothing about the model. A brief that waits this long goes once more, and
  * a second copy that waits as long fails the start.
@@ -72,6 +76,8 @@ const PREVIEW = 80;
 /** What a message became, for the caller's reply. */
 export interface MessageOutcome {
   message: ChildMessage;
+  /** For the session path: why the session's answer is not known yet, when it had not answered within the bound. */
+  unanswered?: string;
   /** The reply for the caller. */
   text: string;
 }
@@ -164,6 +170,13 @@ export async function messageChild(input: MessageInput): Promise<MessageOutcome>
         const found = entry.messages?.find((existing) => existing.id === id);
         if (found) found.via = answer.via;
       });
+      if (answer.unanswered) {
+        return {
+          message,
+          unanswered: answer.unanswered,
+          text: `Pushed to ${child.name}'s session as message ${id}, but ${answer.unanswered}, so nothing was typed into its pane: a session that takes it late would hold two copies. agent_list shows when its model has read it, and a session that reconnects is offered it again.`,
+        };
+      }
       const label = VIA_LABEL[answer.via] ?? answer.via;
       return {
         message,

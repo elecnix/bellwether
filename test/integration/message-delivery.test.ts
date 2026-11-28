@@ -236,17 +236,51 @@ test('a Claude Code child whose session is not connected gets the message typed,
   assert.equal(messagesOf(space, WRITER.id)[0]?.path, 'keystrokes');
 });
 
-test('a session that never takes the message is not waited on forever: the message is typed after the bound, and the reason says so', async (t) => {
+test('a session that does not answer within the bound is not waited on forever, and nothing is typed, because it may still take the message', async (t) => {
   const space = await room(t, [WRITER], { messageAckMs: 300 });
   const pushed: string[] = [];
   await bareChild(t, space, WRITER, (message) => pushed.push(message.id));
+  const began = Date.now();
   const reply = await space.parent.tool('agent_send', { child: 'writer', text: 'Hello?' });
-  assert.match(reply, /because its session did not take the message within 0\.3 s\.$/);
-  assert.equal(pushed.length, 1, 'the session was offered the message first');
-  assert.deepEqual(typed(space.fake, WRITER.pane), ['Hello?']);
+  assert.ok(Date.now() - began < 3_000, 'the reply comes at the bound, not later');
+  assert.match(reply, /^Pushed to writer's session as message m-[0-9a-f]{8}, but its session had not answered within 0\.3 s, so nothing was typed into its pane/);
+  assert.equal(pushed.length, 1, 'the session was offered the message');
+  assert.deepEqual(typed(space.fake, WRITER.pane), [], 'no typed copy beside the one the session holds');
   const [message] = messagesOf(space, WRITER.id);
-  assert.equal(message?.id, pushed[0], 'one record per message, now on the path that carried it');
-  assert.equal(message?.path, 'keystrokes');
+  assert.equal(message?.id, pushed[0], 'one record per message');
+  assert.equal(message?.path, 'session');
+});
+
+// Issue #211, item 2 (Delivery.tla EntersOnce): a message enters exactly one
+// session, once (inSession + typed <= 1).
+test('EntersOnce: an adapter that queues the message after the ack bound must not leave the child with a session copy and a typed copy', async (t) => {
+  const ACK_MS = 300;
+  const LATE_MS = 600;
+  const space = await room(t, [WRITER], { messageAckMs: ACK_MS });
+  const inSession: string[] = [];
+  const timers: NodeJS.Timeout[] = [];
+  t.after(() => {
+    for (const timer of timers) clearTimeout(timer);
+  });
+  await bareChild(t, space, WRITER, (message, _replay, client) => {
+    // The adapter puts the message in the session and acknowledges, but only
+    // after the daemon's bound has run out.
+    timers.push(
+      setTimeout(() => {
+        inSession.push(message.text);
+        client.messageAck(message.id, 'queued', { via: 'claude-channel' });
+      }, LATE_MS),
+    );
+  });
+
+  const reply = await space.parent.tool('agent_send', { child: 'writer', text: 'Run the tests again.' });
+  await new Promise((resolve) => setTimeout(resolve, LATE_MS + 300));
+  const copies = typed(space.fake, WRITER.pane);
+  const record = messagesOf(space, WRITER.id);
+  // Invariant: inSession + typed <= 1.
+  assert.ok(inSession.length + copies.length <= 1, `the message entered the child ${inSession.length + copies.length} times: session copies ${JSON.stringify(inSession)}, typed copies ${JSON.stringify(copies)}; reply: ${reply}; record: ${JSON.stringify(record.map((m) => ({ id: m.id, path: m.path })))}`);
+  assert.equal(inSession.length, 1, 'the session took its copy');
+  assert.deepEqual(record.map((m) => ({ path: m.path, via: m.via })), [{ path: 'session', via: 'claude-channel' }], 'the late answer names the adapter on the record');
 });
 
 test('a blocked child keeps the old refusal: nothing is pushed to its session, herdr refuses the prompt, and the parent gets the dialog', async (t) => {

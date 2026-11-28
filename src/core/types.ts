@@ -179,6 +179,8 @@ export interface BriefDelivery {
   via?: string;
   /** For the session path: when the adapter received the message that carried it. Transport, not reading. */
   receivedAt?: string;
+  /** For the session path: why the adapter's receipt is missing, when its session had not answered within the bound. Nothing was typed. */
+  unanswered?: string;
   /** For the session path: when the adapter reported the model read it. */
   readAt?: string;
   /** For the session path: when the model took it, the later of its read receipt and its first turn. */

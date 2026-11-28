@@ -217,8 +217,8 @@ export class RelayLinks {
     if (host === LOCAL_HOST) throw new Error('a message to a child on this machine goes to its session here');
     // A brief waits on that machine for the child's session to connect, so the answer may take that long too.
     const text = await this.ask(host, 'relay-message', (id) => ({ type: 'relay-message', id, parentId, childId, message, ...(options.awaitSession ? { awaitSession: true } : {}) }), options.awaitSession ? this.readTimeoutMs + BRIEF_SESSION_WAIT_MS : undefined);
-    const answer = JSON.parse(text) as Partial<{ delivered: boolean; via: string; reason: string }>;
-    if (answer.delivered === true && typeof answer.via === 'string') return { delivered: true, via: answer.via };
+    const answer = JSON.parse(text) as Partial<{ delivered: boolean; via: string; reason: string; unanswered: string }>;
+    if (answer.delivered === true && typeof answer.via === 'string') return { delivered: true, via: answer.via, ...(typeof answer.unanswered === 'string' && answer.unanswered ? { unanswered: answer.unanswered } : {}) };
     return { delivered: false, reason: typeof answer.reason === 'string' && answer.reason ? answer.reason : 'its session did not take the message' };
   }
 

@@ -13,7 +13,9 @@
 // session (issue #176), and a `working` names no message, so a redraw or a
 // hook while the brief is in flight looks the same as a turn on it (issue
 // #211). When the two don't both come, the brief goes once more, and when the
-// second copy fares no better, the start fails with BriefNotTaken.
+// second copy fares no better, the start fails with BriefNotTaken. A copy
+// the session never answered does not go again, because the session may
+// still take it.
 //
 // When the session path is not available, herdr types the brief into the pane
 // instead: a harness with no adapter, a session that never connects, or one
@@ -189,6 +191,9 @@ export async function deliverBrief(input: BriefInput): Promise<BriefOutcome> {
     if (outcome.message.path === 'session') {
       const first = outcome.message;
       let sign = await taken(first.id);
+      // A copy the session never answered may still enter it, so a second
+      // copy could reach the model twice. Only a read could prove this one.
+      if (!sign && outcome.unanswered) throw new BriefNotTaken(`${child.name}'s session was pushed its brief as message ${first.id}, but ${outcome.unanswered}, and its model did not read it and begin a turn on it within ${seconds(waitMs)} s more. A second copy could enter its session twice, so none went, the spawn failed and its pane is closed.`);
       if (!sign) {
         // The model did not read the first copy and begin a turn on it: it may
         // have reached the adapter before the session could take a message. The first copy
@@ -215,6 +220,7 @@ export async function deliverBrief(input: BriefInput): Promise<BriefOutcome> {
 /** The delivery a message's outcome records, before the model's sign. */
 function deliveryOf(outcome: MessageOutcome): BriefDelivery {
   const message = outcome.message;
+  if (message.path === 'session' && outcome.unanswered) return { path: 'session', via: message.via ?? 'session', message: message.id, at: message.at, unanswered: outcome.unanswered };
   return message.path === 'session'
     ? { path: 'session', via: message.via ?? 'session', message: message.id, at: message.at, receivedAt: new Date().toISOString() }
     : { path: 'keystrokes', reason: message.reason ?? 'the session path was not available', message: message.id, at: message.at };
@@ -262,6 +268,7 @@ export function deliveryNote(child: Pick<ChildRecord, 'name'>, brief: Pick<Child
   const kept = `The brief stays at ${brief.file}.`;
   if (delivery.path === 'session') {
     const lag = delivery.takenAt && delivery.receivedAt ? seconds(Math.max(0, Date.parse(delivery.takenAt) - Date.parse(delivery.receivedAt))) : undefined;
+    if (delivery.unanswered) return `${child.name}'s session was pushed its brief as message ${delivery.message}, but ${delivery.unanswered}, and its model read it and began a turn on it${lag ? ` ${lag} s later` : ''}; nothing was typed into its pane. ${kept}`;
     const sign = delivery.takenBy === 'read' ? `its model read it${lag ? ` ${lag} s later` : ''}` : delivery.takenBy === 'turn' ? `its model ${delivery.readAt ? 'read it and ' : ''}began a turn on it${lag ? ` ${lag} s later` : ''}` : 'Bellwether did not see its model take it';
     if (delivery.resentFrom) return `${child.name}'s model did not read its brief and begin a turn on it within ${seconds(waitMs)} s of its ${viaLabel(delivery.via)} receiving its brief as message ${delivery.resentFrom}, so Bellwether sent the brief once more as message ${delivery.message}, and ${sign}; nothing was typed into its pane. ${kept}`;
     return `${child.name}'s ${viaLabel(delivery.via)} received its brief as message ${delivery.message}, and ${sign}; nothing was typed into its pane. ${kept}`;

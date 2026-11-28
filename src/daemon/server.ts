@@ -181,7 +181,11 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
   // A parent's message waits here for the child's session to take it.
   const messageAckMs = options.messageAckMs ?? MESSAGE_ACK_MS;
   const inboxWaits = new Map<string, { socket: net.Socket; settle: (answer: InboxAnswer) => void }>();
-  /** Messages whose wait ran out, so a late acceptance is logged as a second copy. */
+  /**
+   * Messages pushed to a session that had not answered when the wait ran out.
+   * Nothing types them, because the session may still take its copy, and a
+   * late answer lands on the record here.
+   */
   const lapsed = new Set<string>();
   // A start's brief waits here for the child's session to say hello.
   const sessionWaitMs = options.sessionWaitMs ?? BRIEF_SESSION_WAIT_MS;
@@ -302,7 +306,10 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
       const timer = setTimeout(() => {
         inboxWaits.delete(message.id);
         lapsed.add(message.id);
-        resolve({ delivered: false, reason: `its session did not take the message within ${Math.round(messageAckMs / 100) / 10} s` });
+        // The push left on a live connection, so the session may still take
+        // it. A typed copy now would enter the child a second time when its
+        // late answer comes, so the message stays on the session path.
+        resolve({ delivered: true, via: 'session', unanswered: `its session had not answered within ${Math.round(messageAckMs / 100) / 10} s` });
       }, messageAckMs);
       timer.unref?.();
       inboxWaits.set(message.id, {
@@ -366,15 +373,42 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
     for (const message of unread) if (socket.writable) socket.write(formatReply({ type: 'message', message, replay: true }));
   };
 
+  /** A session's answer to a message whose wait ran out: the record takes the adapter, or the refusal. */
+  const lateAnswer = (socket: net.Socket, ack: MessageAckRequest): void => {
+    const entry = attached.get(socket);
+    const childId = entry ? childIdOf(entry) : undefined;
+    const found = childId ? localParentOf(childId) : undefined;
+    if (ack.outcome === 'refused') {
+      if (childId && !found) keepRelayMessage(childId, undefined, ack.id);
+      if (found && childId)
+        updateChild(found.parent.id, childId, (child) => {
+          const message = child.messages?.find((each) => each.id === ack.id);
+          if (!message || message.readAt) return;
+          message.undelivered = ack.reason ? `its session refused the message after its wait ran out: ${ack.reason}` : 'its session refused the message after its wait ran out';
+          delete message.text;
+          delete message.from;
+        });
+      log(`message ${ack.id} was refused by the child's session after its wait ran out`);
+      return;
+    }
+    if (found && childId && ack.via)
+      updateChild(found.parent.id, childId, (child) => {
+        const message = child.messages?.find((each) => each.id === ack.id);
+        if (message) message.via = ack.via;
+      });
+    log(`message ${ack.id} reached the child's session after its wait ran out; nothing was typed`);
+  };
+
   /** An adapter's answer about one message. A read lands on the child's record, whichever daemon pushed it. */
   const messageAck = (socket: net.Socket, ack: MessageAckRequest): void => {
     const wait = inboxWaits.get(ack.id);
     if (ack.outcome === 'refused') {
+      if (!wait && lapsed.delete(ack.id)) lateAnswer(socket, ack);
       wait?.settle({ delivered: false, reason: ack.reason ? `its session refused the message: ${ack.reason}` : 'its session refused the message' });
       return;
     }
+    if (!wait && lapsed.delete(ack.id)) lateAnswer(socket, ack);
     wait?.settle({ delivered: true, via: ack.via ?? 'session' });
-    if (!wait && ack.outcome === 'queued' && lapsed.has(ack.id)) log(`message ${ack.id} reached the child's session after its wait ran out, so the child also has the typed copy`);
     if (ack.outcome !== 'read') return;
     const entry = attached.get(socket);
     const childId = entry ? childIdOf(entry) : undefined;
@@ -753,7 +787,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
         keepRelayMessage(request.childId, request.message);
         const answer = await sessionInbox({ id: record.childId, name: record.name, kind: record.kind }, request.message);
         if (!answer.delivered) keepRelayMessage(request.childId, undefined, request.message.id);
-        log(`relay-message ${request.message.id} for child ${request.childId}: ${answer.delivered ? `taken by its session (${answer.via})` : answer.reason}`);
+        log(`relay-message ${request.message.id} for child ${request.childId}: ${answer.delivered ? (answer.unanswered ? `pushed to its session, which ${answer.unanswered.replace(/^its session /, '')}` : `taken by its session (${answer.via})`) : answer.reason}`);
         reply({ type: 'result', id: request.id, text: JSON.stringify(answer) });
         return;
       }

@@ -41,13 +41,13 @@ After the release, follow [upgrading.md](upgrading.md) on each machine.
 `prBody` in `scripts/release.ts` writes the description of the release pull request from four parts, in this order:
 
 1. The version it moves to, and the release before it.
-2. A list headed "What <version> changes", with one line for each entry of `BEHAVIORS` in `src/daemon/features.ts` whose `version` is the version released. Each line gives the entry's summary and the pull requests that brought it.
+2. A list headed "What <version> changes", with one line for each note under `release-notes/<version>/`. Each line gives the note's text and the pull requests that brought it, in the order they merged.
 3. A list headed "What <version> adds to the protocol", with one line for each entry of `FEATURES` whose `version` is the version released. Tools come first, then requests, notices and arguments. A harness entry with `since` counts as the argument `agent_spawn.kind=<kind>`, so a new harness appears in its release.
 4. Whether the daemon protocol moves, with the steps for a protocol change when it does.
 
-A reader learns what the release does before what it adds to the wire. When a list would be empty, the description says so in one line. The script reads both tables from the `release-<version>` worktree, so the lists match the commit it releases.
+A reader learns what the release does before what it adds to the wire. When a list would be empty, the description says so in one line. The script reads the notes and the table from the `release-<version>` worktree, so the lists match the commit it releases.
 
-Each entry's `summary` is one sentence, and the line repeats it. `npm run check:prose` lints the description for every version either table names, so a summary that fails Vale fails the `prose` job before it can fail a release. `test/unit/release.test.ts` fails when the description for a version leaves out an entry recorded under it.
+Each note and each entry's `summary` is one paragraph, and the line repeats it. `npm run check:prose` lints the description for every version a note or the table names, so a note that fails Vale fails the `prose` job before it can fail a release. `test/unit/release.test.ts` fails when the description for a version leaves out an entry recorded under it.
 
 ## Each merged pull request needs a line
 
@@ -61,10 +61,33 @@ None of them was a wire feature, so nothing prompted an entry ([#157](https://gi
 
 Before its gates, the script lists the pull requests merged into `origin/main` since the commit that set `package.json` to the previous release. Main takes squash merges, so the number at the end of each first-parent subject names the pull request. Each one's labels come from `gh pr view`. The release stops when a pull request has neither of these:
 
-- an entry under the release's version whose `prs` names it: a `BEHAVIORS` entry for a change in what Bellwether does, or the `prs` of a `FEATURES` entry for a tool, request, notice or argument;
+- a note under `release-notes/<version>/` for a change in what Bellwether does, or the `prs` of a `FEATURES` entry for a tool, request, notice or argument;
 - the `release-note: none` label, for a change a person would not read about. Examples are a test fix, a typo, a dependency bump and a fix to the release tooling.
 
-The error lists each such pull request with its title and how to add either one. It stops before any push or stage, so summaries go in through a pull request of their own, never mid-release. Add the entry in the change's own pull request once you know its number, or add the label when you review it.
+The error lists each such pull request with its title and how to add either one. It stops before any push or stage, so notes go in through a pull request of their own, never mid-release.
+
+## A note is a file of its own
+
+A change in behavior adds one file, `release-notes/<version>/<name>.md`, in its own pull request. Its one paragraph says what someone can now do, or what now happens. Name it after the change, in lowercase letters, digits, dots and hyphens:
+
+```markdown
+Doctor gives each SSH call of its move check 6 s, and reports a machine that does not answer in time as unknown.
+```
+
+The note doesn't need the pull request's number, which doesn't exist while you write it. Main takes squash merges, so the commit that adds the file ends with `(#N)`, and the release reads the number from that commit. A later edit to the file keeps it on the pull request that added it.
+
+A note that a later pull request adds, for a change that merged without one, names that change in front matter. Otherwise the release would credit the note to the later pull request:
+
+```markdown
+---
+prs: [181]
+---
+A spawn counts a brief taken once the child's model begins a turn on it or reads it.
+```
+
+Front matter also covers a note for several pull requests, and a note moved to another version's directory, because git records a move as a rename rather than an addition.
+
+Until 0.1.9, every note was a line in one array in `src/daemon/features.ts`. Each pull request appended to its end, so two pull requests open together conflicted on adjacent lines. One pull request merged `main` three times in twenty minutes for that reason, and each merge cost a full CI run ([#182](https://github.com/elecnix/bellwether/issues/182)). Each pull request now adds a file of its own, and git merges them without a conflict. `test/unit/release-notes.test.ts` shows both against a real repository. The entries already recorded moved to files that name their pull requests in front matter.
 
 ## A release that changes the daemon protocol
 

@@ -13,7 +13,7 @@
 //      into throwaway global prefixes as a user would, and stage it.
 //   4. An open pull request from release/<version>: merge it once CI is green.
 //   5. Nothing yet: refuse a dirty tree or a red main, stop on a pull request
-//      merged since the last release that features.ts has no line for, run the
+//      merged since the last release that no release note names, run the
 //      gates in a worktree of origin/main, bump the version fields, push, open
 //      the pull request and merge it once CI is green.
 //
@@ -27,7 +27,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import type { Behavior, Feature } from '../src/daemon/features.ts';
+import type { Feature } from '../src/daemon/features.ts';
+import { ADDED_NOTES_LOG, addedBy, NOTES_DIR, readNotes, resolvePrs, type Behavior } from './release-notes.ts';
 import { bylineVersion, SITE_URL } from './site-version.ts';
 
 export const PACKAGE = '@elecnix/bellwether';
@@ -166,13 +167,14 @@ export function featureLine(feature: Feature): string {
 
 /** One release-note line for a change in behavior: its summary, then the pull requests that brought it. */
 export function behaviorLine(behavior: Behavior): string {
-  return `- ${behavior.summary} (${behavior.prs.map((number) => `#${number}`).join(', ')})`;
+  const prs = behavior.prs.length > 0 ? ` (${behavior.prs.map((number) => `#${number}`).join(', ')})` : '';
+  return `- ${behavior.summary}${prs}`;
 }
 
 /**
- * The release pull request's description. It lists every entry of
- * `src/daemon/features.ts` whose version is the one released: first what the
- * release does, from BEHAVIORS, then what it adds to the protocol, from
+ * The release pull request's description. It lists every entry recorded
+ * under the version released: first what the release does, from the notes
+ * under release-notes/<version>/, then what it adds to the protocol, from
  * FEATURES. A reader learns what changes for them before what the wire speaks.
  */
 export function prBody(version: string, previous: string | undefined, change: ProtocolChange | undefined, features: readonly Feature[], behaviors: readonly Behavior[] = []): string {
@@ -183,9 +185,9 @@ export function prBody(version: string, previous: string | undefined, change: Pr
   ];
   const changed = behaviors.filter((behavior) => behavior.version === version);
   if (changed.length > 0) {
-    lines.push(`## What ${version} changes`, '', `\`src/daemon/features.ts\` records these changes in behavior under ${version}:`, '', ...changed.map(behaviorLine), '');
+    lines.push(`## What ${version} changes`, '', `The notes in \`${NOTES_DIR}/${version}/\` record these changes in behavior:`, '', ...changed.map(behaviorLine), '');
   } else {
-    lines.push(`\`src/daemon/features.ts\` doesn't record a change in behavior under ${version}.`, '');
+    lines.push(`\`${NOTES_DIR}/${version}/\` is empty.`, '');
   }
   const added = features
     .filter((feature) => feature.version === version)
@@ -212,8 +214,8 @@ export const NO_ENTRY_LABEL = 'release-note: none';
 export interface MergedPr { number: number; title: string; labels: readonly string[] }
 
 /**
- * The merged pull requests that neither an entry under `version` names in its
- * `prs`, nor the NO_ENTRY_LABEL marks. Each one shipped something the release
+ * The merged pull requests that neither a note or entry under `version`
+ * names in its `prs`, nor the NO_ENTRY_LABEL marks. Each one shipped something the release
  * pull request would not mention.
  */
 export function unrecorded(version: string, merged: readonly MergedPr[], features: readonly Feature[], behaviors: readonly Behavior[]): MergedPr[] {
@@ -221,29 +223,29 @@ export function unrecorded(version: string, merged: readonly MergedPr[], feature
   return merged.filter((pr) => !named.has(pr.number) && !pr.labels.includes(NO_ENTRY_LABEL));
 }
 
-/** The error for a release with merged pull requests that features.ts has no line for. */
+/** The error for a release with merged pull requests that no note names. */
 export function unrecordedMessage(version: string, previous: string, missing: readonly MergedPr[]): string {
   return [
-    `${missing.length === 1 ? 'One pull request' : `${missing.length} pull requests`} merged since ${previous} ${missing.length === 1 ? 'has' : 'have'} no entry under ${version} in src/daemon/features.ts:`,
+    `${missing.length === 1 ? 'One pull request' : `${missing.length} pull requests`} merged since ${previous} ${missing.length === 1 ? 'has' : 'have'} no note in ${NOTES_DIR}/${version}/ and no entry under ${version} in src/daemon/features.ts:`,
     '',
     ...missing.map((pr) => `  #${pr.number} ${pr.title}`),
     '',
-    `Give each one a line: a BEHAVIORS entry with its number in \`prs\`, or its number in the \`prs\` of the tool, request, notice or argument it added. `
+    `Give each one a note: a file ${NOTES_DIR}/${version}/<name>.md that holds one paragraph. A note added by a later pull request names the one it describes in front matter, \`prs: [<number>]\`, because the release otherwise reads the number from the commit that added the file. `
+      + `A wire change can instead put its number in the \`prs\` of the tool, request, notice or argument it added. `
       + `A pull request that changes nothing a person would read about, such as a test, a typo or a dependency bump, takes the \`${NO_ENTRY_LABEL}\` label instead (\`gh pr edit <number> -R ${REPO} --add-label '${NO_ENTRY_LABEL}'\`). `
       + `Merge the entries through a pull request, then run \`npm run release -- ${version}\` again. Nothing was pushed or staged.`,
   ].join('\n');
 }
 
 /**
- * The tables of the tree being released, which can be newer than the
+ * The feature table of the tree being released, which can be newer than the
  * checkout running this script.
  */
-async function treeTables(tree: string): Promise<{ features: readonly Feature[]; behaviors: readonly Behavior[] }> {
+async function treeFeatures(tree: string): Promise<readonly Feature[]> {
   const file = path.join(tree, 'src/daemon/features.ts');
-  const loaded = (await import(pathToFileURL(file).href)) as { FEATURES?: readonly Feature[]; BEHAVIORS?: readonly Behavior[] };
+  const loaded = (await import(pathToFileURL(file).href)) as { FEATURES?: readonly Feature[] };
   if (!Array.isArray(loaded.FEATURES)) throw new ReleaseError(`${file} exports no FEATURES, so the release pull request cannot list what ${tree} adds`);
-  if (!Array.isArray(loaded.BEHAVIORS)) throw new ReleaseError(`${file} exports no BEHAVIORS, so the release pull request cannot list what ${tree} changes`);
-  return { features: loaded.FEATURES, behaviors: loaded.BEHAVIORS };
+  return loaded.FEATURES;
 }
 
 export async function release(options: ReleaseOptions, deps: ReleaseDeps): Promise<Outcome> {
@@ -490,7 +492,7 @@ class Release {
     await this.refuseRedMain(top);
     const tree = await this.worktree(top);
     await this.must('npm', ['ci'], { cwd: tree, inherit: true });
-    const tables = await treeTables(tree);
+    const tables = await this.treeTables(tree);
     await this.refuseUnrecorded(tree, latest, tables);
     await this.syncStyles(tree);
     for (const args of [['run', 'typecheck'], ['test'], ['run', 'doctor']]) {
@@ -518,19 +520,36 @@ class Release {
   }
 
   /**
+   * The feature table and the release notes of the tree being released. A
+   * note that names no pull request takes the one whose squash commit added
+   * its file.
+   */
+  private async treeTables(tree: string): Promise<{ features: readonly Feature[]; behaviors: readonly Behavior[] }> {
+    const features = await treeFeatures(tree);
+    let notes;
+    try {
+      notes = readNotes(tree);
+    } catch (error) {
+      throw new ReleaseError(`a release note in ${tree} cannot be read: ${(error as Error).message}`);
+    }
+    const added = addedBy(await this.must('git', ADDED_NOTES_LOG, { cwd: tree }));
+    return { features, behaviors: resolvePrs(notes, added) };
+  }
+
+  /**
    * Stop before the gates when a pull request merged since `previous` has no
    * entry under this version and no NO_ENTRY_LABEL. The entries go in through
    * a pull request of their own, so nobody writes a summary mid-release.
    */
   private async refuseUnrecorded(tree: string, previous: string | undefined, tables: { features: readonly Feature[]; behaviors: readonly Behavior[] }): Promise<void> {
     if (!previous) {
-      this.deps.log('npm serves no earlier release, so no merged pull request is checked against src/daemon/features.ts');
+      this.deps.log(`npm serves no earlier release, so no merged pull request is checked against ${NOTES_DIR}/ and src/daemon/features.ts`);
       return;
     }
     const merged = await this.mergedSince(tree, previous);
     const missing = unrecorded(this.version, merged, tables.features, tables.behaviors);
     if (missing.length > 0) throw new ReleaseError(unrecordedMessage(this.version, previous, missing));
-    this.deps.log(`each of the ${merged.length} pull requests merged since ${previous} has an entry under ${this.version} or the ${NO_ENTRY_LABEL} label`);
+    this.deps.log(`each of the ${merged.length} pull requests merged since ${previous} has a note or entry under ${this.version}, or the ${NO_ENTRY_LABEL} label`);
   }
 
   /**

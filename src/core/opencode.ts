@@ -24,7 +24,6 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { channelEntry, MCP_SERVER_NAME } from './mcp-config.ts';
 import { mcpConfigPath, mcpDir } from './paths.ts';
-import { nodeCommand, stablePath } from './stable-path.ts';
 
 /** The OpenCode major version the harness speaks. */
 export const OPENCODE_MAJOR = 2;
@@ -159,7 +158,7 @@ export function openCodeMcpConfig(childId: string, environment: Record<string, s
     ...(model ? { model } : {}),
     mcp: {
       servers: {
-        [MCP_SERVER_NAME]: { type: 'local', command: [nodeCommand(), '--disable-warning=ExperimentalWarning', stablePath(channelEntry()), '--child', childId], environment },
+        [MCP_SERVER_NAME]: { type: 'local', command: [process.execPath, '--disable-warning=ExperimentalWarning', channelEntry(), '--child', childId], environment },
       },
     },
   };

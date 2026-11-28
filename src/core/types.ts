@@ -204,8 +204,7 @@ export interface RestartStall {
 }
 
 /** What the parent is told about a child. */
-/** `peer-message` is no child's event: a message from a peer the session holds an address for (issue #262). */
-export type ChildEventKind = 'report' | 'idle' | 'blocked' | 'stuck' | 'inactive' | 'exited' | 'peer-message';
+export type ChildEventKind = 'report' | 'idle' | 'blocked' | 'stuck' | 'inactive' | 'exited';
 
 /** The three things a child can report through parent_report. */
 export type ReportStatus = 'done' | 'needs-input' | 'progress';
@@ -364,6 +363,13 @@ export interface ChildRecord {
   statusChangedAt: string;
   /** herdr's completion_seq for the last finished turn. */
   completionSeq?: number;
+  /**
+   * The pane whose herdr gave `completionSeq`. herdr numbers each pane's turns
+   * on its own, so a number from an earlier pane says nothing about the pane
+   * the child runs in after a restart, resume, move or teleport (issue #271).
+   * A record without it holds a number from the pane its `turnNotified` names.
+   */
+  completionPane?: string;
   /** The child's transcript file, when its harness keeps one. Kept after exit. */
   transcript?: string;
   /**
@@ -425,6 +431,17 @@ export interface ChildRecord {
    * own count of turns ends for a pane herdr does not number.
    */
   turnNotified?: { paneId: string; seq: number };
+  /**
+   * Set when the child runs in a pane where the parent has heard of no turn
+   * yet, after a restart, resume, move or teleport gave it that pane (issue
+   * #271). The parent heard every turn of the earlier panes, so the resumed
+   * session's first settled screen is not a turn, and neither is a number
+   * herdr shows there before the child works. `seq` is the number herdr showed
+   * then, and `worked` says the child has since worked in this pane, so its
+   * next ready status ends a turn. The field goes once a turn in this pane is
+   * notified, which `turnNotified` then names. It never proves a brief read.
+   */
+  turnBaseline?: { paneId: string; seq?: number; worked?: true };
   /** The last time the child's transcript or screen moved. */
   lastBusyAt: string;
   /**
@@ -815,33 +832,7 @@ export interface ParentRecord {
   label?: string;
   /** The roster line this parent last received with an alert, without its age, and when (issue #146). */
   rosterSent?: { at: string; line: string };
-  /**
-   * The children this session freed (issue #262), out of `children` so that no
-   * watcher, roster, relay link count or report route reads them as children.
-   * Each keeps who it was and when it left, and nothing of its briefs, events
-   * or reports. The pair's token sits in each side's peer book, not here.
-   */
-  freed?: FreedChild[];
   updatedAt: string;
-}
-
-/** A child its parent freed: who it was, and when and why it left the registry (issue #262). */
-export interface FreedChild {
-  /** The child id, which stays its address. */
-  id: string;
-  name: string;
-  kind: string;
-  harness: string;
-  host: string;
-  cwd?: string;
-  startedAt: string;
-  session?: ChildSession;
-  /** The pane it ran in when it was freed. */
-  paneId: string;
-  freedAt: string;
-  /** The address of the session that freed it. */
-  freedBy: string;
-  reason?: string;
 }
 
 /** One pending message for the parent, keyed by child until it is delivered. */
@@ -895,12 +886,6 @@ export interface SpoolReport {
    * already landed is accepted once.
    */
   receipt?: string;
-  /**
-   * Set on a line that carries no report but a message from a peer (issue
-   * #262): the sender's address and name. The daemon that wrote the line
-   * checked the pair's token first.
-   */
-  peer?: { from: string; name: string; kind: string; id: string };
 }
 
 /**

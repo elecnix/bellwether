@@ -42,7 +42,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bellwetherHome, claudeSettingsDir, claudeSettingsPath } from './paths.ts';
-import { nodeCommand, stablePath } from './stable-path.ts';
 
 /** The notification types that mean a dialog waits on the person. */
 export const DIALOG_NOTIFICATIONS = ['permission_prompt', 'elicitation_dialog', 'elicitation_url_dialog'] as const;
@@ -68,7 +67,7 @@ function shellQuote(value: string): string {
 
 /** The command line the child's hook runs: this Node, the command entry, the child id. */
 export function hookCommand(childId: string): string {
-  return [nodeCommand(), '--disable-warning=ExperimentalWarning', stablePath(cliEntry()), HOOK_COMMAND, '--child', childId].map(shellQuote).join(' ');
+  return [process.execPath, '--disable-warning=ExperimentalWarning', cliEntry(), HOOK_COMMAND, '--child', childId].map(shellQuote).join(' ');
 }
 
 /**

@@ -10,7 +10,6 @@ import { MODAL_LINE_LIMIT } from './modal.ts';
 import { readRelayRecord, type RelayRecord } from './relay-records.ts';
 import type { CallerIdentity, ChildRecord, ParentRecord, ReportStatus, ReportVia, SpoolReport } from './types.ts';
 import { harnessNamed } from './harnesses/index.ts';
-import { freedOf, freedRefusal } from './peers.ts';
 
 export function harnessForEnv(): string {
   if (process.env['BELLWETHER_HARNESS']) return process.env['BELLWETHER_HARNESS'];
@@ -113,9 +112,6 @@ export type ReportRoute = { kind: 'local'; parent: ParentRecord; child: ChildRec
  * connects to this machine to collect it.
  */
 export function routeReport(input: Pick<ReportInput, 'parentId' | 'childId' | 'paneId'>): ReportRoute {
-  // A freed agent has no parent to take a report, from its tool or its shell (issue #262).
-  const freed = freedOf(input.childId);
-  if (freed) throw new Error(freedRefusal('A report', freed));
   if (input.parentId) {
     const parent = readParent(input.parentId);
     const child = parent?.children.find((entry) => entry.id === input.childId);

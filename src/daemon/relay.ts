@@ -266,44 +266,11 @@ export class RelayOutbox {
     this.log(`relay: kept the answer of restart ${requestId} of child ${record.childId} for parent ${record.parentId}${listeners.length ? ', and sent it' : ', whose daemon is not connected'}`);
   }
 
-  /**
-   * A freed child on this machine sends its former parent a message (issue
-   * #262). It waits in the outbox as a report does, under the parent's
-   * registry id, which that parent's daemon subscribes to, and carries the
-   * pair's token, which that daemon checks before the session sees it.
-   */
-  async peer(record: RelayRecord, registryId: string, peer: NonNullable<ForwardEntry['peer']>, text: string, toName: string): Promise<string> {
-    const entry: ForwardEntry = { receipt: newReportReceipt(), childId: record.childId, parentId: registryId, status: 'progress', text, at: new Date(this.now()).toISOString(), peer };
-    const tooLong = overLong(entry);
-    if (tooLong) throw new Error(`peer_send ${tooLong} Nothing was saved. Send a shorter message.`);
-    saveForward(entry);
-    this.settleRecord(entry.childId, false);
-    const listeners = [...this.subscribers].filter((subscriber) => subscriber.parentIds.has(entry.parentId));
-    const saved = `saved as ${entry.receipt} in ${relayOutboxPath(entry.receipt)}`;
-    if (!listeners.length) return `Sent to ${toName} as message ${peer.id}: its daemon runs on another machine and is not connected to this one now, so the message is ${saved}, and that daemon collects it when it connects. Do not send it again.`;
-    const outcome = new Promise<Outcome | undefined>((resolve) => {
-      const timer = setTimeout(() => {
-        this.acks.delete(entry.receipt);
-        resolve(undefined);
-      }, this.ackWaitMs);
-      timer.unref?.();
-      this.acks.set(entry.receipt, (result) => {
-        clearTimeout(timer);
-        resolve(result);
-      });
-    });
-    for (const listener of listeners) listener.send(toReport(entry));
-    const result = await outcome;
-    if (!result) return `Sent to ${toName} as message ${peer.id}: its daemon has not acknowledged it yet. It is ${saved}, and it goes again whenever that daemon reconnects. Do not send it again.`;
-    if (result.refused) throw new Error(`${toName}'s daemon refused the message: ${result.refused}. It stays in ${relayOutboxPath(entry.receipt)} and does not go again.`);
-    return `Sent to ${toName} (${peer.to}) as message ${peer.id}: it reaches that session as an event at its next turn.`;
-  }
-
   /** Say on the child's relay record how many of its reports wait, and remove the record of a gone child once none does. */
   private settleRecord(childId: string, forwarded: boolean): void {
     const pending = this.waiting().filter((entry) => entry.childId === childId);
     // A read, a restart answer or a retirement request waits like a report, but it is not one, so the count a person sees leaves it out.
-    const waiting = pending.filter((entry) => !entry.messageRead && !entry.restartAnswer && !entry.retire && !entry.teleport && !entry.peer).length;
+    const waiting = pending.filter((entry) => !entry.messageRead && !entry.restartAnswer && !entry.retire && !entry.teleport).length;
     if (pending.length === 0 && readRelayRecord(childId)?.retiredAt) {
       removeRelayRecord(childId);
       this.log(`relay: removed the record of child ${childId}, which is gone and has no report left to collect`);
@@ -329,5 +296,5 @@ function overLong(entry: ForwardEntry): string | undefined {
 }
 
 function toReport(entry: ForwardEntry): RelayReport {
-  return { receipt: entry.receipt, childId: entry.childId, parentId: entry.parentId, status: entry.status, text: entry.text, at: entry.at, ...(entry.via ? { via: entry.via } : {}), ...(entry.toolOffered !== undefined ? { toolOffered: entry.toolOffered } : {}), ...(entry.messageRead ? { messageRead: entry.messageRead } : {}), ...(entry.restartAnswer ? { restartAnswer: entry.restartAnswer } : {}), ...(entry.retire ? { retire: entry.retire } : {}), ...(entry.teleport ? { teleport: entry.teleport } : {}), ...(entry.peer ? { peer: entry.peer } : {}) };
+  return { receipt: entry.receipt, childId: entry.childId, parentId: entry.parentId, status: entry.status, text: entry.text, at: entry.at, ...(entry.via ? { via: entry.via } : {}), ...(entry.toolOffered !== undefined ? { toolOffered: entry.toolOffered } : {}), ...(entry.messageRead ? { messageRead: entry.messageRead } : {}), ...(entry.restartAnswer ? { restartAnswer: entry.restartAnswer } : {}), ...(entry.retire ? { retire: entry.retire } : {}), ...(entry.teleport ? { teleport: entry.teleport } : {}) };
 }

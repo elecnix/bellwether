@@ -8,7 +8,6 @@ import path from 'node:path';
 import test from 'node:test';
 import { HerdrClient } from '../../src/core/herdr-client.ts';
 import { channelEntry } from '../../src/core/mcp-config.ts';
-import { stablePath } from '../../src/core/stable-path.ts';
 import { DIALOG_NOTIFICATIONS, cliEntry } from '../../src/core/claude-hooks.ts';
 import { claudeSettingsPath } from '../../src/core/paths.ts';
 import { mcpConfigPath, promptPath } from '../../src/core/paths.ts';
@@ -164,12 +163,11 @@ test('a Claude Code spawn hands the child its own MCP server through a private -
     assert.deepEqual(Object.keys(config.mcpServers), ['bellwether']);
     const server = config.mcpServers['bellwether'];
     assert.ok(server);
-    // The Node and entry that outlive a brew upgrade (issue #266).
-    assert.equal(server.command, stablePath(process.execPath));
+    assert.equal(server.command, process.execPath);
     assert.equal(server.env, undefined, 'no identity rides in a process environment');
     const entry = server.args.find((arg) => /integrations[\\/]claude[\\/]channel\.(ts|js)$/.test(arg));
     assert.ok(entry && fs.existsSync(entry), `the packaged channel entry is missing from ${JSON.stringify(server.args)}`);
-    assert.equal(entry, stablePath(channelEntry()));
+    assert.equal(entry, channelEntry());
 
     // The server names its child by the record the daemon holds, and that id
     // is the one the tab's environment carries.
@@ -205,8 +203,8 @@ test('a Claude Code spawn gives the child its own settings, whose Notification h
     assert.deepEqual(entry.matcher.split('|').sort(), [...DIALOG_NOTIFICATIONS].sort());
     assert.equal(entry.matcher.includes('idle_prompt'), false, 'a finished turn is not a dialog');
     const command = entry.hooks[0]?.command ?? '';
-    assert.ok(command.includes(`'${stablePath(cliEntry())}' 'claude-hook' '--child' '${child.id}'`), command);
-    assert.ok(command.startsWith(`'${stablePath(process.execPath)}'`), command);
+    assert.ok(command.includes(`'${cliEntry()}' 'claude-hook' '--child' '${child.id}'`), command);
+    assert.ok(command.startsWith(`'${process.execPath}'`), command);
   } finally {
     await space.close();
   }

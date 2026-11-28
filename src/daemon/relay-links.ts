@@ -30,7 +30,6 @@ import { ClaimRefused, type PaneClaim } from '../core/pane-claims.ts';
 import { STARTUP_TIMEOUT_MS } from '../core/spawn.ts';
 import { RelayAnswerLost } from '../core/relay-answer.ts';
 import type { RelayRestartAnswer, RelayRestartAsk } from '../core/restart.ts';
-import type { RelayFreeAsk } from '../core/free.ts';
 
 export interface RelayLinksOptions {
   /** Turns a child's herdr machine into its SSH target. Defaults to herdr's saved machines. */
@@ -64,7 +63,7 @@ export type RelayOutcome = { refused?: string; answer?: string };
 
 interface PendingRead {
   /** The request type, so a far daemon that does not know it can be answered for the requests it refused. */
-  type: 'relay-read' | 'relay-adopt' | 'relay-message' | 'relay-message-again' | 'relay-restart' | 'relay-free';
+  type: 'relay-read' | 'relay-adopt' | 'relay-message' | 'relay-message-again' | 'relay-restart';
   resolve: (text: string) => void;
   reject: (error: Error) => void;
   timer: NodeJS.Timeout;
@@ -105,8 +104,6 @@ interface Wanted {
   children: string[];
   /** The newest exit among them that came after the last drain. */
   exitedSinceDrain: number;
-  /** Freed children there that a parent here still exchanges messages with (issue #262). They keep the link, and are no child it waits for. */
-  peers?: string[];
 }
 
 export class RelayLinks {
@@ -183,7 +180,7 @@ export class RelayLinks {
     if (this.stopped) return;
     const wanted = this.wanted();
     for (const [host, want] of wanted) {
-      const needed = want.children.length > 0 || (want.peers?.length ?? 0) > 0 || (this.pins.get(host) ?? 0) > 0;
+      const needed = want.children.length > 0 || (this.pins.get(host) ?? 0) > 0;
       if (!needed) continue;
       const parentIds = [...want.parentIds].sort();
       let link = this.links.get(host);
@@ -200,7 +197,7 @@ export class RelayLinks {
     }
     for (const [host, link] of this.links) {
       const want = wanted.get(host);
-      if ((want && (want.children.length > 0 || (want.peers?.length ?? 0) > 0)) || (this.pins.get(host) ?? 0) > 0) continue;
+      if ((want && want.children.length > 0) || (this.pins.get(host) ?? 0) > 0) continue;
       // Ended rather than killed: an acknowledgement written just before, such as the last one a drain waited for, still reaches the far daemon.
       this.close(link, 'no child there needs it', true);
       this.links.delete(host);
@@ -245,12 +242,12 @@ export class RelayLinks {
    * With `again`, it asks about a message whose first answer was lost: the
    * daemon there answers from its record and pushes it only if it never did.
    */
-  async message(host: string, parentId: string, childId: string, message: InboxMessage, options: { awaitSession?: boolean; again?: boolean; peer?: { from: string; token: string } } = {}): Promise<RelayMessageAnswer> {
+  async message(host: string, parentId: string, childId: string, message: InboxMessage, options: { awaitSession?: boolean; again?: boolean } = {}): Promise<RelayMessageAnswer> {
     if (host === LOCAL_HOST) throw new Error('a message to a child on this machine goes to its session here');
     const type = options.again ? 'relay-message-again' : 'relay-message';
     const awaitSession = options.awaitSession === true && !options.again;
     // A brief waits on that machine for the child's session to connect, so the answer may take that long too.
-    const text = await this.ask(host, type, (id) => ({ type, id, parentId, childId, message, ...(awaitSession ? { awaitSession: true } : {}), ...(options.peer ? { peer: options.peer } : {}) }), awaitSession ? this.readTimeoutMs + BRIEF_SESSION_WAIT_MS : undefined);
+    const text = await this.ask(host, type, (id) => ({ type, id, parentId, childId, message, ...(awaitSession ? { awaitSession: true } : {}) }), awaitSession ? this.readTimeoutMs + BRIEF_SESSION_WAIT_MS : undefined);
     const answer = JSON.parse(text) as Partial<{ delivered: boolean; via: string; reason: string; unanswered: string; unheld: boolean }>;
     if (answer.delivered === true && typeof answer.via === 'string') return { delivered: true, via: answer.via, ...(typeof answer.unanswered === 'string' && answer.unanswered ? { unanswered: answer.unanswered } : {}) };
     const reason = typeof answer.reason === 'string' && answer.reason ? answer.reason : 'its session did not take the message';
@@ -278,17 +275,6 @@ export class RelayLinks {
     throw new Error(`machine ${host} answered the restart without a new pane or a reason`);
   }
 
-  /**
-   * Ask the daemon on a freed child's machine to write the child's record of
-   * the freeing there (issue #262). A daemon there that predates the request
-   * is refused by name, with the release that brings it, and nothing changes.
-   */
-  async free(host: string, ask: RelayFreeAsk): Promise<void> {
-    if (host === LOCAL_HOST) throw new Error('a child on this machine is freed here');
-    const text = await this.ask(host, 'relay-free', (id) => ({ type: 'relay-free', id, ...ask }));
-    if (text !== 'freed') throw new Error(`machine ${host} answered the freeing with ${JSON.stringify(text.slice(0, 120))}`);
-  }
-
   /** Send one request over a host's connection, opening it for the call when no child holds it open, and wait for its result. */
   private async ask(host: string, type: PendingRead['type'], build: (id: string) => DaemonRequest, timeoutMs = this.readTimeoutMs): Promise<string> {
     const known = this.links.get(host);
@@ -302,7 +288,7 @@ export class RelayLinks {
       return await new Promise<string>((resolve, reject) => {
         const timer = setTimeout(() => {
           link.reads.delete(id);
-          reject(new RelayAnswerLost(`machine ${host} did not answer ${type === 'relay-read' ? 'a read' : type === 'relay-adopt' ? 'an adoption' : type === 'relay-restart' ? 'a restart' : type === 'relay-free' ? 'a freeing' : 'a message'} within ${timeoutMs} ms`));
+          reject(new RelayAnswerLost(`machine ${host} did not answer ${type === 'relay-read' ? 'a read' : type === 'relay-adopt' ? 'an adoption' : type === 'relay-restart' ? 'a restart' : 'a message'} within ${timeoutMs} ms`));
         }, timeoutMs);
         timer.unref?.();
         link.reads.set(id, { type, resolve, reject, timer });
@@ -346,14 +332,6 @@ export class RelayLinks {
   private wanted(): Map<string, Wanted> {
     const wanted = new Map<string, Wanted>();
     for (const parent of listParents()) {
-      // A freed child on another machine keeps the link, which now carries only the pair's messages (issue #262).
-      for (const freed of parent.freed ?? []) {
-        if (freed.host === LOCAL_HOST) continue;
-        const want = wanted.get(freed.host) ?? { parentIds: new Set<string>(), children: [], exitedSinceDrain: 0 };
-        wanted.set(freed.host, want);
-        want.parentIds.add(parent.id);
-        want.peers = [...(want.peers ?? []), freed.id];
-      }
       for (const child of parent.children) {
         // A child that moved away left its old machine as an exited child leaves
         // its own: that machine is drained once more, for a report it left there.

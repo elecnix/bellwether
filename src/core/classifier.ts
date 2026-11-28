@@ -68,6 +68,22 @@ export interface ClassifierState {
   prompt?: string;
   /** When the open prompt appeared, for the blocked settle time. */
   promptSince?: number;
+  /** The pane this state counts turns in. A child in another pane starts from a new seed. */
+  paneId?: string;
+  /**
+   * Set in a pane the child crossed into, until it works there (issue #271).
+   * The parent heard every earlier turn, so meanwhile a ready status or a
+   * number herdr shows is the starting point, not the end of a turn.
+   */
+  fresh?: boolean;
+  /** The number herdr showed in this pane before the child worked here, which no turn ended. */
+  base?: number;
+  /**
+   * A turn number the classifier made up because herdr ended the turn without
+   * one, held while the child stays ready. A number herdr gives during that
+   * spell is the same turn's (issue #271).
+   */
+  counted?: number;
 }
 
 export interface Observation {
@@ -90,6 +106,11 @@ export interface InitialSeed {
   reportedFor?: number;
   /** A final report that waits for its turn to end, from the registry. */
   reportPending?: boolean;
+  /** The pane the state counts turns in. */
+  paneId?: string;
+  /** A pane the child crossed into and has not worked in yet, with herdr's number there. */
+  fresh?: boolean;
+  base?: number;
 }
 
 export function initialState(status: AgentStatus, now: number, seed: InitialSeed = {}): ClassifierState {
@@ -103,6 +124,9 @@ export function initialState(status: AgentStatus, now: number, seed: InitialSeed
     ...(seed.completionSeq === undefined ? {} : { completionSeq: seed.completionSeq }),
     ...(seed.reportedFor === undefined ? {} : { reportedFor: seed.reportedFor }),
     ...(seed.reportPending ? { reportPending: true } : {}),
+    ...(seed.paneId === undefined ? {} : { paneId: seed.paneId }),
+    ...(seed.fresh ? { fresh: true } : {}),
+    ...(seed.base === undefined ? {} : { base: seed.base }),
   };
 }
 
@@ -113,24 +137,42 @@ export function limitsFor(child: ChildRecord, base: SettleLimits): SettleLimits 
 }
 
 /**
+ * herdr's turn number for the pane the child runs in now, or undefined when
+ * the record's number came from an earlier pane. herdr numbers each pane on
+ * its own (issue #271).
+ */
+export function seqHere(child: Pick<ChildRecord, 'completionSeq' | 'completionPane' | 'turnNotified' | 'paneId'>): number | undefined {
+  if (child.completionSeq === undefined) return undefined;
+  const from = child.completionPane ?? child.turnNotified?.paneId ?? child.paneId;
+  return from === child.paneId ? child.completionSeq : undefined;
+}
+
+/**
  * The state a child starts from, recovered from its registry record. A parent
  * that restarts resumes the same quiet period instead of a fresh one, and does
  * not send the inactive event again for a period it already reported. It also
  * starts from the turn the parent last heard about, so a new service, a daemon
- * that took over, or an adopted pane does not announce a turn twice. That turn
- * belongs to the pane that ran it: a child in a new pane starts its count anew.
+ * that took over, or an adopted pane does not announce a turn twice.
+ *
+ * That turn belongs to the pane that ran it. A child in another pane, after a
+ * restart, resume, move or teleport, has had every earlier turn told, so it
+ * starts fresh: nothing in the new pane is a turn until the child works there
+ * (issue #271). `crossed` says the watcher saw the child in another pane.
  */
-export function seedFor(child: ChildRecord, now: number): ClassifierState {
+export function seedFor(child: ChildRecord, now: number, options: { crossed?: boolean } = {}): ClassifierState {
   const activityAt = Math.max(Date.parse(child.lastBusyAt), Date.parse(child.statusChangedAt));
   const fired = child.inactiveNotifiedFor === undefined ? NaN : Date.parse(child.inactiveNotifiedFor);
+  const common = { activityAt: Number.isFinite(activityAt) ? activityAt : now, firedInactiveFor: Number.isFinite(fired) ? fired : undefined, paneId: child.paneId };
   const notified = child.turnNotified && child.turnNotified.paneId === child.paneId ? child.turnNotified.seq : undefined;
-  return initialState(child.lastStatus, now, {
-    activityAt: Number.isFinite(activityAt) ? activityAt : now,
-    firedInactiveFor: Number.isFinite(fired) ? fired : undefined,
-    completionSeq: child.completionSeq ?? notified,
-    reportedFor: notified,
-    reportPending: child.reportPending,
-  });
+  if (notified !== undefined) {
+    return initialState(child.lastStatus, now, { ...common, completionSeq: seqHere(child) ?? notified, reportedFor: notified, reportPending: child.reportPending });
+  }
+  const baseline = child.turnBaseline?.paneId === child.paneId ? child.turnBaseline : undefined;
+  const crossed = baseline !== undefined || options.crossed || (child.turnNotified !== undefined && child.turnNotified.paneId !== child.paneId);
+  if (!crossed) return initialState(child.lastStatus, now, { ...common, completionSeq: seqHere(child), reportPending: child.reportPending });
+  // A final report waiting for a turn in an earlier pane covers nothing here.
+  const seq = baseline ? baseline.seq : seqHere(child);
+  return initialState(child.lastStatus, now, { ...common, completionSeq: seq, reportedFor: seq, base: seq, fresh: !baseline?.worked });
 }
 
 export function isReady(status: AgentStatus): boolean {
@@ -142,7 +184,27 @@ export function isReady(status: AgentStatus): boolean {
  * The returned state is a new object; the classifier never mutates its input.
  */
 export function advance(state: ClassifierState, observation: Observation, now: number, limits: SettleLimits = DEFAULT_LIMITS): { state: ClassifierState; event?: ChildEventKind } {
+  if (state.fresh) {
+    // A pane the child crossed into: what herdr shows before the child works
+    // here is where counting starts, not a turn (issue #271).
+    const settled: ClassifierState = { ...state, status: observation.status, completionSeq: observation.completionSeq, reportedFor: observation.completionSeq, base: observation.completionSeq, prompt: observation.prompt };
+    if (observation.status !== state.status) settled.statusSince = now;
+    if (observation.status !== state.status || observation.busy) settled.lastActivityAt = now;
+    if (observation.busy) settled.lastBusyAt = now;
+    // Work in this pane: from here on, the next ready status ends a turn.
+    if (observation.status === 'working') return advance({ ...settled, fresh: undefined }, observation, now, limits);
+    return { state: settled };
+  }
   const next: ClassifierState = { ...state };
+  // herdr numbered a turn the classifier had already counted, while the child
+  // stayed ready: the same turn, so the number replaces the count (issue #271).
+  if (state.counted !== undefined && state.counted === state.completionSeq && observation.completionSeq !== undefined && observation.completionSeq !== state.completionSeq && isReady(state.status) && isReady(observation.status)) {
+    next.completionSeq = observation.completionSeq;
+    if (state.reportedFor === state.counted) next.reportedFor = observation.completionSeq;
+    next.counted = undefined;
+    return advance(next, observation, now, limits);
+  }
+  if (!isReady(observation.status)) next.counted = undefined;
   const seqMoved = observation.completionSeq !== undefined && observation.completionSeq !== state.completionSeq;
   if (observation.status !== state.status || seqMoved || observation.busy) {
     next.lastActivityAt = now;
@@ -168,6 +230,7 @@ export function advance(state: ClassifierState, observation: Observation, now: n
     // detection catches it leaves the value unchanged. A turn that ends is
     // also visible as a status change into idle or done, so count those.
     next.completionSeq = (state.completionSeq ?? 0) + 1;
+    next.counted = next.completionSeq;
     next.statusSince = now;
   }
   // The turn a final report covered has ended, so the report was its event.

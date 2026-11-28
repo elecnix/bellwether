@@ -114,3 +114,9 @@ test('relay-restart parses with the child it restarts, and refuses one without a
   // The request id names the restart, so the far daemon keeps its answer for a parent whose connection ends (issue #211).
   assert.equal((parseRequest(JSON.stringify({ type: 'relay-restart', id: 'r1', parentId: 'p', childId: 'c', child, requestId: 'rs-example' })) as { requestId?: string }).requestId, 'rs-example');
 });
+
+test("a relay acknowledgement keeps the parent daemon's answer for the child, and a refusal beside it (issue #227)", () => {
+  assert.deepEqual(parseRequest(JSON.stringify({ type: 'relay-ack', receipt: 'rp-1', answer: 'Retirement requested.' })), { type: 'relay-ack', receipt: 'rp-1', answer: 'Retirement requested.' });
+  assert.deepEqual(parseRequest(JSON.stringify({ type: 'relay-ack', receipt: 'rp-2', refused: 'no such child' })), { type: 'relay-ack', receipt: 'rp-2', refused: 'no such child' });
+  assert.deepEqual(parseRequest(JSON.stringify({ type: 'relay-ack', receipt: 'rp-3', answer: '  ' })), { type: 'relay-ack', receipt: 'rp-3' }, 'an empty answer is no answer');
+});

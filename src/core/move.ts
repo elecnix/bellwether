@@ -384,7 +384,7 @@ export async function moveChild(deps: MoveDeps, parentId: string, request: MoveR
     const movedAt = new Date().toISOString();
     updateChild(parentId, child.id, (entry) => {
       delete entry.moving;
-      entry.movedFrom = { host: base.source, at: movedAt };
+      entry.movedFrom = { host: base.source, at: movedAt, ...(child.cwd ? { cwd: child.cwd } : {}) };
     });
     appendMoveLog({ at: movedAt, parent: parentId, child: child.id, name: child.name, harness, outcome: 'moved', from: base.source, to: target, reason: request.reason, sourceFile: bundle.sourceFile, targetFile: sessionFile, cwd: targetCwd, bytes, pane: started?.paneId, ...(leftBehind.length ? { leftBehind } : {}) });
     log(`move: ${child.name} moved from ${where(base.source)} to ${where(target)}, pane ${started?.paneId}${request.reason ? `, because ${request.reason}` : ''}`);

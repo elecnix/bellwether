@@ -49,7 +49,9 @@ export interface RelayLinksOptions {
 }
 
 /** What the daemon does with a report that arrived: take it, or refuse it for good. */
-export type AcceptRelayed = (host: string, report: RelayReport) => { refused?: string };
+/** What the parent's daemon makes of a relayed entry. A retirement request takes git's answers, so it settles later. */
+export type AcceptRelayed = (host: string, report: RelayReport) => RelayOutcome | Promise<RelayOutcome>;
+export type RelayOutcome = { refused?: string; answer?: string };
 
 interface PendingRead {
   /** The request type, so a far daemon that does not know it can be answered for the requests it refused. */
@@ -80,6 +82,12 @@ interface Link {
   closing: boolean;
   reads: Map<string, PendingRead>;
   waiters: Set<() => void>;
+  /**
+   * Acknowledgements still being worked out, such as a retirement request's,
+   * which waits on git. A drain counts only once each of them went out, so a
+   * link closed after the drain never leaves the far copy behind (issue #227).
+   */
+  acking?: Set<Promise<void>>;
 }
 
 interface Wanted {
@@ -476,16 +484,22 @@ export class RelayLinks {
       return;
     }
     if (reply.type === 'relay-report') {
-      const outcome = this.take(link.host, reply.report);
-      this.write(link, formatRequest({ type: 'relay-ack', receipt: reply.report.receipt, ...(outcome.refused ? { refused: outcome.refused } : {}) }));
+      const report = reply.report;
+      const acking = (link.acking ??= new Set());
+      const ack = this.take(link.host, report).then((outcome) => this.write(link, formatRequest({ type: 'relay-ack', receipt: report.receipt, ...(outcome.refused ? { refused: outcome.refused } : {}), ...(outcome.answer ? { answer: outcome.answer } : {}) })));
+      acking.add(ack);
+      void ack.finally(() => acking.delete(ack));
       return;
     }
     if (reply.type === 'relay-drained') {
-      link.state.lastDrainAt = this.iso();
-      if (reply.sent) this.log(`relay: drained machine ${link.host}, ${reply.sent} report(s)`);
-      this.remember(link);
-      // The drain may have been the last thing an exited child's host was kept open for.
-      this.sync();
+      const sent = reply.sent;
+      void Promise.all([...(link.acking ?? [])]).then(() => {
+        link.state.lastDrainAt = this.iso();
+        if (sent) this.log(`relay: drained machine ${link.host}, ${sent} report(s)`);
+        this.remember(link);
+        // The drain may have been the last thing an exited child's host was kept open for.
+        this.sync();
+      });
       return;
     }
     if (reply.type === 'result') {
@@ -528,9 +542,9 @@ export class RelayLinks {
   }
 
   /** Write a report into the parent it names, once per receipt, or refuse it. */
-  private take(host: string, report: RelayReport): { refused?: string } {
+  private async take(host: string, report: RelayReport): Promise<RelayOutcome> {
     try {
-      return this.accept(host, report);
+      return await this.accept(host, report);
     } catch (error) {
       return { refused: (error as Error).message };
     }

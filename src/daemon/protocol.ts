@@ -41,6 +41,12 @@ export type { RelayHostState, RelayLinkStatus } from '../core/types.ts';
 //    `restartAnswer`, so a parent's daemon whose connection ended before the
 //    answer learns the outcome when it reconnects. A parent's daemon that
 //    sends no requestId gets no such report.
+//    Later, without a bump: a child on another machine asks to be retired,
+//    and its request waits in that machine's relay outbox as a relay report
+//    that names `retire`, for the parent's daemon that holds the record. That
+//    daemon's relay-ack carries its `answer` for the child. A parent's daemon
+//    that predates it takes the entry as a needs-input report, whose text
+//    says so, and acknowledges it without an answer.
 //
 // Change the wire additively: a new request type, or a new optional field,
 // needs no bump, because a daemon answers a request it does not know with
@@ -227,6 +233,8 @@ export interface RelayAckRequest {
   type: 'relay-ack';
   receipt: string;
   refused?: string;
+  /** What the parent's daemon answered a request it took, such as a retirement (issue #227), for the child that asked. */
+  answer?: string;
 }
 
 /** Read a harness session's last assistant message from this machine's transcript. */
@@ -608,6 +616,13 @@ export interface RelayReport {
    * answer to the request itself was lost with the connection (issue #211).
    */
   restartAnswer?: { requestId: string; answer: RelayRestartAnswer };
+  /**
+   * Set on an entry that asks the parent's daemon to retire the child, which
+   * runs on the machine the entry comes from (issue #227). Its status and
+   * text read as a request for input, so a parent's daemon that predates the
+   * field shows the parent what the child asked for.
+   */
+  retire?: { reason?: string };
 }
 
 
@@ -674,7 +689,8 @@ export function parseRequest(line: string): DaemonRequest {
       const receipt = text(value['receipt']);
       if (!receipt) throw new ProtocolError('invalid_ack', 'a relay acknowledgement needs a receipt');
       const refused = text(value['refused']);
-      return refused ? { type: 'relay-ack', receipt, refused } : { type: 'relay-ack', receipt };
+      const answer = text(value['answer']);
+      return { type: 'relay-ack', receipt, ...(refused ? { refused } : {}), ...(answer ? { answer } : {}) };
     }
     case 'relay-read': {
       const id = text(value['id']);

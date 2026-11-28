@@ -44,6 +44,8 @@ A session crosses to the other machine, but its processes and worktrees remain o
 
 Bellwether refuses too when it cannot tell, which happens if herdr does not report the pane's shell and foreground process, or if Bellwether on the source predates this check.
 
+After the move, a `request_retirement` from the child reaches the parent's daemon and retires the worktree it left on the parent's machine. The record keeps that directory as `movedFrom.cwd` ([Retiring a child there](remote-machines.md#retiring-a-child-there)).
+
 To move anyway, pass `accept_loss`, or `--accept-loss` to `bellwether move`. With that flag, the reply lists what the move left behind, and the `moved` line in `move.log` keeps the same list under `leftBehind`. Bellwether never changes a worktree or stops a job during a move.
 
 ## Order of operations

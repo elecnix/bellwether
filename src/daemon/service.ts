@@ -32,6 +32,8 @@ export interface ParentService {
    * A roster this returns counts as sent.
    */
   roster?(named: string[]): RosterChild[] | undefined;
+  /** Clean up after a child that asked to be retired and has exited, as its exit would (issue #227). */
+  retire?(childId: string): void;
   /** Report one pane's status changes, and stop when the returned function runs. */
   watchPane(paneId: string, handler: (status: string) => void): () => void;
   stop(): void;
@@ -125,6 +127,9 @@ export function createHerdrService(parent: ParentHello, id: string, deps: Servic
         due = roster;
       });
       return due;
+    },
+    retire: (childId) => {
+      void watcher.childStopped(childId);
     },
     watchPane: (paneId, handler) => {
       const controller = new AbortController();

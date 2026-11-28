@@ -123,6 +123,22 @@ Each case below refuses a restart, and the refusal gives the reason that applied
 
 A failure can come late, after the old pane there has closed and before the session starts again. Bellwether marks the child as gone on the parent's record in that case, as it does when a restart fails on the parent's own machine.
 
+## Retiring a child there
+
+When a child on another machine calls `request_retirement`, the daemon on that machine receives the call. That daemon keeps only the relay record that a spawn or a move wrote there, while the parent's daemon keeps the child record. So Bellwether sends the request just as it sends a report ([#227](https://github.com/elecnix/bellwether/issues/227)). It waits in that machine's relay outbox until the parent's daemon collects it over its open connection. The acknowledgement brings that daemon's answer back to the child.
+
+Each answer starts with `Not this machine's child` and the parent's id, then says what became of the request:
+
+- Taken: the answer adds the reply from the parent's daemon, either the request and its checks or the reason for a refusal.
+- Waiting, when no connection from the parent's daemon is open: the request stays on disk under `retireRequest` on the child's relay record. Meanwhile `bellwether doctor` on that machine prints a `warn` line for it. Closing the tab is safe, since the parent's daemon retires the child once it collects the request.
+- Refused as an entry: the request stays on disk, and `bellwether doctor` prints a `fail` line.
+
+Retirement's proofs run only on the parent's machine. A child that moved from that machine left its worktree there. Once herdr on the other machine drops the child's pane, the parent's daemon retires that left worktree, with the same checks as before the move. On the record, `movedAway` in the intent gives the sending machine.
+
+A moved child's current worktree stays on the other machine, and the answer tells the child to remove it there by hand. A child that started on the other machine, or moved there from a third one, didn't leave a worktree on the parent's machine. Its request doesn't change the record, and the answer says why.
+
+Older Bellwether on the parent's machine takes the request as a `needs-input` report whose text asks the parent to close the child with `agent_stop`.
+
 ## Connection state
 
 Backoff runs from 1 second to 5 minutes when the parent's daemon retries a connection that fails or drops. The first reply on each connection gives the version and build of the child's machine, and `bellwether doctor` prints both on the `relay` line for that machine. Machines on one version number but different builds then show different lines.

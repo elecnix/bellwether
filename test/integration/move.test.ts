@@ -247,6 +247,7 @@ test('a Claude Code child moves to the other machine under the same id, resumes 
   assert.equal(moved?.exitedAt, undefined);
   assert.equal(moved?.moving, undefined);
   assert.equal(moved?.movedFrom?.host, LOCAL_HOST);
+  assert.equal(moved?.movedFrom?.cwd, hereCwd, 'the record keeps the directory the child left, which a retirement from afar retires (issue #227)');
   assert.equal(moved?.transcript, undefined, 'the old machine\'s transcript path means nothing on the new one');
 
   // The session sits where Claude Code looks from the new working directory, byte for byte.
@@ -342,6 +343,7 @@ test('a pi child moves the other way, from the other machine to this one, into a
   assert.equal(moved?.session?.value, local);
   assert.equal(moved?.transcript, local);
   assert.equal(moved?.movedFrom?.host, 'box');
+  assert.equal(moved?.movedFrom?.cwd, boxCwd);
   const [args] = startArgs(w.here);
   assert.deepEqual(args?.slice(args.indexOf('--session'), args.indexOf('--session') + 2), ['--session', local]);
   assert.equal(w.box.world.panes.has('w9:p4'), false);

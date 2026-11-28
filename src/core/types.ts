@@ -436,9 +436,11 @@ export interface ChildRecord {
   /**
    * The machine the child last moved away from, and when. The parent's daemon
    * keeps collecting from that machine until it has drained it once since the
-   * move, so a report the child left there still arrives.
+   * move, so a report the child left there still arrives. `cwd` is the
+   * directory the child ran in there, so a retirement the child asks for after
+   * the move can find the worktree it left behind (issue #227).
    */
-  movedFrom?: { host: string; at: string };
+  movedFrom?: { host: string; at: string; cwd?: string };
   /** Set once the child is gone, so its events stop. */
   exitedAt?: string;
   exitCode?: number;
@@ -598,6 +600,13 @@ export interface RetireIntent {
   defaultBranch?: string;
   /** Why the child asked, in its own words. */
   reason?: string;
+  /**
+   * Set when the child asked from the machine it moved to, with that
+   * machine's name. The worktree is then the one the child left on the
+   * parent's machine, the only one whose proofs the parent's daemon can take
+   * (issue #227).
+   */
+  movedAway?: string;
 }
 
 /** The registry layout this code writes. Version 2 added the child host. */

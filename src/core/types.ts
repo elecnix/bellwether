@@ -209,7 +209,8 @@ export interface RestartStall {
 }
 
 /** What the parent is told about a child. */
-export type ChildEventKind = 'report' | 'idle' | 'blocked' | 'stuck' | 'inactive' | 'exited';
+/** `peer-message` is no child's event: a message from a peer the session holds an address for (issue #262). */
+export type ChildEventKind = 'report' | 'idle' | 'blocked' | 'stuck' | 'inactive' | 'exited' | 'peer-message';
 
 /** The three things a child can report through parent_report. */
 export type ReportStatus = 'done' | 'needs-input' | 'progress';
@@ -884,7 +885,33 @@ export interface ParentRecord {
   label?: string;
   /** The roster line this parent last received with an alert, without its age, and when (issue #146). */
   rosterSent?: { at: string; line: string };
+  /**
+   * The children this session freed (issue #262), out of `children` so that no
+   * watcher, roster, relay link count or report route reads them as children.
+   * Each keeps who it was and when it left, and nothing of its briefs, events
+   * or reports. The pair's token sits in each side's peer book, not here.
+   */
+  freed?: FreedChild[];
   updatedAt: string;
+}
+
+/** A child its parent freed: who it was, and when and why it left the registry (issue #262). */
+export interface FreedChild {
+  /** The child id, which stays its address. */
+  id: string;
+  name: string;
+  kind: string;
+  harness: string;
+  host: string;
+  cwd?: string;
+  startedAt: string;
+  session?: ChildSession;
+  /** The pane it ran in when it was freed. */
+  paneId: string;
+  freedAt: string;
+  /** The address of the session that freed it. */
+  freedBy: string;
+  reason?: string;
 }
 
 /** One pending message for the parent, keyed by child until it is delivered. */
@@ -938,6 +965,12 @@ export interface SpoolReport {
    * already landed is accepted once.
    */
   receipt?: string;
+  /**
+   * Set on a line that carries no report but a message from a peer (issue
+   * #262): the sender's address and name. The daemon that wrote the line
+   * checked the pair's token first.
+   */
+  peer?: { from: string; name: string; kind: string; id: string };
 }
 
 /**

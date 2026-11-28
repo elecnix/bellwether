@@ -32,13 +32,13 @@ function run(args: string[], env: NodeJS.ProcessEnv): Promise<{ status: number |
   });
 }
 
-/** A directory of fake commands for PATH: herdr lists one saved machine, or none, ssh never connects, and pi when a case gives one. */
-function fakeBin(root: string, options: { machines?: object[]; pi?: string } = {}): string {
+/** A directory of fake commands for PATH: herdr lists one saved machine, or none, ssh never connects unless a case gives its own, and pi when a case gives one. */
+function fakeBin(root: string, options: { machines?: object[]; pi?: string; ssh?: string } = {}): string {
   const bin = path.join(root, 'bin');
   fs.mkdirSync(bin, { recursive: true });
   const machines = JSON.stringify(options.machines ?? [{ id: 'm1', label: 'far', target: 'far.example', session: 'default', enabled: true }]);
   fs.writeFileSync(path.join(bin, 'herdr'), `#!/bin/sh\nprintf '%s\\n' '${machines}'\n`, { mode: 0o755 });
-  fs.writeFileSync(path.join(bin, 'ssh'), '#!/bin/sh\nexec sleep 60\n', { mode: 0o755 });
+  fs.writeFileSync(path.join(bin, 'ssh'), options.ssh ?? '#!/bin/sh\nexec sleep 60\n', { mode: 0o755 });
   if (options.pi) fs.writeFileSync(path.join(bin, 'pi'), options.pi, { mode: 0o755 });
   return bin;
 }
@@ -70,10 +70,39 @@ test(`doctor answers within the move check's bound of ${MOVE_CHECK_BUDGET_MS} ms
   const result = await run(['doctor'], env);
   assert.ok(result.elapsedMs < MOVE_CHECK_BUDGET_MS + STARTUP_ALLOWANCE_MS, `doctor took ${result.elapsedMs} ms:\n${result.stdout}\n${result.stderr}`);
   assert.match(result.stdout, /ok {4}herdr api: 0 panes/);
-  assert.match(result.stdout, /move machine far: no child can move there or from there until this is fixed: no answer within 4 s, the bound doctor sets on the move check/);
+  // A machine that does not answer in time is unknown, not broken (issue #166).
+  assert.match(result.stdout, /move machine far: unknown, because it did not answer within 6 s, the bound doctor sets on each call of the move check \(.*timed out.*\)\. That alone shows no fault there, so doctor cannot tell whether a child can move there or from there\./);
+  assert.doesNotMatch(result.stdout, /until this is fixed/);
   assert.match(result.stdout, /versions: this install is /);
   // herdr was asked for the pane list once, not once per session or child.
   assert.equal(herdr.requests.filter((request) => request.method === 'pane.list').length, 1);
+});
+
+/** ssh to a machine that answers as the one in issue #166 did by hand: bellwether help in 0.6 s, then move-probe in 3.4 s. */
+const SSH_SLOW_BUT_WORKING = `#!/bin/sh
+for last; do :; done
+case "$last" in
+  *move-probe*)
+    cat > /dev/null
+    sleep 3.4
+    printf '%s\\n' '${JSON.stringify({ ok: true, result: { hostname: 'far-host', bellwether: '0.1.8', dirs: {}, harnesses: { 'claude-code': { path: '/opt/claude', version: '2.1.332' }, pi: { path: '/opt/pi', version: '0.99.0' } }, piModels: [{ provider: 'example-hosted', model: 'example-m1' }], piModelsFile: '/opt/models.json' } })}'
+    ;;
+  *help*)
+    sleep 0.6
+    echo 'Usage: bellwether <daemon|move|doctor>'
+    echo '  move-probe|move-export|move-import|move-discard|move-commit'
+    ;;
+esac
+`;
+
+test('doctor reports a machine that answers its two move calls in 0.6 s and 3.4 s, rather than calling it unable to move children', async (t) => {
+  const space = isolate(t, 'bellwether-doctor-slow-');
+  const herdr = await startFakeHerdr();
+  t.after(() => herdr.stop());
+  const env: NodeJS.ProcessEnv = { ...process.env, PATH: `${fakeBin(space.root, { ssh: SSH_SLOW_BUT_WORKING })}:${path.dirname(process.execPath)}:/usr/bin:/bin`, HERDR_SOCKET_PATH: herdr.socketPath };
+  const result = await run(['doctor'], env);
+  assert.match(result.stdout, /info {2}move machine far \(far-host\): claude 2\.1\.332, pi 0\.99\.0, 1 pi model, bellwether 0\.1\.8/, result.stdout);
+  assert.doesNotMatch(result.stdout, /move machine far: /);
 });
 
 test('--version prints the version and the commit, without asking a daemon that speaks another protocol', async (t) => {

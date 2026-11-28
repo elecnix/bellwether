@@ -36,7 +36,7 @@ import { BELLWETHER_BUILD, BELLWETHER_BUILD_ID, BELLWETHER_VERSION, describeBuil
 import { canConnect, daemonIsLive, startDaemon } from './daemon/server.ts';
 import type { ChildRecord, OutboxEntry } from './core/types.ts';
 import { LOCAL_HOST, hostOf, knownHosts } from './core/machine.ts';
-import { MOVE_CHECK_BUDGET_MS, MOVE_VERBS, moveEndpoints, serveMoveVerb, type MoveVerb } from './core/move-endpoint.ts';
+import { MOVE_CHECK_BUDGET_MS, MOVE_CHECK_CALL_MS, MOVE_VERBS, RemoteTimeoutError, moveEndpoints, serveMoveVerb, type MoveVerb } from './core/move-endpoint.ts';
 import { describePiModels, moveRefusals, pairLabel, type MovableHarness, type ModelPair } from './core/move-plan.ts';
 import type { ProbeResult } from './core/session-state.ts';
 
@@ -271,11 +271,24 @@ function within<T>(work: Promise<T>, signal: AbortSignal, budgetMs: number): Pro
   return Promise.race([
     work,
     new Promise<never>((_resolve, reject) => {
-      const fail = (): void => reject(new Error(`no answer within ${budgetMs / 1000} s, the bound doctor sets on the move check`));
+      const fail = (): void => reject(new RemoteTimeoutError(`no answer within ${budgetMs / 1000} s, the bound doctor sets on the whole move check`));
       if (signal.aborted) fail();
       else signal.addEventListener('abort', fail, { once: true });
     }),
   ]);
+}
+
+/**
+ * Why doctor could not read a machine for the move check. A timeout is only
+ * that: the machine did not answer within doctor's bound, which agent_move,
+ * with 120 s for each call, does not share. Any other failure is one that
+ * agent_move would meet too.
+ */
+function unreadMachine(failure: Error | undefined): string {
+  if (!failure || failure instanceof RemoteTimeoutError) {
+    return `unknown, because it did not answer within ${MOVE_CHECK_CALL_MS / 1000} s, the bound doctor sets on each call of the move check (${failure?.message ?? 'no answer'}). That alone shows no fault there, so doctor cannot tell whether a child can move there or from there.`;
+  }
+  return `no child can move there or from there until this is fixed: ${failure.message}`;
 }
 
 /**
@@ -296,22 +309,22 @@ async function checkMoves(): Promise<void> {
     hosts = [LOCAL_HOST];
   }
   const children = listParents().flatMap((parent) => parent.children).filter((child): child is ChildRecord & { harness: MovableHarness } => !child.exitedAt && harnessNamed(child.harness)?.movable === true);
-  const endpointFor = moveEndpoints(undefined, { timeoutMs: budgetMs, signal });
-  const probes = new Map<string, ProbeResult | string>();
+  const endpointFor = moveEndpoints(undefined, { timeoutMs: MOVE_CHECK_CALL_MS, signal });
+  const probes = new Map<string, ProbeResult | Error>();
   await Promise.all(
     hosts.map(async (host) => {
       const piSessions = children.filter((child) => hostOf(child) === host && child.harness === 'pi' && child.session?.value).map((child) => child.session?.value as string);
       try {
         probes.set(host, await within(endpointFor(host).probe({ piModels: true, piSessions }), signal, budgetMs));
       } catch (error) {
-        probes.set(host, (error as Error).message);
+        probes.set(host, error instanceof Error ? error : new Error(String(error)));
       }
     }),
   );
   for (const host of hosts) {
     const probe = probes.get(host);
-    if (typeof probe !== 'object') {
-      console.log(`  info  move ${machineLabel(host)}: no child can move there or from there until this is fixed: ${probe ?? 'no answer'}`);
+    if (!probe || probe instanceof Error) {
+      console.log(`  info  move ${machineLabel(host)}: ${unreadMachine(probe)}`);
       continue;
     }
     const models = describePiModels(probe.piModels, probe.piModelsError);
@@ -320,7 +333,7 @@ async function checkMoves(): Promise<void> {
   for (const child of children) {
     const source = hostOf(child);
     const sourceProbe = probes.get(source);
-    if (typeof sourceProbe !== 'object') {
+    if (!sourceProbe || sourceProbe instanceof Error) {
       console.log(`  info  move ${child.name}: not checked, because its machine ${source === LOCAL_HOST ? 'here' : source} could not be read`);
       continue;
     }
@@ -328,7 +341,7 @@ async function checkMoves(): Promise<void> {
     for (const target of hosts) {
       if (target === source) continue;
       const targetProbe = probes.get(target);
-      if (typeof targetProbe !== 'object') continue;
+      if (!targetProbe || targetProbe instanceof Error) continue;
       const reasons = moveRefusals({
         childName: child.name,
         harness: child.harness,

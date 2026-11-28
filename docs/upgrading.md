@@ -66,7 +66,7 @@ Claude Code asks for the list again when the server says it changed. The pi exte
 - how this install and the running daemon pair up. Doctor gives the protocol each one speaks and the protocol they share. It lists each tool and request the daemon lacks, with the protocol and release that brought it. It also lists each tool the daemon serves that this install doesn't offer. Each list says which side gains by updating.
 - for each remote machine the relay connects to: its daemon's release, and the tools that machine gains by updating
 - one `tools` line for each harness. The line shows the server or extension that gives a session started by hand its Bellwether tools, and what a spawned child gets instead. For Claude Code, it lists each plugin or server the spawn keeps out of a child, and how. A session started by hand with two Bellwether servers gets a warning, because Bellwether can't remove one for you. For pi, a copy in pi's settings without the stand-down guard fails the line.
-- what `agent_move` would find on each machine. This check stops after 4 seconds, so a machine whose SSH doesn't connect shows as not answering instead of holding doctor for SSH's own timeout.
+- what `agent_move` would find on each machine. Doctor gives each SSH call of this check 6 seconds, and a probe of another machine takes two calls, so a machine whose SSH doesn't connect shows as unknown instead of holding doctor for SSH's own timeout. Unknown means only that it did not answer in time: `agent_move` waits 120 seconds for each call, and a slow machine can still take a child.
 
 Its last daemon line says one of five things:
 

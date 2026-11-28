@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import test from 'node:test';
 import { LOCAL_HOST } from '../../src/core/machine.ts';
-import { compareVersions, claudeVersionsOf, moveRefusals, newestVersion, parsePiModelList, pickTarget, piModelOf, piSessionDirName, rewriteForTarget, rollbackPlan, sha256, targetSessionLayout, type RefusalInput } from '../../src/core/move-plan.ts';
+import { compareVersions, claudeVersionsOf, describePiModels, moveRefusals, newestVersion, parsePiModelList, pickTarget, piModelOf, piSessionDirName, rewriteForTarget, rollbackPlan, sha256, targetSessionLayout, type RefusalInput } from '../../src/core/move-plan.ts';
 import { verifyCopy } from '../../src/core/move.ts';
 
 const DIRS = { claudeConfigDir: '/home/op/.claude', piAgentDir: '/home/op/.pi/agent' };
@@ -67,6 +67,9 @@ test('a pi pair the target does not offer is refused, naming the pair and the fi
   assert.match(reason ?? '', /example-hosted\/deepseek-v4\.1-flash/);
   assert.match(reason ?? '', /add provider example-hosted with model deepseek-v4\.1-flash to \/home\/op\/\.pi\/agent\/models\.json on machine hawthorne/);
   assert.match(moveRefusals({ ...pi, targetModelsError: 'pi --list-models exited with 1' })[0] ?? '', /could not list pi's models/);
+  const [none] = moveRefusals({ ...pi, targetModels: [] });
+  assert.match(none ?? '', /machine hawthorne offers no pi pair at all/);
+  assert.match(none ?? '', /add provider example-hosted with model deepseek-v4\.1-flash to \/home\/op\/\.pi\/agent\/models\.json on machine hawthorne/);
 });
 
 test('a working directory missing on the target is refused', () => {
@@ -159,6 +162,24 @@ test('a session names its model and its writers', () => {
   assert.deepEqual(piModelOf(pi.split('\n').slice(0, 2).join('\n')), { provider: 'example-a', model: 'example-m1' });
   assert.deepEqual(claudeVersionsOf('{"version":"2.1.300","x":1}\n{"version":"2.1.332"}\n{"version":"2.1.300"}').sort(), ['2.1.300', '2.1.332']);
   assert.deepEqual(parsePiModelList('provider  model  context\nexample-hosted  deepseek-v4.1-flash  1.0M\nopenrouter  deepseek/stub-x  1M\n'), [{ provider: 'example-hosted', model: 'deepseek-v4.1-flash' }, { provider: 'openrouter', model: 'deepseek/stub-x' }]);
+});
+
+test('pi saying it has no model reads as no pair, and output that is not a model table reads as unknown, never as a pair', () => {
+  // pi --list-models on a machine with no provider: it exits 0 and prints a sentence where the table would be (issue #165).
+  assert.deepEqual(parsePiModelList('No models available. Use /login to log into a provider via OAuth or API key.\n'), []);
+  assert.deepEqual(parsePiModelList('provider  model  context  max-out  thinking  images\n'), []);
+  // A warning before the table is not a row of it.
+  assert.deepEqual(parsePiModelList('Warning: example notice\nprovider  model  context\nexample-hosted  example-m1  1.0M\n'), [{ provider: 'example-hosted', model: 'example-m1' }]);
+  assert.throws(() => parsePiModelList('Error: example failure while loading providers\n'), /pi --list-models printed no model table: Error: example failure/);
+  assert.throws(() => parsePiModelList(''), /pi --list-models printed nothing/);
+  assert.throws(() => parsePiModelList('provider  model  context\nexample-hosted\n'), /a row that is not a provider and a model: example-hosted/);
+});
+
+test('doctor says a machine with no pi pair offers no pair, in those words, and says when it does not know', () => {
+  assert.equal(describePiModels([], undefined), 'pi offers no pair: pi --list-models lists no provider and model');
+  assert.equal(describePiModels([{ provider: 'example-hosted', model: 'example-m1' }], undefined), '1 pi model');
+  assert.equal(describePiModels([{ provider: 'example-hosted', model: 'example-m1' }, { provider: 'example-hosted', model: 'example-m2' }], undefined), '2 pi models');
+  assert.equal(describePiModels(undefined, 'pi --list-models printed nothing'), 'pi models unknown (pi --list-models printed nothing)');
 });
 
 test('a copy that reads back with other bytes, or is missing a file, fails verification', () => {

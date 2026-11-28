@@ -95,7 +95,11 @@ export async function probeHarness(harness: MovableHarness, signal?: AbortSignal
 export async function piModels(binary: string, signal?: AbortSignal): Promise<{ models?: ModelPair[]; error?: string }> {
   const result = await run(binary, ['--list-models'], 60_000, signal);
   if (result.code !== 0) return { error: `pi --list-models exited with ${result.code}${result.stderr.trim() ? `: ${result.stderr.trim().split('\n').pop()}` : ''}` };
-  return { models: parsePiModelList(result.stdout) };
+  try {
+    return { models: parsePiModelList(result.stdout) };
+  } catch (error) {
+    return { error: (error as Error).message };
+  }
 }
 
 export interface ProbeRequest {

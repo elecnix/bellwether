@@ -32,15 +32,35 @@ function run(args: string[], env: NodeJS.ProcessEnv): Promise<{ status: number |
   });
 }
 
-/** A directory of fake commands for PATH: herdr lists one saved machine, and ssh never connects. */
-function fakeBin(root: string): string {
+/** A directory of fake commands for PATH: herdr lists one saved machine, or none, ssh never connects, and pi when a case gives one. */
+function fakeBin(root: string, options: { machines?: object[]; pi?: string } = {}): string {
   const bin = path.join(root, 'bin');
   fs.mkdirSync(bin, { recursive: true });
-  const machines = JSON.stringify([{ id: 'm1', label: 'far', target: 'far.example', session: 'default', enabled: true }]);
+  const machines = JSON.stringify(options.machines ?? [{ id: 'm1', label: 'far', target: 'far.example', session: 'default', enabled: true }]);
   fs.writeFileSync(path.join(bin, 'herdr'), `#!/bin/sh\nprintf '%s\\n' '${machines}'\n`, { mode: 0o755 });
   fs.writeFileSync(path.join(bin, 'ssh'), '#!/bin/sh\nexec sleep 60\n', { mode: 0o755 });
+  if (options.pi) fs.writeFileSync(path.join(bin, 'pi'), options.pi, { mode: 0o755 });
   return bin;
 }
+
+/** pi on a machine with no provider: it prints its version, and a sentence where the model table would be, and exits 0. */
+const PI_WITHOUT_MODELS = `#!/bin/sh
+case "$1" in
+  --version) echo 0.99.0 ;;
+  --list-models) echo 'No models available. Use /login to log into a provider via OAuth or API key.' ;;
+esac
+`;
+
+test('doctor says a machine whose pi has no provider offers no pair, rather than counting pi\'s sentence as one', async (t) => {
+  const space = isolate(t, 'bellwether-doctor-no-models-');
+  const herdr = await startFakeHerdr();
+  t.after(() => herdr.stop());
+  const env: NodeJS.ProcessEnv = { ...process.env, PATH: `${fakeBin(space.root, { machines: [], pi: PI_WITHOUT_MODELS })}:${path.dirname(process.execPath)}:/usr/bin:/bin`, HERDR_SOCKET_PATH: herdr.socketPath };
+  const result = await run(['doctor'], env);
+  const line = result.stdout.split('\n').find((entry) => entry.includes('move this machine')) ?? '';
+  assert.match(line, /pi 0\.99\.0, pi offers no pair: pi --list-models lists no provider and model,/, result.stdout);
+  assert.doesNotMatch(result.stdout, /1 pi models?/);
+});
 
 test(`doctor answers within the move check's bound of ${MOVE_CHECK_BUDGET_MS} ms, against a slow herdr and a machine whose SSH never connects`, async (t) => {
   const space = isolate(t, 'bellwether-doctor-');

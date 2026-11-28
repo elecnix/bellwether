@@ -5,7 +5,7 @@
 // not stop a run that grows past it, or when run-all.sh calls the checker
 // without check.sh.
 import assert from 'node:assert/strict';
-import { execFile, spawn } from 'node:child_process';
+import { execFile, spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -52,13 +52,21 @@ setTimeout(() => process.exit(0), ${holdMs});
   return { file, childPid: () => Number(fs.readFileSync(pidFile, 'utf8')) };
 }
 
+/**
+ * Whether `pid` still runs. A killed orphan stays a zombie until init reaps it, and a zombie holds no memory but
+ * still answers `kill(pid, 0)`, so `ps` decides: no line, or a state that starts with Z, means it stopped.
+ */
 function alive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
+  const ps = spawnSync('ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8' });
+  const state = ps.stdout.trim();
+  return state !== '' && !state.startsWith('Z');
+}
+
+/** Wait up to five seconds for `pid` to stop, since SIGKILL lands after `kill` returns. */
+async function stops(pid: number): Promise<boolean> {
+  const deadline = Date.now() + 5_000;
+  while (alive(pid) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
+  return !alive(pid);
 }
 
 async function check(checker: string, env: Record<string, string>): Promise<{ code: number; stderr: string }> {
@@ -110,7 +118,7 @@ for (const cap of caps) {
       const result = await check(stand.file, { ...env, EVERYSTATE_MEMORY: '128M' });
       assert.equal(result.code, 137, `the launcher's child grew to 400 MiB under a 128M ceiling, and the run ended ${result.code}:\n${result.stderr}`);
       assert.match(result.stderr, /passed the memory ceiling of 128M/);
-      assert.equal(alive(stand.childPid()), false, 'the child checker outlived the stop');
+      assert.equal(await stops(stand.childPid()), true, 'the child checker outlived the stop');
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -138,9 +146,7 @@ test("a check stopped from outside stops the launcher's child too (watchdog)", a
     const child = stand.childPid();
     proc.kill('SIGTERM');
     await exited;
-    const gone = Date.now() + 5_000;
-    while (alive(child) && Date.now() < gone) await new Promise((resolve) => setTimeout(resolve, 50));
-    const survived = alive(child);
+    const survived = !(await stops(child));
     if (survived) process.kill(child, 'SIGKILL');
     assert.equal(survived, false, 'check.sh took SIGTERM and left the child checker running');
   } finally {

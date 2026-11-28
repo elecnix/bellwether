@@ -21,7 +21,13 @@ import { updateChild } from './registry.ts';
 import type { NoticeOutcome } from './resume.ts';
 import { machineLabel, teleportNotice } from './teleport-notice.ts';
 import { teleportRefusals, type TeleportEntry, type TeleportNoticeRecord, type TeleportState } from './teleport-plan.ts';
-import type { ChildRecord, ParentRecord } from './types.ts';
+import type { CallerIdentity, ChildRecord, ParentRecord } from './types.ts';
+import { LOCAL_HOST, hostOf } from './machine.ts';
+import { pickTarget } from './move-plan.ts';
+import { childOfCaller } from './report.ts';
+import { readParent } from './registry.ts';
+import { RESTART_DEFER_MS, noteStatus, waitForTurnEnd, type RestartHooks } from './restart.ts';
+import type { RegisterRemote } from './spawn.ts';
 
 export function teleportLogPath(): string {
   return path.join(bellwetherHome(), 'teleport.log');
@@ -30,6 +36,8 @@ export function teleportLogPath(): string {
 export type TeleportRequest = CarryRequest;
 
 export interface TeleportDeps extends CarryDeps {
+  /** Who asked: the child's parent, or the child itself. The notice says which. */
+  requester?: 'parent' | 'self';
   /** Why a destination machine cannot put a message into the child's session, when it cannot: its Bellwether predates relay-message, or no relay connection reaches it. */
   inbound?: (host: string, kind: string) => Promise<string | undefined>;
 }
@@ -102,7 +110,7 @@ export async function teleportChild(deps: TeleportDeps, parentId: string, reques
       const gap = await inboundGap(deps, target, child.kind);
       return gap ? { inbound: gap } : {};
     },
-    notice: (places) => teleportNotice({ from: { machine: machineLabel(places.source), cwd: places.sourceCwd }, to: { machine: machineLabel(places.target), cwd: places.targetCwd }, at: places.at, by: places.by, ...(places.reason ? { reason: places.reason } : {}), state: places.state }),
+    notice: (places) => teleportNotice({ from: { machine: machineLabel(places.source), cwd: places.sourceCwd }, to: { machine: machineLabel(places.target), cwd: places.targetCwd }, at: places.at, requester: deps.requester ?? 'parent', ...(places.reason ? { reason: places.reason } : {}), state: places.state }),
     refused: (name, target, reasons) => new TeleportRefusedError(name, target, reasons),
     failed: (message, stage, restoredPane) => new TeleportFailedError(message, stage, restoredPane),
     logPath: teleportLogPath,
@@ -157,6 +165,10 @@ const RECENT_MS = 24 * 3_600_000;
 export function teleportLines(parents: Pick<ParentRecord, 'children'>[], now = Date.now()): string[] {
   const lines: string[] = [];
   for (const child of parents.flatMap((parent) => parent.children)) {
+    const asked = child.teleportRequest;
+    if (asked) lines.push(`info  teleport: ${child.name} asked at ${asked.at} to teleport itself to ${where(asked.machine)} once its turn ends${asked.wait ? `, waiting on pane ${asked.wait.paneId} until ${asked.wait.until}` : ''}.`);
+    const stalled = child.teleportStalled;
+    if (stalled) lines.push(`warn  teleport: ${child.name}'s request to teleport itself${stalled.machine ? ` to ${where(stalled.machine)}` : ''}, made at ${stalled.requestedAt ?? stalled.at}, did not run: ${stalled.reason.replace(/\.$/, '')}.`);
     const last = child.teleports?.at(-1);
     if (!last) continue;
     const read = last.notice.message ? child.messages?.find((message) => message.id === last.notice.message)?.readAt : undefined;
@@ -165,4 +177,121 @@ export function teleportLines(parents: Pick<ParentRecord, 'children'>[], now = D
     else if (Date.parse(last.at) > now - RECENT_MS) lines.push(`info  teleport: ${trip}, and read the notice at ${last.notice.takenAt ?? read}.`);
   }
   return lines;
+}
+
+/** What a child asks for when it teleports itself. */
+export interface SelfTeleportRequest {
+  machine?: string;
+  cwd?: string;
+  reason?: string;
+  kind?: string;
+}
+
+/** The crossing's deps for a child, given the parent whose registry lists it: its relay registration is that parent's. */
+export type SelfTeleportDeps = Omit<TeleportDeps, 'registerRemote' | 'by' | 'requester'> & { registerFor?: (parentId: string) => RegisterRemote | undefined };
+
+function seconds(ms: number): string {
+  return ms >= 60_000 && ms % 60_000 === 0 ? `${ms / 60_000} min` : `${(ms / 1000).toFixed(1)} s`;
+}
+
+/**
+ * A child teleports itself (issue #226). The request goes on the child's
+ * record and the reply goes first; the daemon acts once the child's turn
+ * ends, within the bound a self-restart waits under, because a teleport
+ * never cuts a turn short and a child that asks is in the middle of one. The
+ * crossing runs as the child's parent, and the notice says the child asked.
+ */
+export async function requestSelfTeleport(deps: SelfTeleportDeps, caller: CallerIdentity, request: SelfTeleportRequest, hooks: RestartHooks): Promise<string> {
+  if (!caller.childId) throw new Error('agent_teleport needs a child, or a session Bellwether started as a child: this session sent no child id, so there is nothing to teleport. Name the child to teleport with child.');
+  const found = childOfCaller(caller);
+  if (!found) throw new Error(`agent_teleport was called for child ${caller.childId}, which no registry on this machine holds: its parent runs on another machine. Self-teleport from there is not available yet: the request has to cross the relay to your parent's daemon, and that path is the next change. Until then, ask your parent with parent_report to teleport you. Nothing was recorded.`);
+  const { parent, child } = found;
+  const source = hostOf(child);
+  const machine = request.machine?.trim();
+  const target = machine ? (machine === 'local' ? LOCAL_HOST : machine) : pickTarget(await deps.knownHosts(), source);
+  const cwd = request.cwd?.trim() || child.cwd;
+  // What the record alone can refuse is refused now, so the child hears it in the reply rather than after its turn.
+  const early = teleportRefusals({ childName: child.name, harness: child.harness, status: 'idle', state: 'live', origin: child.origin, source, target, hasSession: Boolean(child.session), ...(child.route ? { route: child.route.name } : {}) });
+  if (early.length) throw new TeleportRefusedError(child.name, target, early);
+  const timeoutMs = hooks.deferTimeoutMs ?? RESTART_DEFER_MS;
+  const now = Date.now();
+  updateChild(parent.id, child.id, (entry) => {
+    entry.teleportRequest = { at: new Date(now).toISOString(), machine: target, ...(cwd ? { cwd } : {}), ...(request.reason ? { reason: request.reason } : {}), wait: { until: new Date(now + timeoutMs).toISOString(), paneId: child.paneId } };
+    delete entry.teleportStalled;
+  });
+  hooks.defer?.(`teleport:${child.id}`, () => deferredSelfTeleport(deps, parent.id, child.id, request, hooks));
+  return [
+    `${child.name} is teleported to ${where(target)}, directory ${cwd ?? '(its current directory)'}, once this turn ends, within ${seconds(timeoutMs)}. Bellwether then stops this session and resumes it there under the same child id, and your next input there is the notice that says where you came from.`,
+    `Prepare the directory before your turn ends: Bellwether carries the conversation, never the worktree or the shell jobs. When the turn does not end within the bound, or the teleport is refused when it would run, nothing moves, and your record and bellwether doctor say why.`,
+  ].join('\n');
+}
+
+/** The deferred half: wait for the child's turn to end, then teleport it as its parent. */
+async function deferredSelfTeleport(deps: SelfTeleportDeps, parentId: string, childId: string, request: SelfTeleportRequest, hooks: RestartHooks): Promise<void> {
+  const child = readParent(parentId)?.children.find((entry) => entry.id === childId);
+  const asked = child?.teleportRequest;
+  if (!child || !asked) return;
+  const timeoutMs = hooks.deferTimeoutMs ?? RESTART_DEFER_MS;
+  const stall = (reason: string): void => {
+    updateChild(parentId, childId, (entry) => {
+      const requestedAt = entry.teleportRequest?.at;
+      delete entry.teleportRequest;
+      entry.teleportStalled = { at: new Date().toISOString(), ...(requestedAt ? { requestedAt } : {}), paneId: child.paneId, machine: asked.machine, reason };
+    });
+    hooks.log?.(`self-teleport of ${child.name} (child ${childId}) did not run: ${reason}`);
+  };
+  try {
+    const client = await deps.clientFor(hostOf(child));
+    const onStatus = noteStatus((change) =>
+      updateChild(parentId, childId, (entry) => {
+        if (entry.teleportRequest?.wait) change(entry.teleportRequest.wait);
+      }),
+    );
+    await waitForTurnEnd(client, child.name, { paneId: child.paneId, ...(child.tabId ? { tabId: child.tabId } : {}) }, { timeoutMs, freshOnly: true, readAtDeadline: true, signal: hooks.signal, onStatus });
+  } catch (error) {
+    // A daemon that stops mid-wait leaves the request for its next start.
+    if (hooks.signal?.aborted) return;
+    const status = readParent(parentId)?.children.find((entry) => entry.id === childId)?.teleportRequest?.wait?.status;
+    const message = (error as Error).message;
+    stall(/ wait; /.test(message) ? `${child.name} did not end its turn within ${seconds(timeoutMs)}${status ? `, and herdr last reported it ${status}` : ''}, so nothing moved. Ask again once it is idle, or ask your parent to teleport you.` : `the wait for ${child.name}'s turn to end failed, so nothing moved: ${message}`);
+    return;
+  }
+  if (!readParent(parentId)?.children.find((entry) => entry.id === childId)?.teleportRequest) return;
+  // herdr just reported the turn over. The watcher records that only after its
+  // settle time, and the crossing refuses a child its record still calls
+  // working, so the record takes the status the wait saw.
+  updateChild(parentId, childId, (entry) => {
+    const seen = entry.teleportRequest?.wait?.status;
+    if (entry.lastStatus !== 'working' && entry.lastStatus !== 'blocked') return;
+    entry.lastStatus = seen === 'done' ? 'done' : 'idle';
+    entry.statusChangedAt = new Date().toISOString();
+  });
+  try {
+    const { registerFor, ...rest } = deps;
+    const registerRemote = registerFor?.(parentId);
+    await teleportChild({ ...rest, ...(registerRemote ? { registerRemote } : {}), by: 'self', requester: 'self' }, parentId, { child: childId, machine: asked.machine, ...(asked.cwd ? { cwd: asked.cwd } : {}), ...(asked.reason ? { reason: asked.reason } : {}), ...(request.kind ? { kind: request.kind } : {}) });
+    updateChild(parentId, childId, (entry) => {
+      delete entry.teleportRequest;
+    });
+  } catch (error) {
+    stall(`the teleport did not run: ${(error as Error).message}`);
+  }
+}
+
+/**
+ * Arm again a teleport this session asked for itself and a stopped daemon
+ * never ran: the request is on the child's record, and the session that
+ * reconnects is the child's own, so its service starts the wait afresh.
+ */
+export function armPendingTeleports(deps: SelfTeleportDeps, session: Pick<ParentRecord, 'childId' | 'paneId'>, hooks: RestartHooks): boolean {
+  if (!session.childId) return false;
+  const found = childOfCaller({ childId: session.childId });
+  const asked = found?.child.teleportRequest;
+  if (!found || !asked) return false;
+  const timeoutMs = hooks.deferTimeoutMs ?? RESTART_DEFER_MS;
+  updateChild(found.parent.id, found.child.id, (entry) => {
+    if (entry.teleportRequest) entry.teleportRequest.wait = { until: new Date(Date.now() + timeoutMs).toISOString(), paneId: found.child.paneId };
+  });
+  hooks.defer?.(`teleport:${found.child.id}`, () => deferredSelfTeleport(deps, found.parent.id, found.child.id, { ...(asked.reason ? { reason: asked.reason } : {}) }, hooks));
+  return true;
 }

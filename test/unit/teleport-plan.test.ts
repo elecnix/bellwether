@@ -97,13 +97,17 @@ test('a child is stopped when its record says it exited or names no pane, and li
 });
 
 test('the notice names both machines and both directories as a person would, and says what did not cross', () => {
-  const text = teleportNotice({ from: { machine: 'alder', cwd: '/home/a/work/x' }, to: { machine: 'hawthorne', cwd: '/home/b/work/x' }, at: '2026-11-28T03:40:00.000Z', by: 'parent pi-01a2', reason: 'it needs more memory', state: 'live' });
+  const text = teleportNotice({ from: { machine: 'alder', cwd: '/home/a/work/x' }, to: { machine: 'hawthorne', cwd: '/home/b/work/x' }, at: '2026-11-28T03:40:00.000Z', requester: 'parent', reason: 'it needs more memory', state: 'live' });
   assert.match(text, /teleported from machine alder, directory \/home\/a\/work\/x, to machine hawthorne, directory \/home\/b\/work\/x/);
   assert.match(text, /2026-11-28T03:40:00\.000Z/);
-  assert.match(text, /by parent pi-01a2/);
-  assert.match(text, /because it needs more memory/);
-  assert.match(text, /worktree, the shell jobs it ran and any file outside the session did not cross/);
-  const stopped = teleportNotice({ from: { machine: 'alder', cwd: '/a' }, to: { machine: 'alder-2', cwd: '/b' }, at: '2026-11-28T03:40:00.000Z', by: 'parent p', state: 'stopped' });
+  assert.match(text, /at your parent's request, because it needs more memory\./);
+  assert.match(text, /Your worktree, the shell jobs you ran and any file outside the session did not cross: your parent prepared \/home\/b\/work\/x for you\./);
+  // Nothing of how Bellwether names a session leaks into the first thing a moved agent reads.
+  assert.doesNotMatch(text, /pi session|claude-code-|session [0-9a-f]{8}/);
+  const own = teleportNotice({ from: { machine: 'alder', cwd: '/a' }, to: { machine: 'hawthorne', cwd: '/b' }, at: '2026-11-28T03:40:00.000Z', requester: 'self', state: 'live' });
+  assert.match(own, /at your own request\./);
+  assert.match(own, /you prepared \/b yourself before you asked/);
+  const stopped = teleportNotice({ from: { machine: 'alder', cwd: '/a' }, to: { machine: 'alder-2', cwd: '/b' }, at: '2026-11-28T03:40:00.000Z', requester: 'parent', state: 'stopped' });
   assert.match(stopped, /You were stopped/);
   assert.doesNotMatch(stopped, /because/, 'no reason given, none invented');
 });
@@ -117,7 +121,7 @@ test('a far machine whose Bellwether predates relay-message has no inbound path,
 });
 
 test('doctor warns about a teleported child that has not read its notice, and notes a recent one that did', () => {
-  const entry = (notice: TeleportEntry['notice'], at = '2026-11-28T03:40:00.000Z'): TeleportEntry => ({ at, by: 'parent p', state: 'live', from: { host: LOCAL_HOST, cwd: '/a' }, to: { host: 'hawthorne', cwd: '/b', paneId: 'w9:p1' }, sessionFile: '/b/s.jsonl', bytes: 10, notice, alive: { at, proof: notice.takenAt ? 'took-notice' : 'detected' } });
+  const entry = (notice: TeleportEntry['notice'], at = '2026-11-28T03:40:00.000Z'): TeleportEntry => ({ at, by: 'claude-code-p', state: 'live', from: { host: LOCAL_HOST, cwd: '/a' }, to: { host: 'hawthorne', cwd: '/b', paneId: 'w9:p1' }, sessionFile: '/b/s.jsonl', bytes: 10, notice, alive: { at, proof: notice.takenAt ? 'took-notice' : 'detected' } });
   const child = (extra: object) => ({ id: 'c', name: 'worker', kind: 'claude', harness: 'claude-code', paneId: 'w9:p1', host: 'hawthorne', startedAt: '', lastStatus: 'idle' as const, statusChangedAt: '', lastBusyAt: '', depth: 1, ...extra });
   const now = Date.parse('2026-11-28T04:00:00.000Z');
   const [warn] = teleportLines([{ children: [child({ teleports: [entry({ message: 'm-1', undelivered: 'its session never connected' })] })] }], now);

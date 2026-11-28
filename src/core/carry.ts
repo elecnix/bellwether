@@ -83,8 +83,10 @@ export interface CarryDeps {
   redrawMs?: number;
   /** The daemon's way into the child's session, for a policy that tells the child. */
   inbox?: Inbox;
-  /** Who asked, as the child reads it. */
+  /** Who asked, as the record and the logs keep it: a parent's id, or `self`. */
   by?: string;
+  /** Who sends the notice, as the child's session shows the sender. */
+  from?: string;
 }
 
 /** What a policy needs to word its notice. */
@@ -381,7 +383,7 @@ export async function carryChild(deps: CarryDeps, parentId: string, request: Car
       upsertChild(parentId, moved);
       const parent = readParent(parentId);
       if (!parent) throw new Error(`the registry for ${parentId} disappeared`);
-      const resumed = await resumeChild(targetClient, parent, { child: moved, session: { kind: byPath ? 'path' : 'id', value: moved.session?.value ?? '' } }, { registerRemote: deps.registerRemote, cleanupRemote: deps.cleanupRemote, startupTimeoutMs: deps.startupTimeoutMs, redrawMs: deps.redrawMs, ...(noticeText === undefined ? {} : { inbox: deps.inbox, from: by, notice: noticeText }) });
+      const resumed = await resumeChild(targetClient, parent, { child: moved, session: { kind: byPath ? 'path' : 'id', value: moved.session?.value ?? '' } }, { registerRemote: deps.registerRemote, cleanupRemote: deps.cleanupRemote, startupTimeoutMs: deps.startupTimeoutMs, redrawMs: deps.redrawMs, ...(noticeText === undefined ? {} : { inbox: deps.inbox, from: deps.from ?? by, notice: noticeText }) });
       started = resumed.child;
       notice = resumed.notice;
       stage = 'started';

@@ -23,6 +23,16 @@ Bellwether performs three steps and no others.
 
 Whoever asks for the teleport prepares the destination before the child arrives, including any folder, worktree or assets the child needs. Bellwether never copies a worktree or creates a directory, and it moves only the conversation. Shell jobs and files outside the session stay on the source machine, and so does the worktree.
 
+## A child that teleports itself
+
+A child Bellwether started can teleport itself. It calls `agent_teleport` with no `child`, naming `machine` and `cwd`. The reply comes first and says where the child goes. Then the daemon waits for the turn to end, within the 5 minutes a self-restart waits, because a teleport never cuts a turn short and the child is mid-turn when it asks.
+
+After herdr reports the turn over, the daemon teleports the child as its parent would, and the notice says the child asked: `at your own request`. On the record, `self` is the teleport's `by`. A child stays where it is when its turn doesn't end within the bound, or when the daemon refuses its teleport at run time. Its record keeps the reason under `teleportStalled`, and `bellwether doctor` prints a `warn` line.
+
+If the daemon stops during the wait, the request stays on the record, and the child's session arms it again when it reconnects.
+
+For a child whose parent runs on another machine, self-teleport is not available yet. That machine's daemon doesn't keep the child's record, so the request must cross the relay to the parent's daemon. Until then, the child asks its parent through `parent_report`.
+
 ## Live and stopped children
 
 - Bellwether carries a live, idle child the way `agent_move` does. It copies the session, then stops the child's tab on the source. If the session grew, it copies again. Finally, it starts the child at the destination.

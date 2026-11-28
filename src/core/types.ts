@@ -136,6 +136,16 @@ export interface Crossing {
   by?: string;
 }
 
+/** A teleport a child asked for itself, as the record keeps it while the child's turn ends. */
+export interface TeleportRequestRecord {
+  at: string;
+  machine: string;
+  cwd?: string;
+  reason?: string;
+  /** What the request waits for: the child's pane to end its turn, until a bound. */
+  wait?: RestartWait;
+}
+
 /** A crossing that left the child running nowhere (issue #226). */
 export interface CrossingFailure {
   at: string;
@@ -496,6 +506,10 @@ export interface ChildRecord {
    * could not be undone. A later resume clears it.
    */
   crossingFailed?: CrossingFailure;
+  /** A teleport this child asked for itself, which waits for its turn to end (issue #226). */
+  teleportRequest?: TeleportRequestRecord;
+  /** Why the last teleport the child asked for itself did not run, until its next request. */
+  teleportStalled?: RestartStall & { machine?: string };
   /**
    * The machine the child last moved away from, and when. The parent's daemon
    * keeps collecting from that machine until it has drained it once since the

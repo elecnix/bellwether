@@ -249,7 +249,7 @@ const CLOSE_EVENTS = new Set(['pane.exited', 'pane_exited', 'pane.closed', 'pane
  * contains its request to finish. Undefined means there was nothing to wait
  * for: the pane was already idle, or already gone.
  */
-async function waitForTurnEnd(client: HerdrClient, label: string, pane: { paneId: string; tabId?: string }, options: { timeoutMs: number; freshOnly?: boolean; readAtDeadline?: boolean; signal?: AbortSignal; onStatus?: (status: string) => void }): Promise<{ waitedMs: number } | undefined> {
+export async function waitForTurnEnd(client: HerdrClient, label: string, pane: { paneId: string; tabId?: string }, options: { timeoutMs: number; freshOnly?: boolean; readAtDeadline?: boolean; signal?: AbortSignal; onStatus?: (status: string) => void }): Promise<{ waitedMs: number } | undefined> {
   if (options.signal?.aborted) throw new RestartRefused(`The restart of ${label} was cancelled before it began.`);
   const started = Date.now();
   const controller = new AbortController();
@@ -1370,7 +1370,7 @@ function deferParentRestart(client: HerdrClient, record: ParentRecord, caller: C
 }
 
 /** Keep the status herdr reports for the waiting pane on the record, for a second call and doctor. */
-function noteStatus(update: (change: (wait: RestartWait) => void) => void): (status: string) => void {
+export function noteStatus(update: (change: (wait: RestartWait) => void) => void): (status: string) => void {
   return (status) =>
     update((wait) => {
       wait.status = status;

@@ -7,6 +7,7 @@ import { knownHosts, machineClients } from '../core/machine.ts';
 import { reclaimRemote, remoteOps } from '../core/remote.ts';
 import { armPendingRestarts, type RestartHooks } from '../core/restart.ts';
 import { recoverCrossings } from '../core/recover-crossing.ts';
+import { armPendingTeleports } from '../core/teleport.ts';
 import { moveEndpoints } from '../core/move-endpoint.ts';
 import { emptyParent, mutateParent, parentId, readParent, saveParent } from '../core/registry.ts';
 import { Watcher } from '../core/watcher.ts';
@@ -103,6 +104,8 @@ export function createHerdrService(parent: ParentHello, id: string, deps: Servic
   watcher.start();
   // Finish a restart a daemon stopped part of the way through.
   armPendingRestarts(client, record, restart);
+  // A teleport this session asked for itself, which a stopped daemon never ran (issue #226).
+  armPendingTeleports({ clientFor, endpointFor: moveEndpoints(), knownHosts: () => knownHosts(), registerFor: (parentId) => (child, brief) => remote.register({ id: parentId }, child, brief), cleanupRemote: (child) => remote.cleanup(child), log: deps.log, ...(deps.inbox ? { inbox: deps.inbox } : {}), from: 'Bellwether, at your own request' }, record, restart);
   // Finish or undo a move or a teleport a stopped daemon left half done (issue #226).
   void recoverCrossings({ clientFor, endpointFor: moveEndpoints(), knownHosts: () => knownHosts(), registerRemote: (child, brief) => remote.register({ id: record.id }, child, brief), cleanupRemote: (child) => remote.cleanup(child), log: deps.log }, record.id).then((done) => {
     for (const recovery of done) if (recovery.outcome !== 'unknown') watcher.reset(recovery.childId);

@@ -131,3 +131,21 @@ export const TRUST_DIMMED_ACCEPT = [
   '',
   ' Enter to confirm · Esc to cancel',
 ].join('\r\n');
+
+/**
+ * Two lines typed into Codex's composer. The second line starts at the first
+ * line's text, the way an option lines up under a selected one. But neither
+ * line is numbered and no confirm or cancel hint follows, so it is a draft
+ * and no dialog (issue #164).
+ */
+export const CODEX_TWO_LINE_DRAFT = codex('first line\r\n  second line');
+
+/**
+ * A numbered list typed into Claude Code's box. It has the shape of a
+ * numbered dialog, but no question stands above it, only the box's rule, so
+ * it is a draft.
+ */
+export const CLAUDE_NUMBERED_DRAFT = claude(`${RESET}1. first step\r\n  2. second step`);
+
+/** The folder-trust question with its unselected option and its hint both dimmed. */
+export const TRUST_DIMMED_HINT = TRUST_DIMMED_ACCEPT.replace(' Enter to confirm · Esc to cancel', `${FAINT} Enter to confirm · Esc to cancel${RESET}`);

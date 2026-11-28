@@ -198,7 +198,12 @@ export interface ChildRecord {
    * the spawn's caller, the parent session, or the child's own session file
    * when neither named one and pi chose its default.
    */
-  model?: ModelPair & { source: 'caller' | 'parent' | 'session' };
+  /**
+   * `saved` is pi's saved default, which the spawn passed as flags when the
+   * parent's pair was unknown (issue #189). `setting` names the file it came
+   * from, and `over` names what pi would have taken on its own, when that differs.
+   */
+  model?: ModelPair & { source: 'caller' | 'parent' | 'session' | 'saved'; setting?: string; over?: string };
   /** The route the child was launched through, or absent for a bare start. A restart or resume that changes route rewrites it. */
   route?: ChildRoute;
   /** The herdr agent kind, which names the child's entry in the harness registry. */

@@ -131,9 +131,12 @@ export function childArgs(kind: string, options: Pick<SpawnOptions, 'model' | 'p
  * wins, in the spawn's fields or in its extra arguments. Half a pair is
  * refused, because pi would pair it with whatever provider it defaults to.
  * With neither named, the child inherits the parent's pair. With the parent's
- * pair unknown too, no flag is passed and pi picks its own default.
+ * pair unknown too, a child on this machine gets the harness's saved default,
+ * read from its settings, rather than whatever else the harness would take on
+ * its own, such as the first entry of pi's enabledModels (issue #189). With no
+ * saved default, or on another machine, no flag is passed and pi picks.
  */
-export function chooseChildModel(options: Pick<SpawnOptions, 'kind' | 'name' | 'model' | 'provider' | 'args' | 'parentModel'>): (ModelPair & { source: 'caller' | 'parent' }) | undefined {
+export function chooseChildModel(options: Pick<SpawnOptions, 'kind' | 'name' | 'model' | 'provider' | 'args' | 'parentModel' | 'cwd' | 'host'>): NonNullable<ChildRecord['model']> | undefined {
   if (requireHarness(options.kind).chosenBy !== 'pair') {
     if (options.provider) throw new Error(`${options.name} was not started: provider applies to a pi child, and this is a ${options.kind} child. Put the provider in model if the harness takes one.`);
     return undefined;
@@ -145,7 +148,10 @@ export function chooseChildModel(options: Pick<SpawnOptions, 'kind' | 'name' | '
   if (provider && model) return { provider, id: model, source: 'caller' };
   if (model) throw new Error(`${options.name} was not started: pi needs a provider with the model ${model}, and Bellwether does not guess one. Pass provider too, ${instead}.`);
   if (provider) throw new Error(`${options.name} was not started: pi needs a model with the provider ${provider}, and Bellwether does not guess one. Pass model too, ${instead}.`);
-  return parent ? { ...parent, source: 'parent' } : undefined;
+  if (parent) return { ...parent, source: 'parent' };
+  if ((options.host ?? LOCAL_HOST) !== LOCAL_HOST) return undefined;
+  const saved = requireHarness(options.kind).savedPair?.(options.cwd);
+  return saved ? { provider: saved.provider, id: saved.id, source: 'saved', setting: saved.setting, ...(saved.over ? { over: saved.over } : {}) } : undefined;
 }
 
 /** The line of a spawn reply that says which model the child runs on, when its harness has one to say. */

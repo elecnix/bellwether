@@ -23,9 +23,9 @@ A parent sends input only to the panes it started, resumed or adopted.
 
 A pi child runs on its parent's provider and model, so a spawn never bills another account by accident. pi needs both values, so Bellwether passes `--provider` and `--model` together.
 
-A caller who names both, in `provider` and `model` or in `args`, wins. Naming one without the other fails the spawn, and the error gives this session's pair. A Claude Code parent has no pi pair to pass, so its pi child starts on pi's own default.
+A caller who names both, in `provider` and `model` or in `args`, wins. Naming one without the other fails the spawn, and the error gives this session's pair. A Claude Code parent has no pi pair to pass. Its pi child on this machine then starts on pi's saved default, `defaultProvider` and `defaultModel` from pi's settings, and Bellwether passes that pair as flags. Left to itself, pi would take the first entry of `enabledModels` whenever that list leaves the saved default out, and nobody chose that entry for the child. The reply mentions the first entry only when it differs from the saved default. When pi's settings don't save a default, or the child runs on another machine, pi picks the pair itself.
 
-Either way, the spawn reply states the provider account and model the child runs on, since the account is what pays. For a default, Bellwether reads the pair from the child's session file once pi writes it, and `agent_list` shows it beside the kind. Before that, the reply gives the pair that pi's settings point to, along with the setting and its file. It marks that pair unverified.
+Either way, the spawn reply states the provider account and model the child runs on, since the account is what pays. When pi picks, Bellwether reads the pair from the child's session file once pi writes it, and `agent_list` shows it beside the kind. Before that, the reply gives the pair that pi's settings point to, along with the setting and its file. It marks that pair unverified.
 
 A spawn reports a child that failed to start as a failure, not as a start the parent has to disprove later. Until herdr detects the harness, the spawn checks the pane's foreground process every half second. When the shell regains the foreground from the harness, the harness has exited. At once, the spawn fails and shows the harness's printed lines.
 

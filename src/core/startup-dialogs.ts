@@ -22,6 +22,14 @@
 // prompt that starts with the same ❯ a menu uses for its selection sits above
 // the dialog, so it is never read as the chosen option (issue #160). A block
 // with the marker on two options is not guessed at: the start fails by name.
+//
+// Whether a screen shows a dialog at all is decided by one rule, which
+// detectModal in src/core/modal.ts and herdr-box-state.sh share: a question
+// with its options under it, and a solid selection marker or a y/n prompt.
+// Two lines typed into an input box are no dialog. The watcher asks
+// detectModal before it hands an idle child's screen to this module, so a
+// draft never reaches the answer below. The spawn and the watcher's blocked
+// path answer only a screen whose own line matches a known dialog's `shows`.
 import type { HerdrClient, Subscription } from './herdr-client.ts';
 import type { ModalView } from './modal.ts';
 import { BLANK_SCREEN, type Screen } from './screen.ts';
@@ -237,9 +245,9 @@ function drawn(line: string): Drawn | undefined {
 }
 
 /**
- * The option block of the dialog whose own line matches `shows`. The rule,
- * which herdr-box-state.sh should share so a pane and a dialog never
- * disagree:
+ * The option block of the dialog whose own line matches `shows`. Whether a
+ * dialog is up is detectModal's rule (src/core/modal.ts); this one reads the
+ * options of a dialog a known entry names:
  *
  * - The anchor is the dialog's own line: the last line on screen that
  *   matches `shows`. Nothing above it is part of the dialog, so a shell

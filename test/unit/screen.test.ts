@@ -9,7 +9,7 @@ import { boxLine, parseRuns, parseScreen, shownScreen } from '../../src/core/scr
 import { CLAUDE_STARTUP, keyToward } from '../../src/core/startup-dialogs.ts';
 
 const TRUST = CLAUDE_STARTUP.dialogs.find((dialog) => dialog.id === 'trust')?.shows ?? /^$/;
-import { BOX_CASES, CLAUDE_GHOST_QUESTION, PERMISSION_DIMMED, SUGGESTION, TRUST_DIMMED_ACCEPT, TRUST_FAINT_ACCEPT, TYPED, stripAnsi } from '../fixtures/ghost-screens.ts';
+import { BOX_CASES, CLAUDE_GHOST_QUESTION, CODEX_TWO_LINE_DRAFT, PERMISSION_DIMMED, SUGGESTION, TRUST_DIMMED_ACCEPT, TRUST_FAINT_ACCEPT, TYPED, stripAnsi } from '../fixtures/ghost-screens.ts';
 
 for (const box of BOX_CASES) {
   test(`${box.name}: the ANSI format reads ${box.state}`, () => {
@@ -82,4 +82,10 @@ test('a dialog that dims its unselected options is still a dialog, and the scree
 test('the spawn walks to an accepting option drawn dim, and never takes a faint marker as selected', () => {
   assert.equal(keyToward(parseScreen(TRUST_DIMMED_ACCEPT, 'ansi'), 'Yes, I trust this folder', TRUST), 'Down');
   assert.equal(keyToward(parseScreen(TRUST_FAINT_ACCEPT, 'ansi'), 'Yes, I trust this folder', TRUST), undefined);
+});
+
+test('two lines typed into a box read as a draft, so a reader still sees the box (issue #164)', () => {
+  const screen = parseScreen(CODEX_TWO_LINE_DRAFT, 'ansi', (view) => detectModal(view) !== undefined);
+  assert.deepEqual(screen.box, { state: 'DRAFT', text: 'first line' });
+  assert.equal(boxLine(screen), 'Input box: DRAFT. The text on its line was typed there and not sent.');
 });

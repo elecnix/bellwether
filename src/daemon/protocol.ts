@@ -264,7 +264,15 @@ export interface RelayAdoptRequest {
  * parent types the message into the pane instead.
  */
 export interface RelayMessageRequest {
-  type: 'relay-message';
+  /**
+   * `relay-message-again` asks about a message whose first answer the parent's
+   * daemon lost to a dropped connection or a timeout (issue #218). The daemon
+   * here answers from its own record when it already pushed that message id,
+   * and pushes it only when it never did, so a message enters the session
+   * once. A daemon that predates it answers unknown_type, and the parent keeps
+   * the message in doubt rather than type a second copy.
+   */
+  type: 'relay-message' | 'relay-message-again';
   id: string;
   parentId: string;
   childId: string;
@@ -686,7 +694,8 @@ export function parseRequest(line: string): DaemonRequest {
       const session = text(value['session']);
       return { type: 'relay-adopt', id, parentId, childId, name, kind, paneId, ...(session ? { session } : {}) };
     }
-    case 'relay-message': {
+    case 'relay-message':
+    case 'relay-message-again': {
       const id = text(value['id']);
       const parentId = text(value['parentId']);
       const childId = text(value['childId']);
@@ -695,7 +704,7 @@ export function parseRequest(line: string): DaemonRequest {
       const messageId = text(message['id']);
       const body = typeof message['text'] === 'string' ? message['text'] : '';
       if (!messageId || !body.trim()) throw new ProtocolError('invalid_message', 'a relay message needs a message id and text');
-      return { type: 'relay-message', id, parentId, childId, message: { id: messageId, text: body, from: text(message['from']) || 'your parent', at: text(message['at']) || new Date().toISOString() }, ...(value['awaitSession'] === true ? { awaitSession: true } : {}) };
+      return { type: value['type'] === 'relay-message-again' ? 'relay-message-again' : 'relay-message', id, parentId, childId, message: { id: messageId, text: body, from: text(message['from']) || 'your parent', at: text(message['at']) || new Date().toISOString() }, ...(value['awaitSession'] === true ? { awaitSession: true } : {}) };
     }
     case 'relay-restart': {
       const id = text(value['id']);

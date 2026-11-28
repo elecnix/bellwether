@@ -59,8 +59,12 @@ Until the child's model reads the message, its text stays on the child's relay r
 herdr on that machine types the message into the far pane instead, with the reason on the record, in these cases:
 
 - That machine runs a Bellwether that predates `relay-message`. Its daemon answers `unknown_type`, and the reason gives the release that brings the request.
-- The connection to that machine is down.
+- The connection to that machine is down before the message goes out.
 - The child's session there never connected to that machine's daemon with an inbox.
+
+After `relay-message` goes out, the connection can still end before the answer comes back. By then that machine may have pushed the message to the session, so herdr types nothing.
+
+Bellwether replies that the answer is unknown, marks the message `relayInDoubt` on the record, and `agent_list` shows it. A wait that runs out counts the same. Once the connection is back, the parent's daemon sends `relay-message-again` for that message. When the `pushed` list on its relay record contains the message, the daemon there replies from that list. Otherwise it pushes the message, once. So the session holds one copy, and that answer clears `relayInDoubt`. A Bellwether there that predates `relay-message-again` answers `unknown_type`, and the message stays in doubt, because asking that daemon again could push a second copy.
 
 ## Adopting an agent on another machine
 

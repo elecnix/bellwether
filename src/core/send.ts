@@ -20,9 +20,13 @@ export type { InboxMessage } from '../daemon/protocol.ts';
 /**
  * What the child's session said to a message: it holds it, or why it could
  * not take it. `unanswered` is a push the session had not answered within the
- * bound: it may still take it, so the message must not be typed as well.
+ * bound, or whose connection closed first: it may still take it, so the
+ * message must not be typed as well. `inDoubt` marks a message to another
+ * machine whose relay answer was lost (issue #218): the far daemon may have
+ * pushed it, so nothing is typed, and the parent's daemon asks again once the
+ * relay is back. Its `via` is then empty, because no adapter is known.
  */
-export type InboxAnswer = { delivered: true; via: string; unanswered?: string } | { delivered: false; reason: string };
+export type InboxAnswer = { delivered: true; via: string; unanswered?: string; inDoubt?: true } | { delivered: false; reason: string };
 
 /** How a push into a child's session behaves. */
 export interface InboxOptions {
@@ -168,8 +172,18 @@ export async function messageChild(input: MessageInput): Promise<MessageOutcome>
       const message: ChildMessage = { id, at, path: 'session', via: answer.via, preview: preview(text), text, from: input.from, ...brief };
       updateChild(parentId, child.id, (entry) => {
         const found = entry.messages?.find((existing) => existing.id === id);
-        if (found) found.via = answer.via;
+        if (!found) return;
+        if (answer.via) found.via = answer.via;
+        if (answer.inDoubt) found.relayInDoubt = answer.unanswered ?? 'the relay lost the answer';
       });
+      if (answer.inDoubt) {
+        const { via: _none, ...unknown } = message;
+        return {
+          message: { ...unknown, relayInDoubt: answer.unanswered ?? 'the relay lost the answer' },
+          unanswered: answer.unanswered,
+          text: `Pushed to ${child.name}'s session as message ${id}, but ${(answer.unanswered ?? 'the relay lost the answer').replace(/[.\s]+$/, '')}, so nothing was typed into its pane: its session may already hold it, and a typed copy would enter it twice. Bellwether asks that machine again once the relay is back, and its daemon pushes the message only if it never did. agent_list shows the answer.`,
+        };
+      }
       if (answer.unanswered) {
         return {
           message,
@@ -235,7 +249,7 @@ export function unreadSessionMessages(child: Pick<ChildRecord, 'messages'>): Chi
 export function describeMessages(child: Pick<ChildRecord, 'name' | 'messages'>): string[] {
   return (child.messages ?? []).slice(-3).map((message) => {
     const path = message.path === 'session' ? `into its session through ${VIA_LABEL[message.via ?? ''] ?? 'its adapter (waiting for it to take the message)'}` : `typed into its pane, because ${message.reason ?? 'no reason was recorded'}`;
-    const state = message.undelivered ? `never delivered: ${message.undelivered}` : message.path === 'keystrokes' ? 'typed; Bellwether cannot tell when the model read it' : message.readAt ? `read at ${message.readAt}` : 'not read yet';
+    const state = message.undelivered ? `never delivered: ${message.undelivered}` : message.relayInDoubt && !message.readAt ? `not known whether its machine pushed it, because ${message.relayInDoubt.replace(/[.\s]+$/, '')}; Bellwether asks again once the relay is back` : message.path === 'keystrokes' ? 'typed; Bellwether cannot tell when the model read it' : message.readAt ? `read at ${message.readAt}` : 'not read yet';
     return `${child.name}: message ${message.id} at ${message.at}, ${path}; ${state}. "${message.preview}"`;
   });
 }

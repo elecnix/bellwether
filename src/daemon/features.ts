@@ -141,6 +141,10 @@ const BASE: readonly Feature[] = [
   ...brought('argument', 4, '0.1.10', {
     'relay-restart.requestId': "When a connection ends before a restart's answer arrives, the parent's daemon takes that answer from the far machine's relay outbox once the connection returns.",
   }, [214]),
+  // A far daemon that predates it answers unknown_type, and the parent keeps the message in doubt rather than type a second copy.
+  ...brought('request', 4, '0.1.10', {
+    'relay-message-again': "When a connection ends before a message's answer arrives, the parent's daemon sends the message again once the connection returns, and the far machine pushes it only if it never did.",
+  }, [221]),
   // A daemon that predates it answers unknown_type, and `bellwether resume` names the release that brought it.
   ...brought('request', 4, '0.1.10', {
     resume: '`bellwether resume <session>` brings back a session that has lost its pane, from its own record, and reports the pane and tab it opened.',

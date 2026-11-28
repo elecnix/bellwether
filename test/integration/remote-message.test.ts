@@ -31,7 +31,7 @@ import { startDaemon, type ParentService, type ServiceFactory } from '../../src/
 import { runBellwetherTool, type ToolContext } from '../../src/integrations/tools.ts';
 import { stopDaemonsUnder } from '../fixtures/daemons.ts';
 import { startFakeHerdr, type FakeHerdr, type RecordedRequest } from '../fixtures/fake-herdr.ts';
-import { installFakeSsh } from '../fixtures/fake-ssh.ts';
+import { installFakeSsh, type FakeSsh } from '../fixtures/fake-ssh.ts';
 import { LIVE_HOME } from '../fixtures/isolation.ts';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -78,6 +78,7 @@ interface Room {
   /** The parent daemon's way into a child's session, as a start uses it for a brief. */
   inbox: () => Inbox | undefined;
   farClient: HerdrClient;
+  ssh: FakeSsh;
 }
 
 /** A parent daemon in this process whose service runs the real tools, with the far machine reached through the relay links. */
@@ -149,7 +150,7 @@ async function room(t: test.TestContext, options: { farDaemon?: (socketPath: str
     process.env['BELLWETHER_DAEMON_SOCKET'] = saved.socket;
     fs.rmSync(root, { recursive: true, force: true });
   });
-  return { root, parentHome, childHome, far, links, parent, inbox: () => held.inbox, farClient };
+  return { root, parentHome, childHome, far, links, parent, inbox: () => held.inbox, farClient, ssh };
 }
 
 async function until<T>(what: string, check: () => T | undefined | false | Promise<T | undefined | false>, timeoutMs = 20_000): Promise<T> {
@@ -349,6 +350,45 @@ test('a far session that reconnects before reading takes the message again from 
   });
   assert.deepEqual(await until('the replay', () => again[0]), { id, replay: true, text: 'Keep this one.' });
   await until('the read on the parent record', () => messages().find((entry) => entry.id === id && entry.readAt));
+  assert.deepEqual(typed(space.far), []);
+});
+
+// Issue #218 (Delivery.tla EntersOnce): the far session took the message, and
+// the relay link dropped before the far daemon's answer crossed back. The
+// parent does not know whether the push left, so it must not type a copy into
+// the far pane. Once the link is back it asks again, and the far daemon answers
+// from its own record without pushing the message a second time.
+test('EntersOnce: a relay link that drops after the far session took the message types nothing, and asks the far daemon again once the link is back', async (t) => {
+  const space = await room(t);
+  const farSocket = path.join(space.childHome, 'daemon.sock');
+  const hello = { harness: 'claude-code' as const, session: SESSION, cwd: '/far/work', host: 'child-box', paneId: PANE, depth: 1, herdrSocket: space.far.socketPath, childId: CHILD_ID, reportsTo: PARENT_ID, accepts: ['message'] };
+  const session = await inHome(space.childHome, () => DaemonClient.connect(hello, { socketPath: farSocket, home: space.childHome }));
+  t.after(() => session.close());
+  const inSession: { id: string; replay: boolean }[] = [];
+  let dropped: Promise<number> | undefined;
+  session.onMessage((message, replay) => {
+    inSession.push({ id: message.id, replay });
+    // The link drops after the push reached the session, before the far daemon answers.
+    dropped ??= space.ssh.drop().then(async (code) => {
+      session.messageAck(message.id, 'queued', { via: 'claude-channel' });
+      return code;
+    });
+  });
+  await relayUp(space);
+
+  const reply = await space.parent.tool('agent_send', { child: NAME, text: 'Pull before you rebase.' });
+  await dropped;
+  assert.deepEqual(typed(space.far), [], `nothing may be typed into the far pane while the push may have left; reply: ${reply}`);
+  assert.match(reply, /^Pushed to first-mate's session as message m-[0-9a-f]{8}, but the relay to machine child-box lost its answer: the connection to machine child-box ended/);
+  const id = /message (m-[0-9a-f]{8})/.exec(reply)?.[1];
+  assert.equal(messages()[0]?.relayInDoubt !== undefined, true, 'the record says the far answer is not known');
+
+  // The link comes back, and the far daemon answers the second ask from its record.
+  await relayUp(space);
+  const settled = await until('the far answer on the parent record', () => messages().find((entry) => entry.id === id && entry.relayInDoubt === undefined && entry.via));
+  assert.equal(settled.via, 'claude-channel');
+  assert.equal(settled.path, 'session');
+  assert.deepEqual(inSession, [{ id, replay: false }], 'the far session took one copy, and the second ask pushed none');
   assert.deepEqual(typed(space.far), []);
 });
 

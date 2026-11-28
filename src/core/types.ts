@@ -551,6 +551,14 @@ export interface ChildMessage {
   from?: string;
   /** The number of the brief this message carried, for a start's brief rather than a parent's message. */
   brief?: number;
+  /**
+   * For a child on another machine: why the far daemon's answer is not known,
+   * after the relay connection ended or timed out while the message was out
+   * (issue #218). The far session may hold it, so nothing is typed. The
+   * parent's daemon asks the far daemon again once the connection is back,
+   * and the field goes when that answer arrives.
+   */
+  relayInDoubt?: string;
 }
 
 /** One raise of a child's ceiling, for the audit trail agent_list shows. */

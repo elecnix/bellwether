@@ -52,7 +52,7 @@ export type AcceptRelayed = (host: string, report: RelayReport) => { refused?: s
 
 interface PendingRead {
   /** The request type, so a far daemon that does not know it can be answered for the requests it refused. */
-  type: 'relay-read' | 'relay-adopt' | 'relay-message' | 'relay-restart';
+  type: 'relay-read' | 'relay-adopt' | 'relay-message' | 'relay-message-again' | 'relay-restart';
   resolve: (text: string) => void;
   reject: (error: Error) => void;
   timer: NodeJS.Timeout;
@@ -106,6 +106,7 @@ export class RelayLinks {
   /** What earlier daemons learnt about each host, kept across a restart. */
   private memory: Record<string, { lastDrainAt?: string; lastConnectedAt?: string; lastError?: string }> = {};
   private accept: AcceptRelayed = () => ({ refused: 'this daemon takes no reports' });
+  private readonly connectedHandlers = new Set<(host: string) => void>();
   private sequence = 0;
   private stopped = true;
 
@@ -126,6 +127,12 @@ export class RelayLinks {
     this.stopped = false;
     this.memory = readMemory();
     this.sync();
+  }
+
+  /** Run once each time the far daemon on a machine answers the relay, after a first connection or a reconnect. */
+  onConnected(handler: (host: string) => void): () => void {
+    this.connectedHandlers.add(handler);
+    return () => this.connectedHandlers.delete(handler);
   }
 
   stop(): void {
@@ -212,11 +219,15 @@ export class RelayLinks {
    * it in the child's session there, over the open connection. The answer
    * says whether that session took it. A daemon there that predates the
    * request is refused by name, and the caller types the message instead.
+   * With `again`, it asks about a message whose first answer was lost: the
+   * daemon there answers from its record and pushes it only if it never did.
    */
-  async message(host: string, parentId: string, childId: string, message: InboxMessage, options: { awaitSession?: boolean } = {}): Promise<RelayMessageAnswer> {
+  async message(host: string, parentId: string, childId: string, message: InboxMessage, options: { awaitSession?: boolean; again?: boolean } = {}): Promise<RelayMessageAnswer> {
     if (host === LOCAL_HOST) throw new Error('a message to a child on this machine goes to its session here');
+    const type = options.again ? 'relay-message-again' : 'relay-message';
+    const awaitSession = options.awaitSession === true && !options.again;
     // A brief waits on that machine for the child's session to connect, so the answer may take that long too.
-    const text = await this.ask(host, 'relay-message', (id) => ({ type: 'relay-message', id, parentId, childId, message, ...(options.awaitSession ? { awaitSession: true } : {}) }), options.awaitSession ? this.readTimeoutMs + BRIEF_SESSION_WAIT_MS : undefined);
+    const text = await this.ask(host, type, (id) => ({ type, id, parentId, childId, message, ...(awaitSession ? { awaitSession: true } : {}) }), awaitSession ? this.readTimeoutMs + BRIEF_SESSION_WAIT_MS : undefined);
     const answer = JSON.parse(text) as Partial<{ delivered: boolean; via: string; reason: string; unanswered: string }>;
     if (answer.delivered === true && typeof answer.via === 'string') return { delivered: true, via: answer.via, ...(typeof answer.unanswered === 'string' && answer.unanswered ? { unanswered: answer.unanswered } : {}) };
     return { delivered: false, reason: typeof answer.reason === 'string' && answer.reason ? answer.reason : 'its session did not take the message' };
@@ -457,6 +468,7 @@ export class RelayLinks {
       }
       this.remember(link);
       for (const waiter of [...link.waiters]) waiter();
+      for (const handler of this.connectedHandlers) handler(link.host);
       return;
     }
     if (reply.type === 'relay-report') {
@@ -624,6 +636,11 @@ export async function relayInbox(links: Pick<RelayLinks, 'message'>, parentId: s
     const answer = await links.message(host, parentId, child.id, message, options);
     return answer.delivered ? answer : { delivered: false, reason: `machine ${host} answered: ${answer.reason}` };
   } catch (error) {
+    // The request went out and its answer did not come back (issue #218). The
+    // far daemon may have pushed the message to its session, so a typed copy
+    // could enter the child twice. The parent's daemon asks again once the
+    // relay is back, with relay-message-again.
+    if (error instanceof RelayAnswerLost) return { delivered: true, via: '', inDoubt: true, unanswered: `the relay to machine ${host} lost its answer: ${error.message.trim()}` };
     return { delivered: false, reason: (error as Error).message };
   }
 }

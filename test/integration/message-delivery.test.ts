@@ -283,6 +283,37 @@ test('EntersOnce: an adapter that queues the message after the ack bound must no
   assert.deepEqual(record.map((m) => ({ path: m.path, via: m.via })), [{ path: 'session', via: 'claude-channel' }], 'the late answer names the adapter on the record');
 });
 
+// Issue #218: the same invariant when the session's connection closes after
+// its adapter put the message in the session, before its answer went out.
+test('EntersOnce: a session whose connection closes after its adapter took the message is offered it again, and nothing is typed', async (t) => {
+  const space = await room(t, [WRITER]);
+  const inSession: string[] = [];
+  await bareChild(t, space, WRITER, (message, _replay, client) => {
+    // The adapter takes the message, and its connection closes before the answer.
+    inSession.push(message.id);
+    void client.close();
+  });
+
+  const reply = await space.parent.tool('agent_send', { child: 'writer', text: 'Run the tests again.' });
+  assert.deepEqual(typed(space.fake, WRITER.pane), [], `nothing may be typed for a push that left on the connection; reply: ${reply}`);
+  assert.match(reply, /^Pushed to writer's session as message m-[0-9a-f]+, but its session's connection to the daemon closed before it answered, so nothing was typed/);
+  const [message] = messagesOf(space, WRITER.id);
+  assert.equal(message?.path, 'session');
+  assert.equal(message?.undelivered, undefined);
+
+  // The adapter that reconnects is offered it again, and keeps one copy, as the real ones do by id.
+  const offered: { id: string; replay: boolean }[] = [];
+  await bareChild(t, space, WRITER, (replayed, replay, client) => {
+    offered.push({ id: replayed.id, replay });
+    if (!inSession.includes(replayed.id)) inSession.push(replayed.id);
+    client.messageAck(replayed.id, 'read', { via: 'claude-channel' });
+  });
+  await until('the replay', () => offered[0]);
+  assert.deepEqual(offered, [{ id: message?.id, replay: true }]);
+  await until('the read on the record', () => messagesOf(space, WRITER.id)[0]?.readAt);
+  assert.equal(inSession.length + typed(space.fake, WRITER.pane).length, 1, 'the message entered the child once');
+});
+
 test('a blocked child keeps the old refusal: nothing is pushed to its session, herdr refuses the prompt, and the parent gets the dialog', async (t) => {
   const stuck: Kid = { ...WRITER, status: 'blocked' };
   const space = await room(t, [stuck]);

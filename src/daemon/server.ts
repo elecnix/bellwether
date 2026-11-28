@@ -18,18 +18,18 @@ import { PRUNE_DELAY_MS, PRUNE_EVERY_MS, pruneState } from '../core/hygiene.ts';
 import { defaultServiceFactory, parentIdOf, type ParentService, type ServiceFactory } from './service.ts';
 import { acquire, isAlive, readLock, release } from './lock.ts';
 import { RelayOutbox } from './relay.ts';
+import { RelayAnswerLost, learnRelayRestart, restartForRelay, type RelayRestartAnswer } from '../core/restart.ts';
 import { RelayLinks, relayInbox } from './relay-links.ts';
 import { LOCAL_HOST, hostOf } from '../core/machine.ts';
 import { acceptLocalReport, isReportStatus, localParentOf, routeReport, type ReportInput } from '../core/report.ts';
 import { readRelayRecord, updateRelayRecord } from '../core/relay-records.ts';
-import { learnRelayRestart, restartForRelay, type RelayRestartAnswer } from '../core/restart.ts';
 import { claimPane } from '../core/pane-claims.ts';
 import { adoptedInboxGap, adoptedParentOf, type SessionReach } from '../core/adopted-session.ts';
 import { lastAssistantMessage } from '../core/transcript.ts';
 import { harnessFor, resolveTranscript } from '../core/harnesses/index.ts';
 import type { CallerIdentity, OutboxEntry } from '../core/types.ts';
 import type { RosterChild } from '../core/roster.ts';
-import type { InboxMessage, MessageAckRequest, RelayHostState, RelayReport, ServedTool } from './protocol.ts';
+import type { InboxMessage, MessageAckRequest, RelayHostState, RelayMessageAnswer, RelayMessageRequest, RelayReport, ServedTool } from './protocol.ts';
 import { BRIEF_SESSION_WAIT_MS, BRIEF_TURN_WAIT_MS, unreadSessionMessages, type Inbox, type InboxAnswer } from '../core/send.ts';
 import { updateChild } from '../core/registry.ts';
 import { UnknownTool, servedTools, type ToolScope } from '../integrations/tools.ts';
@@ -365,6 +365,99 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
     });
   };
 
+  /** Note on the child's relay record that its session was pushed a message, through which adapter, or take the note back after a refusal. */
+  const notePushed = (childId: string, id: string, via: string | undefined): void => {
+    updateRelayRecord(childId, (record) => {
+      const kept = (record.pushed ?? []).filter((entry) => entry.id !== id);
+      if (via) kept.push({ id, via });
+      if (kept.length) record.pushed = kept.slice(-50);
+      else delete record.pushed;
+    });
+  };
+
+  /** relay-message requests this daemon is still answering, by message id, so a second ask waits for the first. */
+  const relayMessagesInFlight = new Map<string, Promise<RelayMessageAnswer>>();
+
+  /**
+   * A parent's message from a parent's daemon on another machine, for a child
+   * this machine holds a relay record for. A `relay-message-again` for a
+   * message already pushed here is answered from the record, and a second ask
+   * while the first is still out waits for it, so the message enters the
+   * session once (issue #218).
+   */
+  const relayMessage = (request: RelayMessageRequest): Promise<RelayMessageAnswer> => {
+    const id = request.message.id;
+    const running = relayMessagesInFlight.get(id);
+    if (running) return running;
+    const record = readRelayRecord(request.childId);
+    if (!record || record.parentId !== request.parentId || record.retiredAt) return Promise.resolve({ delivered: false, reason: `this machine holds no running child ${request.childId} for parent ${request.parentId}` });
+    if (request.type === 'relay-message-again') {
+      const pushed = record.pushed?.find((entry) => entry.id === id);
+      if (pushed) return Promise.resolve({ delivered: true, via: pushed.via });
+    }
+    const answering = (async (): Promise<RelayMessageAnswer> => {
+      // A start's brief waits for the child's session first. It is kept on
+      // the relay record only once that session is here, so the hello's
+      // replay cannot hand the session a second copy.
+      if (request.awaitSession) await awaitSession(request.childId, sessionWaitMs);
+      // Kept before the push, so a read that comes back at once finds it.
+      keepRelayMessage(request.childId, request.message);
+      const answer = await sessionInbox({ id: record.childId, name: record.name, kind: record.kind }, request.message);
+      if (answer.delivered) notePushed(request.childId, id, answer.via);
+      else keepRelayMessage(request.childId, undefined, id);
+      return answer;
+    })();
+    relayMessagesInFlight.set(id, answering);
+    void answering.finally(() => relayMessagesInFlight.delete(id)).catch(() => {});
+    return answering;
+  };
+
+  /** Messages to children on a machine whose relay answer was lost and that are asked about again now, by message id. */
+  const askingAgain = new Set<string>();
+
+  /**
+   * The relay to a machine is up: ask its daemon again about each message to
+   * a child there whose first answer was lost (issue #218). Its answer settles
+   * the record. A lost answer leaves the message in doubt for the next
+   * connection, and a far daemon that predates relay-message-again leaves it
+   * in doubt for good, because asking it again could push a second copy.
+   */
+  const askAgain = (host: string): void => {
+    for (const parent of listParents()) {
+      for (const child of parent.children) {
+        if (hostOf(child) !== host) continue;
+        for (const message of child.messages ?? []) {
+          if (!message.relayInDoubt || message.readAt || message.undelivered || message.text === undefined || askingAgain.has(message.id)) continue;
+          askingAgain.add(message.id);
+          const ask: InboxMessage = { id: message.id, from: message.from ?? 'your parent', text: message.text, at: message.at };
+          void links
+            .message(host, parent.id, child.id, ask, { again: true })
+            .then(
+              (answer) => {
+                updateChild(parent.id, child.id, (entry) => {
+                  const found = entry.messages?.find((each) => each.id === message.id);
+                  if (!found?.relayInDoubt) return;
+                  delete found.relayInDoubt;
+                  if (answer.delivered) {
+                    if (answer.via && answer.via !== 'session') found.via = answer.via;
+                    else found.via ??= 'session';
+                  } else if (!found.readAt) {
+                    found.undelivered = `machine ${host} answered, once the relay was back, that its session never took it: ${answer.reason}. Nothing was typed, because the parent's call had already returned`;
+                    delete found.text;
+                    delete found.from;
+                  }
+                });
+                log(`relay-message-again ${message.id} for child ${child.id}: ${answer.delivered ? `machine ${host} holds it in its session (${answer.via})` : `machine ${host} never pushed it: ${answer.reason}`}`);
+              },
+              (error: unknown) => log(`relay-message-again ${message.id} for child ${child.id}: ${error instanceof RelayAnswerLost ? 'the answer was lost again; asked on the next connection' : (error as Error).message}`),
+            )
+            .finally(() => askingAgain.delete(message.id));
+        }
+      }
+    }
+  };
+  links.onConnected(askAgain);
+
   /** Put each message a child's session has not read in front of that session again, after it connects. */
   const replayMessages = (socket: net.Socket, childId: string): void => {
     const found = localParentOf(childId);
@@ -379,7 +472,10 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
     const childId = entry ? childIdOf(entry) : undefined;
     const found = childId ? localParentOf(childId) : undefined;
     if (ack.outcome === 'refused') {
-      if (childId && !found) keepRelayMessage(childId, undefined, ack.id);
+      if (childId && !found) {
+        keepRelayMessage(childId, undefined, ack.id);
+        notePushed(childId, ack.id, undefined);
+      }
       if (found && childId)
         updateChild(found.parent.id, childId, (child) => {
           const message = child.messages?.find((each) => each.id === ack.id);
@@ -391,6 +487,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
       log(`message ${ack.id} was refused by the child's session after its wait ran out`);
       return;
     }
+    if (childId && !found && ack.via && readRelayRecord(childId)?.pushed?.some((entry) => entry.id === ack.id)) notePushed(childId, ack.id, ack.via);
     if (found && childId && ack.via)
       updateChild(found.parent.id, childId, (child) => {
         const message = child.messages?.find((each) => each.id === ack.id);
@@ -436,7 +533,16 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
   };
 
   const forgetSocket = (socket: net.Socket): void => {
-    for (const wait of [...inboxWaits.values()]) if (wait.socket === socket) wait.settle({ delivered: false, reason: "its session's connection to the daemon closed before it took the message" });
+    // Each push waiting here was written to this socket, so the adapter may
+    // have put it in the session before the connection closed (issue #218). A
+    // typed copy could then enter the child a second time. The message stays
+    // on the session path, and the hello's replay offers it to the session
+    // that reconnects, which keeps one copy by its id.
+    for (const [id, wait] of [...inboxWaits]) {
+      if (wait.socket !== socket) continue;
+      lapsed.add(id);
+      wait.settle({ delivered: true, via: 'session', unanswered: "its session's connection to the daemon closed before it answered" });
+    }
     sockets.delete(socket);
     attached.delete(socket);
     relaySockets.delete(socket);
@@ -772,22 +878,10 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
         }
         return;
       }
-      if (request.type === 'relay-message') {
+      if (request.type === 'relay-message' || request.type === 'relay-message-again') {
         // A parent's daemon on another machine, for a child this machine holds a relay record for.
-        const record = readRelayRecord(request.childId);
-        if (!record || record.parentId !== request.parentId || record.retiredAt) {
-          reply({ type: 'result', id: request.id, text: JSON.stringify({ delivered: false, reason: `this machine holds no running child ${request.childId} for parent ${request.parentId}` }) });
-          return;
-        }
-        // A start's brief waits for the child's session first. It is kept on
-        // the relay record only once that session is here, so the hello's
-        // replay cannot hand the session a second copy.
-        if (request.awaitSession) await awaitSession(request.childId, sessionWaitMs);
-        // Kept before the push, so a read that comes back at once finds it.
-        keepRelayMessage(request.childId, request.message);
-        const answer = await sessionInbox({ id: record.childId, name: record.name, kind: record.kind }, request.message);
-        if (!answer.delivered) keepRelayMessage(request.childId, undefined, request.message.id);
-        log(`relay-message ${request.message.id} for child ${request.childId}: ${answer.delivered ? (answer.unanswered ? `pushed to its session, which ${answer.unanswered.replace(/^its session /, '')}` : `taken by its session (${answer.via})`) : answer.reason}`);
+        const answer = await relayMessage(request);
+        log(`${request.type} ${request.message.id} for child ${request.childId}: ${answer.delivered ? (answer.unanswered ? `pushed to its session, which ${answer.unanswered.replace(/^its session /, '')}` : `taken by its session (${answer.via})`) : answer.reason}`);
         reply({ type: 'result', id: request.id, text: JSON.stringify(answer) });
         return;
       }

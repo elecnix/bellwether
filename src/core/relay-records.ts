@@ -48,6 +48,13 @@ export interface RelayRecord {
    * back to the parent's daemon.
    */
   messages?: { id: string; text: string; from: string; at: string }[];
+  /**
+   * The parent's messages this machine's daemon pushed to the child's
+   * session, newest last, with the adapter that took each. A
+   * `relay-message-again` for one of them is answered from here and never
+   * pushed twice (issue #218).
+   */
+  pushed?: { id: string; via: string }[];
 }
 
 /** One report waiting for the parent's daemon to collect it. */

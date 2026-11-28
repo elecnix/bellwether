@@ -167,6 +167,7 @@ export const BEHAVIORS: readonly Behavior[] = [
   { version: '0.1.8', prs: [170], summary: "A claude, pi or omp child takes its brief as a message in its session once its startup dialogs close, and the spawn waits for the adapter's acknowledgement. The pane shows the task rather than a path. A harness that exits first fails the spawn with its line, and the record says whether the session took the brief or herdr typed it, with the reason." },
   { version: '0.1.8', prs: [172], summary: "A parent's message to an adopted pi session enters the session through the extension it loaded, and the adoption's reply and a typed message's reason name each case where an adopted session takes no message." },
   { version: '0.1.8', prs: [171], summary: 'A refusal for a missing session gives the `herdr integration install` command when herdr on the child\'s machine lacks the integration, and `agent_spawn` warns.' },
+  { version: '0.1.9', prs: [177], summary: "Doctor reads pi's models only from the model table. When pi has no provider, doctor says pi doesn't offer a pair, and other output makes the models unknown." },
 ];
 
 /**

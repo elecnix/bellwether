@@ -691,7 +691,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
    */
   const postReport = async (input: ReportInput): Promise<{ text: string; duplicate: boolean }> => {
     const route = routeReport(input);
-    if (route.kind === 'relay') return { text: await outbox.report(route.record, input.status, input.text), duplicate: false };
+    if (route.kind === 'relay') return { text: await outbox.report(route.record, input.status, input.text, input.via), duplicate: false };
     const { duplicate } = acceptLocalReport(route.parent, route.child, input);
     if (duplicate) log(`report ${input.receipt} for child ${route.child.id} was already accepted, so the copy was dropped`);
     else log(`report${input.receipt ? ` ${input.receipt}` : ''} from child ${route.child.id} accepted for parent ${route.parent.id}`);
@@ -715,7 +715,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
     if (!isReportStatus(status)) throw new Error('parent_report status must be done, needs-input or progress');
     const route = routeReport({ childId, paneId: caller.paneId });
     if (route.kind !== 'relay') return undefined;
-    return outbox.report(route.record, status, text);
+    return outbox.report(route.record, status, text, 'tool');
   };
 
   /**
@@ -787,7 +787,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
       log(`message ${report.messageRead} reached the model of child ${report.childId} on machine ${host}`);
       return {};
     }
-    const { duplicate } = acceptLocalReport(route.parent, route.child, { parentId: report.parentId, childId: report.childId, receipt: report.receipt, status: report.status, text: report.text });
+    const { duplicate } = acceptLocalReport(route.parent, route.child, { parentId: report.parentId, childId: report.childId, receipt: report.receipt, status: report.status, text: report.text, ...(report.via ? { via: report.via } : {}) });
     if (duplicate) log(`report ${report.receipt} for child ${report.childId} from machine ${host} was already accepted, so the copy was dropped`);
     else log(`report ${report.receipt} from child ${report.childId} on machine ${host} accepted for parent ${report.parentId}`);
     return {};

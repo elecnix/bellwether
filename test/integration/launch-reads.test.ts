@@ -192,7 +192,7 @@ async function rig(pane: ClaudePane): Promise<Rig> {
   // The child's working directory is a checkout of its own, apart from the home that holds its brief.
   const worktree = fs.mkdtempSync(path.join(os.tmpdir(), 'bellwether-worktree-'));
   process.env['BELLWETHER_HOME'] = home;
-  const fake = await startFakeHerdr({ respond: pane.respond });
+  const fake = await startFakeHerdr({ respond: pane.respond, statusAfterStart: null });
   pane.fake = fake;
   const client = new HerdrClient({ socketPath: fake.socketPath });
   const parent = saveParent(emptyParent('claude-code', `s-${Math.random().toString(36).slice(2)}`, home, { workspaceId: 'w1' }));

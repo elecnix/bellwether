@@ -241,6 +241,13 @@ The rule treats every harness alike. A harness that draws nothing faint never sh
 
 A busy parent gets each event at its next turn: after the tool calls in flight, before the next model call. For an idle parent, the event starts a turn. Several events from one burst arrive together in one message, oldest first, and an event more than a minute old gets a note such as `(late by 4m34s: it happened at 07:25:46 UTC)` after its receipt.
 
+A report event specifies the path that sent it:
+
+- `sent through the parent_report tool` means the session called the tool.
+- `sent from the shell, because this session has no parent_report` means the child ran `bellwether report`, which proves only that it had a shell.
+
+The spool line and the child's `lastReport` keep the same path as `via`. `agent_list` prints it under `Last reports`.
+
 Bellwether marks an event read once its own message is in front of the model. A shell read of the outbox file under `~/.bellwether/outbox/` shows the same receipts, but it leaves them unread, and the notification still arrives. That file stores the read flag, so a restarted daemon replays only the unread events.
 
 The inactivity threshold defaults to 5 minutes. Pass `inactive_minutes` to `agent_spawn` to change it for one child, from 1 minute to 24 hours. No setting turns this notice off. Bellwether sends it once per quiet period, and output or a report starts a new one.
@@ -269,7 +276,7 @@ The inactivity notice handles a quiet child, naming it once per quiet period. Th
 
 ## A child's environment
 
-A child started by `agent_spawn` gets these variables, for its own scripts and for the `bellwether report` command, which reads `--child` from `BELLWETHER_CHILD` when the flag is absent.
+A child started by `agent_spawn` gets these variables, for its own scripts and for the `bellwether report` command, which reads `--child` from `BELLWETHER_CHILD` when the flag is absent. A report from that command says `sent from the shell` in its event, so a parent can tell it from one the session sent through `parent_report`.
 
 | Variable | Meaning |
 | -- | -- |

@@ -21,10 +21,11 @@ import { agentNameOf, lastAssistantMessage, sessionFrom } from './transcript.ts'
 import { keepsBriefs } from './brief-history.ts';
 import { removeChildFiles } from './mcp-config.ts';
 import { childLabel } from './label.ts';
+import { reportViaLine } from './report.ts';
 import { spoolPath } from './paths.ts';
 import { realRetireOps, reapChild, retirementPending, type RetireOps } from './retire.ts';
 import { isMoving } from './move-plan.ts';
-import type { AgentStatus, ChildEventKind, ChildMessage, ChildRecord, DialogDecision, OutboxEntry, PaneEnd, RelayHostState, SpoolReport } from './types.ts';
+import type { AgentStatus, ChildEventKind, ChildMessage, ChildRecord, DialogDecision, OutboxEntry, PaneEnd, RelayHostState, ReportVia, SpoolReport } from './types.ts';
 import { unreadSessionMessages } from './send.ts';
 import { backInPane } from './adopt.ts';
 import { parsePane, type HerdrPane } from './herdr-client.ts';
@@ -1276,14 +1277,14 @@ export class Watcher {
     return transcript ? lastAssistantMessage(transcript) : undefined;
   }
 
-  private offer(child: ChildRecord, event: ChildEventKind, given: string): void {
+  private offer(child: ChildRecord, event: ChildEventKind, given: string, via?: ReportVia): void {
     // The parent hears each answer Bellwether gave for the child once, with
     // the first event after it, right under the event's first line.
     const { taken, earlier } = takeUntoldDecisions(this.parentId, child.id);
     const [headline = '', ...rest] = given.split('\n');
     const text = taken.length ? [headline, describeDecisions(childLabel(child), taken, earlier), ...rest].join('\n') : given;
     const state = event === 'blocked' || event === 'stuck' || event === 'idle' ? { status: child.lastStatus, stateChangeSeq: child.stateChangeSeq } : {};
-    this.outbox.offer({ childId: child.id, name: child.name, kind: child.kind, paneId: child.paneId, event, text, at: new Date().toISOString(), ...state });
+    this.outbox.offer({ childId: child.id, name: child.name, kind: child.kind, paneId: child.paneId, event, text, at: new Date().toISOString(), ...state, ...(via ? { via } : {}) });
     this.outbox.prune();
     this.outbox.save(this.parentId);
   }
@@ -1338,7 +1339,7 @@ export class Watcher {
     const child = record?.children.find((entry) => entry.id === report.childId || entry.name === report.childName);
     if (!child) return;
     updateChild(this.parentId, child.id, (entry) => {
-      entry.lastReport = { status: report.status, text: report.text, at: report.at, seq: report.seq };
+      entry.lastReport = { status: report.status, text: report.text, at: report.at, seq: report.seq, ...(report.via ? { via: report.via } : {}) };
       entry.lastBusyAt = report.at;
     });
     // A child this watcher has not evaluated yet starts from its record, so the
@@ -1347,7 +1348,8 @@ export class Watcher {
     this.states.set(child.id, markReported(this.states.get(child.id) ?? seedFor(child, now), now, report.status !== 'progress'));
     this.remember(child);
     const label = report.status === 'needs-input' ? 'needs input' : report.status;
-    this.offer(child, 'report', `${childLabel(child)} reported ${label}:\n${report.text}`);
+    const path = report.via ? `, ${reportViaLine(report.via)}` : '';
+    this.offer(child, 'report', `${childLabel(child)} reported ${label}${path}:\n${report.text}`, report.via);
     this.publish();
   }
 

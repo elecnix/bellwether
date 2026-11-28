@@ -8,7 +8,7 @@ import { mcpDir, registryPath, relayChildPath, spoolPath } from './paths.ts';
 import { listParents, readParent, updateChild } from './registry.ts';
 import { MODAL_LINE_LIMIT } from './modal.ts';
 import { readRelayRecord, type RelayRecord } from './relay-records.ts';
-import type { CallerIdentity, ChildRecord, ParentRecord, ReportStatus, SpoolReport } from './types.ts';
+import type { CallerIdentity, ChildRecord, ParentRecord, ReportStatus, ReportVia, SpoolReport } from './types.ts';
 import { harnessNamed } from './harnesses/index.ts';
 
 export function harnessForEnv(): string {
@@ -84,7 +84,7 @@ export function reportForCaller(caller: CallerIdentity, status: ReportStatus, te
     );
   }
   const { parent, child } = found;
-  return writeReport({ parentId: parent.id, parentPaneId: parent.paneId, childId: child.id, childName: child.name, paneId: child.paneId || caller.paneId, status, text });
+  return writeReport({ parentId: parent.id, parentPaneId: parent.paneId, childId: child.id, childName: child.name, paneId: child.paneId || caller.paneId, status, text, via: 'tool' });
 }
 
 /** What a report names: who sent it, to whom, and the receipt that makes it unique. */
@@ -96,6 +96,8 @@ export interface ReportInput {
   receipt?: string;
   status: ReportStatus;
   text: string;
+  /** Which path sent it: the child's parent_report tool, or the command in its shell. */
+  via?: ReportVia;
 }
 
 /** Where a report goes: into a parent this daemon holds, or into the relay outbox for a parent on another machine. */
@@ -178,12 +180,23 @@ export function acceptLocalReport(parent: ParentRecord, child: ChildRecord, inpu
     paneId: child.paneId || input.paneId,
     status: input.status,
     text: input.text,
+    ...(input.via ? { via: input.via } : {}),
     ...(input.receipt ? { receipt: input.receipt } : {}),
   });
   return { report, duplicate: false };
 }
 
 export const REPORT_STATUSES: readonly ReportStatus[] = ['done', 'needs-input', 'progress'];
+
+/**
+ * The clause that names the path a report took. A shell report is the one that
+ * stood in for a missing tool, so its line says why the parent is reading it.
+ */
+export function reportViaLine(via: ReportVia | undefined): string {
+  if (via === 'shell') return 'sent from the shell, because this session has no parent_report';
+  if (via === 'tool') return 'sent through the parent_report tool';
+  return 'sent before Bellwether recorded the path';
+}
 
 export function isReportStatus(value: unknown): value is ReportStatus {
   return typeof value === 'string' && (REPORT_STATUSES as readonly string[]).includes(value);

@@ -642,7 +642,7 @@ async function report(argv: string[]): Promise<number> {
   if (!isReportStatus(status)) throw new Error('report --status must be done, needs-input or progress');
   if (!text.trim()) throw new Error('report needs --text');
   try {
-    const posted = await postReport({ childId, status, text, ...(values['parent'] ? { parentId: values['parent'] } : {}), ...(values['receipt'] ? { receipt: values['receipt'] } : {}) });
+    const posted = await postReport({ childId, status, text, via: 'shell', ...(values['parent'] ? { parentId: values['parent'] } : {}), ...(values['receipt'] ? { receipt: values['receipt'] } : {}) });
     console.log(posted.text);
     return 0;
   } catch (error) {

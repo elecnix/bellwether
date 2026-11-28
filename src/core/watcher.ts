@@ -28,6 +28,7 @@ import type { AgentStatus, ChildEventKind, ChildMessage, ChildRecord, DialogDeci
 import { unreadSessionMessages } from './send.ts';
 import { backInPane } from './adopt.ts';
 import { parsePane, type HerdrPane } from './herdr-client.ts';
+import { ClaimRefused } from './pane-claims.ts';
 import { ClaimHeldElsewhere } from './remote.ts';
 import { releaseWorkspace } from './workspace.ts';
 
@@ -115,6 +116,9 @@ export class Watcher {
   private readonly childrenChanged: (() => void) | undefined;
   /** The cleanup on another machine that an exit started, which a child coming back waits for, so the cleanup cannot remove the claim made after it. */
   private readonly remoteCleanups = new Map<string, Promise<void>>();
+  /** Adoptions in doubt being asked about now, and when each may be asked again. */
+  private readonly settling = new Set<string>();
+  private readonly doubtRetry = new Map<string, { at: number; delay: number }>();
   private readonly retireBusy: { retries?: number; delayMs?: number };
   private readonly relayState: ((host: string) => RelayHostState | undefined) | undefined;
   private readonly startConfirmMs: number;
@@ -354,6 +358,8 @@ export class Watcher {
           // A child changing machines closed its old pane on purpose, and a
           // restart closing it has yet to name the new one.
           if (isMoving(child) || closingNow(child) || child.restartInDoubt) continue;
+          // An adoption whose far answer was lost is watched once that machine confirms it.
+          if (child.adoptInDoubt) continue;
           // A record written a moment ago may predate its pane. Leave it be.
           if (!child.paneId || Date.now() - Date.parse(child.startedAt) < 15_000 || live.has(child.paneId)) {
             if (child.paneId) addressable.push(child);
@@ -534,7 +540,7 @@ export class Watcher {
     void this.reconcileAndSubscribe();
   }
 
-  private markExited(child: ChildRecord, code: number | undefined, ended?: 'in-pane', how: PaneEnd['how'] = ended ? 'harness-ended' : 'closed', newSession?: string): void {
+  private markExited(child: ChildRecord, code: number | undefined, ended?: 'in-pane', how: PaneEnd['how'] = ended ? 'harness-ended' : 'closed', detail: Pick<PaneEnd, 'session' | 'reason'> = {}): void {
     // One exit can arrive twice: the reconcile after a subscribe finds the pane
     // gone, and the pane_closed event for it lands too. agent_stop also marks
     // the exit before herdr's event arrives. The record decides, so the exit is
@@ -562,7 +568,7 @@ export class Watcher {
       entry.exitCode = code;
       entry.lastStatus = 'unknown';
       // What became of the pane, for agent_list and doctor (issue #187).
-      entry.paneEnd = { pane: entry.paneId, ...(entry.workspaceId ? { workspaceId: entry.workspaceId } : {}), how, at: entry.exitedAt, ...(code === undefined ? {} : { code }), ...(newSession ? { session: newSession } : {}) };
+      entry.paneEnd = { pane: entry.paneId, ...(entry.workspaceId ? { workspaceId: entry.workspaceId } : {}), how, at: entry.exitedAt, ...(code === undefined ? {} : { code }), ...detail };
       if (harnessEnded) entry.harnessEnded = harnessEnded;
       if (awaitsResume) entry.awaitsResume = entry.exitedAt;
       // A message in the session that the model never received is undelivered, and the exit event says so.
@@ -573,7 +579,7 @@ export class Watcher {
         delete message.from;
       }
     });
-    child = { ...child, ...(harnessEnded ? { harnessEnded } : {}), ...(newSession ? { paneEnd: { pane: child.paneId, how, at: new Date().toISOString(), session: newSession } } : {}) };
+    child = { ...child, ...(harnessEnded ? { harnessEnded } : {}), ...(detail.session || detail.reason ? { paneEnd: { pane: child.paneId, how, at: new Date().toISOString(), ...detail } } : {}) };
     // A brief nothing shows the child read stays for the resume that hands it over (issue #132).
     removeChildFiles(child.id, hostOf(child) === LOCAL_HOST ? child.cwd : undefined, { briefs: !this.keepsBriefs(child) });
     if (hostOf(child) !== LOCAL_HOST && this.cleanupRemote) {
@@ -674,6 +680,8 @@ export class Watcher {
       void this.reconcileAndSubscribe();
       return;
     }
+    // An adoption in doubt says nothing until its machine confirms it (issue #211).
+    if (child.adoptInDoubt) return;
     if (STATUS_EVENTS.has(event.event)) {
       // A harness that ended in its pane is reported; the pane's last status changes say nothing more.
       if (child.exitedAt && child.harnessEnded) return;
@@ -802,7 +810,7 @@ export class Watcher {
       // the pane, after a /clear, a /resume or herdr reusing the pane id, is
       // another agent, which no parent adopted (issue #211, item 7).
       if (child.origin === 'adopt' && child.session && session && session.value !== child.session.value) {
-        this.markExited(child, undefined, 'in-pane', 'session-changed', session.value);
+        this.markExited(child, undefined, 'in-pane', 'session-changed', { session: session.value });
         this.dropLink(hostOf(child));
         void this.reconcileAndSubscribe();
         continue;
@@ -892,7 +900,7 @@ export class Watcher {
       }
       // A child changing machines is read again once it runs on the new one,
       // and a child whose restart answer was lost, once that answer arrives.
-      if (isMoving(child) || child.restartInDoubt) {
+      if (isMoving(child) || child.restartInDoubt || child.adoptInDoubt) {
         this.states.delete(child.id);
         continue;
       }
@@ -1241,6 +1249,7 @@ export class Watcher {
   }
 
   private describeExit(child: ChildRecord, code: number | undefined, beforeStart = false): string {
+    if (child.paneEnd?.how === 'adopt-refused') return `${childLabel(child)} is not a child of this session: machine ${hostOf(child)} refused the adoption Bellwether was not sure of: ${child.paneEnd.reason ?? 'it gave no reason'}. Bellwether stopped watching pane ${child.paneId}.`;
     if (child.paneEnd?.how === 'session-changed') return `${childLabel(child)} left its pane: herdr reports ${child.paneEnd.session ? `session ${child.paneEnd.session}` : 'another session'} in pane ${child.paneId} now, not ${child.session?.value ?? 'the adopted one'}, the session this parent adopted. Bellwether stopped watching the pane: adopt it again to watch the new session.`;
     const coded = code === undefined ? '' : ` with code ${code}`;
     const tab = child.harnessEnded ? ' Its tab stays open on the shell the harness ran in, with what the harness printed before it ended: agent_read shows that screen, and agent_stop closes the tab.' : '';
@@ -1352,11 +1361,53 @@ export class Watcher {
     // herdr calls.
     const due = (host: string): boolean => (this.retryAt.get(host)?.at ?? 0) <= Date.now();
     const changed = [...byHost].some(([host, children]) => due(host) && this.links.get(host)?.key !== paneKey(children)) || [...this.links.keys()].some((host) => !byHost.has(host));
+    for (const child of record?.children ?? []) if (child.adoptInDoubt && !child.exitedAt) void this.settleAdoption(child);
     if (changed) {
       await this.reconcileAndSubscribe();
       return;
     }
     await this.evaluate();
+  }
+
+  /**
+   * Ask the far machine again about an adoption whose first answer the relay
+   * lost (issue #211, item 6). The ask is the same claim, so it settles the
+   * doubt either way: that machine holds the pane for this child, refuses it,
+   * or holds it for this parent under another id. A failed ask waits longer
+   * before the next one, up to a minute.
+   */
+  private async settleAdoption(child: ChildRecord): Promise<void> {
+    if (!this.reclaimRemote || this.settling.has(child.id)) return;
+    const retry = this.doubtRetry.get(child.id);
+    if (retry && retry.at > Date.now()) return;
+    this.settling.add(child.id);
+    try {
+      await this.reclaimRemote(child);
+      this.doubtRetry.delete(child.id);
+      updateChild(this.parentId, child.id, (entry) => {
+        delete entry.adoptInDoubt;
+      });
+      this.log(`machine ${hostOf(child)} confirmed the adoption of ${child.name} in pane ${child.paneId}, as child ${child.id}`);
+      this.childrenChanged?.();
+      this.dropLink(hostOf(child));
+      void this.reconcileAndSubscribe();
+    } catch (error) {
+      if (error instanceof ClaimRefused || error instanceof ClaimHeldElsewhere) {
+        this.doubtRetry.delete(child.id);
+        const reason = error instanceof ClaimHeldElsewhere ? `it holds pane ${child.paneId} for this session as child ${error.childId}; adopt the pane again to watch it under that id` : error.message.trim().replace(/\.$/, '');
+        updateChild(this.parentId, child.id, (entry) => {
+          delete entry.adoptInDoubt;
+          if (error instanceof ClaimHeldElsewhere) entry.replacedBy = error.childId;
+        });
+        this.markExited({ ...child, adoptInDoubt: undefined }, undefined, undefined, 'adopt-refused', { reason });
+        return;
+      }
+      const delay = Math.min((retry?.delay ?? 500) * 2, 60_000);
+      this.doubtRetry.set(child.id, { at: Date.now() + delay, delay });
+      this.log(`could not ask machine ${hostOf(child)} again about ${child.name}'s adoption: ${(error as Error).message}`);
+    } finally {
+      this.settling.delete(child.id);
+    }
   }
 
   private age(since: number, now = this.now()): string {
@@ -1440,7 +1491,7 @@ function groupByHost(children: ChildRecord[]): Map<string, ChildRecord[]> {
 /** The set of panes the subscription must cover, as one comparable string. */
 function paneKey(children: ChildRecord[]): string {
   return children
-    .filter((child) => !child.exitedAt && child.paneId)
+    .filter((child) => !child.exitedAt && !child.adoptInDoubt && child.paneId)
     .map((child) => `${child.paneId}:${child.harness === 'other' ? 'raw' : 'agent'}`)
     .sort()
     .join(',');

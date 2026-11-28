@@ -68,16 +68,19 @@ export interface DialogDecision {
  * - `harness-ended`: the harness ended and the pane stayed open on its shell.
  * - `restart`: a restart closed the pane and then failed to start the session again.
  * - `session-changed`: herdr reported another session in an adopted child's pane, which `session` names (issue #211).
+ * - `adopt-refused`: the far machine refused an adoption whose first answer was lost, for `reason` (issue #211).
  */
 export interface PaneEnd {
   pane: string;
   /** The workspace the pane was in, which herdr may have removed with it. */
   workspaceId?: string;
-  how: 'exited' | 'closed' | 'missing' | 'harness-ended' | 'restart' | 'session-changed';
+  how: 'exited' | 'closed' | 'missing' | 'harness-ended' | 'restart' | 'session-changed' | 'adopt-refused';
   at: string;
   code?: number;
   /** For `session-changed`: the session herdr reported in the pane instead. */
   session?: string;
+  /** For `adopt-refused`: why the far machine refused. */
+  reason?: string;
 }
 
 /**
@@ -481,6 +484,13 @@ export interface ChildRecord {
    * machine holds it again.
    */
   farRecordLost?: { at: string; host: string; reason: string };
+  /**
+   * An adoption on another machine whose answer the relay lost, so the parent
+   * does not know whether that machine recorded the claim (issue #211, item 6).
+   * The watcher holds the child's events and asks that machine again, and
+   * clears this once it answers.
+   */
+  adoptInDoubt?: { at: string; host: string; reason: string };
   /**
    * For an adopted child that exited: the child id that now stands for its
    * session, because the machine that runs it holds the session under that id

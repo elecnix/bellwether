@@ -62,20 +62,9 @@ import { harnessFor, requireHarness, resolveTranscript } from './harnesses/index
 import type { ChildFiles } from './harnesses/types.ts';
 import { REGISTRY_SCHEMA, type CallerIdentity, type ChildRecord, type ChildRoute, type ChildSession, type DialogDecision, type ParentRecord, type RestartFailure, type RestartInDoubt, type RestartStall, type RestartWait } from './types.ts';
 import { openReturnTab, parseWorkspaces, returnPlacement, undoChildTab, type ChildTab, type TabRequest, type WorkspacePlacement } from './workspace.ts';
+import { RelayAnswerLost } from './relay-answer.ts';
 
 export const RESTART_TOOL = 'agent_restart';
-
-/**
- * A request sent over a relay connection whose answer never came back: the
- * connection ended or the wait ran out after the request went out, so the far
- * side may have acted on it (issue #211).
- */
-export class RelayAnswerLost extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'RelayAnswerLost';
-  }
-}
 
 /** A restart the daemon refuses, with the reason a person can act on. */
 export class RestartRefused extends Error {

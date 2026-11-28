@@ -26,7 +26,8 @@ import { featureNamed } from './features.ts';
 import { BRIEF_SESSION_WAIT_MS, type InboxAnswer, type InboxOptions } from '../core/send.ts';
 import { ClaimRefused, type PaneClaim } from '../core/pane-claims.ts';
 import { STARTUP_TIMEOUT_MS } from '../core/spawn.ts';
-import { RelayAnswerLost, type RelayRestartAnswer, type RelayRestartAsk } from '../core/restart.ts';
+import { RelayAnswerLost } from '../core/relay-answer.ts';
+import type { RelayRestartAnswer, RelayRestartAsk } from '../core/restart.ts';
 
 export interface RelayLinksOptions {
   /** Turns a child's herdr machine into its SSH target. Defaults to herdr's saved machines. */

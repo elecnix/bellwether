@@ -3,7 +3,10 @@
 cd "$(dirname "$0")"
 # check.sh runs the checker named by EVERYSTATE under the memory ceiling EVERYSTATE_MEMORY.
 for cfg in *-*.cfg; do
-  base=${cfg%.cfg}; spec=${base%%-*}; spec=${spec%HerdrRemovesEmpty}; spec=${spec%NoStrayNoResend}
+  # The spec is the longest leading run of capitalised words that names a .tla file:
+  # ClaimsSettled-X.cfg checks Claims.tla, LifecycleHerdrRemovesEmpty-X.cfg checks Lifecycle.tla.
+  base=${cfg%.cfg}; spec=${base%%-*}
+  while [ ! -f "$spec.tla" ] && [ -n "$spec" ]; do spec=$(printf '%s' "$spec" | sed -E 's/[A-Z][a-z]*$//'); done
   out=$(./check.sh -json -workers auto -config "$cfg" "$spec.tla" 2>&1); code=$?
   last=$(printf '%s\n' "$out" | tail -1)
   if printf '%s' "$last" | jq -e . >/dev/null 2>&1; then

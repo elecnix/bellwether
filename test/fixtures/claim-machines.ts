@@ -41,6 +41,22 @@ export function herdr(state: { session: string }): HerdrClient {
   return { agentList: async () => [pane()], paneList: async () => [pane()] } as unknown as HerdrClient;
 }
 
+/** herdr on the pane machine with several panes: each runs the session the map gives it, or nothing. */
+export function herdrPanes(state: Record<string, string | undefined>): HerdrClient {
+  const panes = (): HerdrPane[] =>
+    Object.entries(state).map(([paneId, session], index) => ({
+      paneId,
+      workspaceId: 'w1',
+      tabId: `w1:t${index}`,
+      terminalId: `t${index}`,
+      focused: false,
+      revision: 0,
+      agentStatus: session ? 'idle' : 'unknown',
+      ...(session ? { agent: 'claude', name: `mate-${paneId}`, agentSessionId: session } : {}),
+    }));
+  return { agentList: async () => panes().filter((pane) => pane.agent), paneList: async () => panes() } as unknown as HerdrClient;
+}
+
 export function newParent(home: string, name: string): string {
   return on(home, () => saveParent(emptyParent('claude-code', name, '/w', {})).id);
 }
@@ -50,13 +66,13 @@ export function newParent(home: string, name: string): string {
  * claimPane in the pane machine's home (what relay-adopt runs, server.ts:725).
  * `replyLost` throws after claimPane saved the claim, as the relay-links.ts:257 timeout does.
  */
-export async function farAdopt(parentHome: string, parentId: string, paneHome: string, client: HerdrClient, replyLost = false) {
+export async function farAdopt(parentHome: string, parentId: string, paneHome: string, client: HerdrClient, replyLost = false, target = PANE) {
   const saved = process.env['BELLWETHER_HOME'];
   process.env['BELLWETHER_HOME'] = parentHome;
   try {
     const parent = listParents().find((entry) => entry.id === parentId)!;
     return await adoptPane(client, parent, {
-      target: PANE,
+      target,
       host: PANE_HOST,
       claim: async (_host, claim) => {
         const answer = on(paneHome, () => claimPane(claim));

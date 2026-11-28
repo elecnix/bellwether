@@ -74,10 +74,14 @@ That daemon answers who watches the pane, because its registry lists the childre
 
 - herdr has no saved machine by that name, and the error lists the saved ones;
 - herdr recognizes no agent in that pane;
-- a parent already watches that pane, on that machine or through an earlier adoption from a third machine, and the error gives that parent and the child's name;
+- a parent already watches that pane, on that machine, through an earlier adoption from a third machine, or through a child that a parent on a third machine started there, and the error gives that parent and the child's name;
 - the Bellwether on that machine predates `relay-adopt`, and the error gives the version it runs and the release that brings the request, 0.1.6.
 
 An adoption from a third machine stops counting once herdr shows a different session in that pane, because herdr reused the pane id for another agent. An adoption that takes the pane over removes that claim, whether it comes from a parent on the pane's machine or from yet another machine. The parent that left the claim sees the new session through its own watcher: its child exits, and `relay-cleanup` removes whatever claim remains.
+
+An adoption of the pane again by the parent whose claim went stale gives the new session a new child id, not the old one (issue #244).
+
+A child that a parent on another machine started holds its pane there while its own Bellwether server or extension stays connected to the daemon on that machine. Once its harness ends, the pane is free, even when the parent's `relay-cleanup` never reached that machine.
 
 A connection that ends, or a wait that runs out, can lose the answer to `relay-adopt` after the request went out. That machine may have recorded the claim all the same. In that case the parent writes the child record anyway, marked `adoptInDoubt`, and its reply says the outcome is unknown. Until the doubt clears, the watcher doesn't send events for that child. It asks the machine again, and waits longer after each failed ask, up to a minute. When the machine kept the claim, the doubt clears and the watcher follows the child from then on. When it refuses, the child exits with the reason in its exit event. `agent_adopt` on the same pane asks again too.
 
@@ -95,7 +99,9 @@ The parent's daemon collects it over the same connection as a report from a spaw
 
 When the child's pane closes, the watcher runs `bellwether relay-cleanup` there, which removes the adoption.
 
-A harness can quit and leave its pane open, and then the child exits. `relay-cleanup` drops that claim too. Bellwether keeps watching the pane, as the exit event says. Resuming the same session there makes the same child, as after a quit and a `--resume`. Under its child id, the watcher brings it back and records the claim on that machine again. It then follows the child's status. Its session gets `parent_report` and its messages back. Another session in the pane, or the pane closing, ends the wait.
+A harness can quit and leave its pane open, and then the child exits. `relay-cleanup` drops that claim too. Bellwether keeps watching the pane, as the exit event says. Resuming the same session there makes the same child, as after a quit and a `--resume`. Under its child id, the watcher brings it back and records the claim on that machine again.
+
+A child adopted on the parent's own machine comes back only when no parent on another machine adopted the pane in the meantime. Otherwise the wait ends, so the session answers to one parent. It then follows the child's status. Its session gets `parent_report` and its messages back. Another session in the pane, or the pane closing, ends the wait.
 
 Should the parent's watcher miss the return, as when its daemon was down, `agent_adopt` on the pane brings the child back under its child id, and the reply reports it. A daemon on that machine may hold the session under another child id, and that id then stands for the session. The reply gives both ids, and the old record keeps its exited status and gets `replacedBy`.
 

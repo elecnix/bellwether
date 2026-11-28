@@ -29,7 +29,8 @@ import type { AgentStatus, ChildEventKind, ChildMessage, ChildRecord, DialogDeci
 import { unreadSessionMessages } from './send.ts';
 import { backInPane } from './adopt.ts';
 import { parsePane, type HerdrPane } from './herdr-client.ts';
-import { ClaimRefused } from './pane-claims.ts';
+import { ClaimRefused, claimantOf, decideClaim } from './pane-claims.ts';
+import { removeRelayRecord } from './relay-records.ts';
 import { ClaimHeldElsewhere } from './remote.ts';
 import { releaseWorkspace } from './workspace.ts';
 
@@ -516,7 +517,18 @@ export class Watcher {
       this.stopAwaiting(child, `pane ${child.paneId} now runs session ${agent.agentSessionId}, not ${child.session?.value ?? 'an unrecorded one'}`);
       return;
     }
-    if (hostOf(child) !== LOCAL_HOST && this.reclaimRemote) {
+    if (hostOf(child) === LOCAL_HOST) {
+      // A parent on another machine may have adopted the pane before this
+      // watcher heard the session come back. Its claim stands, as a far
+      // child's reclaim yields to one, so the session answers to one parent (issue #244).
+      const holder = claimantOf(child.paneId);
+      const decision = decideClaim({ parentId: this.parentId, paneId: child.paneId, session: agent.agentSessionId }, holder);
+      if (decision.kind === 'refuse') {
+        this.stopAwaiting(child, decision.reason);
+        return;
+      }
+      if (decision.kind === 'take' && holder?.where === 'away') removeRelayRecord(holder.record.childId);
+    } else if (this.reclaimRemote) {
       await this.remoteCleanups.get(child.id);
       try {
         await this.reclaimRemote(child);

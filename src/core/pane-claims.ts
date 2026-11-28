@@ -22,11 +22,35 @@ export interface PaneClaim {
 /** Who holds a pane here: a parent on this machine, or a parent on another one through its claim. */
 export type Claimant = { where: 'here'; parentId: string; childId: string; name: string } | { where: 'away'; record: RelayRecord };
 
+/**
+ * The panes that children started by parents on other machines say hello
+ * from, by connection. A started child holds its pane while its own adapter
+ * stays connected to this daemon from it, and no longer: its harness may end
+ * and herdr may reuse the pane id while the parent's relay-cleanup fails, so
+ * a pane written on its relay record could outlive the child. The map lives
+ * in memory, because only a live connection proves the child still runs
+ * there, and an adapter says hello again after every hand-over (issue #244).
+ */
+const startedPanes = new Map<object, { childId: string; paneId: string }>();
+
+/** A child's adapter said hello from a pane, with the child id its start gave it. */
+export function childSaidHello(connection: object, childId: string, paneId: string): void {
+  startedPanes.set(connection, { childId, paneId });
+}
+
+/** A connection that said hello closed. */
+export function childLeft(connection: object): void {
+  startedPanes.delete(connection);
+}
+
 /** The holder of a pane on this machine, if any. */
 export function claimantOf(paneId: string): Claimant | undefined {
   const local = watcherOfPane(LOCAL_HOST, paneId);
   if (local) return { where: 'here', parentId: local.parent.id, childId: local.child.id, name: local.child.name };
-  const record = listRelayRecords().find((entry) => entry.adopted && !entry.retiredAt && entry.paneId === paneId);
+  const records = listRelayRecords().filter((entry) => !entry.retiredAt);
+  // A child a parent on another machine started holds its pane as an adopted one does (issue #244).
+  const live = new Set([...startedPanes.values()].filter((entry) => entry.paneId === paneId).map((entry) => entry.childId));
+  const record = records.find((entry) => !entry.adopted && live.has(entry.childId)) ?? records.find((entry) => entry.adopted && entry.paneId === paneId);
   return record ? { where: 'away', record } : undefined;
 }
 
@@ -39,7 +63,8 @@ export type ClaimDecision = { kind: 'take' } | { kind: 'held'; childId: string }
  * Whether a parent may adopt a pane, given who holds it now. A claim whose
  * session differs from the one in the pane now is stale: herdr reused the
  * pane id for another agent after the first one ended without its parent
- * hearing, and the old claim no longer stands for anything.
+ * hearing, and the old claim no longer stands for anything, even to the
+ * parent that made it.
  */
 export function decideClaim(claim: Pick<PaneClaim, 'parentId' | 'paneId' | 'session'>, holder: Claimant | undefined): ClaimDecision {
   if (!holder) return { kind: 'take' };
@@ -48,8 +73,13 @@ export function decideClaim(claim: Pick<PaneClaim, 'parentId' | 'paneId' | 'sess
     return { kind: 'refuse', reason: `pane ${claim.paneId} is already a child of ${holder.parentId}, a parent on that machine, as ${holder.name}` };
   }
   const record = holder.record;
+  // A stale claim stays stale whoever made it. The same parent's claim for a
+  // session that left the pane names a child that ended: handing its id back
+  // would make one child id stand for two sessions (issue #244). A child that
+  // a parent started holds its pane only while its adapter is connected from
+  // it, and a new session there after a /clear is still that child.
+  if (record.adopted && claim.session && record.session && claim.session !== record.session) return { kind: 'take' };
   if (record.parentId === claim.parentId) return { kind: 'held', childId: record.childId };
-  if (claim.session && record.session && claim.session !== record.session) return { kind: 'take' };
   return { kind: 'refuse', reason: `pane ${claim.paneId} is already a child of ${record.parentId}, a parent on another machine, as ${record.name}` };
 }
 

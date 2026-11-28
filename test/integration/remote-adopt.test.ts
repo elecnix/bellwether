@@ -762,3 +762,40 @@ test('a machine whose Bellwether predates the request is refused with the versio
   assert.equal(readParent(PARENT_ID)?.children.length, 0);
   assert.notEqual(w.links.state('child-box')?.status, 'reconnecting', 'an unknown request does not end the relay');
 });
+
+// NoPaneTwoParentsCurrent and PaneOneLiveChildCurrent in model/Claims.tla (issue #244).
+// Trace: a parent on another machine starts a child in pane x of the pane's machine (ResumeStart), then a parent there adopts x (LocalAdopt).
+test('a child a parent on another machine started holds its pane on that machine while it runs there, so a parent there cannot adopt the pane as well', async (t) => {
+  const w = await world(t);
+  const at = new Date().toISOString();
+  const cwd = path.join(w.root, 'work');
+  fs.mkdirSync(cwd);
+  const spawned: ChildRecord = { id: 'kid-spawned', name: 'far-worker', kind: 'claude', harness: 'claude-code', paneId: PANE, host: 'child-box', origin: 'spawn', cwd, startedAt: at, lastStatus: 'idle', statusChangedAt: at, lastBusyAt: at, depth: 1 };
+  // The spawn: relay-register on child-box, run over the fake ssh as a real spawn runs it, then the child's own server says hello there from its pane.
+  await w.ctx.remote!.register(readParent(PARENT_ID)!, spawned, 'Fix the build.');
+  upsertChild(PARENT_ID, spawned);
+  const session = await DaemonClient.connect({ harness: 'claude-code', session: SESSION, cwd, host: 'child-box', paneId: PANE, workspaceId: 'w1', depth: 1, childId: spawned.id, herdrSocket: w.far.socketPath, accepts: ['message'] }, { home: w.childHome, socketPath: path.join(w.childHome, 'daemon.sock') });
+  t.after(() => session.close());
+
+  // A pi session on child-box itself, in pane w1:p2, asks that machine's daemon to adopt the pane.
+  const local = await DaemonClient.connect({ harness: 'pi', session: 'sess-pane-box-parent', cwd, host: 'child-box', paneId: 'w1:p2', workspaceId: 'w1', depth: 0, herdrSocket: w.far.socketPath }, { home: w.childHome, socketPath: path.join(w.childHome, 'daemon.sock') });
+  t.after(() => local.close());
+  await assert.rejects(
+    local.tool('agent_adopt', { target: PANE }),
+    new RegExp(`Pane ${PANE} on local cannot be adopted: pane ${PANE} is already a child of ${PARENT_ID}, a parent on another machine, as far-worker\\.`),
+  );
+
+  // The child's harness ends, and its parent's relay-cleanup never reaches child-box: its record stays there, and the pane is free.
+  session.close();
+  const deadline = Date.now() + 5_000;
+  let text: string | undefined;
+  while (text === undefined) {
+    text = await local.tool('agent_adopt', { target: PANE }).catch((error: Error) => {
+      if (Date.now() > deadline) throw error;
+      return undefined;
+    });
+    if (text === undefined) await delay(20);
+  }
+  assert.match(text, /Adopted/, text);
+  assert.ok(inHome(w.childHome, () => readRelayRecord(spawned.id)), 'the record relay-cleanup would remove is still there');
+});

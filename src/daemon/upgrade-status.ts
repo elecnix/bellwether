@@ -357,3 +357,17 @@ export function farPairing(state: RelayHostState): string {
   const gains = missing.length ? `; updating that machine gains ${namedFeatures(missing)}, when convenient` : '; nothing to gain by updating it';
   return `, on protocol ${state.farProtocol}${gains}`;
 }
+
+/**
+ * The doctor line for the herdr the daemon runs. The daemon's environment is
+ * whatever started it, so a daemon started over SSH can lack herdr while
+ * doctor, in a login shell, has it. The symptom would otherwise appear at the
+ * first command that needs herdr, as `spawn herdr ENOENT` (issue #186).
+ */
+export function daemonHerdrLine(sessions: UpgradeInput['sessions']): { line: string; failed: boolean } | undefined {
+  if (!sessions || !('sessions' in sessions)) return undefined;
+  const { herdr, pid } = sessions.daemon;
+  if (!herdr) return { line: info(`daemon herdr: the daemon (pid ${pid}) predates 0.1.9 and does not say whether it can run herdr`), failed: false };
+  if ('error' in herdr) return { line: `fail  daemon herdr: the daemon (pid ${pid}) cannot run herdr, so every operation that needs it fails: ${herdr.error}. Then run bellwether drain, and the next session starts a daemon that finds it.`, failed: true };
+  return { line: ok(`daemon herdr: ${herdr.path}, from ${herdr.via === 'PATH' ? 'the PATH the daemon inherited' : herdr.via === 'login shell' ? "the login shell's PATH" : herdr.via === 'install directory' ? 'an install directory' : 'HERDR_BIN_PATH'}`), failed: false };
+}

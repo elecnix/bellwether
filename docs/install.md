@@ -76,3 +76,16 @@ bellwether doctor
 Doctor lists the herdr socket, whether the herdr API answers, the Pi extension, the MCP entry point, the daemon, and every registered parent with its children. It fails when the Pi extension path doesn't resolve or the MCP entry lacks its executable bit. It also fails on a Bellwether copy in pi's settings that predates the guard against a second copy. A pi child would exit at startup there.
 
 From version 0.1.5, doctor also prints the installed version and protocol and compares them with the running daemon's. From that version, `bellwether --version` prints the installed version alone.
+
+### The herdr binary the daemon runs
+
+A daemon inherits the environment of the process that started it. A parent on another machine can start it over SSH, and a non-interactive SSH shell often has a PATH that leaves out the herdr directory. So from version 0.1.9 the daemon looks for herdr in this order, and runs the first it finds:
+
+1. `HERDR_BIN_PATH`, when set. A value that is not an executable file is an error, and the search stops there.
+2. The inherited PATH.
+3. The PATH of your login shell, which reads the profile files an SSH command skips.
+4. `~/.local/bin`, `~/bin`, `~/.npm-global/bin`, `/home/linuxbrew/.linuxbrew/bin`, `/opt/homebrew/bin`, `/usr/local/bin` and the `bin` directory of each nvm Node, the places a move looks for a harness.
+
+Doctor asks the running daemon which herdr it found and where. When the daemon found none, the `daemon herdr` line fails and lists each place it looked.
+
+To fix it, set `HERDR_BIN_PATH` in the environment of the session that starts the daemon, or put herdr on your login shell's PATH. Then run `bellwether drain`, and the next session starts a daemon with the new environment.

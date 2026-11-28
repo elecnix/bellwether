@@ -3,6 +3,7 @@
 // the events it missed, runs the Bellwether tools through the daemon, and marks
 // receipts read. The daemon starts on demand, drains for an upgrade, and exits
 // when no session needs it.
+import { locateHerdr } from '../core/herdr-bin.ts';
 import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
@@ -630,10 +631,12 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
         return;
       }
       if (request.type === 'sessions') {
+        // Whether this process can run herdr, which its environment decides and doctor's own process cannot see (issue #186).
+        const herdr = await locateHerdr();
         reply({
           type: 'sessions',
           id: request.id,
-          daemon: { pid, version: BELLWETHER_VERSION, build: BELLWETHER_BUILD_ID, protocol: DAEMON_PROTOCOL, minClientProtocol: MIN_CLIENT_PROTOCOL, startedAt, draining: drainingSince !== undefined, features: SERVED },
+          daemon: { pid, version: BELLWETHER_VERSION, build: BELLWETHER_BUILD_ID, protocol: DAEMON_PROTOCOL, minClientProtocol: MIN_CLIENT_PROTOCOL, startedAt, draining: drainingSince !== undefined, features: SERVED, herdr },
           sessions: [...attached.values()].map(sessionInfo),
           relaySubscribers: relaySockets.size,
         });

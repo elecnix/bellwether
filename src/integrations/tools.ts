@@ -550,8 +550,14 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
       throw new Error(`Cannot adopt ${target} on machine ${host}: ${(error as Error).message}`);
     }
     const claim = ctx.remote?.claim?.bind(ctx.remote);
-    const { child, link, already, revived, replaced, session: farReach, messages: farMessages } = await adoptPane(client, record, { target, host, name: optionalString(args['name']), stuckMinutes: typeof args['stuck_minutes'] === 'number' ? (args['stuck_minutes'] as number) : undefined, ...(claim ? { claim } : {}) });
-    if (already) return `${child.name} in pane ${child.paneId} is already a child of this session.`;
+    const { child, link, already, revived, replaced, restored, unconfirmed, session: farReach, messages: farMessages } = await adoptPane(client, record, { target, host, name: optionalString(args['name']), stuckMinutes: typeof args['stuck_minutes'] === 'number' ? (args['stuck_minutes'] as number) : undefined, ...(claim ? { claim } : {}) });
+    if (already) {
+      const held = `${child.name} in pane ${child.paneId} is already a child of this session.`;
+      // Issue #219: the claim on the child's machine was asked for again.
+      if (restored) return [`${held} Machine ${host} had lost its record of it, and holds it again as child ${child.id}.`, adoptedReach(farReach, host, farMessages, child.kind), `herdr link: ${link}`].join('\n');
+      if (unconfirmed) return `${held} Machine ${host} could not confirm it: ${unconfirmed}.`;
+      return held;
+    }
     const where = host === LOCAL_HOST ? '' : ` on machine ${host}`;
     const session = child.session ? ` Its harness session is ${child.session.value}.` : '';
     const outage = host === LOCAL_HOST ? '' : ` While the connection to machine ${host} is down, agent_list shows it unreachable, not exited.`;

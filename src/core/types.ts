@@ -131,6 +131,9 @@ export interface RestartWait {
 /** A self-restart that gave up because its session never ended a turn in time. */
 export interface RestartStall {
   at: string;
+  /** When the request that gave up was made, and the pane it waited on (issue #220). */
+  requestedAt?: string;
+  paneId?: string;
   /** What held it: the live turn, the messages that reached the session, its working children. */
   reason: string;
 }
@@ -471,6 +474,13 @@ export interface ChildRecord {
    * session takes the pane.
    */
   awaitsResume?: string;
+  /**
+   * The child's machine answered that it holds no record of this child, while
+   * this registry still does, and the record could not be restored there
+   * (issue #219). Messages to it are typed until then. Cleared once that
+   * machine holds it again.
+   */
+  farRecordLost?: { at: string; host: string; reason: string };
   /**
    * For an adopted child that exited: the child id that now stands for its
    * session, because the machine that runs it holds the session under that id

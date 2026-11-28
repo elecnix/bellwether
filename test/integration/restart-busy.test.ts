@@ -112,14 +112,14 @@ test('a session that never ends a turn gives up its restart within the bound, na
   const { tool, jobs } = context(id, rig, 600);
 
   const first = await tool({}, { paneId: 'w1:p1' });
-  assert.match(first, /If the turn has not ended within 0\.6 s, the restart gives up and says what held it/);
+  assert.match(first, /If the turn has not ended within 0\.6 s, the daemon reads the pane from herdr once: idle restarts it, and anything else gives up and says what held it/);
   await until('the status herdr reports for the pane', () => readParent(id)?.restartWait?.status);
 
   // A second call is a diagnosis, not a wall.
   const second = await tool({}, { paneId: 'w1:p1' });
   assert.match(second, /^This session has a restart pending since \S+\. It waits for pane w1:p1 to end its turn, and herdr reports it working since \S+\./);
   assert.match(second, /1 of its children is working: worker\./);
-  assert.match(second, /It gives up at \S+ if the turn has not ended, and says why\./);
+  assert.match(second, /At \S+ it reads the pane from herdr once more: idle restarts it, and anything else gives up and says why\./);
   const pending = restartWaitLines(listParents());
   assert.match(pending[0] ?? '', /^info +restart: session .* has a restart pending since .*waits for pane w1:p1/);
 
@@ -132,7 +132,7 @@ test('a session that never ends a turn gives up its restart within the bound, na
   assert.match(record?.restartStalled?.reason ?? '', /Nothing was closed\./);
   assert.equal(rig.fake.requests.filter((request) => request.method === 'pane.close' || request.method === 'tab.create').length, 0, 'nothing was closed or opened');
   assert.equal(restartLog().at(-1)?.['outcome'], 'timeout');
-  assert.match(restartWaitLines(listParents())[0] ?? '', /^info +restart: session .* gave up a restart at \S+: pane w1:p1 did not end a turn/);
+  assert.match(restartWaitLines(listParents())[0] ?? '', /^warn +restart: session .* gave up the restart it requested at \S+ on pane w1:p1, at \S+: pane w1:p1 did not end a turn/);
 
   // The session can ask again, and the new request starts a fresh wait.
   assert.match(await tool({}, { paneId: 'w1:p1' }), /^Restart requested\./);

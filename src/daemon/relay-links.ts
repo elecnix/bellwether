@@ -17,13 +17,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { LOCAL_HOST, hostOf, resolveMachine, type MachineResolver } from '../core/machine.ts';
 import { relayHostsPath } from '../core/paths.ts';
-import { listParents } from '../core/registry.ts';
+import { listParents, updateChild } from '../core/registry.ts';
+import { adoptionClaim } from '../core/adopt.ts';
 import { farErrorLine, relayBridgeArgv, releaseAdvice } from '../core/ssh.ts';
 import type { ChildRecord } from '../core/types.ts';
 import { DAEMON_PROTOCOL, MAX_DAEMON_FRAME_BYTES, formatRequest, type DaemonReply, type DaemonRequest, type InboxMessage, type RelayMessageAnswer, type RelayAdoptAnswer, type RelayHostState, type RelayReport } from './protocol.ts';
 import { featureNamed } from './features.ts';
 import { BRIEF_SESSION_WAIT_MS, type InboxAnswer, type InboxOptions } from '../core/send.ts';
-import type { PaneClaim } from '../core/pane-claims.ts';
+import { ClaimRefused, type PaneClaim } from '../core/pane-claims.ts';
 import { STARTUP_TIMEOUT_MS } from '../core/spawn.ts';
 import { RelayAnswerLost, type RelayRestartAnswer, type RelayRestartAsk } from '../core/restart.ts';
 
@@ -228,9 +229,12 @@ export class RelayLinks {
     const awaitSession = options.awaitSession === true && !options.again;
     // A brief waits on that machine for the child's session to connect, so the answer may take that long too.
     const text = await this.ask(host, type, (id) => ({ type, id, parentId, childId, message, ...(awaitSession ? { awaitSession: true } : {}) }), awaitSession ? this.readTimeoutMs + BRIEF_SESSION_WAIT_MS : undefined);
-    const answer = JSON.parse(text) as Partial<{ delivered: boolean; via: string; reason: string; unanswered: string }>;
+    const answer = JSON.parse(text) as Partial<{ delivered: boolean; via: string; reason: string; unanswered: string; unheld: boolean }>;
     if (answer.delivered === true && typeof answer.via === 'string') return { delivered: true, via: answer.via, ...(typeof answer.unanswered === 'string' && answer.unanswered ? { unanswered: answer.unanswered } : {}) };
-    return { delivered: false, reason: typeof answer.reason === 'string' && answer.reason ? answer.reason : 'its session did not take the message' };
+    const reason = typeof answer.reason === 'string' && answer.reason ? answer.reason : 'its session did not take the message';
+    // A daemon there from before the flag says the same in its reason (issue #219).
+    const unheld = answer.unheld === true || reason.startsWith('this machine holds no running child ');
+    return { delivered: false, reason, ...(unheld ? { unheld: true as const } : {}) };
   }
 
   /**
@@ -489,7 +493,7 @@ export class RelayLinks {
       if (!read) return;
       link.reads.delete(reply.id);
       clearTimeout(read.timer);
-      if (reply.error !== undefined) read.reject(new Error(reply.error));
+      if (reply.error !== undefined) read.reject(reply.code === 'pane_watched' ? new ClaimRefused(reply.error) : new Error(reply.error));
       else read.resolve(reply.text ?? '');
       return;
     }
@@ -630,11 +634,40 @@ export function runsOn(hello: { version?: string; build?: string }): string {
  * daemon that predates relay-message, or a machine out of reach, gives the
  * reason the caller records for typing.
  */
-export async function relayInbox(links: Pick<RelayLinks, 'message'>, parentId: string, child: Pick<ChildRecord, 'id' | 'host'>, message: InboxMessage, options: InboxOptions = {}): Promise<InboxAnswer> {
+export async function relayInbox(links: Pick<RelayLinks, 'message' | 'adopt'>, parentId: string, child: Pick<ChildRecord, 'id' | 'host' | 'origin' | 'name' | 'kind' | 'paneId' | 'session' | 'farRecordLost'>, message: InboxMessage, options: InboxOptions = {}): Promise<InboxAnswer> {
   const host = hostOf(child);
   try {
     const answer = await links.message(host, parentId, child.id, message, options);
-    return answer.delivered ? answer : { delivered: false, reason: `machine ${host} answered: ${answer.reason}` };
+    if (answer.delivered) {
+      farRecordHeld(parentId, child);
+      return answer;
+    }
+    if (!answer.unheld) return { delivered: false, reason: `machine ${host} answered: ${answer.reason}` };
+    // This registry and that machine disagree about the child (issue #219).
+    // An adopted child's record there is a claim, which this daemon can make
+    // again; a spawned child's needs the files only a spawn writes there.
+    const lost = `machine ${host} holds no running child ${child.id} for parent ${parentId}`;
+    if (child.origin !== 'adopt') {
+      farRecordGone(parentId, child, host, answer.reason);
+      return { delivered: false, reason: `${lost}, and only a spawn there registers a spawned child, so doctor names it until it is registered again` };
+    }
+    let claimed: RelayAdoptAnswer;
+    try {
+      claimed = await links.adopt(host, adoptionClaim(parentId, child));
+    } catch (error) {
+      const why = (error as Error).message.replace(/\.$/, '');
+      if (error instanceof ClaimRefused) farRecordGone(parentId, child, host, why);
+      return { delivered: false, reason: `${lost}, and ${error instanceof ClaimRefused ? 'refused to take the claim back' : 'the claim could not be made again'}: ${why}` };
+    }
+    if (claimed.childId !== child.id) {
+      const why = `it holds pane ${child.paneId} for this parent as child ${claimed.childId}`;
+      farRecordGone(parentId, child, host, why);
+      return { delivered: false, reason: `${lost}: ${why}. Run agent_adopt on the pane to take that id` };
+    }
+    farRecordHeld(parentId, child);
+    const note = `Machine ${host} had lost its record of child ${child.id}, so Bellwether claimed pane ${child.paneId} there again before sending.`;
+    const again = await links.message(host, parentId, child.id, message, options);
+    return again.delivered ? { ...again, note } : { delivered: false, reason: `machine ${host} answered: ${again.reason}`, note };
   } catch (error) {
     // The request went out and its answer did not come back (issue #218). The
     // far daemon may have pushed the message to its session, so a typed copy
@@ -643,4 +676,19 @@ export async function relayInbox(links: Pick<RelayLinks, 'message'>, parentId: s
     if (error instanceof RelayAnswerLost) return { delivered: true, via: '', inDoubt: true, unanswered: `the relay to machine ${host} lost its answer: ${error.message.trim()}` };
     return { delivered: false, reason: (error as Error).message };
   }
+}
+
+/** Put on the record that the child's machine holds no record of it (issue #219). */
+function farRecordGone(parentId: string, child: Pick<ChildRecord, 'id'>, host: string, reason: string): void {
+  updateChild(parentId, child.id, (entry) => {
+    entry.farRecordLost = { at: entry.farRecordLost?.at ?? new Date().toISOString(), host, reason };
+  });
+}
+
+/** Clear the mark once the child's machine holds the child again. */
+function farRecordHeld(parentId: string, child: Pick<ChildRecord, 'id' | 'farRecordLost'>): void {
+  if (!child.farRecordLost) return;
+  updateChild(parentId, child.id, (entry) => {
+    delete entry.farRecordLost;
+  });
 }

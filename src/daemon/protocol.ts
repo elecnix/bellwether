@@ -317,8 +317,9 @@ export interface RelayRestartRequest {
  * The text of a relay-message result: the child's session took it, through
  * which adapter, or why not. `unanswered` marks a push the session had not
  * answered in time, which the parent's daemon must not type a second time.
+ * `unheld` says this machine holds no record of the child (issue #219).
  */
-export type RelayMessageAnswer = { delivered: true; via: string; unanswered?: string } | { delivered: false; reason: string };
+export type RelayMessageAnswer = { delivered: true; via: string; unanswered?: string } | { delivered: false; reason: string; unheld?: true };
 
 /** The text of a relay-adopt result: the child id the claim stands under, and whether this parent already held it. */
 export interface RelayAdoptAnswer {

@@ -1,0 +1,1 @@
+Retirement refuses to remove a worktree while a live child works in it. A child under any parent on the machine counts, and so does a child in a folder inside the worktree. The refusal names that child, its pane and its parent session.

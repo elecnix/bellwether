@@ -178,7 +178,6 @@ export const BEHAVIORS: readonly Behavior[] = [
   { version: '0.1.9', prs: [196], summary: "A session's restart of itself waits at most 5 minutes for its turn to end. The daemon keeps the session's own events unread while it waits, so they don't start another turn, and the new session receives them. A second call and doctor report the pane, the status herdr gives for it and the events held. A wait that runs out closes nothing and records the cause as `restartStalled`." },
   { version: '0.1.9', prs: [194], summary: "A daemon finds herdr through HERDR_BIN_PATH, its inherited PATH, the login shell's PATH and the usual install directories, so a daemon started over SSH no longer fails every herdr command with `spawn herdr ENOENT`. Doctor fails when the running daemon can't find herdr, and lists each place it looked." },
   { version: '0.1.9', prs: [202], summary: "An input box with two typed lines now counts as a draft. `agent_read` shows the box, and an idle child with a draft reaches its parent as idle. A screen is a dialog only when a question stands above a solid selection marker with a numbered option beside it, or with an option beside it and a confirm or cancel hint under the list. A y/n question also counts." },
-  { version: '0.1.10', prs: [205], summary: "Retirement refuses to remove a worktree while a live child under any parent on the machine works in it or in a folder inside it, and the refusal names that child, its pane and its parent session." },
 ];
 
 /**

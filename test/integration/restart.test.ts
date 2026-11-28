@@ -14,15 +14,15 @@ import { HerdrClient } from '../../src/core/herdr-client.ts';
 import { LOCAL_HOST } from '../../src/core/machine.ts';
 import { bellwetherHome, parentId as registryId } from '../../src/core/paths.ts';
 import { PI_EXTENSION_ENV, piExtensionEntry } from '../../src/core/pi-extension.ts';
-import { emptyParent, readParent, saveParent, upsertChild } from '../../src/core/registry.ts';
+import { emptyParent, listParents, readParent, saveParent, upsertChild } from '../../src/core/registry.ts';
 import { hostName } from '../../src/core/spawn.ts';
 import { Watcher } from '../../src/core/watcher.ts';
 import type { ChildRecord, OutboxEntry, ParentRecord } from '../../src/core/types.ts';
-import type { RestartHooks } from '../../src/core/restart.ts';
+import { restartFailureLines, type RestartHooks } from '../../src/core/restart.ts';
 import { DaemonClient } from '../../src/daemon/client.ts';
 import { startDaemon, type Daemon } from '../../src/daemon/server.ts';
 import { runBellwetherTool, type ToolContext } from '../../src/integrations/tools.ts';
-import { startFakeHerdr, type FakeHerdr, type RecordedRequest, harnessStarts, type HarnessStartRequest } from '../fixtures/fake-herdr.ts';
+import { startFakeHerdr, type FakeHerdr, type RecordedRequest, harnessStart, harnessStarts, type HarnessStartRequest } from '../fixtures/fake-herdr.ts';
 import { fakeWorld, type FakeWorld } from '../fixtures/fake-world.ts';
 import { isolate } from '../fixtures/isolated.ts';
 
@@ -133,6 +133,10 @@ function calls(fake: FakeHerdr, method: string): RecordedRequest[] {
 
 function lastStart(fake: FakeHerdr): HarnessStartRequest {
   return harnessStarts(fake).at(-1) as HarnessStartRequest;
+}
+
+function listParentsBySession(session: string): ParentRecord | undefined {
+  return listParents().find((record) => record.session === session);
 }
 
 function children(id: string): ChildRecord[] {
@@ -532,23 +536,24 @@ test('an unknown target says what to call next', async (t) => {
   await assert.rejects(context(id, rig).tool('agent_restart', { target: 'nonesuch' }), /No child, parent session or live agent matches "nonesuch"\. Call agent_list for this session's children/);
 });
 
-test('a child in a workspace Bellwether made for it restarts in a new one under the same label once herdr has closed the old one', async (t) => {
+test('a child alone in a workspace Bellwether made for it restarts in that workspace, which never empties', async (t) => {
   isolate(t, 'bellwether-restart-');
-  const rig = await herdr(t);
+  const rig = await closingHerdr(t, 'w1');
+  rig.world.add({ pane_id: 'w1:p1', tab_id: 'w1:t1', agent: 'claude', name: 'lead', agent_status: 'idle' });
   const id = parent('restart-own-workspace');
-  // The child's tab was the only one in w5, so closing it leaves herdr no w5.
+  // The child's tab is the only one in w5: closing it first would leave herdr no w5.
   upsertChild(id, worker({ paneId: 'w5:p1', tabId: 'w5:t1', workspaceId: 'w5', workspaceLabel: 'big-job', ownsWorkspace: true }));
   rig.world.add({ pane_id: 'w5:p1', tab_id: 'w5:t1', workspace_id: 'w5', agent: 'claude', name: 'worker', agent_status: 'idle', agent_session: SESSION_1 });
 
   const text = await context(id, rig).tool('agent_restart', { target: 'worker' });
   assert.match(text, /Restarted worker \(child child-worker\)/);
-  assert.equal(calls(rig.fake, 'tab.create').length, 0, 'the restart opened a tab in a workspace that no longer exists');
-  const created = calls(rig.fake, 'workspace.create')[0]?.params;
-  assert.equal(created?.['label'], 'big-job');
+  assert.equal(calls(rig.fake, 'workspace.create').length, 0);
+  assert.equal(calls(rig.fake, 'tab.create')[0]?.params['workspace_id'], 'w5');
+  assert.deepEqual(methodOrder(rig.fake, ['tab.create', 'tab.close', 'start']), ['tab.create', 'tab.close', 'start']);
   const child = children(id)[0];
-  assert.ok(child?.workspaceId && child.workspaceId !== 'w5');
-  assert.equal(child.ownsWorkspace, true);
-  assert.equal(child.paneId, `${child.workspaceId}:p1`);
+  assert.equal(child?.workspaceId, 'w5');
+  assert.equal(child?.ownsWorkspace, true);
+  assert.ok(child?.paneId.startsWith('w5:'));
 });
 
 test('a child whose own workspace still holds another tab restarts in that same workspace', async (t) => {
@@ -586,4 +591,146 @@ test('a restart with reads widens the read set in the child\'s launch settings, 
   await assert.rejects(context(id, rig).tool('agent_restart', { target: 'worker', reads: [os.homedir()] }), /holds the operator's home/);
   assert.equal(calls(rig.fake, 'tab.close').length, before, 'nothing was closed');
   assert.deepEqual(children(id)[0]?.reads, [other]);
+});
+
+// Issue #185: a session alone in its herdr workspace. herdr closes a workspace
+// with its last pane, so a restart that closed the old pane first had no
+// workspace left to open the new tab in.
+async function closingHerdr(t: test.TestContext, workspace: string): Promise<Rig> {
+  const world = fakeWorld(workspace, { closeEmptyWorkspaces: true });
+  const fake = await startFakeHerdr({ respond: (request) => world.respond(request) });
+  world.emit = (frame) => fake.send(frame);
+  t.after(() => fake.stop());
+  return { fake, world, client: new HerdrClient({ socketPath: fake.socketPath }) };
+}
+
+/** Refuse every harness start in a new pane, as a harness that never comes up. */
+function refuseStarts(rig: Rig, except: string[] = []): void {
+  const answer = rig.world.answer.bind(rig.world);
+  rig.world.answer = (request) => {
+    const pane = String(request.params['pane_id'] ?? '');
+    if ((request.method === 'agent.start' || (request.method === 'pane.send_input' && Array.isArray(request.params['keys']) && (request.params['keys'] as string[]).includes('Enter'))) && !except.includes(pane)) {
+      return { error: { code: 'pane_not_found', message: `herdr pane ${pane} refused the start` } };
+    }
+    return answer(request);
+  };
+}
+
+function methodOrder(fake: FakeHerdr, wanted: string[]): string[] {
+  return fake.requests.map((request) => harnessStart(request) ? 'start' : request.method).filter((method) => wanted.includes(method));
+}
+
+test('a session alone in its workspace restarts itself, and the new tab opens in that workspace before the old pane closes', async (t) => {
+  isolate(t, 'bellwether-restart-');
+  const rig = await closingHerdr(t, 'w74');
+  const id = parent('alone-session', { paneId: 'w74:p1', workspaceId: 'w74' });
+  rig.world.add({ pane_id: 'w74:p1', tab_id: 'w74:t1', workspace_id: 'w74', agent: 'claude', name: 'lead', label: 'lead', agent_status: 'working', agent_session: { agent: 'claude', kind: 'id', source: 'herdr:claude', value: 'alone-session' } });
+  const { tool, jobs, service } = context(id, rig);
+  byeOnClose(rig, service, { method: 'pane.close', id: 'w74:p1' });
+
+  await tool('agent_restart', {}, { paneId: 'w74:p1' });
+  await rig.fake.waitFor('events.subscribe');
+  setStatus(rig, 'w74:p1', 'idle');
+  await jobs.get(`parent:${id}`);
+
+  assert.deepEqual(methodOrder(rig.fake, ['tab.create', 'workspace.create', 'pane.close', 'start']), ['tab.create', 'pane.close', 'start'], 'the new tab opens first, and the harness starts only once the old pane is closed');
+  assert.equal(calls(rig.fake, 'tab.create')[0]?.params['workspace_id'], 'w74');
+  const record = readParent(id);
+  assert.ok(record?.paneId?.startsWith('w74:'), `the session came back in its workspace: ${record?.paneId}`);
+  assert.equal(record?.restartFailed, undefined);
+  assert.equal(rig.world.panes.get(record?.paneId ?? '')?.agent_session?.value, 'alone-session');
+  assert.equal(restartLog().at(-1)?.['outcome'], 'restarted');
+});
+
+test('a restart whose workspace disappears under it opens a new workspace carrying the old label', async (t) => {
+  isolate(t, 'bellwether-restart-');
+  const rig = await closingHerdr(t, 'w74');
+  saveParent(emptyParent('claude-code', 'ops-session', '/work/ops', { workspaceId: 'w74', host: hostName(), paneId: 'w74:p1' }));
+  rig.world.add({ pane_id: 'w74:p1', tab_id: 'w74:t1', workspace_id: 'w74', agent: 'claude', name: 'ops', label: 'ops', agent_status: 'idle', agent_session: { agent: 'claude', kind: 'id', source: 'herdr:claude', value: 'ops-session' } });
+  // herdr lists w74 as "ops", then the workspace goes before the tab opens in it.
+  const answer = rig.world.answer.bind(rig.world);
+  rig.world.answer = (request) => {
+    if (request.method === 'workspace.list') return { type: 'workspace_list', workspaces: [{ workspace_id: 'w74', label: 'ops', tab_count: 1 }] };
+    if (request.method === 'tab.create' && request.params['workspace_id'] === 'w74') return { error: { code: 'workspace_not_found', message: 'herdr workspace w74 not found' } };
+    return answer(request);
+  };
+
+  const text = await context(parent('restart-caller'), rig).tool('agent_restart', { target: 'ops-session' });
+  assert.match(text, /Restarted ops/);
+  assert.equal(calls(rig.fake, 'workspace.create')[0]?.params['label'], 'ops', 'the new workspace carries the old label');
+  const record = listParentsBySession('ops-session');
+  assert.ok(record?.paneId && !record.paneId.startsWith('w74:'), `the session came back somewhere: ${record?.paneId}`);
+  assert.equal(record?.workspaceId, record?.paneId?.split(':')[0]);
+  assert.equal(rig.world.panes.get(record?.paneId ?? '')?.agent_session?.value, 'ops-session');
+});
+
+test('a child restart that fails to start leaves an event for its parent, a line on its record and a doctor line', async (t) => {
+  isolate(t, 'bellwether-restart-');
+  const rig = await herdr(t);
+  const id = parent('restart-fails');
+  const now = new Date().toISOString();
+  upsertChild(id, worker({ startedAt: now, statusChangedAt: now, lastBusyAt: now }));
+  liveWorker(rig.world);
+  refuseStarts(rig);
+  const entries: OutboxEntry[] = [];
+  const watching = new Watcher({ client: rig.client, parentId: id, onEntries: (fresh) => entries.push(...fresh), tickMs: 50, screenPollMs: 0 });
+  watching.start();
+  t.after(() => watching.stop());
+
+  await assert.rejects(context(id, rig).tool('agent_restart', { target: 'worker' }), /worker did not come back: .*Its old pane w1:p3 is closed/);
+  const child = children(id)[0];
+  assert.equal(child?.restartFailed?.oldPane, 'w1:p3');
+  assert.match(child?.restartFailed?.error ?? '', /refused the start/);
+  assert.match(child?.restartFailed?.reopen ?? '', /agent_spawn and resume sess-1/);
+
+  const event = await until('the parent\'s event', () => entries.find((entry) => entry.childId === 'child-worker' && entry.event === 'exited'));
+  assert.equal(event.event, 'exited');
+  assert.match(event.text, /worker \(child child-worker\) did not come back from a restart/);
+  assert.match(event.text, /last pane w1:p3/);
+  assert.equal(children(id)[0]?.restartFailed?.told, true, 'the parent hears of it once');
+
+  const lines = restartFailureLines(listParents());
+  assert.equal(lines.length, 1);
+  assert.match(lines[0] ?? '', /^fail +restart: worker \(child child-worker of /);
+  assert.match(lines[0] ?? '', /last pane w1:p3/);
+  assert.match(lines[0] ?? '', /refused the start/);
+});
+
+test('a session restart that fails to start leaves a line on its record and a doctor line naming its last pane', async (t) => {
+  isolate(t, 'bellwether-restart-');
+  const rig = await closingHerdr(t, 'w74');
+  const id = parent('lost-session', { paneId: 'w74:p1', workspaceId: 'w74' });
+  rig.world.add({ pane_id: 'w74:p1', tab_id: 'w74:t1', workspace_id: 'w74', agent: 'claude', name: 'lead', label: 'lead', agent_status: 'working', agent_session: { agent: 'claude', kind: 'id', source: 'herdr:claude', value: 'lost-session' } });
+  refuseStarts(rig);
+  const { tool, jobs } = context(id, rig);
+
+  await tool('agent_restart', {}, { paneId: 'w74:p1' });
+  await rig.fake.waitFor('events.subscribe');
+  setStatus(rig, 'w74:p1', 'idle');
+  await jobs.get(`parent:${id}`);
+
+  const failed = readParent(id)?.restartFailed;
+  assert.equal(failed?.oldPane, 'w74:p1');
+  assert.equal(failed?.workspaceId, 'w74');
+  assert.match(failed?.reopen ?? '', /claude .*--resume lost-session/);
+  const lines = restartFailureLines(listParents());
+  assert.equal(lines.length, 1);
+  assert.match(lines[0] ?? '', new RegExp(`^fail +restart: session ${id} \\(claude-code, last pane w74:p1 in workspace w74\\) did not come back`));
+  assert.match(lines[0] ?? '', /Reopen it by hand with `claude .*--resume lost-session` in \/work\./);
+  assert.equal(restartLog().at(-1)?.['outcome'], 'failed');
+});
+
+test('a child in a workspace Bellwether made for it, whose workspace herdr has already closed, restarts in a new one under the same label', async (t) => {
+  isolate(t, 'bellwether-restart-');
+  const rig = await closingHerdr(t, 'w1');
+  rig.world.add({ pane_id: 'w1:p1', tab_id: 'w1:t1', agent: 'claude', name: 'lead', agent_status: 'idle' });
+  const id = parent('restart-gone-workspace');
+  // The child's pane is gone, and herdr closed w5 with it.
+  upsertChild(id, worker({ paneId: 'w5:p1', tabId: 'w5:t1', workspaceId: 'w5', workspaceLabel: 'big-job', ownsWorkspace: true }));
+
+  await context(id, rig).tool('agent_restart', { target: 'worker' });
+  assert.equal(calls(rig.fake, 'workspace.create')[0]?.params['label'], 'big-job');
+  const child = children(id)[0];
+  assert.ok(child?.workspaceId && child.workspaceId !== 'w5');
+  assert.equal(child.ownsWorkspace, true);
 });

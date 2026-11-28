@@ -88,6 +88,12 @@ export function createHerdrService(parent: ParentHello, id: string, deps: Servic
   watcher.start();
   // Finish a restart a daemon stopped part of the way through.
   armPendingRestarts(client, record, restart);
+  // A session whose restart failed is connected again, so it came back by hand.
+  if (readParent(record.id)?.restartFailed) {
+    mutateParent(record.id, (entry) => {
+      delete entry.restartFailed;
+    });
+  }
   return {
     tool: (name, args, caller) => runBellwetherTool(context, name, args, caller),
     markRead: (receipts) => {

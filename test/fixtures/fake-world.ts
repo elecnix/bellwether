@@ -101,7 +101,16 @@ export function shellWords(line: string): string[] {
   return words;
 }
 
-export function fakeWorld(workspace = 'w1'): FakeWorld {
+export interface FakeWorldOptions {
+  /**
+   * Close a workspace with its last pane, as herdr does: workspace.list leaves
+   * it out, and tab.create in it fails with workspace_not_found (issue #185).
+   * Off by default, where the world's own workspace always exists.
+   */
+  closeEmptyWorkspaces?: boolean;
+}
+
+export function fakeWorld(workspace = 'w1', options: FakeWorldOptions = {}): FakeWorld {
   const panes = new Map<string, FakePane>();
   const labels = new Map<string, string>();
   let next = 10;
@@ -149,10 +158,15 @@ export function fakeWorld(workspace = 'w1'): FakeWorld {
       const params = request.params;
       switch (request.method) {
         case 'tab.create': {
-          const id = `${workspace}:p${next}`;
-          const tab = `${workspace}:t${next}`;
+          let into = workspace;
+          if (options.closeEmptyWorkspaces) {
+            into = typeof params['workspace_id'] === 'string' ? params['workspace_id'] : workspace;
+            if (![...panes.values()].some((pane) => pane.workspace_id === into)) return { error: { code: 'workspace_not_found', message: `herdr workspace ${into} not found` } };
+          }
+          const id = `${into}:p${next}`;
+          const tab = `${into}:t${next}`;
           next += 1;
-          add({ pane_id: id, tab_id: tab, cwd: typeof params['cwd'] === 'string' ? params['cwd'] : undefined });
+          add({ pane_id: id, tab_id: tab, workspace_id: into, cwd: typeof params['cwd'] === 'string' ? params['cwd'] : undefined });
           return { type: 'tab_created', tab: { tab_id: tab }, root_pane: { pane_id: id } };
         }
         case 'workspace.create': {
@@ -166,7 +180,8 @@ export function fakeWorld(workspace = 'w1'): FakeWorld {
           return { type: 'workspace_created', workspace: { workspace_id: id, label }, tab: { tab_id: `${id}:t1`, workspace_id: id }, root_pane: { pane_id: `${id}:p1` } };
         }
         case 'workspace.list': {
-          const ids = [...new Set([workspace, ...[...panes.values()].map((pane) => pane.workspace_id)])];
+          const held = [...panes.values()].map((pane) => pane.workspace_id);
+          const ids = [...new Set(options.closeEmptyWorkspaces ? held : [workspace, ...held])];
           return { type: 'workspace_list', workspaces: ids.map((id) => ({ workspace_id: id, label: labels.get(id) ?? id, tab_count: new Set([...panes.values()].filter((pane) => pane.workspace_id === id).map((pane) => pane.tab_id)).size })) };
         }
         case 'agent.start': {

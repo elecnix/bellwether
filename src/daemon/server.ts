@@ -89,6 +89,8 @@ export interface DaemonOptions {
   sessionWaitMs?: number;
   /** How long a start's brief waits for the child's model after its adapter received it, before it goes once more. Default 20 s. */
   briefTurnWaitMs?: number;
+  /** The end of that wait, held by a test that fires it by hand. Default a timer. */
+  briefDeadline?: (ms: number, signal: AbortSignal) => Promise<void>;
   /** What retirement asks of git, gh and the process table, for a request that crosses from another machine. Tests pass a fake git. */
   retireOps?: RetireOps;
   /** The tools a session gets, by its hello. Default the feature table's tools for its identity; a test passes a newer table. */
@@ -341,6 +343,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
     return relayInbox(links, parentId, child, message, options);
   };
   inbox.turnWaitMs = options.briefTurnWaitMs ?? BRIEF_TURN_WAIT_MS;
+  if (options.briefDeadline) inbox.deadline = options.briefDeadline;
   inbox.read = (parentId, childId, messageId, signal) =>
     new Promise<string>((resolve) => {
       // The check and the wait run in one tick, so a read that lands between them cannot slip past.
@@ -530,6 +533,8 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
       if (!message || message.readAt) return;
       message.readAt = readAt = new Date(now()).toISOString();
       if (ack.via) message.via ??= ack.via;
+      // A copy marked undelivered when the brief went again, read after all (issue #246).
+      delete message.undelivered;
       delete message.text;
       delete message.from;
     });
@@ -780,6 +785,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
         const message = child.messages?.find((entry) => entry.id === report.messageRead);
         if (!message || message.readAt) return;
         message.readAt = readAt = report.at;
+        delete message.undelivered;
         delete message.text;
         delete message.from;
       });

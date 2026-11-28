@@ -40,14 +40,14 @@ interface Room {
   parent: DaemonClient;
 }
 
-async function room(t: test.TestContext, options: { sessionWaitMs?: number; briefTurnWaitMs?: number } = {}): Promise<Room> {
+async function room(t: test.TestContext, options: { sessionWaitMs?: number; briefTurnWaitMs?: number; briefDeadline?: (ms: number, signal: AbortSignal) => Promise<void> } = {}): Promise<Room> {
   const { root, home } = isolate(t, 'bellwether-brief-');
   const world = fakeWorld('w1');
   const fake = await startFakeHerdr({ respond: (request) => world.respond(request) });
   world.emit = (frame) => fake.send(frame);
   process.env['HERDR_SOCKET_PATH'] = fake.socketPath;
   const socketPath = path.join(home, 'daemon.sock');
-  const daemon = await startDaemon({ socketPath, home, pruneEveryMs: false, messageAckMs: 2_000, sessionWaitMs: options.sessionWaitMs ?? 5_000, ...(options.briefTurnWaitMs ? { briefTurnWaitMs: options.briefTurnWaitMs } : {}) });
+  const daemon = await startDaemon({ socketPath, home, pruneEveryMs: false, messageAckMs: 2_000, sessionWaitMs: options.sessionWaitMs ?? 5_000, ...(options.briefTurnWaitMs ? { briefTurnWaitMs: options.briefTurnWaitMs } : {}), ...(options.briefDeadline ? { briefDeadline: options.briefDeadline } : {}) });
   const session = `parent-${path.basename(root)}`;
   const parentId = saveParent(emptyParent('claude-code', session, root, { paneId: 'w1:p0', workspaceId: 'w1' })).id;
   const parent = await DaemonClient.connect({ harness: 'claude-code', session, cwd: root, host: os.hostname(), paneId: 'w1:p0', depth: 0, herdrSocket: fake.socketPath }, { socketPath, home, spawn: false });
@@ -329,22 +329,114 @@ test('an adapter that acknowledges at once while its model reads the brief ten s
   assert.deepEqual(prompted(space.fake, childNamed(space, 'slow')?.paneId ?? ''), [], 'nothing typed');
 });
 
-// Issue #176 held closed: a read receipt says only that the message entered
-// the session, so on its own it is not the model taking the brief.
-test('a read receipt arrives and the model never begins a turn: the brief is not taken, and the resend and BriefNotTaken still fire', async (t) => {
+// Issue #246: a read receipt says the message entered the session, so it
+// alone does not settle the brief as taken (issue #176), but it does mean a
+// second copy would enter that session twice. A copy with a read never goes
+// again, whatever herdr reported.
+test('a read receipt arrives and herdr never reports a turn: the brief is not taken, and it does not go again (issue #246)', async (t) => {
   const space = await room(t, { briefTurnWaitMs: 500 });
   const pushes: { id: string; text: string; replay: boolean; at: number }[] = [];
   space.world.onStart = (pane) => {
     const child = childInPane(space, pane);
-    // The adapter acknowledges and reports a read; herdr never reports a turn.
+    // The adapter acknowledges and reports a read; herdr never reports a turn,
+    // as for a turn shorter than one herdr status cycle.
     if (child) void bareSession(t, space, child, 'claude-code', 'claude-channel', pushes, () => ({ readAfterMs: 0 }));
   };
-  const outcome = await space.parent.tool('agent_spawn', { kind: 'claude', name: 'unturned', prompt: BRIEF }).catch((error: Error) => error.message);
-  assert.equal(childNamed(space, 'unturned')?.briefs?.[0]?.delivery?.takenBy, undefined, `the brief settled as taken on a read with no turn: ${outcome}`);
-  assert.equal(pushes.length, 2, 'the resend fired');
-  assert.match(outcome, /BriefNotTaken: unturned's Bellwether channel received its brief twice/);
-  assert.match(outcome, /Of the second copy, Bellwether saw its adapter's read receipt but no turn from herdr\./, 'the failure names the missing sign');
+  const reply = await space.parent.tool('agent_spawn', { kind: 'claude', name: 'unturned', prompt: BRIEF }).catch((error: Error) => error.message);
+  assert.equal(pushes.length, 1, `a copy whose read was recorded went again: ${JSON.stringify(pushes)}`);
+  const child = childNamed(space, 'unturned');
+  const delivery = child?.briefs?.[0]?.delivery;
+  assert.equal(delivery?.takenBy, undefined, `the brief settled as taken on a read with no turn: ${JSON.stringify(delivery)}`);
+  assert.equal(delivery?.takenAt, undefined);
+  assert.equal(delivery?.readAt, child?.messages?.find((message) => message.id === pushes[0]!.id)?.readAt, 'the delivery keeps the read the record holds');
+  assert.equal(delivery?.resentFrom, undefined);
+  assert.match(reply, new RegExp(`unturned's Bellwether channel received its brief as message ${pushes[0]!.id}, and its model read it [0-9.]+ s later, but herdr reported no turn on it within 0\\.5 s; Bellwether did not send it again, because a second copy would enter its session twice; nothing was typed into its pane\\.`));
   assert.deepEqual(space.fake.requests.filter((request) => request.method === 'agent.prompt'), [], 'nothing typed');
+});
+
+/** A deadline a case fires by hand, so a read can land just before it, or just after it, without a race against a real timer. */
+function heldDeadlines(): { deadline: (ms: number, signal: AbortSignal) => Promise<void>; pending: (() => void)[] } {
+  const pending: (() => void)[] = [];
+  return {
+    pending,
+    deadline: (_ms, signal) =>
+      new Promise<void>((resolve) => {
+        const fire = (): void => resolve();
+        pending.push(fire);
+        signal.addEventListener('abort', () => pending.splice(pending.indexOf(fire) >>> 0, 1), { once: true });
+      }),
+  };
+}
+
+// Issue #246: the crossing it came from. The first copy's read reached the
+// daemon 1.4 s after the push, herdr never reported a turn, and the resend
+// fired at the end of the window all the same. Here the read lands just
+// before the window ends, and the window ends only after the record has it.
+test('a read receipt that lands just before the resend is due, with no turn from herdr, leaves one copy in the session (issue #246)', async (t) => {
+  const held = heldDeadlines();
+  // A daemon without the injected deadline falls back on this real one, so the case fails there by resending.
+  const space = await room(t, { briefTurnWaitMs: 1_500, briefDeadline: held.deadline });
+  const pushes: { id: string; text: string; replay: boolean; at: number }[] = [];
+  let session: DaemonClient | undefined;
+  space.world.onStart = (pane) => {
+    const child = childInPane(space, pane);
+    if (child) void bareSession(t, space, child, 'claude-code', 'claude-channel', pushes, () => undefined).then((client) => (session = client));
+  };
+  const spawned = space.parent.tool('agent_spawn', { kind: 'claude', name: 'brisk', prompt: BRIEF });
+  spawned.catch(() => {});
+  const first = await until('the first copy', () => pushes[0]);
+  // A daemon that ignores the held deadline opens no window here; its real one ends at 1.5 s, after this read.
+  await until('the window for the first copy', () => held.pending.length === 1 || undefined, 1_000).catch(() => undefined);
+  session!.messageAck(first.id, 'read', { via: 'claude-channel' });
+  await until('the read on the record', () => childNamed(space, 'brisk')?.messages?.find((message) => message.id === first.id)?.readAt);
+  // The resend is due now, with the read already on the record.
+  held.pending.shift()?.();
+  const reply = await spawned.catch((error: Error) => error.message);
+  assert.deepEqual(pushes.map((push) => push.id), [first.id], 'the read landed before the resend was due, so one copy entered the session');
+  const delivery = childNamed(space, 'brisk')?.briefs?.[0]?.delivery;
+  assert.equal(delivery?.message, first.id);
+  assert.equal(delivery?.resentFrom, undefined);
+  assert.equal(delivery?.takenBy, undefined, 'no turn, so not taken');
+  assert.ok(delivery?.readAt, JSON.stringify(delivery));
+  assert.match(reply, /but herdr reported no turn on it within 1\.5 s; Bellwether did not send it again/);
+});
+
+// Issue #246: a read that lands after the resend went out. On this machine the
+// last check of the record and the push run in one turn of the event loop, so
+// the read can only land on the far side of the push, as one on its way back
+// over the relay does. The session then holds two copies, the brief does not
+// go a third time, and the record says which copy was read.
+test('a read on the first copy that lands while the second copy waits settles the brief on that read, sends no third copy, and the record says the session holds both (issue #246)', async (t) => {
+  const held = heldDeadlines();
+  const space = await room(t, { briefTurnWaitMs: 1_500, briefDeadline: held.deadline });
+  const pushes: { id: string; text: string; replay: boolean; at: number }[] = [];
+  let session: DaemonClient | undefined;
+  space.world.onStart = (pane) => {
+    const child = childInPane(space, pane);
+    if (child) void bareSession(t, space, child, 'claude-code', 'claude-channel', pushes, () => undefined).then((client) => (session = client));
+  };
+  const spawned = space.parent.tool('agent_spawn', { kind: 'claude', name: 'late', prompt: BRIEF });
+  spawned.catch(() => {});
+  const first = await until('the first copy', () => pushes[0]);
+  // A daemon that ignores the held deadline resends on its real one, at 1.5 s.
+  await until('the window for the first copy', () => held.pending.length === 1 || pushes.length > 1 || undefined);
+  held.pending.shift()?.();
+  const second = await until('the second copy', () => pushes[1]);
+  await until('the window for the second copy', () => held.pending.length === 1 || undefined, 500).catch(() => undefined);
+  session!.messageAck(first.id, 'read', { via: 'claude-channel' });
+  await until('the read on the record', () => childNamed(space, 'late')?.messages?.find((message) => message.id === first.id)?.readAt, 1_000).catch(() => undefined);
+  held.pending.shift()?.();
+  const reply = await spawned.catch((error: Error) => error.message);
+  assert.equal(pushes.length, 2, 'no third copy');
+  const child = childNamed(space, 'late');
+  const delivery = child?.briefs?.[0]?.delivery;
+  assert.equal(delivery?.message, second.id);
+  assert.equal(delivery?.resentFrom, first.id);
+  assert.equal(delivery?.readFrom, first.id, `the delivery names the copy that was read: ${JSON.stringify(delivery)}`);
+  const firstMessage = child?.messages?.find((message) => message.id === first.id);
+  assert.ok(firstMessage?.readAt);
+  assert.equal(firstMessage?.undelivered, undefined, 'a message the model read is not also marked undelivered');
+  assert.match(reply, new RegExp(`the read receipt for message ${first.id} arrived after message ${second.id} went out, so its session holds both copies`));
 });
 
 test('a model that does not take the first copy gets the brief once more, and the reply says so', async (t) => {

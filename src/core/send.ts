@@ -57,14 +57,17 @@ export interface Inbox {
   read?: (parentId: string, childId: string, messageId: string, signal: AbortSignal) => Promise<string>;
   /** How long a start's brief waits for the child's model after its adapter received it, before it goes once more. */
   turnWaitMs?: number;
+  /** The end of that wait, which a test holds and fires by hand so a read can land just before or just after it. Default a timer of `ms`. */
+  deadline?: (ms: number, signal: AbortSignal) => Promise<void>;
 }
 
 /**
  * How long a start's brief waits, after the child's adapter received it, for
  * the model behind that adapter to read it (issue #176). The
  * adapter connects while the harness is still starting, so its receipt says
- * nothing about the model. A brief that waits this long goes once more, and
- * a second copy that waits as long fails the start.
+ * nothing about the model. A brief that waits this long without a read goes
+ * once more, and a second copy that waits as long fails the start. A copy
+ * whose read came never goes again (issue #246).
  */
 export const BRIEF_TURN_WAIT_MS = 20_000;
 

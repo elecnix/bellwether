@@ -34,6 +34,8 @@
 //   cwd              start     firstRun, runStarts, relocated           never
 //   session          start     firstRun, sessionSeen, relocated         never: a retired child keeps it to be resumed
 //   resumedAt        start     runStarts when the start is a return     never
+//   launchedAt       start     runStarts or runAwaitsPane when          runStarts that starts no harness, as
+//                              harness, as a resume or restart does     an adoption's return (issue #256)
 //   lastStatus       run       firstRun, runStarts, statusSeen          set to unknown by runEnds and by runStarts without a status
 //   startingUntil    run       holdEvents                               releaseEvents, every start, runFailedToRestart
 //   harnessSeenAt    run       harnessSeen, runStarts given seenAt      every start
@@ -89,6 +91,7 @@ export const LIFETIMES = {
   host: 'start',
   origin: 'child',
   resumedAt: 'start',
+  launchedAt: 'start',
   cwd: 'start',
   startedAt: 'child',
   lastStatus: 'run',
@@ -220,6 +223,12 @@ export interface RunStart extends Place {
   resumedAt?: string;
   /** When herdr saw the harness run, for a start that finds it already running. */
   seenAt?: string;
+  /**
+   * When Bellwether started the harness, for a start that launches it in a tab
+   * Bellwether opened. A start that finds a harness someone else started, as
+   * an adoption's return does, leaves it out, and the field goes (issue #256).
+   */
+  launchedAt?: string;
 }
 
 /**
@@ -234,6 +243,8 @@ export function runStarts(record: ChildRecord, start: RunStart): void {
   entry.lastStatus = start.status ?? 'unknown';
   if (start.resumedAt) entry.resumedAt = start.resumedAt;
   if (start.seenAt) entry.harnessSeenAt = start.seenAt;
+  if (start.launchedAt) entry.launchedAt = start.launchedAt;
+  else delete entry.launchedAt;
 }
 
 /**
@@ -314,6 +325,8 @@ export function runAwaitsPane(record: ChildRecord, start: Omit<RunStart, 'paneId
   const entry = writable(record);
   entry.lastStatus = start.status ?? 'unknown';
   if (start.resumedAt) entry.resumedAt = start.resumedAt;
+  if (start.launchedAt) entry.launchedAt = start.launchedAt;
+  else delete entry.launchedAt;
   if (!entry.exitedAt) entry.exitedAt = start.at;
 }
 

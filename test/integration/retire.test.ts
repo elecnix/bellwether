@@ -19,6 +19,7 @@ import { runBellwetherTool, toolsFor, type ToolContext } from '../../src/integra
 import { startFakeHerdr, type FakeHerdr } from '../fixtures/fake-herdr.ts';
 import { fakeGit, type FakeGit } from '../fixtures/fake-git.ts';
 import { runEnds, sessionSeen } from '../../src/core/incarnation.ts';
+import { backInPane } from '../../src/core/adopt.ts';
 
 const WORKTREE = '/work/x/feat-x';
 const MAIN = '/work/x/main';
@@ -371,6 +372,27 @@ test('an adopted child and a child on another host are out of bounds', async (t)
   await watcher.retirements();
   assert.match(adopted.child().retireReason ?? '', /^out of bounds: feat-x was adopted/);
   assert.deepEqual(adopted.git.calls, []);
+});
+
+// Issue #256: retirement follows how the parent holds the child now, not how
+// the child first came to it. A resume starts the harness in a tab Bellwether
+// opened, so the parent holds the child as one it started.
+test('an adopted child that a resume brought back retires as a child Bellwether started, and is out of bounds again once its session comes back under an adoption', async (t) => {
+  const w = await world(t, { origin: 'adopt', resumedAt: new Date().toISOString(), launchedAt: new Date().toISOString() });
+  w.git.merged.add(`${REPO}:feat/x`);
+  const { watcher, text } = await requested(w);
+  assert.match(text, /Retirement requested for feat-x: \/work\/x\/feat-x on branch feat\/x\. Nothing has been removed\./);
+  assert.equal(w.child().origin, 'adopt', 'the record keeps how the child first came to the parent');
+  w.exit();
+  await until('the outcome', () => w.child().retireOutcome);
+  await watcher.retirements();
+  assert.equal(w.child().retireOutcome, 'removed', w.child().retireReason);
+
+  // The same session, taken up again by an adoption, runs in a process Bellwether did not start.
+  const again = await world(t, { origin: 'adopt', resumedAt: new Date().toISOString(), launchedAt: new Date().toISOString() });
+  updateChild(again.parentId, 'c-retire', (entry) => backInPane(entry, { paneId: PANE, agentStatus: 'idle', tabId: TAB, workspaceId: 'w1' }));
+  assert.equal(again.child().launchedAt, undefined);
+  await assert.rejects(runBellwetherTool(again.ctx(again.watcher()), RETIRE_TOOL, {}, caller), /feat-x was adopted, not spawned by Bellwether/);
 });
 
 test('a child on another host cannot ask', async (t) => {

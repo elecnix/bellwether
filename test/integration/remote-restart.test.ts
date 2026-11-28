@@ -179,7 +179,7 @@ function child(): ChildRecord {
 
 /** What a restart must leave as it was on the parent's record: everything but where the child runs, its state there, and when the watcher last saw its harness, which every restart clears. */
 function identity(record: ChildRecord): Partial<ChildRecord> {
-  const { paneId: _pane, tabId: _tab, workspaceId: _workspace, lastStatus: _status, statusChangedAt: _changed, lastBusyAt: _busy, resumedAt: _resumed, restartedAt: _restarted, toolSource: _tools, decisions: _decisions, harnessSeenAt: _seen, ...rest } = record;
+  const { paneId: _pane, tabId: _tab, workspaceId: _workspace, lastStatus: _status, statusChangedAt: _changed, lastBusyAt: _busy, resumedAt: _resumed, launchedAt: _launched, restartedAt: _restarted, toolSource: _tools, decisions: _decisions, harnessSeenAt: _seen, ...rest } = record;
   return rest;
 }
 
@@ -222,6 +222,7 @@ test("a parent restarts its child on another machine: same child id, a new pane,
 
   // 4. The parent's record is otherwise unchanged, and it records the restart.
   assert.deepEqual(identity(after), identity(before));
+  assert.ok(after.launchedAt, 'a restart starts the harness, so the record says Bellwether launched this run (issue #256)');
   assert.equal(after.host, 'child-box');
   assert.ok(after.restartedAt, 'the record carries the restart');
   assert.equal(after.startingUntil, undefined);

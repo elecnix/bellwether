@@ -14,6 +14,7 @@ import { harnessNamed } from './harnesses/index.ts';
 import { LOCAL_HOST } from './machine.ts';
 import { claimantOf } from './pane-claims.ts';
 import { listParents } from './registry.ts';
+import { heldByAdoption } from './acquisition.ts';
 
 /**
  * How an adopted session can reach the parent that adopted it: `tools` when a
@@ -63,7 +64,7 @@ export function sameSession(hello: string | undefined, recorded: string | undefi
 export function adoptedParentOf(hello: SessionHello): AdoptedParent | undefined {
   if (hello.childId || hello.reportsTo || !hello.paneId) return undefined;
   for (const parent of listParents()) {
-    const child = parent.children.find((entry) => entry.origin === 'adopt' && !entry.exitedAt && entry.paneId === hello.paneId && (entry.host ?? LOCAL_HOST) === LOCAL_HOST);
+    const child = parent.children.find((entry) => heldByAdoption(entry) && !entry.exitedAt && entry.paneId === hello.paneId && (entry.host ?? LOCAL_HOST) === LOCAL_HOST);
     if (child && sameSession(hello.session, child.session?.value)) return { parentId: parent.id, childId: child.id, name: child.name, where: 'here' };
   }
   const holder = claimantOf(hello.paneId);

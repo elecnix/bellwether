@@ -163,7 +163,9 @@ A resume, a restart and a move each take the child's lock, and the cleanup takes
 
 The removal runs `git worktree remove` without `--force`, so git itself refuses a worktree that holds changes.
 
-Bellwether leaves a child it adopted, a detached HEAD and any main worktree in place. A worktree on another machine goes through the daemon there, on the parent's request, after the same checks on that machine, as [Retiring a child there](remote-machines.md#retiring-a-child-there) describes. That section also covers the worktree a moved child left on the parent's machine. A worktree counts as main when its git directory is the repository itself, when git lists it first, when it has the default branch checked out, or when its name is `main` or `master`.
+Bellwether leaves a child it holds by adoption, a detached HEAD and any main worktree in place. A worktree on another machine goes through the daemon there, on the parent's request, after the same checks on that machine, as [Retiring a child there](remote-machines.md#retiring-a-child-there) describes. That section also covers the worktree a moved child left on the parent's machine. A worktree counts as main when its git directory is the repository itself, when git lists it first, when it has the default branch checked out, or when its name is `main` or `master`.
+
+An adopted child that a resume brought back runs in a harness Bellwether started, so retirement treats it as a started child ([Adopted sessions](tools.md#adopted-sessions)).
 
 `agent_stop` waits up to 10 seconds for the cleanup, and its reply ends with one line about the worktree:
 

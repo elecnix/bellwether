@@ -265,3 +265,39 @@ test('when the registry says exited and herdr shows the session in its own pane,
   assert.equal(calls(local.fake, 'agent.prompt').length, 1);
   assert.equal(children(id)[0]?.exitedAt, undefined);
 });
+
+// Issue #256, and OneSessionPerId, IdStableBySession and IdStableInPane in
+// model/Claims.tla: a resume starts the harness in a tab Bellwether opened, with
+// the child id in its own adapter, so the parent holds the child as one it
+// started. A /clear there is the same child under a new session, not an exit.
+test('an adopted child brought back by a resume takes a new session in its pane under its own id, as a child Bellwether started does', async (t) => {
+  isolate(t, 'bellwether-resume-');
+  const local = await herdr(t);
+  const id = parent('resumed-adoption');
+  upsertChild(id, worker({ origin: 'adopt', exitedAt: new Date().toISOString(), harnessSeenAt: new Date().toISOString(), harnessEnded: 'in-pane' }));
+
+  await runBellwetherTool(context(id, local), 'agent_spawn', { resume: 'worker', prompt });
+  const resumed = children(id)[0] as ChildRecord;
+  assert.equal(resumed.origin, 'adopt', 'the record keeps how the child first came to the parent');
+
+  const published: string[] = [];
+  const watcher = new Watcher({ client: local.client, parentId: id, onEntries: (entries) => published.push(...entries.map((entry) => entry.event)), tickMs: 60_000, screenPollMs: 0 });
+  t.after(() => watcher.stop());
+  local.fake.requests.length = 0;
+  watcher.start();
+  await local.fake.waitFor('events.subscribe');
+
+  // A /clear: the same process, a new session.
+  const pane = local.world.panes.get(resumed.paneId)!;
+  pane.agent_session = { ...SESSION_1, value: 'sess-2' };
+  local.fake.send({ event: 'pane_agent_detected', data: { pane_id: resumed.paneId, workspace_id: 'w1', agent: 'claude', agent_status: 'idle', agent_session: pane.agent_session } });
+  const deadline = Date.now() + 5_000;
+  while (children(id)[0]?.session?.value !== 'sess-2' && children(id)[0]?.exitedAt === undefined && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
+
+  const after = children(id)[0] as ChildRecord;
+  assert.equal(after.exitedAt, undefined, `the child exited as ${after.paneEnd?.how}, though Bellwether started the process that took the new session`);
+  assert.equal(after.session?.value, 'sess-2');
+  assert.equal(after.id, 'child-worker');
+  assert.ok(!published.includes('exited'), `the parent heard: ${published.join(', ')}`);
+  assert.equal(after.origin, 'adopt');
+});

@@ -72,7 +72,10 @@ export function adoptionClaim(parentId: string, child: Pick<ChildRecord, 'id' | 
  * agent, so the session has to match. The pane need not: a session resumed by
  * hand in another pane is still that child (issue #211, item 7). A record in
  * that pane wins, then an exited one, then one that still shows the session
- * live in another pane, which herdr has just contradicted.
+ * live in another pane, which herdr has just contradicted. It reads how the
+ * child first came to this parent, not how the parent holds it now: a child a
+ * resume brought back is still the child this parent adopted on that session
+ * (issue #256).
  */
 export function resumableAdoption(parent: Pick<ParentRecord, 'children'>, host: string, paneId: string, session: string | undefined): ChildRecord | undefined {
   if (!session) return undefined;
@@ -90,6 +93,8 @@ export function backInPane(entry: ChildRecord, pane: Pick<HerdrPane, 'paneId' | 
   // the start-window check has nothing left to find.
   runStarts(entry, { paneId: pane.paneId, ...(pane.tabId ? { tabId: pane.tabId } : {}), ...(pane.cwd ? { cwd: pane.cwd } : {}), status: pane.agentStatus, resumedAt: now, seenAt: now });
   clearRetirement(entry);
+  // The process in the pane is not one Bellwether started, so runStarts, given no
+  // launchedAt, leaves the parent holding the child by adoption again (issue #256).
   entry.statusChangedAt = now;
   entry.lastBusyAt = now;
   if (pane.workspaceId) entry.workspaceId = pane.workspaceId;

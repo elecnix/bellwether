@@ -38,6 +38,7 @@ import { BRIEF_SESSION_WAIT_MS, BRIEF_TURN_WAIT_MS, unreadSessionMessages, type 
 import { updateChild } from '../core/registry.ts';
 import { UnknownTool, servedTools, type ToolScope } from '../integrations/tools.ts';
 import { FEATURES } from './features.ts';
+import { heldByAdoption } from '../core/acquisition.ts';
 
 /**
  * The roster for entries about to reach a parent, when one is due. Only an
@@ -232,7 +233,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
   /** Whether a child is a session a parent adopted, by this machine's registry or by a claim a parent on another machine left here. */
   const isAdopted = (childId: string): boolean => {
     const found = localParentOf(childId);
-    return found ? found.child.origin === 'adopt' : readRelayRecord(childId)?.adopted === true;
+    return found ? heldByAdoption(found.child) : readRelayRecord(childId)?.adopted === true;
   };
 
   /** Why no session of a child takes a message, naming an adopted session's own case rather than a child's. */

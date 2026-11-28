@@ -20,7 +20,7 @@ Keys2 == Parents \X Sessions
 
 VARIABLES
   paneSession,   \* herdr's truth: the harness session in each pane, or NoSession
-  children,      \* every parent's registry rows: [id, parent, pane, session, live, replaced, adopted, doubt]
+  children,      \* every parent's registry rows: [id, parent, pane, session, live, replaced, adopted, byAdoption, doubt]
   relay,         \* who holds a pane for a far parent on the pane machine: [id, parent, pane,
                  \* session, adopted]. adopted: a claim in the relay records (pane-claims.ts:58).
                  \* Otherwise a far parent's started child whose adapter is connected to the daemon
@@ -34,9 +34,12 @@ VARIABLES
 
 vars == <<paneSession, children, relay, pending, nextId, firstByPane, firstBySess, sessOfId>>
 
-\* `adopted`: the child stands for its session, since no child id rides in it (#222).
+\* `adopted`: the parent holds the child by adoption now, so the child stands for its
+\* session, since no child id rides in it (#222). heldByAdoption in acquisition.ts (#256).
+\* `byAdoption`: the child first came to its parent by adoption, the record's `origin`,
+\* which stays after a resume makes the parent hold it as a started child (#256).
 \* `doubt`: a far adoption whose answer the relay lost (#237).
-Rec(p, x, s, i) == [id |-> i, parent |-> p, pane |-> x, session |-> s, live |-> TRUE, replaced |-> FALSE, adopted |-> TRUE, doubt |-> FALSE]
+Rec(p, x, s, i) == [id |-> i, parent |-> p, pane |-> x, session |-> s, live |-> TRUE, replaced |-> FALSE, adopted |-> TRUE, byAdoption |-> TRUE, doubt |-> FALSE]
 
 Init ==
   /\ paneSession \in {f \in [Panes -> Sessions \cup {NoSession}] :
@@ -75,8 +78,10 @@ Decide(p, x, s) ==
   ELSE "refuse"
 
 \* resumableAdoption: same parent and session, not replaced, exited or recorded live in
-\* another pane, which herdr has just contradicted (#230). The pane need not match.
-Earlier(p, x, s) == {c \in children : c.parent = p /\ c.adopted /\ ~c.replaced /\ c.session = s /\ (~c.live \/ c.pane /= x)}
+\* another pane, which herdr has just contradicted (#230). The pane need not match. It reads
+\* the origin, so a child a resume brought back still counts (#256). Taking the session up
+\* again by adoption makes the parent hold the child by adoption (backInPane).
+Earlier(p, x, s) == {c \in children : c.parent = p /\ c.byAdoption /\ ~c.replaced /\ c.session = s /\ (~c.live \/ c.pane /= x)}
 
 \* adoptPane on the pane machine. No await between the guards and the write, so this is
 \* one step. A stale far claim it takes over goes (#222).
@@ -89,7 +94,7 @@ LocalAdopt(p, x) ==
   /\ OwnerSeen(p, x) = {}
   /\ Decide(p, x, s) /= "refuse"
   /\ IF Earlier(p, x, s) /= {}
-     THEN /\ children' = (children \ {e}) \cup {[e EXCEPT !.live = TRUE, !.pane = x]}
+     THEN /\ children' = (children \ {e}) \cup {[e EXCEPT !.live = TRUE, !.pane = x, !.adopted = TRUE]}
           /\ nextId' = nextId
           /\ Note(p, x, s, e.id)
      ELSE /\ nextId <= MaxIds
@@ -123,7 +128,7 @@ FarAdopt(p, x, replyLost) ==
   /\ LET got == IF replyLost THEN proposed ELSE answer IN
      /\ children' =
           IF Earlier(p, x, s) /= {} /\ e.id = got
-          THEN (children \ {e}) \cup {[e EXCEPT !.live = TRUE, !.pane = x, !.doubt = replyLost]}
+          THEN (children \ {e}) \cup {[e EXCEPT !.live = TRUE, !.pane = x, !.adopted = TRUE, !.doubt = replyLost]}
           ELSE (IF Earlier(p, x, s) /= {}
                 THEN (children \ {e}) \cup {[e EXCEPT !.replaced = TRUE]}
                 ELSE children)
@@ -242,7 +247,10 @@ ResumeCheck(p, s) ==
 \* openChildTab and startHarness, resume.ts:257-286, after the awaits. No second check.
 \* For a far parent, the child's adapter connects to the pane machine's daemon from pane y,
 \* and childSaidHello records it (#244). The model takes the hello in the same step: the
-\* code's start waits for that session before it reports the start.
+\* code's start waits for that session before it reports the start. relay-register writes
+\* the child's relay record whole, so an adopted claim under the same id gives way to the
+\* started child's record. Bellwether started the harness, so the parent holds the child
+\* as one it started from here on, whatever its origin (heldByAdoption, #256).
 ResumeStart(r, y) ==
   LET known == {c \in children : c.parent = r.parent /\ c.session = r.session /\ ~c.replaced}
       k == CHOOSE c \in known : TRUE
@@ -253,17 +261,17 @@ ResumeStart(r, y) ==
   /\ ~\E c \in children : c.live /\ c.pane = y
   /\ paneSession' = [paneSession EXCEPT ![y] = r.session]
   /\ IF known /= {}
-     THEN /\ children' = (children \ {k}) \cup {[k EXCEPT !.live = TRUE, !.pane = y]}
+     THEN /\ children' = (children \ {k}) \cup {[k EXCEPT !.live = TRUE, !.pane = y, !.adopted = FALSE]}
           /\ nextId' = nextId
           /\ Note(r.parent, y, r.session, k.id)
      ELSE /\ nextId <= MaxIds
-          /\ children' = children \cup {[Rec(r.parent, y, r.session, nextId) EXCEPT !.adopted = FALSE]}
+          /\ children' = children \cup {[Rec(r.parent, y, r.session, nextId) EXCEPT !.adopted = FALSE, !.byAdoption = FALSE]}
           /\ nextId' = nextId + 1
           /\ Note(r.parent, y, r.session, nextId)
   /\ pending' = pending \ {r}
-  /\ relay' = IF r.parent \in LocalParents \/ \E q \in relay : q.id = id /\ q.adopted
+  /\ relay' = IF r.parent \in LocalParents
               THEN relay
-              ELSE relay \cup {[id |-> id, parent |-> r.parent, pane |-> y, session |-> NoSession, adopted |-> FALSE]}
+              ELSE {q \in relay : q.id /= id} \cup {[id |-> id, parent |-> r.parent, pane |-> y, session |-> NoSession, adopted |-> FALSE]}
 
 Next ==
   \/ \E p \in Parents, x \in Panes : LocalAdopt(p, x)
@@ -275,6 +283,12 @@ Next ==
   \/ \E r \in pending, y \in Panes : ResumeStart(r, y)
 
 Spec == Init /\ [][Next]_vars
+
+\* State identity without the ghosts. The ghosts record the first id given and never steer
+\* the system, so a configuration whose invariant reads no ghost checks the same behaviours
+\* with this VIEW, in far fewer states. Since a resumed adopted child takes new sessions as a
+\* started child does (#256), the settled configurations need it to finish within 10G.
+NoGhosts == <<paneSession, children, relay, pending, nextId>>
 
 \* ---- Invariants ----
 

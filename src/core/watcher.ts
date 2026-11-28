@@ -34,6 +34,7 @@ import { removeRelayRecord } from './relay-records.ts';
 import { ClaimHeldElsewhere } from './remote.ts';
 import { releaseWorkspace } from './workspace.ts';
 import { harnessSeen, reportPending, runEnds, sessionSeen, statusSeen, stopAwaiting, tabClosed, viewOf } from './incarnation.ts';
+import { heldByAdoption } from './acquisition.ts';
 
 /** herdr's status for a pane, or the child's last known status. */
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -431,7 +432,7 @@ export class Watcher {
    * parent hears it as an exit. Returns true when the child turned out gone.
    */
   private async endedBeforeSeen(child: ChildRecord): Promise<boolean> {
-    if (child.harnessSeenAt || child.origin === 'adopt' || !child.paneId || this.startChecked.has(child.id)) return false;
+    if (child.harnessSeenAt || heldByAdoption(child) || !child.paneId || this.startChecked.has(child.id)) return false;
     const since = Date.parse(child.resumedAt ?? child.startedAt);
     if (!(Date.now() - since >= this.startConfirmMs)) return false;
     this.startChecked.add(child.id);
@@ -590,7 +591,7 @@ export class Watcher {
     // An adopted harness that ended in its open pane may come back there, as a
     // quit and a resume of the same session do, and it is the same child then (issue #191).
     // A pane that went to another session holds another agent, so nothing waits there.
-    const awaitsResume = Boolean(harnessEnded) && child.origin === 'adopt' && how !== 'session-changed';
+    const awaitsResume = Boolean(harnessEnded) && heldByAdoption(child) && how !== 'session-changed';
     let unread: ChildMessage[] = [];
     updateChild(this.parentId, child.id, (entry) => {
       const at = new Date().toISOString();
@@ -835,7 +836,7 @@ export class Watcher {
       // the pane and session are the child's whole identity. Another session in
       // the pane, after a /clear, a /resume or herdr reusing the pane id, is
       // another agent, which no parent adopted (issue #211, item 7).
-      if (child.origin === 'adopt' && child.session && session && session.value !== child.session.value) {
+      if (heldByAdoption(child) && child.session && session && session.value !== child.session.value) {
         this.markExited(child, undefined, 'in-pane', 'session-changed', { session: session.value });
         this.dropLink(hostOf(child));
         void this.reconcileAndSubscribe();
@@ -1120,7 +1121,7 @@ export class Watcher {
    * dialogs reaches the parent as blocked.
    */
   private answers(child: ChildRecord): boolean {
-    return child.origin !== 'adopt' && Boolean(harnessFor(child.kind)?.startup);
+    return !heldByAdoption(child) && Boolean(harnessFor(child.kind)?.startup);
   }
 
   /**
@@ -1592,7 +1593,7 @@ export function silence(child: ChildRecord): string {
   const started = child.resumedAt ?? child.startedAt;
   const reportedAt = child.lastReport ? Date.parse(child.lastReport.at) : NaN;
   if (Number.isFinite(reportedAt) && reportedAt >= Date.parse(started)) return '';
-  const since = child.resumedAt ? 'it resumed' : child.origin === 'adopt' ? 'Bellwether adopted it' : 'it started';
+  const since = child.resumedAt ? 'it resumed' : heldByAdoption(child) ? 'Bellwether adopted it' : 'it started';
   return `, and it has not called parent_report since ${since} at ${started}`;
 }
 

@@ -60,6 +60,10 @@ The adoption compares the harness session in the pane with the one the adapter n
 
 An adopted child stands for the session herdr reported when the parent adopted it. When herdr reports another session in that pane, after a `/clear`, a `/resume` or a reused pane id, the child exits and keeps the adopted session on its record. The exit event gives the new session, and `agent_list` shows `pane <id> went to session <id>`. To watch the new session, adopt the pane again. When the first session comes back to the pane later, adopting the pane gives back the first child id. A session resumed by hand in another pane gets its child id back too, from `agent_adopt` on that pane. Its record moves there, and the reply gives the pane that ran the session before.
 
+A resume changes how the parent holds an adopted child. `agent_spawn` with `resume` starts the harness in a tab Bellwether opens, so from then on the child counts as one Bellwether started. A `/clear` there keeps the same child under the new session, retirement may remove its worktree, and `agent_restart` and `agent_teleport` accept it.
+
+The record keeps `origin: adopt`. When the session comes back under an adoption, by hand or through `agent_adopt`, the child counts as adopted again. A child that another parent adopts belongs to that parent by the same rule.
+
 The `agent_adopt` reply says which case applies:
 
 | The adopted session | What the parent gets |

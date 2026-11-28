@@ -26,6 +26,7 @@ import { listRelayRecords } from './relay-records.ts';
 import { childOfCaller } from './report.ts';
 import { listParents, readParent, updateChild } from './registry.ts';
 import type { CallerIdentity, ChildRecord, FarWorktree, LeftWorktree, ParentRecord, RetireIntent } from './types.ts';
+import { heldByAdoption } from './acquisition.ts';
 
 /** What git says about the worktree a path sits in. */
 export interface WorktreeFacts {
@@ -98,7 +99,7 @@ export function retireLogPath(): string {
  * the refusal, or undefined when the child is in bounds.
  */
 function outOfBounds(child: ChildRecord): string | undefined {
-  if (child.origin === 'adopt') return `${child.name} was adopted, not spawned by Bellwether, so Bellwether never removes its worktree. Remove it by hand with \`git worktree remove\` once its work is safe.`;
+  if (heldByAdoption(child)) return `${child.name} was adopted, not spawned by Bellwether, so Bellwether never removes its worktree. Remove it by hand with \`git worktree remove\` once its work is safe.`;
   if (hostOf(child) !== LOCAL_HOST) return `${child.name} runs on machine ${hostOf(child)}, and this daemon only cleans up after children on its own machine. Remove the worktree on ${hostOf(child)} by hand.`;
   if (!child.cwd) return `${child.name} has no working directory on its record, so there is no worktree to retire.`;
   return undefined;
@@ -115,7 +116,7 @@ function leftBehindHere(child: ChildRecord): boolean {
   // Only requestRetirementFromAfar sets movedAway, once it found the worktree
   // among the places the child left on this machine. A move after the request
   // changes those places, not the worktree the request named.
-  return Boolean(intent?.movedAway && child.origin !== 'adopt' && intent.worktree);
+  return Boolean(intent?.movedAway && !heldByAdoption(child) && intent.worktree);
 }
 
 /**
@@ -133,11 +134,11 @@ function leftHere(child: ChildRecord): string[] {
 /**
  * The worktrees a child has on machines other than this one: the one it runs
  * in there, then each one it left on another machine by a move. The daemon on
- * each machine retires them on this daemon's request (issue #242). An adopted
- * child has none that Bellwether answers for.
+ * each machine retires them on this daemon's request (issue #242). A child held
+ * by adoption has none that Bellwether answers for.
  */
 export function farWorktrees(child: ChildRecord): FarWorktree[] {
-  if (child.origin === 'adopt') return [];
+  if (heldByAdoption(child)) return [];
   const found: FarWorktree[] = [];
   const add = (host: string, worktree: string | undefined, runs: boolean): void => {
     if (!worktree || host === LOCAL_HOST || found.some((entry) => entry.host === host && path.resolve(entry.worktree) === path.resolve(worktree))) return;
@@ -205,7 +206,7 @@ export async function requestRetirementFromAfar(parentId: string, childId: strin
   const parent = readParent(parentId);
   const child = parent?.children.find((entry) => entry.id === childId);
   if (!parent || !child) throw new RetireRefused(`no parent ${parentId} with child ${childId} on the parent's machine, so there is nothing to retire. Nothing was written.`);
-  if (child.origin === 'adopt') throw new RetireRefused(`${outOfBounds(child)} Nothing was written.`);
+  if (heldByAdoption(child)) throw new RetireRefused(`${outOfBounds(child)} Nothing was written.`);
   // Every place the child left counts, not only the last (issue #241).
   const here = departuresOf(child).filter((entry) => entry.host === LOCAL_HOST);
   const far = farWorktrees(child);
@@ -432,7 +433,7 @@ export function retireLine(child: ChildRecord): string | undefined {
  * machine. The worktree it runs in there is not this daemon's to judge.
  */
 export async function retireOnStop(parentId: string, child: ChildRecord, ops: RetireOps): Promise<string | undefined> {
-  if (retirementPending(child) || child.origin === 'adopt') return undefined;
+  if (retirementPending(child) || heldByAdoption(child)) return undefined;
   const runsHere = hostOf(child) === LOCAL_HOST;
   const here = leftHere(child);
   if (runsHere && !child.cwd) return undefined;
@@ -535,7 +536,7 @@ async function reapLocked(parentId: string, childId: string, deps: ReapDeps, log
   };
 
   const intent = child.retireIntent;
-  if (child.origin === 'adopt') return refuse(`out of bounds: ${outOfBounds(child)}`);
+  if (heldByAdoption(child)) return refuse(`out of bounds: ${outOfBounds(child)}`);
   if (!intent || (!intent.worktree && !intent.far?.length)) return refuse(`no intent: the record of ${child.name} asks for retirement but names no worktree, so nothing was touched. Ask again from a live child.`);
   // A worktree on this machine for a child on another one is in bounds only when the child left it here by a move.
   if (intent.worktree && !leftBehindHere(child)) {

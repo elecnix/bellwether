@@ -38,7 +38,7 @@ test('a daemon that lists its features is judged by its list, and an older one b
   // A build between releases carries the previous release's number, so the version proves nothing.
   assert.equal(serves({ protocol: 4, version: '0.1.4' }, move), true);
   assert.equal(serves({ protocol: 3, version: '0.1.4' }, move), false);
-  assert.deepEqual(missingFrom({ protocol: 3, version: '0.1.4' }, 'tool').map((feature) => feature.name), ['agent_restart', 'agent_move', 'agent_request_depth', 'agent_grant_depth', 'agent_teleport']);
+  assert.deepEqual(missingFrom({ protocol: 3, version: '0.1.4' }, 'tool').map((feature) => feature.name), ['agent_restart', 'agent_move', 'agent_request_depth', 'agent_grant_depth', 'agent_teleport', 'agent_free', 'peer_send']);
   assert.deepEqual(unknownTo({ protocol: 5, features: ['agent_list', 'agent_clone'] }), ['agent_clone']);
 });
 

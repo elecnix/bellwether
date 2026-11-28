@@ -68,6 +68,13 @@ export interface RelayRecord {
    * daemon takes the request, and `bellwether doctor` here shows it until then.
    */
   teleportRequest?: { at: string; receipt: string; machine?: string; refused?: string };
+  /**
+   * Set once the child's parent freed it (issue #262). The record stays, for
+   * the relay link that still carries the pair's messages, but its reports,
+   * retirement and teleport requests go nowhere, and a message for it needs
+   * the pair's token.
+   */
+  freed?: { at: string; by: string };
 }
 
 /** One report waiting for the parent's daemon to collect it. */
@@ -96,6 +103,8 @@ export interface ForwardEntry {
   retire?: { reason?: string };
   /** Set on an entry that asks the parent's daemon to teleport the child once its turn ends (issue #226). */
   teleport?: { machine?: string; cwd?: string; reason?: string };
+  /** Set on an entry that carries no report but a freed child's message to its former parent (issue #262). */
+  peer?: { to: string; token: string; id: string; name: string; kind: string };
 }
 
 /** A receipt that names one report, so a retried forward is accepted once. */

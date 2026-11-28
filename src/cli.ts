@@ -4,6 +4,7 @@
 // `watch` is the dogfood driver: it runs the same core the Pi extension and the
 // Claude channel run, and prints one line per child event, so a supervisor can
 // read the stream instead of polling herdr.
+import { peerDoctorLines } from './core/peers.ts';
 import { describeRoutes, readRoutes } from './core/routes.ts';
 import { checkReads } from './core/reads.ts';
 import { workspaceColumn } from './core/workspace.ts';
@@ -260,6 +261,8 @@ async function doctor(): Promise<number> {
   for (const line of restartWaitLines(listParents())) console.log(`  ${line}`);
   // Each child whose machine holds no record of it while this registry does (issue #219).
   for (const line of farRecordLines(listParents())) console.log(`  ${line}`);
+  // Each child a session here freed, and each freed agent whose record is here (issue #262).
+  for (const line of peerDoctorLines()) console.log(`  ${line}`);
   // A recent teleport, and a teleported child that has not read its notice (issue #226).
   for (const line of teleportLines(listParents())) console.log(`  ${line}`);
   // A crossing under way shows as one, not as an exit, and a child a crossing left on neither machine fails (issue #226).
@@ -426,7 +429,7 @@ async function main(argv: string[]): Promise<number> {
   }
 
   if (command === 'help' || command === '--help') {
-    console.log('Usage: bellwether <daemon|drain|spawn|watch|list|read|send|stop|move|teleport|resume|report|parents|ancestry|doctor|version> [--debug]');
+    console.log('Usage: bellwether <daemon|drain|spawn|watch|list|read|send|stop|move|teleport|free|resume|report|parents|ancestry|doctor|version> [--debug]');
     console.log('  --debug                                  print the stack trace of a failure, as BELLWETHER_DEBUG=1 does');
     console.log('  daemon [--socket PATH]                   run the local daemon in the foreground');
     console.log('  drain  [--socket PATH]                   stop the running daemon once its calls finish, so the next session starts the installed one');
@@ -565,12 +568,16 @@ async function main(argv: string[]): Promise<number> {
       const child = positional[0];
       if (!child) throw new Error('teleport needs a child');
       console.log(await daemon.tool('agent_teleport', { child, machine: str(flags, 'to') ?? str(flags, 'machine'), cwd: str(flags, 'cwd'), reason: str(flags, 'reason'), ...(flags['accept-loss'] === true ? { accept_loss: true } : {}) }));
+    } else if (command === 'free') {
+      const child = positional[0];
+      if (!child) throw new Error('free needs a child');
+      console.log(await daemon.tool('agent_free', { child, reason: str(flags, 'reason') }));
     } else if (command === 'stop') {
       const child = positional[0];
       if (!child) throw new Error('stop needs a child');
       console.log(await daemon.tool('agent_stop', { child, force: flags['force'] === true }));
     } else {
-      console.log('Usage: bellwether <daemon|drain|spawn|watch|list|read|send|stop|move|teleport|report|parents|doctor|version>');
+      console.log('Usage: bellwether <daemon|drain|spawn|watch|list|read|send|stop|move|teleport|free|report|parents|doctor|version>');
       return 1;
     }
   } finally {

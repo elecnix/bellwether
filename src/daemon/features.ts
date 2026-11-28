@@ -50,6 +50,9 @@ function brought(kind: Feature['kind'], protocol: number, version: string, summa
   return Object.entries(summaries).map(([name, summary]) => ({ name, kind, protocol, version, summary, ...(prs ? { prs } : {}) }));
 }
 
+/** The pull request that brought freeing (issue #262). */
+const PR_FREE = 0;
+
 const BASE: readonly Feature[] = [
   // In 0.1.3 or earlier, on protocol 2, the oldest a daemon serves.
   ...brought('request', 2, '0.1.3', {
@@ -166,6 +169,19 @@ const BASE: readonly Feature[] = [
   ...brought('tool', 4, '0.1.10', {
     agent_teleport: "A parent moves a live or stopped child to another machine, and the child's first input there is a notice that gives where it came from and where it is now.",
   }, [240]),
+  // Freeing a child (issue #262). A daemon that predates them does not list the tools, and a client refuses them by name.
+  ...brought('tool', 4, '0.1.11', {
+    agent_free: 'A parent frees a child, which leaves its registry and becomes a peer with an address: its turns no longer wake the parent, and its briefs and reports are no longer the parent\'s.',
+    peer_send: "A parent and the child it freed send each other messages, and the target's own daemon checks each message's token against the target's record.",
+  }, [PR_FREE]),
+  // A far daemon that predates relay-free answers unknown_type, and the freeing is refused with nothing changed.
+  ...brought('request', 4, '0.1.11', {
+    'relay-free': "The daemon on a freed child's machine writes the child's own record of the freeing, with its former parent as a peer.",
+  }, [PR_FREE]),
+  ...brought('argument', 4, '0.1.11', {
+    'relay-message.peer': "A message to a freed child on another machine carries the pair's token, which that machine's daemon checks.",
+    'relay-report.peer': "A freed child's message to its former parent waits in its machine's relay outbox, and the parent's daemon checks the pair's token.",
+  }, [PR_FREE]),
 ];
 
 /**

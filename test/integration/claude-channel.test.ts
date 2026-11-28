@@ -120,7 +120,7 @@ test('the channel declares claude/channel and registers the Bellwether tools', a
   try {
     assert.deepEqual(client.getServerCapabilities()?.experimental?.['claude/channel'], {});
     const listed = await client.listTools();
-    assert.deepEqual(listed.tools.map((tool) => tool.name).sort(), ['agent_adopt', 'agent_grant_depth', 'agent_list', 'agent_move', 'agent_read', 'agent_restart', 'agent_send', 'agent_spawn', 'agent_stop', 'agent_teleport']);
+    assert.deepEqual(listed.tools.map((tool) => tool.name).sort(), ['agent_adopt', 'agent_free', 'agent_grant_depth', 'agent_list', 'agent_move', 'agent_read', 'agent_restart', 'agent_send', 'agent_spawn', 'agent_stop', 'agent_teleport', 'peer_send']);
     const spawn = listed.tools.find((tool) => tool.name === 'agent_spawn');
     assert.ok(spawn?.inputSchema.properties?.['kind']);
     const list = await client.callTool({ name: 'agent_list', arguments: {} });

@@ -1347,6 +1347,7 @@ export class Watcher {
   }
 
   private acceptReport(report: SpoolReport): void {
+    if (report.peer) return this.acceptPeer(report, report.peer);
     const record = readParent(this.parentId);
     const child = record?.children.find((entry) => entry.id === report.childId || entry.name === report.childName);
     if (!child) return;
@@ -1362,6 +1363,19 @@ export class Watcher {
     const label = report.status === 'needs-input' ? 'needs input' : report.status;
     const path = report.via ? `, ${reportViaLine(report.via, report.toolOffered)}` : '';
     this.offer(child, 'report', `${childLabel(child)} reported ${label}${path}:\n${report.text}`, report.via);
+    this.publish();
+  }
+
+  /**
+   * A message from a peer this session holds an address for (issue #262). The
+   * daemon that wrote it checked the pair's token. It is no child's event, so
+   * no child record changes: it wakes the session once, with how to answer.
+   */
+  private acceptPeer(report: SpoolReport, peer: NonNullable<SpoolReport['peer']>): void {
+    const text = `Message ${peer.id} from your peer ${peer.name} (address ${peer.from}), sent at ${report.at}:\n${report.text}\nReply with peer_send to ${peer.from}.`;
+    this.outbox.offer({ childId: peer.from, name: peer.name, kind: peer.kind, paneId: '', event: 'peer-message', text, at: report.at });
+    this.outbox.prune();
+    this.outbox.save(this.parentId);
     this.publish();
   }
 

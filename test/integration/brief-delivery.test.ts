@@ -343,6 +343,7 @@ test('a read receipt arrives and the model never begins a turn: the brief is not
   assert.equal(childNamed(space, 'unturned')?.briefs?.[0]?.delivery?.takenBy, undefined, `the brief settled as taken on a read with no turn: ${outcome}`);
   assert.equal(pushes.length, 2, 'the resend fired');
   assert.match(outcome, /BriefNotTaken: unturned's Bellwether channel received its brief twice/);
+  assert.match(outcome, /Of the second copy, Bellwether saw its adapter's read receipt but no turn from herdr\./, 'the failure names the missing sign');
   assert.deepEqual(space.fake.requests.filter((request) => request.method === 'agent.prompt'), [], 'nothing typed');
 });
 
@@ -362,7 +363,7 @@ test('a model that does not take the first copy gets the brief once more, and th
   const child = childNamed(space, 'deaf');
   assert.equal(child?.briefs?.[0]?.delivery?.message, second!.id);
   assert.equal(child?.briefs?.[0]?.delivery?.resentFrom, first!.id);
-  assert.match(child?.messages?.find((message) => message.id === first!.id)?.undelivered ?? '', new RegExp(`its model did not read it and begin a turn on it within 1 s, so brief 1 went again as message ${second!.id}`));
+  assert.match(child?.messages?.find((message) => message.id === first!.id)?.undelivered ?? '', new RegExp(`its model did not read it and begin a turn on it within 1 s \\(Bellwether saw neither a read receipt nor a turn\\), so brief 1 went again as message ${second!.id}`));
   assert.deepEqual(prompted(space.fake, child?.paneId ?? ''), [], 'nothing typed');
 });
 

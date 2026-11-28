@@ -151,8 +151,12 @@ export async function deliverBrief(input: BriefInput): Promise<BriefOutcome> {
     });
   };
   const waitMs = input.inbox?.turnWaitMs ?? BRIEF_TURN_WAIT_MS;
+  // Which sign the newest copy got, so a failure says what was missing.
+  let readSeen = false;
+  const signsSeen = (): string => (readSeen && turnAt ? 'both signs' : readSeen ? "its adapter's read receipt but no turn from herdr" : turnAt ? "a turn from herdr but no read receipt from its adapter, which a Claude Code channel sends only once it finds the session's transcript" : 'neither a read receipt nor a turn');
   // Wait for both facts on one copy: its read receipt, and a turn since its push.
   const taken = async (messageId: string): Promise<Taken> => {
+    readSeen = false;
     const read = input.inbox?.read;
     if (!read) return undefined;
     const waiting = new AbortController();
@@ -164,7 +168,7 @@ export async function deliverBrief(input: BriefInput): Promise<BriefOutcome> {
         : new Promise<string>((resolve) => {
             onTurn = () => resolve(turnAt!);
           });
-      const both = Promise.all([read(input.parentId, child.id, messageId, waiting.signal), turn]).then(([readAt, at]): Taken => ({ readAt, at: Date.parse(readAt) > Date.parse(at) ? readAt : at }));
+      const both = Promise.all([read(input.parentId, child.id, messageId, waiting.signal).then((at) => ((readSeen = true), at)), turn]).then(([readAt, at]): Taken => ({ readAt, at: Date.parse(readAt) > Date.parse(at) ? readAt : at }));
       return await Promise.race<Taken>([
         both,
         new Promise<Taken>((resolve) => {
@@ -190,11 +194,11 @@ export async function deliverBrief(input: BriefInput): Promise<BriefOutcome> {
         // have reached the adapter before the session could take a message. The first copy
         // leaves the replay, so a reconnect does not hand it over a third time.
         outcome = await send();
-        markResent(input.parentId, child.id, first.id, `its model did not read it and begin a turn on it within ${seconds(waitMs)} s, so brief ${input.brief.n} went again as message ${outcome.message.id}`);
+        markResent(input.parentId, child.id, first.id, `its model did not read it and begin a turn on it within ${seconds(waitMs)} s (Bellwether saw ${signsSeen()}), so brief ${input.brief.n} went again as message ${outcome.message.id}`);
         delivery = { ...deliveryOf(outcome), resentFrom: first.id };
         if (outcome.message.path === 'session') {
           sign = await taken(outcome.message.id);
-          if (!sign) throw new BriefNotTaken(`${child.name}'s ${viaLabel(first.via)} received its brief twice, as messages ${first.id} and ${outcome.message.id}, but its model did not read and begin a turn on either within ${seconds(waitMs)} s of each, so the spawn failed and its pane is closed.`);
+          if (!sign) throw new BriefNotTaken(`${child.name}'s ${viaLabel(first.via)} received its brief twice, as messages ${first.id} and ${outcome.message.id}, but its model did not read and begin a turn on either within ${seconds(waitMs)} s of each, so the spawn failed and its pane is closed. Of the second copy, Bellwether saw ${signsSeen()}.`);
         }
       }
       if (sign) delivery = { ...delivery, readAt: sign.readAt, takenAt: sign.at, takenBy: 'turn' };

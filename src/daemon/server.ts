@@ -776,7 +776,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
    */
   const acceptTeleport = async (host: string, parentId: string, childId: string, request: { machine?: string; cwd?: string; reason?: string }): Promise<{ answer: string }> => {
     try {
-      const answer = await acceptTeleportFromAfar(parentId, childId, request, await knownHosts());
+      const answer = await acceptTeleportFromAfar(parentId, childId, request, () => knownHosts());
       log(`teleport of child ${childId} requested from machine ${host} for parent ${parentId}`);
       services.get(parentId)?.teleport?.(childId);
       return { answer };

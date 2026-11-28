@@ -207,7 +207,7 @@ export async function requestSelfTeleport(deps: SelfTeleportDeps, caller: Caller
   if (!found) throw new Error(`agent_teleport was called for child ${caller.childId}, which no registry on this machine holds, and this machine holds no relay record that names its parent either, so the request has nowhere to go. Ask your parent with parent_report to teleport you. Nothing was recorded.`);
   const { parent, child } = found;
   const timeoutMs = hooks.deferTimeoutMs ?? RESTART_DEFER_MS;
-  const reply = await recordSelfTeleport(parent.id, child, request, await deps.knownHosts(), timeoutMs);
+  const reply = await recordSelfTeleport(parent.id, child, request, deps.knownHosts, timeoutMs);
   hooks.defer?.(`teleport:${child.id}`, () => deferredSelfTeleport(deps, parent.id, child.id, request, hooks));
   return reply;
 }
@@ -220,7 +220,7 @@ export async function requestSelfTeleport(deps: SelfTeleportDeps, caller: Caller
  * and then teleports it. The answer goes back to the child in the relay-ack.
  * A refusal throws, and its message is the answer.
  */
-export async function acceptTeleportFromAfar(parentId: string, childId: string, request: SelfTeleportRequest, knownHosts: string[], timeoutMs = RESTART_DEFER_MS): Promise<string> {
+export async function acceptTeleportFromAfar(parentId: string, childId: string, request: SelfTeleportRequest, knownHosts: () => Promise<string[]>, timeoutMs = RESTART_DEFER_MS): Promise<string> {
   const child = readParent(parentId)?.children.find((entry) => entry.id === childId);
   if (!child) throw new TeleportRefusedError(childId, request.machine ?? 'another machine', [`the daemon of parent ${parentId} holds no child ${childId}`]);
   return `The daemon of parent ${parentId}, which holds your record, took the request.\n${await recordSelfTeleport(parentId, child, request, knownHosts, timeoutMs)}`;
@@ -240,10 +240,11 @@ export function armTeleportFor(deps: SelfTeleportDeps, parentId: string, childId
  * rather than after its turn, then write the request on the child's record
  * and return the reply.
  */
-async function recordSelfTeleport(parentId: string, child: ChildRecord, request: SelfTeleportRequest, knownHosts: string[], timeoutMs: number): Promise<string> {
+async function recordSelfTeleport(parentId: string, child: ChildRecord, request: SelfTeleportRequest, knownHosts: () => Promise<string[]>, timeoutMs: number): Promise<string> {
   const source = hostOf(child);
   const machine = request.machine?.trim();
-  const target = machine ? (machine === 'local' ? LOCAL_HOST : machine) : pickTarget(knownHosts, source);
+  // The saved machines are read only when the request names none: a named destination needs no herdr here to resolve it.
+  const target = machine ? (machine === 'local' ? LOCAL_HOST : machine) : pickTarget(await knownHosts(), source);
   const cwd = request.cwd?.trim() || child.cwd;
   const early = teleportRefusals({ childName: child.name, harness: child.harness, status: 'idle', state: 'live', origin: child.origin, source, target, hasSession: Boolean(child.session), ...(child.route ? { route: child.route.name } : {}) });
   if (early.length) throw new TeleportRefusedError(child.name, target, early);

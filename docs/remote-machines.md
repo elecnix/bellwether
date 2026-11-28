@@ -99,7 +99,11 @@ An `agent_restart` of a child on another machine travels over the relay connecti
 
 That daemon replies with the new pane, which the parent's record takes. Everything else in the record stays as it was, so the child's history, receipts and messages carry on.
 
-The parent's record lets go of the old pane before it asks. The watcher then reads the close on that machine as part of the restart, not as the child exiting. If the daemon refuses, the pane goes back on the record, and nothing changes on either machine.
+The parent's record keeps naming the old pane, marked as closing, for as long as it asks. The parent's watcher then reads the close on that machine as part of the restart, not as the child exiting. If the daemon there refuses, the mark goes, and nothing changes on either machine.
+
+A connection can end after the request went out and before the answer came back. By then the daemon on that machine may have restarted the child, so the parent doesn't claim an outcome. Bellwether replies that the outcome is unknown. `restartInDoubt` sits on the record, `restart.log` records `outcome: unknown`, and `bellwether doctor` prints a `warn` line. Bellwether turns away a second restart while the record is in doubt, since a second start could run the session twice on the far machine.
+
+The answer isn't lost. On the far side, the daemon keeps it in the relay outbox, and the parent's daemon takes it when the connection returns, after which the record shows the new pane or the failure and `restart.log` records the outcome with `learned: true`.
 
 Each case below refuses a restart, and the refusal gives the reason that applied:
 

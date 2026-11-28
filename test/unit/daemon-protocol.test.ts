@@ -110,4 +110,6 @@ test('relay-restart parses with the child it restarts, and refuses one without a
   assert.deepEqual((parseRequest(JSON.stringify({ type: 'relay-restart', id: 'r1', parentId: 'p', childId: 'c', child: pi })) as { child: unknown }).child, { ...child, kind: 'pi', harness: 'pi', launch: { harnessModel: 'example-model', provider: 'example-provider' } });
   assert.throws(() => parseRequest(JSON.stringify({ type: 'relay-restart', id: 'r1', parentId: 'p', childId: 'c', child: { ...child, session: undefined } })), (error: unknown) => error instanceof ProtocolError && error.code === 'invalid_restart');
   assert.throws(() => parseRequest(JSON.stringify({ type: 'relay-restart', id: 'r1', parentId: 'p', childId: 'c' })), (error: unknown) => error instanceof ProtocolError && error.code === 'invalid_restart');
+  // The request id names the restart, so the far daemon keeps its answer for a parent whose connection ends (issue #211).
+  assert.equal((parseRequest(JSON.stringify({ type: 'relay-restart', id: 'r1', parentId: 'p', childId: 'c', child, requestId: 'rs-example' })) as { requestId?: string }).requestId, 'rs-example');
 });

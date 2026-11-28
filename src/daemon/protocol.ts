@@ -299,32 +299,6 @@ export interface RelayMessageRequest {
    * field answers at once that no session is connected, and the brief is typed.
    */
   awaitSession?: boolean;
-  /**
-   * Set for a message to a freed child (issue #262): the sender's address and
-   * the pair's token. The daemon here takes a message for a freed child only
-   * when the token matches the one that child's record keeps for the sender.
-   */
-  peer?: { from: string; token: string };
-}
-
-/**
- * From a parent's daemon on another machine, at a freeing (issue #262):
- * write the freed child's own record here, with its former parent as a peer
- * and the pair's token, and mark its relay record freed, so its reports go
- * nowhere. The answer is a result whose text is `freed`. Added without a
- * protocol bump: a daemon that predates it answers unknown_type, and the
- * parent refuses the freeing by name, with nothing changed.
- */
-export interface RelayFreeRequest {
-  type: 'relay-free';
-  id: string;
-  parentId: string;
-  childId: string;
-  token: string;
-  by: string;
-  byName: string;
-  at: string;
-  reason?: string;
 }
 
 /**
@@ -453,7 +427,7 @@ export interface ResumeRequest {
   label?: string;
 }
 
-export type DaemonRequest = HelloRequest | CallRequest | ReceiptRequest | ByeRequest | DrainRequest | WatchRequest | ReportRequest | RelaySubscribeRequest | RelayAckRequest | RelayReadRequest | RelayAdoptRequest | RelayStatusRequest | SessionsRequest | AncestryRequest | MessageAckRequest | RelayMessageRequest | RelayRestartRequest | ResumeRequest | RelayFreeRequest;
+export type DaemonRequest = HelloRequest | CallRequest | ReceiptRequest | ByeRequest | DrainRequest | WatchRequest | ReportRequest | RelaySubscribeRequest | RelayAckRequest | RelayReadRequest | RelayAdoptRequest | RelayStatusRequest | SessionsRequest | AncestryRequest | MessageAckRequest | RelayMessageRequest | RelayRestartRequest | ResumeRequest;
 
 export interface HelloReply {
   type: 'hello';
@@ -667,13 +641,6 @@ export interface RelayReport {
    * that predates the field.
    */
   teleport?: { machine?: string; cwd?: string; reason?: string };
-  /**
-   * Set on an entry that carries no report but a freed child's message to its
-   * former parent (issue #262): the parent's address, the pair's token, and
-   * the message id. The parent's daemon checks the token against the record
-   * it keeps for the child before the message reaches the session.
-   */
-  peer?: { to: string; token: string; id: string; name: string; kind: string };
 }
 
 
@@ -773,19 +740,7 @@ export function parseRequest(line: string): DaemonRequest {
       const messageId = text(message['id']);
       const body = typeof message['text'] === 'string' ? message['text'] : '';
       if (!messageId || !body.trim()) throw new ProtocolError('invalid_message', 'a relay message needs a message id and text');
-      const peer = isRecord(value['peer']) && text(value['peer']['from']) && text(value['peer']['token']) ? { peer: { from: text(value['peer']['from']), token: text(value['peer']['token']) } } : {};
-      return { type: value['type'] === 'relay-message-again' ? 'relay-message-again' : 'relay-message', id, parentId, childId, message: { id: messageId, text: body, from: text(message['from']) || 'your parent', at: text(message['at']) || new Date().toISOString() }, ...(value['awaitSession'] === true ? { awaitSession: true } : {}), ...peer };
-    }
-    case 'relay-free': {
-      const id = text(value['id']);
-      const parentId = text(value['parentId']);
-      const childId = text(value['childId']);
-      const token = text(value['token']);
-      const by = text(value['by']);
-      const at = text(value['at']);
-      if (!id || !parentId || !childId || !token || !by || !at) throw new ProtocolError('invalid_free', 'a relay free needs an id, a parent id, a child id, a token, the former parent and a time');
-      const reason = text(value['reason']);
-      return { type: 'relay-free', id, parentId, childId, token, by, byName: text(value['byName']) || by, at, ...(reason ? { reason } : {}) };
+      return { type: value['type'] === 'relay-message-again' ? 'relay-message-again' : 'relay-message', id, parentId, childId, message: { id: messageId, text: body, from: text(message['from']) || 'your parent', at: text(message['at']) || new Date().toISOString() }, ...(value['awaitSession'] === true ? { awaitSession: true } : {}) };
     }
     case 'relay-restart': {
       const id = text(value['id']);

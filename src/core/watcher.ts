@@ -9,7 +9,7 @@
 import { closingNow, restartFailureText } from './restart.ts';
 import fs from 'node:fs';
 import type { HerdrClient, HerdrEvent, Subscription } from './herdr-client.ts';
-import { DEFAULT_LIMITS, advance, limitsFor, markReported, seedFor, type ClassifierState, type SettleLimits } from './classifier.ts';
+import { DEFAULT_LIMITS, advance, limitsFor, markReported, seedFor, seqHere, type ClassifierState, type SettleLimits } from './classifier.ts';
 import { LOCAL_HOST, hostOf, type ClientFor } from './machine.ts';
 import { Outbox } from './outbox.ts';
 import { describeDecisions, mutateParent, readParent, recordDecisions, takeUntoldDecisions, updateChild } from './registry.ts';
@@ -705,8 +705,9 @@ export class Watcher {
       // end on: a later snapshot that reads the same turn finds it already known.
       const seq = typeof event.data['completion_seq'] === 'number' ? (event.data['completion_seq'] as number) : undefined;
       updateChild(this.parentId, child.id, (entry) => {
-        if (seq !== undefined && seq !== entry.completionSeq) {
+        if (seq !== undefined && (seq !== entry.completionSeq || entry.completionPane !== entry.paneId)) {
           entry.completionSeq = seq;
+          entry.completionPane = entry.paneId;
           entry.lastBusyAt = new Date().toISOString();
         }
         if (status !== 'unknown' && !entry.harnessSeenAt) entry.harnessSeenAt = new Date().toISOString();
@@ -847,7 +848,10 @@ export class Watcher {
           // record keeps it, so a restarted parent does not lose the period.
           if (seq !== undefined && seq !== entry.completionSeq) entry.lastBusyAt = at;
           entry.lastStatus = status;
-          if (seq !== undefined) entry.completionSeq = seq;
+          if (seq !== undefined) {
+            entry.completionSeq = seq;
+            entry.completionPane = entry.paneId;
+          }
           if (stateSeq !== undefined) entry.stateChangeSeq = stateSeq;
           if (session) entry.session = session;
           if (agentName) entry.agentName = agentName;
@@ -921,14 +925,17 @@ export class Watcher {
       const away = this.away.has(hostOf(child));
       if (!away && (await this.endedBeforeSeen(child))) continue;
       if (child.lastStatus !== 'blocked') this.gaveUp.delete(child.id);
-      const state = this.states.get(child.id) ?? seedFor(child, now);
+      // A state built for another pane counts that pane's turns: a restart,
+      // resume, move or teleport gave the child a new one (issue #271).
+      const held = this.states.get(child.id);
+      const state = held && held.paneId === child.paneId ? held : seedFor(child, now, { crossed: held !== undefined });
       const busy = away ? false : await this.childIsBusy(child, now);
       // A spawn can set its own stuck and inactivity thresholds. The stuck one
       // is what the lab uses to reach that event in seconds rather than minutes.
       // While its machine is unreachable a child is never stuck, because its
       // quiet is the link's; the inactivity notice still comes, and says so.
       const limits = limitsFor(child, this.limits);
-      const { state: next, event } = advance(state, { status: child.lastStatus, completionSeq: child.completionSeq, busy, prompt: child.prompt?.line }, now, away ? { ...limits, stuckMs: Number.POSITIVE_INFINITY } : limits);
+      const { state: next, event } = advance(state, { status: child.lastStatus, completionSeq: seqHere(child), busy, prompt: child.prompt?.line }, now, away ? { ...limits, stuckMs: Number.POSITIVE_INFINITY } : limits);
       this.states.set(child.id, next);
       if (!event) continue;
       if (event === 'inactive') {
@@ -1023,20 +1030,37 @@ export class Watcher {
    */
   private remember(child: ChildRecord): void {
     const state = this.states.get(child.id);
-    if (!state || !child.paneId) return;
-    const seq = state.reportedFor;
+    if (!state || !child.paneId || state.paneId !== child.paneId) return;
     const pending = Boolean(state.reportPending);
+    // In a pane the child crossed into, before a turn there was told, the
+    // record keeps where counting starts rather than a turn (issue #271): a
+    // turn number would read as a turn the child finished in this pane.
+    const told = state.reportedFor !== undefined && !state.fresh && state.reportedFor !== state.base ? state.reportedFor : undefined;
+    const crossing = state.fresh || state.base !== undefined;
+    const baseline = crossing && told === undefined ? { paneId: child.paneId, ...(state.base === undefined ? {} : { seq: state.base }), ...(state.fresh ? {} : { worked: true as const }) } : undefined;
     const known = child.turnNotified?.paneId === child.paneId ? child.turnNotified.seq : undefined;
-    if (known === seq && Boolean(child.reportPending) === pending) return;
+    const sameBaseline = JSON.stringify(child.turnBaseline ?? null) === JSON.stringify(baseline ?? null);
+    if (crossing ? known === told && sameBaseline : known === state.reportedFor) {
+      if (Boolean(child.reportPending) === pending) return;
+    }
     updateChild(this.parentId, child.id, (entry) => {
       // The record moved to another pane since this pass read it: that pane counts its own turns.
       if (entry.paneId !== child.paneId) return;
-      if (seq === undefined) delete entry.turnNotified;
-      else entry.turnNotified = { paneId: child.paneId, seq };
+      if (crossing) {
+        if (told !== undefined) entry.turnNotified = { paneId: child.paneId, seq: told };
+        if (baseline) entry.turnBaseline = baseline;
+        else delete entry.turnBaseline;
+      } else if (state.reportedFor === undefined) delete entry.turnNotified;
+      else {
+        entry.turnNotified = { paneId: child.paneId, seq: state.reportedFor };
+        delete entry.turnBaseline;
+      }
       if (pending) entry.reportPending = true;
       else delete entry.reportPending;
     });
-    child.turnNotified = seq === undefined ? undefined : { paneId: child.paneId, seq };
+    const fresh = readParent(this.parentId)?.children.find((entry) => entry.id === child.id);
+    child.turnNotified = fresh?.turnNotified;
+    child.turnBaseline = fresh?.turnBaseline;
     child.reportPending = pending || undefined;
   }
 
@@ -1347,7 +1371,6 @@ export class Watcher {
   }
 
   private acceptReport(report: SpoolReport): void {
-    if (report.peer) return this.acceptPeer(report, report.peer);
     const record = readParent(this.parentId);
     const child = record?.children.find((entry) => entry.id === report.childId || entry.name === report.childName);
     if (!child) return;
@@ -1358,24 +1381,12 @@ export class Watcher {
     // A child this watcher has not evaluated yet starts from its record, so the
     // report covers the right turn either way.
     const now = this.now();
-    this.states.set(child.id, markReported(this.states.get(child.id) ?? seedFor(child, now), now, report.status !== 'progress'));
+    const held = this.states.get(child.id);
+    this.states.set(child.id, markReported(held && held.paneId === child.paneId ? held : seedFor(child, now, { crossed: held !== undefined }), now, report.status !== 'progress'));
     this.remember(child);
     const label = report.status === 'needs-input' ? 'needs input' : report.status;
     const path = report.via ? `, ${reportViaLine(report.via, report.toolOffered)}` : '';
     this.offer(child, 'report', `${childLabel(child)} reported ${label}${path}:\n${report.text}`, report.via);
-    this.publish();
-  }
-
-  /**
-   * A message from a peer this session holds an address for (issue #262). The
-   * daemon that wrote it checked the pair's token. It is no child's event, so
-   * no child record changes: it wakes the session once, with how to answer.
-   */
-  private acceptPeer(report: SpoolReport, peer: NonNullable<SpoolReport['peer']>): void {
-    const text = `Message ${peer.id} from your peer ${peer.name} (address ${peer.from}), sent at ${report.at}:\n${report.text}\nReply with peer_send to ${peer.from}.`;
-    this.outbox.offer({ childId: peer.from, name: peer.name, kind: peer.kind, paneId: '', event: 'peer-message', text, at: report.at });
-    this.outbox.prune();
-    this.outbox.save(this.parentId);
     this.publish();
   }
 

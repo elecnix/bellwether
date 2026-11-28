@@ -115,27 +115,6 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 });
 
-// Claude Code drops a channel notification that reaches it before its
-// notifications/initialized, and the write to stdout succeeds all the same
-// (issue #274). This server says hello to the daemon as soon as it starts, so
-// a start's brief can arrive in that window, about 200 ms. Every notification
-// waits for the handshake, and a message is acknowledged only once its
-// notification has gone out, so the daemon never counts a dropped copy.
-let openChannel: () => void = () => {};
-const channelOpen = new Promise<void>((resolve) => {
-  openChannel = resolve;
-});
-mcp.oninitialized = () => {
-  log('Claude Code finished the MCP handshake; the channel takes notifications');
-  openChannel();
-};
-
-/** Send a channel notification once Claude Code can take it. */
-async function notifyChannel(params: { content: string; meta: Record<string, string> }): Promise<void> {
-  await channelOpen;
-  await mcp.notification({ method: 'notifications/claude/channel', params });
-}
-
 /** The channel path's name, which the daemon records as how a message reached the session. */
 const VIA = 'claude-channel';
 
@@ -163,23 +142,26 @@ async function takeMessage(message: InboxMessage, replay: boolean): Promise<void
     daemon.messageAck(message.id, 'queued', { via: VIA });
     return;
   }
-  // Taken before the wait for the handshake, so a replay and a live push of
-  // the same message, both waiting, put it in the session once.
-  pushedMessages.add(message.id);
   try {
-    await notifyChannel({ content: composeMessage(message), meta: { message_id: message.id, from: message.from, kind: 'parent-message' } });
+    await mcp.notification({
+      method: 'notifications/claude/channel',
+      params: { content: composeMessage(message), meta: { message_id: message.id, from: message.from, kind: 'parent-message' } },
+    });
+    pushedMessages.add(message.id);
     unreadMessages.add(message.id);
-    daemon?.messageAck(message.id, 'queued', { via: VIA });
+    daemon.messageAck(message.id, 'queued', { via: VIA });
     log('took message', message.id);
   } catch (error) {
-    pushedMessages.delete(message.id);
-    daemon?.messageAck(message.id, 'refused', { reason: `the channel notification failed: ${(error as Error).message}` });
+    daemon.messageAck(message.id, 'refused', { reason: `the channel notification failed: ${(error as Error).message}` });
   }
 }
 
 /** Send one event. `roster` is the line for the last notification of a flush, and empty for any other. */
 async function push(entry: OutboxEntry, roster = ''): Promise<void> {
-  await notifyChannel({ content: composeEvent(entry, Date.now(), roster), meta: { child: entry.name, pane: entry.paneId, child_id: entry.childId, event: entry.event, receipt: entry.receipt } });
+  await mcp.notification({
+    method: 'notifications/claude/channel',
+    params: { content: composeEvent(entry, Date.now(), roster), meta: { child: entry.name, pane: entry.paneId, child_id: entry.childId, event: entry.event, receipt: entry.receipt } },
+  });
 }
 
 // Receipts this server has already pushed, and those sent once more after the

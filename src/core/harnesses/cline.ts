@@ -50,7 +50,6 @@ import { clineDataDir, mcpConfigPath, mcpDir } from '../paths.ts';
 import type { ChildRecord } from '../types.ts';
 import { briefSentence, modelFlag, noTranscript } from './shared.ts';
 import type { HarnessEntry } from './types.ts';
-import { nodeCommand, stablePath } from '../stable-path.ts';
 
 /** The Cline release these facts were checked against. */
 export const CLINE_CHECKED_AGAINST = '3.0.76';
@@ -90,7 +89,7 @@ export function clineOptedIn(args: readonly string[] = []): boolean {
 export function clineMcpSettings(childId: string, env: Record<string, string>): { mcpServers: Record<string, { transport: { type: 'stdio'; command: string; args: string[]; env: Record<string, string> } }> } {
   return {
     mcpServers: {
-      [MCP_SERVER_NAME]: { transport: { type: 'stdio', command: nodeCommand(), args: ['--disable-warning=ExperimentalWarning', stablePath(channelEntry()), '--child', childId], env } },
+      [MCP_SERVER_NAME]: { transport: { type: 'stdio', command: process.execPath, args: ['--disable-warning=ExperimentalWarning', channelEntry(), '--child', childId], env } },
     },
   };
 }

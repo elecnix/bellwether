@@ -1,1 +1,0 @@
-A Claude Code child that has just started now gets the first copy of its brief or notice, so a start on the parent's own machine no longer waits 20 s for a second copy. Claude Code drops a channel message that arrives before it has finished connecting to its MCP server. Now the Bellwether channel server waits for that connection first.

@@ -83,9 +83,8 @@ export class Outbox {
    */
   offer(entry: Omit<OutboxEntry, 'receipt' | 'read'>): OutboxEntry {
     const next: OutboxEntry = { ...entry, receipt: newReceipt(), read: false };
-    // A peer's message carries text, as a report does, and it is no state a newer one replaces.
-    for (const existing of entry.event === 'peer-message' ? [] : this.entries) {
-      if (existing.childId !== entry.childId || existing.read || existing.event === 'report' || existing.event === 'peer-message') continue;
+    for (const existing of this.entries) {
+      if (existing.childId !== entry.childId || existing.read || existing.event === 'report') continue;
       this.settle(existing, next.receipt);
     }
     this.entries.push(next);

@@ -98,8 +98,82 @@ test('a child seeded from its record does not announce the turn the parent alrea
   assert.equal(advance(seeded, { status: 'idle', completionSeq: 9 }, limits.idleMs * 2, limits).event, undefined);
   // A turn that ended while no watcher ran is still news.
   assert.equal(advance(seedFor({ ...child, completionSeq: 10 }, 0), { status: 'idle', completionSeq: 10 }, limits.idleMs * 2, limits).event, 'idle');
-  // A notified turn from another pane says nothing about this one.
-  assert.equal(advance(seedFor({ ...child, turnNotified: { paneId: 'w1:p0', seq: 9 } }, 0), { status: 'idle', completionSeq: 9 }, limits.idleMs * 2, limits).event, 'idle');
+  // A notified turn from another pane means the parent heard every turn
+  // before this pane, so a crossing announces nothing (issue #271).
+  assert.equal(advance(seedFor({ ...child, turnNotified: { paneId: 'w1:p0', seq: 9 } }, 0), { status: 'idle', completionSeq: 9 }, limits.idleMs * 2, limits).event, undefined);
+});
+
+const crossed = (extra: Partial<ChildRecord> = {}): ChildRecord => {
+  const at = new Date(0).toISOString();
+  // The child ran turn 949 in w1:p6, the parent heard it, and a crossing gave it w1:p8.
+  return { id: 'c1', name: 'c1', kind: 'claude', harness: 'claude-code', paneId: 'w1:p8', host: 'local', startedAt: at, lastStatus: 'idle', statusChangedAt: at, lastBusyAt: at, depth: 1, completionSeq: 949, turnNotified: { paneId: 'w1:p6', seq: 949 }, ...extra };
+};
+
+test('a child in a pane it crossed into announces neither the old turn nor a settled screen before it works there (issue #271)', () => {
+  let state = seedFor(crossed(), 0);
+  assert.equal(state.fresh, true);
+  // The old pane's number is not this pane's: the record's 949 is ignored.
+  assert.equal(state.completionSeq, undefined);
+  for (const [at, observation] of [
+    [limits.idleMs * 2, { status: 'idle' as const }],
+    [limits.idleMs * 4, { status: 'unknown' as const }],
+    [limits.idleMs * 6, { status: 'done' as const }],
+    // herdr numbers the resumed screen as done, though no turn ran here.
+    [limits.idleMs * 8, { status: 'done' as const, completionSeq: 960 }],
+    [limits.idleMs * 20, { status: 'done' as const, completionSeq: 960 }],
+  ] as const) {
+    const step = advance(state, observation, at, limits);
+    assert.equal(step.event, undefined, `${JSON.stringify(observation)} at ${at}`);
+    state = step.state;
+  }
+  // The child works, and the turn that ends is the first news from this pane.
+  state = advance(state, { status: 'working', completionSeq: 960 }, limits.idleMs * 21, limits).state;
+  assert.equal(state.fresh, undefined);
+  state = advance(state, { status: 'done', completionSeq: 961 }, limits.idleMs * 22, limits).state;
+  const fired = advance(state, { status: 'done', completionSeq: 961 }, limits.idleMs * 23, limits);
+  assert.equal(fired.event, 'idle');
+  assert.equal(advance(fired.state, { status: 'done', completionSeq: 961 }, limits.idleMs * 40, limits).event, undefined);
+});
+
+test('a crossed pane on a harness herdr does not number counts the first turn there once (issue #271)', () => {
+  let state = seedFor(crossed({ completionSeq: undefined }), 0);
+  state = advance(state, { status: 'idle' }, limits.idleMs * 3, limits).state;
+  state = advance(state, { status: 'working' }, limits.idleMs * 4, limits).state;
+  state = advance(state, { status: 'idle' }, limits.idleMs * 5, limits).state;
+  const fired = advance(state, { status: 'idle' }, limits.idleMs * 6, limits);
+  assert.equal(fired.event, 'idle');
+  assert.equal(advance(fired.state, { status: 'idle' }, limits.idleMs * 30, limits).event, undefined);
+});
+
+test('a baseline on the record keeps a crossed pane quiet across a new seed, and one that worked counts its next turn (issue #271)', () => {
+  const quiet = seedFor(crossed({ turnBaseline: { paneId: 'w1:p8', seq: 960 }, completionSeq: 960, completionPane: 'w1:p8' }), 0);
+  assert.equal(advance(quiet, { status: 'done', completionSeq: 960 }, limits.idleMs * 5, limits).event, undefined);
+  const worked = seedFor(crossed({ lastStatus: 'working', turnBaseline: { paneId: 'w1:p8', seq: 960, worked: true }, completionSeq: 960, completionPane: 'w1:p8' }), 0);
+  assert.ok(!worked.fresh, 'a child that worked here counts its next turn');
+  const ended = advance(worked, { status: 'done', completionSeq: 961 }, limits.idleMs, limits).state;
+  assert.equal(advance(ended, { status: 'done', completionSeq: 961 }, limits.idleMs * 3, limits).event, 'idle');
+});
+
+test('a turn the classifier counted keeps its one idle event when herdr numbers it later in the same ready spell (issue #271)', () => {
+  let state = advance(initialState('working', 0), { status: 'done' }, 0, limits).state;
+  const fired = advance(state, { status: 'done' }, limits.idleMs, limits);
+  assert.equal(fired.event, 'idle');
+  state = fired.state;
+  const numbered = advance(state, { status: 'done', completionSeq: 941 }, limits.idleMs + 10_000, limits);
+  assert.equal(numbered.event, undefined, 'the number belongs to the turn already told');
+  assert.equal(advance(numbered.state, { status: 'done', completionSeq: 941 }, limits.idleMs * 10 + 10_000, limits).event, undefined);
+  // The next turn, numbered by herdr, is news.
+  state = advance(numbered.state, { status: 'working', completionSeq: 941 }, limits.idleMs * 11 + 10_000, limits).state;
+  state = advance(state, { status: 'done', completionSeq: 942 }, limits.idleMs * 12 + 10_000, limits).state;
+  assert.equal(advance(state, { status: 'done', completionSeq: 942 }, limits.idleMs * 13 + 10_000, limits).event, 'idle');
+});
+
+test('a number that arrives while a counted turn still settles gives the turn one idle event, not two (issue #271)', () => {
+  let state = advance(initialState('working', 0), { status: 'done' }, 0, limits).state;
+  state = advance(state, { status: 'done', completionSeq: 941 }, limits.idleMs / 2, limits).state;
+  const fired = advance(state, { status: 'done', completionSeq: 941 }, limits.idleMs * 2, limits);
+  assert.equal(fired.event, 'idle');
+  assert.equal(advance(fired.state, { status: 'done', completionSeq: 941 }, limits.idleMs * 10, limits).event, undefined);
 });
 
 test('a status change into idle without a completionSeq still fires', () => {

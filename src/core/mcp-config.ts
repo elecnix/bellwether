@@ -11,7 +11,6 @@ import { removeBrief, removeBriefAt, workdirBriefPath } from './brief.ts';
 import { childReadSet, removeClaudeSettings, writeClaudeSettings } from './claude-hooks.ts';
 import { mcpConfigPath, mcpDir } from './paths.ts';
 import { CHILD_SERVER_NAME, findAmbientServers, planToolSource, type ToolSource } from './tool-source.ts';
-import { nodeCommand, stablePath } from './stable-path.ts';
 
 /** The name the child's channel flag loads, `server:bellwether`. */
 export const MCP_SERVER_NAME = CHILD_SERVER_NAME;
@@ -37,7 +36,7 @@ export function standDownEntry(): string {
  * name, and the child keeps one set of tools.
  */
 export function mcpConfig(childId: string, standDown: readonly string[] = []): { mcpServers: Record<string, { type: 'stdio'; command: string; args: string[] }> } {
-  const entry = (script: string, args: string[] = []): { type: 'stdio'; command: string; args: string[] } => ({ type: 'stdio', command: nodeCommand(), args: ['--disable-warning=ExperimentalWarning', stablePath(script), ...args] });
+  const entry = (script: string, args: string[] = []): { type: 'stdio'; command: string; args: string[] } => ({ type: 'stdio', command: process.execPath, args: ['--disable-warning=ExperimentalWarning', script, ...args] });
   return {
     mcpServers: {
       ...Object.fromEntries(standDown.filter((name) => name !== MCP_SERVER_NAME).map((name) => [name, entry(standDownEntry())])),

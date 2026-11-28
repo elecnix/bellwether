@@ -23,6 +23,8 @@ const LIMITS = { idleMs: 40, blockedMs: 20, stuckMs: 60_000 };
 
 /** One child pane whose herdr status, turn number and screen a case moves by hand. */
 class Pane {
+  /** The pane herdr runs the child in. A restart, resume, move or teleport gives it another. */
+  paneId = PANE;
   status = 'working';
   seq: number | undefined;
   stateSeq = 1;
@@ -32,15 +34,15 @@ class Pane {
     this.seq = seq;
   }
   respond = (request: RecordedRequest): { result: unknown } | undefined => {
-    if (request.method === 'pane.read') return { result: paneReadAnswer(request.params, this.screen, PANE) };
+    if (request.method === 'pane.read') return { result: paneReadAnswer(request.params, this.screen, this.paneId) };
     if (request.method === 'agent.get') return { result: { type: 'agent_info', agent: this.info() } };
     if (request.method === 'agent.list') return { result: { type: 'agent_list', agents: [this.info()] } };
     if (request.method === 'session.snapshot') return { result: { type: 'session_snapshot', snapshot: { panes: [], agents: [this.info()] } } };
-    if (request.method === 'pane.list') return { result: { type: 'pane_list', panes: [{ pane_id: PANE }] } };
+    if (request.method === 'pane.list') return { result: { type: 'pane_list', panes: [{ pane_id: this.paneId }] } };
     return undefined;
   };
   private info(): Record<string, unknown> {
-    return { pane_id: PANE, workspace_id: 'w1', tab_id: 'w1:t1', terminal_id: 'term-1', agent: 'pi', name: 'kid', agent_status: this.status, completion_seq: this.seq ?? null, state_change_seq: this.stateSeq };
+    return { pane_id: this.paneId, workspace_id: 'w1', tab_id: 'w1:t1', terminal_id: 'term-1', agent: 'pi', name: 'kid', agent_status: this.status, completion_seq: this.seq ?? null, state_change_seq: this.stateSeq };
   }
   /** herdr's status event. A turn that ends carries its number, as herdr 0.9.5 sends it. */
   set(status: string, options: { endsTurn?: boolean; screen?: string } = {}): void {
@@ -48,11 +50,11 @@ class Pane {
     if (options.endsTurn && this.seq !== undefined) this.seq += 1;
     this.status = status;
     this.stateSeq += 1;
-    this.fake.send({ event: 'pane_agent_status_changed', data: { pane_id: PANE, workspace_id: 'w1', agent_status: status, completion_seq: this.seq ?? null, state_change_seq: this.stateSeq } });
+    this.fake.send({ event: 'pane_agent_status_changed', data: { pane_id: this.paneId, workspace_id: 'w1', agent_status: status, completion_seq: this.seq ?? null, state_change_seq: this.stateSeq } });
   }
   /** An agent event, after which the watcher reads a fresh snapshot of every child. */
   detected(): void {
-    this.fake.send({ event: 'pane_agent_detected', data: { pane_id: PANE, workspace_id: 'w1', agent: 'pi' } });
+    this.fake.send({ event: 'pane_agent_detected', data: { pane_id: this.paneId, workspace_id: 'w1', agent: 'pi' } });
   }
 }
 
@@ -360,6 +362,104 @@ test('an adopted child that never reported names its adoption as the start', asy
     r.pane.set('idle', { endsTurn: true, screen: 'adopted turn\n>' });
     await until('the idle event', () => r.published.length === 1);
     assert.match(r.published[0]!.text, /has not called parent_report since Bellwether adopted it at \S+Z:/);
+  } finally {
+    await r.stop();
+  }
+});
+
+// A crossing gives a child a new pane and keeps its turns (issue #271). The
+// record's turn belonged to the old pane, so the watcher of the new one must
+// neither announce that turn again nor count the resumed session's first
+// settled screen as a turn. Each crossing below moves the record the way
+// restart.ts and resume.ts do: the pane and tab change, nothing else.
+
+/** Move the child to another pane, as a restart, resume, move or teleport does, then let herdr show the resumed session. */
+async function cross(r: Rig, paneId: string, herdrSays: { status: string; seq?: number }): Promise<void> {
+  const { updateChild } = await import('../../src/core/registry.ts');
+  r.pane.paneId = paneId;
+  r.pane.seq = herdrSays.seq;
+  updateChild(r.parentId, r.childId, (entry) => {
+    entry.paneId = paneId;
+    entry.tabId = `${paneId.split(':')[0]}:t9`;
+  });
+  r.pane.detected();
+  r.pane.set(herdrSays.status);
+}
+
+test('a child restarted into a new pane does not announce the turn its parent already heard, and its next turn gives one idle event (issue #271)', async () => {
+  const r = await rig(new Pane(948));
+  try {
+    await r.settle();
+    r.pane.set('idle', { endsTurn: true, screen: 'the turn before the restart\n>' });
+    await until('the idle event', () => r.published.length === 1);
+    assert.deepEqual(r.record()?.turnNotified, { paneId: PANE, seq: 949 });
+
+    // The resumed session shows its last answer; herdr calls it done in the new pane, with no turn there.
+    await cross(r, 'w1:p8', { status: 'done', seq: 960 });
+    await r.settle();
+    r.pane.detected();
+    await r.settle();
+    r.restartWatcher();
+    await r.settle();
+    assert.deepEqual(events(r), ['idle'], `the parent heard the old turn again: ${JSON.stringify(r.published.map((entry) => [entry.event, entry.paneId]))}`);
+
+    r.pane.set('working');
+    await r.settle();
+    r.pane.set('idle', { endsTurn: true, screen: 'the first turn in the new pane\n>' });
+    await until('the idle event of the new turn', () => r.published.length === 2);
+    r.pane.detected();
+    await r.settle();
+    r.restartWatcher();
+    await r.settle();
+    assert.deepEqual(events(r), ['idle', 'idle']);
+    assert.equal(r.published[1]!.paneId, 'w1:p8');
+    assert.match(r.published[1]!.text, /the first turn in the new pane/);
+  } finally {
+    await r.stop();
+  }
+});
+
+test('a child resumed into a new pane on a harness herdr does not number stays quiet until it works there (issue #271)', async () => {
+  const r = await rig(new Pane(undefined));
+  try {
+    await r.settle();
+    r.pane.set('idle', { screen: 'turn one\n>' });
+    await until('the first idle', () => r.published.length === 1);
+
+    await cross(r, 'w1:p9', { status: 'unknown' });
+    await r.settle();
+    r.pane.set('idle');
+    await r.settle();
+    r.restartWatcher();
+    await r.settle();
+    assert.deepEqual(events(r), ['idle'], 'the resumed prompt is not a turn');
+
+    r.pane.set('working');
+    await r.settle();
+    r.pane.set('done', { screen: 'the turn the resume brought\n>' });
+    await until('one idle for the new turn', () => r.published.length === 2);
+    await r.settle();
+    assert.deepEqual(events(r), ['idle', 'idle']);
+  } finally {
+    await r.stop();
+  }
+});
+
+test('a turn the watcher counted before herdr numbered it gives one idle event when the number arrives later (issue #271)', async () => {
+  const r = await rig(new Pane(undefined));
+  try {
+    await r.settle();
+    // herdr ends the turn without a number, then numbers it a moment later in the same done spell.
+    r.pane.set('done', { screen: 'one turn\n>' });
+    await until('the idle event', () => r.published.length === 1);
+    r.pane.seq = 941;
+    r.pane.set('done');
+    await r.settle();
+    r.pane.detected();
+    await r.settle();
+    r.restartWatcher();
+    await r.settle();
+    assert.deepEqual(events(r), ['idle'], `one turn gave ${r.published.length} events`);
   } finally {
     await r.stop();
   }

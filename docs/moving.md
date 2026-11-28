@@ -92,6 +92,10 @@ The mark on the child record names the daemon process that runs the move, the la
 | Neither runs it, and the child had stopped before the move began. | It removes the copy and leaves the child stopped. | `abandoned`, with `recovered: true` |
 | Bellwether can't read one of the machines. | It doesn't change anything, so it never runs the session twice, and it tries again at its next start. Once the window has passed, doctor prints a `warn` line. | nothing yet |
 
+Before the move types the launch line at the target, the mark records the tab it opened there under the step `launching`. herdr reports a harness only once it has loaded, so the target can be starting the session while no pane there shows it yet.
+
+When the target doesn't run the session and the mark records such a tab, the next daemon closes that tab before it does anything else. If the tab won't close, the daemon leaves everything as it is. It tries again at its next start. A session that was still loading there never comes up beside the one the daemon resumes on the source.
+
 ## Trying a move across two machines
 
 On the parent's machine, with Bellwether installed on both:

@@ -10,6 +10,7 @@ import { newChildId } from '../../src/core/outbox.ts';
 import { registryPath } from '../../src/core/paths.ts';
 import { childById, emptyParent, listParents, migrateParent, readParent, saveParent, slug, updateChild, upsertChild } from '../../src/core/registry.ts';
 import type { ChildRecord } from '../../src/core/types.ts';
+import { statusSeen } from '../../src/core/incarnation.ts';
 
 function scratch(): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bellwether-registry-'));
@@ -90,7 +91,7 @@ test('updateChild changes one field and keeps the rest', () => {
   const record = child('reviewer');
   upsertChild(parent.id, record);
   updateChild(parent.id, record.id, (entry) => {
-    entry.lastStatus = 'blocked';
+    statusSeen(entry, 'blocked');
   });
 
   const read = readParent(parent.id);

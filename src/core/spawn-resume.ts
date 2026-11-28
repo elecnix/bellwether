@@ -19,6 +19,7 @@ import { routeLabel } from './routes.ts';
 import { isMoving } from './move-plan.ts';
 import { messageChild, type Inbox } from './send.ts';
 import type { ChildRecord } from './types.ts';
+import { runContinues, runEnds } from './incarnation.ts';
 
 export interface SpawnResumeRequest extends Omit<ResumeOptions, 'workspaceId'> {
   /** A child id or name, a session id or transcript path, or a live agent's name. */
@@ -123,13 +124,11 @@ export async function spawnResume(clientFor: (host: string) => Promise<HerdrClie
       let corrected: string | undefined;
       if (child.exitedAt) {
         corrected = `The registry marked ${child.name} exited, but herdr shows its session ${session?.value} in its own pane ${child.paneId}, so Bellwether cleared the exit and treated it as alive.`;
+        // The run never ended, so only its recorded end goes.
         updateChild(parentId, child.id, (entry) => {
-          delete entry.exitedAt;
-          delete entry.exitCode;
-          delete entry.harnessEnded;
-          delete entry.tabClosedAt;
+          runContinues(entry);
         });
-        delete child.exitedAt;
+        runContinues(child);
       }
       const reply = request.prompt ? (await messageChild({ herdr: client, parentId, from: request.from ?? parentId, child, text: request.prompt, inbox: request.inbox })).text : `${child.name} is alive in pane ${child.paneId}, and there was no prompt to send.`;
       return { action: 'messaged', child, reply, link: herdrLink('pane', child.paneId), corrected };
@@ -161,9 +160,9 @@ export async function spawnResume(clientFor: (host: string) => Promise<HerdrClie
       corrected = `The registry still listed ${child.name} as running in pane ${child.paneId}, but herdr shows no pane holding its session ${session.value}, so Bellwether treated it as retired and resumed it.`;
       const at = new Date().toISOString();
       updateChild(parentId, child.id, (entry) => {
-        entry.exitedAt = at;
+        runEnds(entry, { at });
       });
-      child.exitedAt = at;
+      runEnds(child, { at });
     }
     const resumed = await resumeChild(client, record, { child }, options, signal);
     return { action: 'resumed', child: resumed.child, session: resumed.session, link: resumed.link, corrected, ...(resumed.brief ? { brief: resumed.brief } : {}), ...(resumed.briefNote ? { briefNote: resumed.briefNote } : {}) };

@@ -28,6 +28,7 @@ import { childOfCaller } from './report.ts';
 import { readParent } from './registry.ts';
 import { RESTART_DEFER_MS, noteStatus, waitForTurnEnd, type RestartHooks } from './restart.ts';
 import type { RegisterRemote } from './spawn.ts';
+import { statusSeen } from './incarnation.ts';
 
 export function teleportLogPath(): string {
   return path.join(bellwetherHome(), 'teleport.log');
@@ -296,7 +297,7 @@ async function deferredSelfTeleport(deps: SelfTeleportDeps, parentId: string, ch
   updateChild(parentId, childId, (entry) => {
     const seen = entry.teleportRequest?.wait?.status;
     if (entry.lastStatus !== 'working' && entry.lastStatus !== 'blocked') return;
-    entry.lastStatus = seen === 'done' ? 'done' : 'idle';
+    statusSeen(entry, seen === 'done' ? 'done' : 'idle');
     entry.statusChangedAt = new Date().toISOString();
   });
   try {

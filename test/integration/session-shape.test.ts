@@ -17,6 +17,7 @@ import { runBellwetherTool, type ToolContext } from '../../src/integrations/tool
 import { startFakeHerdr, type FakeHerdr, harnessStarts, harnessStart } from '../fixtures/fake-herdr.ts';
 import { fakeWorld, type FakeWorld } from '../fixtures/fake-world.ts';
 import { isolate } from '../fixtures/isolated.ts';
+import { runEnds } from '../../src/core/incarnation.ts';
 
 interface Herdr {
   fake: FakeHerdr;
@@ -277,7 +278,7 @@ test('a spawn on a machine records the host, targets that machine, and resumes t
   remote.world.panes.delete(child?.paneId ?? '');
   const { updateChild } = await import('../../src/core/registry.ts');
   updateChild(id, child?.id ?? '', (entry) => {
-    entry.exitedAt = new Date().toISOString();
+    runEnds(entry, { at: new Date().toISOString() });
   });
   await runBellwetherTool(ctx, 'agent_spawn', { resume: 'far' });
   const resumed = childOf(id, 'far');

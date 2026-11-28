@@ -31,6 +31,7 @@ import { bellwetherHome } from './paths.ts';
 import { readParent, updateChild } from './registry.ts';
 import { holdsSession, resumeChild, type HarnessSession } from './resume.ts';
 import type { ChildRecord, Crossing, ParentRecord } from './types.ts';
+import { crossingFailed, relocated, releaseEvents, runContinues, runEnds, runStarts, viewOf } from './incarnation.ts';
 
 /** What a recovery did with one crossing, for the daemon log and the tests. */
 export interface Recovery {
@@ -98,20 +99,14 @@ async function recoverOne(deps: CarryDeps, parentId: string, childId: string, in
   if (there) {
     await deps.endpointFor(crossing.to).commit({ childId, files: crossing.files ?? [] }).catch(() => {});
     if (crossing.from === LOCAL_HOST) removeChildFiles(childId);
-    else await deps.cleanupRemote?.({ ...child, host: crossing.from }).catch(() => {});
+    else await deps.cleanupRemote?.(viewOf(child, { host: crossing.from })).catch(() => {});
     updateChild(parentId, childId, (entry) => {
-      entry.host = crossing.to;
-      entry.paneId = there.paneId;
-      if (there.tabId) entry.tabId = there.tabId;
-      else delete entry.tabId;
+      relocated(entry, { host: crossing.to, ...(crossing.target ? { cwd: crossing.target.cwd } : {}), ...(crossing.target?.session ? { session: crossing.target.session } : {}) });
+      // The session runs at the destination: a new run, and nothing of the source's stays.
+      runStarts(entry, { paneId: there.paneId, tabId: there.tabId || undefined, status: there.agentStatus });
       if (there.workspaceId) entry.workspaceId = there.workspaceId;
       else delete entry.workspaceId;
-      if (crossing.target) entry.cwd = crossing.target.cwd;
-      if (crossing.target?.session) entry.session = crossing.target.session;
       delete entry.transcript;
-      delete entry.exitedAt;
-      delete entry.startingUntil;
-      entry.lastStatus = there.agentStatus;
       recordDeparture(entry, { host: crossing.from, at, ...(crossing.source?.cwd ? { cwd: crossing.source.cwd } : {}), verb, ...(crossing.reason ? { reason: crossing.reason } : {}) });
       delete entry.moving;
     });
@@ -124,22 +119,19 @@ async function recoverOne(deps: CarryDeps, parentId: string, childId: string, in
   const here = await holding(deps, crossing.from, source?.session);
   if (here === 'unreadable') return { childId, name: child.name, outcome: 'unknown', detail: `${where(crossing.from)} could not be read, so Bellwether cannot tell whether the session still runs there, and changed nothing. It tries again when the daemon next starts.` };
   await deps.endpointFor(crossing.to).discard({ childId, files: crossing.files ?? [] }).catch(() => {});
-  if (crossing.to !== LOCAL_HOST) await deps.cleanupRemote?.({ ...child, host: crossing.to }).catch(() => {});
+  if (crossing.to !== LOCAL_HOST) await deps.cleanupRemote?.(viewOf(child, { host: crossing.to })).catch(() => {});
   updateChild(parentId, childId, (entry) => {
-    entry.host = crossing.from;
-    if (source?.cwd) entry.cwd = source.cwd;
-    if (source?.session) entry.session = source.session;
-    if (source?.transcript) entry.transcript = source.transcript;
-    entry.paneId = here ? here.paneId : (source?.paneId ?? entry.paneId);
     const tab = here ? here.tabId : source?.tabId;
-    if (tab) entry.tabId = tab;
-    else delete entry.tabId;
+    relocated(entry, { host: crossing.from, ...(source?.cwd ? { cwd: source.cwd } : {}), ...(source?.session ? { session: source.session } : {}), paneId: here ? here.paneId : (source?.paneId ?? entry.paneId), tabId: tab || undefined });
+    if (source?.transcript) entry.transcript = source.transcript;
     const workspace = here ? here.workspaceId : source?.workspaceId;
     if (workspace) entry.workspaceId = workspace;
     else delete entry.workspaceId;
-    delete entry.startingUntil;
-    if (here) delete entry.exitedAt;
-    else entry.exitedAt = source?.exitedAt ?? at;
+    releaseEvents(entry);
+    // The source still runs the session: the run never ended. Otherwise it
+    // stays stopped where it was, or comes back below through a resume.
+    if (here) runContinues(entry);
+    else runEnds(entry, { at: source?.exitedAt ?? at });
   });
 
   if (here || crossing.state === 'stopped') {
@@ -168,7 +160,7 @@ async function recoverOne(deps: CarryDeps, parentId: string, childId: string, in
     const message = (error as Error).message;
     updateChild(parentId, childId, (entry) => {
       delete entry.moving;
-      entry.crossingFailed = { at, verb, from: crossing.from, to: crossing.to, stage: crossing.stage ?? 'unknown', error: `the daemon running the ${verb} stopped after the child's tab closed, and resuming it on ${where(crossing.from)} failed: ${message}`, ...(crossing.sourceFile ? { sourceFile: crossing.sourceFile } : {}), reopen, interrupted: true };
+      crossingFailed(entry, { at, verb, from: crossing.from, to: crossing.to, stage: crossing.stage ?? 'unknown', error: `the daemon running the ${verb} stopped after the child's tab closed, and resuming it on ${where(crossing.from)} failed: ${message}`, ...(crossing.sourceFile ? { sourceFile: crossing.sourceFile } : {}), reopen, interrupted: true });
     });
     appendLog(crossing, { ...base, outcome: 'stranded', rollbackError: message });
     return { childId, name: child.name, outcome: 'stranded', detail: `it runs on neither machine: ${message}. Bring it back with ${reopen}.` };

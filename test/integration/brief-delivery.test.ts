@@ -24,6 +24,7 @@ import { startDaemon } from '../../src/daemon/server.ts';
 import { prompted, startFakeHerdr, type FakeHerdr } from '../fixtures/fake-herdr.ts';
 import { fakeWorld, type FakePane, type FakeWorld } from '../fixtures/fake-world.ts';
 import { isolate } from '../fixtures/isolated.ts';
+import { runEnds } from '../../src/core/incarnation.ts';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const channelServer = path.join(here, '..', '..', 'bin', 'bellwether-mcp.js');
@@ -254,7 +255,7 @@ test('a resume hands its brief to the session once, and an unread brief it carri
   // The harness exits with no report and no finished turn, and herdr forgets the pane.
   space.world.panes.delete(child.paneId);
   updateChild(space.parentId, child.id, (entry) => {
-    entry.exitedAt = new Date().toISOString();
+    runEnds(entry, { at: new Date().toISOString() });
   });
   space.world.onStart = (pane) => {
     const resumed = childInPane(space, pane);

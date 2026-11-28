@@ -12,6 +12,7 @@ import { LOCAL_HOST } from './machine.ts';
 import { newChildId } from './outbox.ts';
 import { readParent, recordDecisions, removeChild, updateChild, upsertChild } from './registry.ts';
 import { clearRetirement, retiredItsWorktree } from './retire.ts';
+import { firstRun, holdEvents, paneOpened, releaseEvents, restoreRun, runStarts, sessionSeen, snapshotRun, statusSeen } from './incarnation.ts';
 import { openReturnTab, returnPlacement, undoChildTab, type ChildTab } from './workspace.ts';
 import { STARTUP_HOLD_MS, STARTUP_TIMEOUT_MS, childArgs, childEnv, childStartFiles, herdrLink, nextLaunch, startHarness, type RegisterRemote } from './spawn.ts';
 import { agentKinds, harnessFor, harnessNamed, requireHarness, type HarnessSession } from './harnesses/index.ts';
@@ -169,12 +170,9 @@ export async function resumeChild(client: HerdrClient, parent: ParentRecord, tar
         name: target.name ?? `resumed-${path.basename(session.value, '.jsonl').slice(-8)}`,
         kind,
         harness: requireHarness(kind).harness,
-        paneId: '',
-        host: target.host ?? LOCAL_HOST,
+        ...firstRun({ paneId: '', host: target.host ?? LOCAL_HOST, cwd: target.cwd }),
         origin: 'resume',
-        cwd: target.cwd,
         startedAt: now,
-        lastStatus: 'unknown',
         statusChangedAt: now,
         lastBusyAt: now,
         depth: parent.depth + 1,
@@ -186,7 +184,9 @@ export async function resumeChild(client: HerdrClient, parent: ParentRecord, tar
   const next = nextBrief(child, options.prompt || undefined, now);
   const previousBriefs = child.briefs?.map((brief) => ({ ...brief }));
   const knownBriefs = briefsOf(child).map((brief) => ({ ...brief }));
-  const previous = existing ? { paneId: existing.paneId, tabId: existing.tabId, workspaceId: existing.workspaceId, workspaceLabel: existing.workspaceLabel, exitedAt: existing.exitedAt ?? now, exitCode: existing.exitCode, route: existing.route, model: existing.model } : undefined;
+  const previous = existing ? { workspaceId: existing.workspaceId, workspaceLabel: existing.workspaceLabel, route: existing.route, model: existing.model } : undefined;
+  // A resume that fails puts the run before it back, field for field, as an exited one.
+  const previousRun = existing ? snapshotRun(existing, { exitedAt: existing.exitedAt ?? now }) : undefined;
   // The record says how this run starts, so a later resume or restart replays it.
   if (launch.route) {
     child.route = launch.route;
@@ -197,24 +197,14 @@ export async function resumeChild(client: HerdrClient, parent: ParentRecord, tar
   }
 
   // 1. The record lands first, with no pane, so a crash still says what was asked.
-  child.paneId = '';
-  delete child.tabId;
-  delete child.exitedAt;
-  delete child.exitCode;
-  delete child.reportPending;
-  // The new harness has yet to show herdr it runs, and the watcher checks it once after its start window.
-  delete child.harnessSeenAt;
-  delete child.harnessEnded;
-  delete child.tabClosedAt;
+  // Every field of the run before goes, a failed restart or crossing among
+  // them. The new harness has yet to show herdr it runs, and the watcher
+  // checks it once after its start window.
+  runStarts(child, { paneId: '', tabId: undefined, resumedAt: now });
   // A child brought back did not ask for this run to end its worktree.
   clearRetirement(child);
-  child.lastStatus = 'unknown';
   child.statusChangedAt = now;
   child.lastBusyAt = now;
-  child.resumedAt = now;
-  // A child that failed to come back from a restart is back now.
-  delete child.restartFailed;
-  delete child.crossingFailed;
   // The brief this start hands over carries an unread one. A session message
   // that carried that one is not offered again when the session reconnects,
   // so the child takes the task once.
@@ -244,13 +234,9 @@ export async function resumeChild(client: HerdrClient, parent: ParentRecord, tar
       return;
     }
     updateChild(parent.id, child.id, (entry) => {
-      delete entry.startingUntil;
-      entry.paneId = previous.paneId;
-      entry.tabId = previous.tabId;
+      if (previousRun) restoreRun(entry, previousRun);
       entry.workspaceId = previous.workspaceId;
       entry.workspaceLabel = previous.workspaceLabel;
-      entry.exitedAt = previous.exitedAt;
-      entry.exitCode = previous.exitCode;
       if (previous.route) entry.route = previous.route;
       else delete entry.route;
       if (previous.model) entry.model = previous.model;
@@ -279,8 +265,7 @@ export async function resumeChild(client: HerdrClient, parent: ParentRecord, tar
     opened = tab;
     tabId = tab.tabId ?? tab.paneId;
     if (!tab.paneId) throw new Error('herdr created no pane for the resumed tab');
-    child.tabId = tab.tabId;
-    child.paneId = tab.paneId;
+    paneOpened(child, { paneId: tab.paneId, tabId: tab.tabId });
     child.workspaceId = tab.workspaceId;
     if (tab.workspaceLabel) child.workspaceLabel = tab.workspaceLabel;
     if (next) {
@@ -293,7 +278,7 @@ export async function resumeChild(client: HerdrClient, parent: ParentRecord, tar
     const dialogs = requireHarness(kind).startup;
     if (dialogs) {
       const timeoutMs = options.startupTimeoutMs ?? STARTUP_TIMEOUT_MS;
-      child.startingUntil = new Date(Date.now() + Math.max(STARTUP_HOLD_MS, timeoutMs + 15_000)).toISOString();
+      holdEvents(child, new Date(Date.now() + Math.max(STARTUP_HOLD_MS, timeoutMs + 15_000)).toISOString());
       startup = await watchStartup(client, tab.paneId, signal, { timeoutMs, redrawMs: options.redrawMs, dialogs, by: 'resume' });
     }
     upsertChild(parent.id, child);
@@ -304,7 +289,7 @@ export async function resumeChild(client: HerdrClient, parent: ParentRecord, tar
   } catch (error) {
     startup?.close();
     await undoChildTab(client, opened);
-    delete child.startingUntil;
+    releaseEvents(child);
     restore();
     throw error;
   }
@@ -333,7 +318,7 @@ export async function resumeChild(client: HerdrClient, parent: ParentRecord, tar
   if (options.notice !== undefined || (next && !requireHarness(kind).brief.launch)) {
     const held = new Date(Date.now() + briefHoldMs(options.inbox)).toISOString();
     updateChild(parent.id, child.id, (entry) => {
-      entry.startingUntil = held;
+      holdEvents(entry, held);
     });
     try {
       // A notice comes first, so the session reads where it is before the
@@ -367,7 +352,7 @@ export async function resumeChild(client: HerdrClient, parent: ParentRecord, tar
   }
   const kept = reported ?? { kind: session.kind, value: session.value };
   updateChild(parent.id, child.id, (entry) => {
-    entry.session = kept;
+    sessionSeen(entry, kept);
     if (child.host === LOCAL_HOST) {
       // The same session in the same directory is the same file, so a resumed
       // child keeps the path it had.
@@ -376,11 +361,8 @@ export async function resumeChild(client: HerdrClient, parent: ParentRecord, tar
       if (entry.transcript) delete entry.transcriptMissing;
       else entry.transcriptMissing = found.missing;
     }
-    if (status && entry.lastStatus !== status) {
-      entry.statusChangedAt = new Date().toISOString();
-      entry.lastStatus = status;
-    }
-    delete entry.startingUntil;
+    if (status && statusSeen(entry, status)) entry.statusChangedAt = new Date().toISOString();
+    releaseEvents(entry);
   });
 
   const saved = readParent(parent.id)?.children.find((entry) => entry.id === child.id) ?? child;

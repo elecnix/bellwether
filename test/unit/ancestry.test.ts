@@ -6,6 +6,7 @@ import test from 'node:test';
 import { ANCESTRY_SCHEMA, ancestry, parseAgent, type AncestryAnswer, type AncestryLevel } from '../../src/core/ancestry.ts';
 import { emptyParent } from '../../src/core/registry.ts';
 import type { ChildRecord, ParentRecord } from '../../src/core/types.ts';
+import { runEnds } from '../../src/core/incarnation.ts';
 
 const T0 = '2026-11-01T10:00:00.000Z';
 const T1 = '2026-11-01T11:00:00.000Z';
@@ -110,7 +111,7 @@ test('two records on one session: the alive one wins, then the latest start, and
   assert.equal(answer.chain[0]?.agent, 'claude:claude-root-session');
 
   // Both exited: the latest start wins.
-  resumed.exitedAt = T3;
+  runEnds(resumed, { at: T3 });
   const both = ancestry('claude:claude-leaf-session', records, live);
   assert.equal(both.agent?.childId, 'leaf000000000002');
   assert.equal(both.agent?.match.rule, 'latest-start');

@@ -12,6 +12,7 @@ import type { HerdrClient, HerdrPane } from './herdr-client.ts';
 import { LOCAL_HOST } from './machine.ts';
 import { newChildId } from './outbox.ts';
 import { ClaimRefused, claimantOf, decideClaim, type PaneClaim } from './pane-claims.ts';
+import { RelayAnswerLost } from './relay-answer.ts';
 import { removeRelayRecord } from './relay-records.ts';
 import { readParent, updateChild, upsertChild, watcherOfPane } from './registry.ts';
 import { clearRetirement } from './retire.ts';
@@ -48,6 +49,8 @@ export interface AdoptResult {
   revived?: boolean;
   /** The pane that ran the revived child's session before, when it is another pane. */
   from?: string;
+  /** For a pane on another machine: the relay lost that machine's answer, so whether it recorded the claim is unknown, and why. */
+  inDoubt?: string;
   /** The id of that earlier child, when the pane's machine holds the session under another id instead, which stands for it from now on. */
   replaced?: string;
   /** For a pane this parent already held on another machine: that machine had lost the claim, and holds it again (issue #219). */
@@ -123,9 +126,10 @@ async function confirmHeld(parentId: string, child: ChildRecord, host: string, c
     throw new Error(`Pane ${child.paneId} on machine ${host} is a child of this session as ${child.name}, but machine ${host} holds no record of that and refuses to take the claim back: ${why}.`);
   }
   if (answer.childId !== child.id) throw new Error(`Pane ${child.paneId} on machine ${host} is a child of this session as ${child.id}, but machine ${host} holds it for this session as child ${answer.childId}.`);
-  if (child.farRecordLost) {
+  if (child.farRecordLost || child.adoptInDoubt) {
     updateChild(parentId, child.id, (entry) => {
       delete entry.farRecordLost;
+      delete entry.adoptInDoubt;
     });
   }
   const current = readParent(parentId)?.children.find((entry) => entry.id === child.id) ?? child;
@@ -164,6 +168,7 @@ export async function adoptPane(client: HerdrClient, parent: ParentRecord, optio
   let id = earlier?.id ?? newChildId();
   let reach: SessionReach | undefined;
   let messages: boolean | undefined;
+  let inDoubt: string | undefined;
   if (host === LOCAL_HOST) {
     // A parent on another machine may have adopted this pane: its claim sits in this machine's relay records.
     const holder = claimantOf(pane.paneId);
@@ -174,17 +179,26 @@ export async function adoptPane(client: HerdrClient, parent: ParentRecord, optio
     if (decision.kind === 'take' && holder?.where === 'away') removeRelayRecord(holder.record.childId);
   } else {
     if (!options.claim) throw new Error(`This session holds no relay connection to machine ${host}, so it cannot ask that machine who watches pane ${pane.paneId}.`);
-    let answer: { childId: string; held: boolean; session?: SessionReach; messages?: boolean };
+    let answer: { childId: string; held: boolean; session?: SessionReach; messages?: boolean } | undefined;
     try {
       answer = await options.claim(host, { parentId: parent.id, childId: id, name, kind: pane.agent, paneId: pane.paneId, ...(pane.agentSessionId ? { session: pane.agentSessionId } : {}) });
     } catch (error) {
-      throw new Error(`Pane ${pane.paneId} on machine ${host} cannot be adopted: ${(error as Error).message}.`.replace(/\.\.$/, '.'));
+      // The request went out and its answer did not come back, so that machine
+      // may have saved the claim. A record here keeps that claim from routing
+      // the session's reports to a parent with no child, and the watcher asks
+      // again to learn which it was (issue #211, item 6).
+      if (!(error instanceof RelayAnswerLost)) throw new Error(`Pane ${pane.paneId} on machine ${host} cannot be adopted: ${(error as Error).message}.`.replace(/\.\.$/, '.'));
+      inDoubt = error.message.trim().replace(/\.$/, '');
     }
-    // The far daemon already held this pane for this parent, from an adoption whose record this machine lost: keep its child id.
-    id = answer.childId;
-    reach = answer.session;
-    messages = answer.messages;
+    if (answer) {
+      // The far daemon already held this pane for this parent, from an adoption whose record this machine lost: keep its child id.
+      id = answer.childId;
+      reach = answer.session;
+      messages = answer.messages;
+    }
   }
+  const doubt = inDoubt ? { at: new Date().toISOString(), host, reason: inDoubt } : undefined;
+  const doubtful = inDoubt ? { inDoubt } : {};
 
   const now = new Date().toISOString();
   const extra = { ...(reach ? { session: reach } : {}), ...(messages === undefined ? {} : { messages }) };
@@ -195,9 +209,10 @@ export async function adoptPane(client: HerdrClient, parent: ParentRecord, optio
       entry.paneId = pane.paneId;
       backInPane(entry, pane, now);
       entry.name = name;
+      if (doubt) entry.adoptInDoubt = doubt;
     });
     const child = readParent(parent.id)?.children.find((entry) => entry.id === earlier.id) ?? earlier;
-    return { child, link: herdrLink('pane', child.paneId), already: false, revived: true, ...(from ? { from } : {}), ...extra };
+    return { child, link: herdrLink('pane', child.paneId), already: false, revived: true, ...(from ? { from } : {}), ...extra, ...doubtful };
   }
   // The pane's machine holds the session under an id of its own, which stands for it from now on.
   const replaced = earlier?.id;
@@ -236,7 +251,8 @@ export async function adoptPane(client: HerdrClient, parent: ParentRecord, optio
     depth: parent.depth + 1,
     stuckMs: options.stuckMinutes === undefined ? undefined : Math.max(1_000, Math.round(options.stuckMinutes * 60_000)),
     inactiveMs: resolveInactiveMs(undefined),
+    ...(doubt ? { adoptInDoubt: doubt } : {}),
   };
   upsertChild(parent.id, child);
-  return { child, link: herdrLink('pane', child.paneId), already: false, ...extra, ...(replaced ? { replaced } : {}) };
+  return { child, link: herdrLink('pane', child.paneId), already: false, ...extra, ...(replaced ? { replaced } : {}), ...doubtful };
 }

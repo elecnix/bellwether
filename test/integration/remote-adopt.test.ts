@@ -619,6 +619,46 @@ test('an unknown machine, an empty pane and a pane another parent watches there 
   assert.equal(inHome(w.childHome, () => readRelayRecord('third-kid')), undefined, 'the stale claim is gone');
 });
 
+// RouteToWatcher in model/Claims.tla (issue #211, item 6): the far daemon saves the claim, and its answer is lost.
+test('an adoption whose answer from the far machine is lost leaves a record in doubt, and the watcher asks again, so the claim there routes to a live child', async (t) => {
+  const w = await world(t);
+  const links = w.links as unknown as { ask: (host: string, type: string, build: unknown, timeoutMs?: number) => Promise<string> };
+  const ask = links.ask.bind(w.links);
+  let lose = true;
+  links.ask = (host, type, build, timeoutMs) => {
+    if (type !== 'relay-adopt' || !lose) return ask(host, type, build, timeoutMs);
+    lose = false;
+    return ask(host, type, build, 1);
+  };
+  const text = await adopt(w);
+  assert.match(text, /^Machine child-box did not answer the adoption of pane w1:p5 \(machine child-box did not answer an adoption within 1 ms\), so Bellwether does not know whether it recorded it\. The child stands as first-mate, child \S+, in doubt: Bellwether asks that machine again and reports what it learns\./, text);
+  const id = child(w)!.id;
+  await until('the far claim', () => inHome(w.childHome, () => readRelayRecord(id))?.adopted === true, 10_000);
+  await until('the doubt to clear', () => child(w)?.adoptInDoubt === undefined, 10_000, () => w.logs.slice(-5));
+  await until('the watcher to subscribe on child-box', () => subscribed(w));
+  const claim = inHome(w.childHome, () => readRelayRecord(id))!;
+  const live = (readParent(PARENT_ID)?.children ?? []).filter((entry) => entry.id === claim.childId && !entry.exitedAt);
+  assert.equal(live.length, 1, 'the parent the claim routes to watches a live child with that id');
+  w.pane.set('working');
+  w.pane.set('idle', true);
+  await until('the idle event', () => w.published.some((entry) => entry.childId === id && entry.event === 'idle'), 5_000, () => w.published);
+});
+
+test('an adoption in doubt that the far machine refuses when asked again ends, and the exit event gives the refusal', async (t) => {
+  const w = await world(t);
+  inHome(w.childHome, () => saveRelayRecord({ schema: RELAY_SCHEMA, childId: 'c0ffee0000000211', name: 'theirs', kind: 'claude', parentId: 'claude-code-someone-else', registeredAt: new Date().toISOString(), paneId: PANE, adopted: true, session: SESSION }));
+  const at = new Date().toISOString();
+  w.watcher.stop();
+  upsertChild(PARENT_ID, { id: 'feed000000000211', name: 'first-mate', kind: 'claude', harness: 'claude-code', paneId: PANE, tabId: 'w1:t1', workspaceId: 'w1', host: 'child-box', origin: 'adopt', cwd: '/far/work', startedAt: at, lastStatus: 'idle', statusChangedAt: at, lastBusyAt: at, depth: 1, session: { kind: 'id', value: SESSION }, adoptInDoubt: { at, host: 'child-box', reason: 'machine child-box did not answer an adoption within 1 ms' } });
+  w.watcher.start();
+  await until('the child to exit', () => child(w)?.exitedAt !== undefined, 10_000, () => w.logs.slice(-5));
+  assert.equal(child(w)?.adoptInDoubt, undefined);
+  await until('the exit event', () => w.published.some((entry) => entry.childId === 'feed000000000211' && entry.event === 'exited'), 5_000, () => w.published);
+  const text = w.published.find((entry) => entry.event === 'exited')!.text;
+  assert.match(text, /machine child-box refused the adoption Bellwether was not sure of: pane w1:p5 is already a child of claude-code-someone-else/, text);
+  assert.equal(inHome(w.childHome, () => readRelayRecord('c0ffee0000000211'))?.parentId, 'claude-code-someone-else', 'the other claim stays');
+});
+
 test('a dropped link shows the child unreachable, not exited, and the reconnect restores it without a second adoption', async (t) => {
   const w = await world(t);
   // A stuck threshold of one minute, which the outage below runs far past.

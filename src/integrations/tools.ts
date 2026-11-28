@@ -603,7 +603,7 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
       throw new Error(`Cannot adopt ${target} on machine ${host}: ${(error as Error).message}`);
     }
     const claim = ctx.remote?.claim?.bind(ctx.remote);
-    const { child, link, already, revived, from, replaced, restored, unconfirmed, session: farReach, messages: farMessages } = await adoptPane(client, record, { target, host, name: optionalString(args['name']), stuckMinutes: typeof args['stuck_minutes'] === 'number' ? (args['stuck_minutes'] as number) : undefined, ...(claim ? { claim } : {}) }).catch(async (error: unknown) => {
+    const { child, link, already, revived, from, replaced, restored, unconfirmed, inDoubt, session: farReach, messages: farMessages } = await adoptPane(client, record, { target, host, name: optionalString(args['name']), stuckMinutes: typeof args['stuck_minutes'] === 'number' ? (args['stuck_minutes'] as number) : undefined, ...(claim ? { claim } : {}) }).catch(async (error: unknown) => {
       throw await ambiguousTarget(ctx, given, parsed, error as Error);
     });
     if (already) {
@@ -613,6 +613,8 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
       if (unconfirmed) return `${held} Machine ${host} could not confirm it: ${unconfirmed}.`;
       return held;
     }
+    // Issue #211: the relay lost the far machine's answer, so the claim there is unknown until the watcher asks again.
+    if (inDoubt) return [`Machine ${host} did not answer the adoption of pane ${child.paneId} (${inDoubt}), so Bellwether does not know whether it recorded it. The child stands as ${child.name}, child ${child.id}, in doubt: Bellwether asks that machine again and reports what it learns. Until then the child sends no events.`, `herdr link: ${link}`].join('\n');
     const where = host === LOCAL_HOST ? '' : ` on machine ${host}`;
     const session = child.session ? ` Its harness session is ${child.session.value}.` : '';
     const outage = host === LOCAL_HOST ? '' : ` While the connection to machine ${host} is down, agent_list shows it unreachable, not exited.`;

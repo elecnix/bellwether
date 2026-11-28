@@ -13,11 +13,11 @@ import { briefHoldMs, deliverBrief, deliveryNote } from './brief-delivery.ts';
 import type { Inbox } from './send.ts';
 import { promptPath } from './paths.ts';
 import { DEFAULT_MAX_DEPTH, tooDeep } from './depth.ts';
-import { droppedNote, type DroppedVariable } from './relay-env.ts';
+import { droppedNote, farEnvironment, type DroppedVariable } from './relay-env.ts';
 import { resolveInactiveMs } from './inactivity.ts';
 import { removeChildFiles } from './mcp-config.ts';
 import { argValue } from './args.ts';
-import { requireHarness, spawnRefusal, type ChildFiles, type HarnessEntry, type HarnessHooks } from './harnesses/index.ts';
+import { harnessFor, requireHarness, spawnRefusal, type ChildFiles, type HarnessEntry, type HarnessHooks } from './harnesses/index.ts';
 import { recordDecisions, removeChild, updateChild, upsertChild } from './registry.ts';
 import { detectRefused, StartupDialogRefused, watchStartup, type StartupDialog, type StartupWatch } from './startup-dialogs.ts';
 import { agentNameOf, sessionFrom } from './transcript.ts';
@@ -248,6 +248,22 @@ export async function childStartFiles(parent: ParentRecord, child: ChildRecord, 
     ...(registration.envDropped?.length ? { envDropped: registration.envDropped } : {}),
     registered: true,
   };
+}
+
+/**
+ * The files a child of a parent on another machine starts with on this
+ * machine, as its harness's entry says: a Claude Code child's own server, with
+ * whatever keeps this machine's other Bellwether servers from adding a second
+ * set, or the extension a pi child loads. The variables the entry gives the
+ * tab come back less those that belong to one machine, which `dropped` names.
+ * `bellwether relay-register` writes them at a spawn, and the daemon here
+ * writes them again for a restart the parent asks for over the relay.
+ */
+export function farChildFiles(child: Pick<ChildRecord, 'id' | 'kind' | 'cwd' | 'reads'>): ChildFiles & { env: Record<string, string>; dropped: DroppedVariable[] } {
+  const reports = harnessFor(child.kind)?.reports;
+  const tools = reports && reports.via !== 'none' && reports.remote ? reports.local({ id: child.id, cwd: child.cwd, host: LOCAL_HOST, ...(child.reads?.length ? { reads: child.reads } : {}) }, { env: {}, farEnd: true }) : undefined;
+  const { env, dropped } = farEnvironment(tools?.env);
+  return { ...tools, env, dropped };
 }
 
 /** Why a child of this harness cannot take `reads`. */

@@ -17,6 +17,7 @@ import type { PaneClaim } from './pane-claims.ts';
 import type { SessionReach } from './adopted-session.ts';
 import { adoptionClaim } from './adopt.ts';
 import { hostOf } from './machine.ts';
+import type { RelayRestartAnswer, RelayRestartAsk } from './restart.ts';
 
 /** What the child's machine wrote when it registered the child. */
 export interface RemoteRegistration {
@@ -53,6 +54,8 @@ export interface RemoteOps {
   lastMessage(child: ChildRecord): Promise<string | undefined>;
   /** Ask the pane's machine to record an adoption, or say who already watches the pane there. Absent when the session holds no relay. */
   claim?(host: string, claim: PaneClaim): Promise<{ childId: string; held: boolean; session?: SessionReach; messages?: boolean }>;
+  /** Ask the child's machine to restart the child there. Absent when the session holds no relay. */
+  restart?(host: string, ask: RelayRestartAsk): Promise<RelayRestartAnswer>;
 }
 
 /** The arguments `bellwether relay-register` takes on the child's machine. */
@@ -116,6 +119,8 @@ export interface RemoteReader {
   lastMessage(child: ChildRecord): Promise<string | undefined>;
   /** Record an adoption on the pane's machine, over the same connection. */
   adopt?(host: string, claim: PaneClaim): Promise<{ childId: string; held: boolean; session?: SessionReach; messages?: boolean }>;
+  /** Restart a child on its own machine, over the same connection. */
+  restart?(host: string, ask: RelayRestartAsk): Promise<RelayRestartAnswer>;
 }
 
 export function remoteOps(resolve: MachineResolver = resolveMachine, options: SshOptions = {}, reader?: RemoteReader): RemoteOps {
@@ -143,6 +148,7 @@ export function remoteOps(resolve: MachineResolver = resolveMachine, options: Ss
       if (!reader?.adopt) throw new Error(`this session holds no connection to machine ${host}`);
       return reader.adopt(host, claim);
     },
+    ...(reader?.restart ? { restart: (host: string, ask: RelayRestartAsk) => (reader.restart as NonNullable<RemoteReader['restart']>).call(reader, host, ask) } : {}),
   };
 }
 

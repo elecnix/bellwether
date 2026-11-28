@@ -16,12 +16,11 @@ import { emptyParent, listParents, readParent, saveParent } from './core/registr
 import { restartFailureLines, restartWaitLines } from './core/restart.ts';
 import { PROMPT_NOTICE, isReportStatus } from './core/report.ts';
 import { HOOK_COMMAND, dialogFromHook } from './core/claude-hooks.ts';
-import { hostName } from './core/spawn.ts';
+import { farChildFiles, hostName } from './core/spawn.ts';
 import { RELAY_SCHEMA, listForwards, readRelayRecord, removeRelayRecord, saveRelayRecord, updateRelayRecord } from './core/relay-records.ts';
 import { relayChildPath, relayOutboxDir } from './core/paths.ts';
 import { removeBriefAt, writeBrief, writeBriefIn } from './core/brief.ts';
 import { removeChildFiles } from './core/mcp-config.ts';
-import { farEnvironment } from './core/relay-env.ts';
 import { harnessFor, harnessNamed } from './core/harnesses/index.ts';
 import { daemonHerdrLine, describeUpgrade, farPairing, gatherUpgrade } from './daemon/upgrade-status.ts';
 import { describeState } from './core/hygiene.ts';
@@ -714,18 +713,16 @@ function relayRegister(argv: string[]): number {
   // server, with whatever keeps this machine's other Bellwether servers from
   // adding a second set, or the extension a pi child loads, which fails here,
   // before anything else is written, when it is missing.
-  const reports = harnessFor(values['kind'])?.reports;
   // The paths the parent named for the child, checked again here against this machine's home.
   const reads = values['reads'] === undefined ? undefined : checkReads(JSON.parse(values['reads']));
-  const tools = reports && reports.via !== 'none' && reports.remote ? reports.local({ id: childId, cwd, host: LOCAL_HOST, ...(reads ? { reads } : {}) }, { env: {}, farEnd: true }) : undefined;
-  const { env, dropped } = farEnvironment(tools?.env);
+  const { env, dropped, ...tools } = farChildFiles({ id: childId, kind: values['kind'] ?? 'other', ...(cwd ? { cwd } : {}), ...(reads ? { reads } : {}) });
   let brief: string | undefined;
   if (values['brief-stdin'] === 'yes') {
     const text = fs.readFileSync(0, 'utf8');
     brief = cwd ? writeBriefIn(cwd, childId, text) : writeBrief(childId, text);
   }
   saveRelayRecord({ schema: RELAY_SCHEMA, childId, name: values['name'] ?? childId, kind: values['kind'] ?? 'other', parentId, ...(cwd ? { cwd } : {}), ...(brief ? { brief } : {}), registeredAt: new Date().toISOString() });
-  console.log(JSON.stringify({ record: relayChildPath(childId), version: BELLWETHER_VERSION, build: BELLWETHER_BUILD_ID, ...(brief ? { brief } : {}), ...(tools?.mcpConfigFile ? { mcpConfig: tools.mcpConfigFile, ...(tools.claudeSettingsFile ? { claudeSettings: tools.claudeSettingsFile } : {}), toolSource: tools.toolSource } : {}), ...(tools?.piExtension ? { piExtension: tools.piExtension } : {}), env, ...(dropped.length ? { envDropped: dropped } : {}) }));
+  console.log(JSON.stringify({ record: relayChildPath(childId), version: BELLWETHER_VERSION, build: BELLWETHER_BUILD_ID, ...(brief ? { brief } : {}), ...(tools?.mcpConfigFile ? { mcpConfig: tools.mcpConfigFile, ...(tools.claudeSettingsFile ? { claudeSettings: tools.claudeSettingsFile } : {}), toolSource: tools.toolSource } : {}), ...(tools.piExtension ? { piExtension: tools.piExtension } : {}), env, ...(dropped.length ? { envDropped: dropped } : {}) }));
   return 0;
 }
 

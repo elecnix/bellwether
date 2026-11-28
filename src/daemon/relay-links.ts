@@ -24,6 +24,8 @@ import { DAEMON_PROTOCOL, MAX_DAEMON_FRAME_BYTES, formatRequest, type DaemonRepl
 import { featureNamed } from './features.ts';
 import { BRIEF_SESSION_WAIT_MS, type InboxAnswer, type InboxOptions } from '../core/send.ts';
 import type { PaneClaim } from '../core/pane-claims.ts';
+import { STARTUP_TIMEOUT_MS } from '../core/spawn.ts';
+import type { RelayRestartAnswer, RelayRestartAsk } from '../core/restart.ts';
 
 export interface RelayLinksOptions {
   /** Turns a child's herdr machine into its SSH target. Defaults to herdr's saved machines. */
@@ -50,7 +52,7 @@ export type AcceptRelayed = (host: string, report: RelayReport) => { refused?: s
 
 interface PendingRead {
   /** The request type, so a far daemon that does not know it can be answered for the requests it refused. */
-  type: 'relay-read' | 'relay-adopt' | 'relay-message';
+  type: 'relay-read' | 'relay-adopt' | 'relay-message' | 'relay-restart';
   resolve: (text: string) => void;
   reject: (error: Error) => void;
   timer: NodeJS.Timeout;
@@ -220,6 +222,25 @@ export class RelayLinks {
     return { delivered: false, reason: typeof answer.reason === 'string' && answer.reason ? answer.reason : 'its session did not take the message' };
   }
 
+  /**
+   * Ask the daemon on a child's machine to restart that child there, over the
+   * open connection (issue #190). That daemon closes the child's pane, opens a
+   * new tab and resumes the same session, and answers with the new pane. A
+   * daemon there that predates the request is refused by name, with the
+   * release that brings it.
+   */
+  async restart(host: string, ask: RelayRestartAsk): Promise<RelayRestartAnswer> {
+    if (host === LOCAL_HOST) throw new Error('a child on this machine is restarted here');
+    const herdrSession = (await this.resolve(host).catch(() => undefined))?.session;
+    // The act there waits for a turn under way, answers the startup dialogs and starts the harness.
+    const timeoutMs = this.readTimeoutMs + (ask.waitTimeoutMs ?? 0) + 2 * STARTUP_TIMEOUT_MS;
+    const text = await this.ask(host, 'relay-restart', (id) => ({ type: 'relay-restart', id, ...ask, ...(herdrSession ? { herdrSession } : {}) }), timeoutMs);
+    const answer = JSON.parse(text) as Partial<RelayRestartAnswer>;
+    if (answer.restarted === true && typeof answer.record?.paneId === 'string' && answer.record.paneId && answer.outcome) return answer as RelayRestartAnswer;
+    if (answer.restarted === false && typeof answer.reason === 'string' && answer.reason) return answer as RelayRestartAnswer;
+    throw new Error(`machine ${host} answered the restart without a new pane or a reason`);
+  }
+
   /** Send one request over a host's connection, opening it for the call when no child holds it open, and wait for its result. */
   private async ask(host: string, type: PendingRead['type'], build: (id: string) => DaemonRequest, timeoutMs = this.readTimeoutMs): Promise<string> {
     const known = this.links.get(host);
@@ -233,7 +254,7 @@ export class RelayLinks {
       return await new Promise<string>((resolve, reject) => {
         const timer = setTimeout(() => {
           link.reads.delete(id);
-          reject(new Error(`machine ${host} did not answer ${type === 'relay-read' ? 'a read' : type === 'relay-adopt' ? 'an adoption' : 'a message'} within ${timeoutMs} ms`));
+          reject(new Error(`machine ${host} did not answer ${type === 'relay-read' ? 'a read' : type === 'relay-adopt' ? 'an adoption' : type === 'relay-restart' ? 'a restart' : 'a message'} within ${timeoutMs} ms`));
         }, timeoutMs);
         timer.unref?.();
         link.reads.set(id, { type, resolve, reject, timer });

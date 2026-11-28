@@ -101,3 +101,13 @@ test('a relay message carries the parent, the child and the message, and one wit
   assert.throws(() => parseRequest(JSON.stringify({ type: 'relay-message', id: 'r1', parentId: 'p', childId: 'c', message: { ...message, text: ' ' } })), (error: unknown) => error instanceof ProtocolError && error.code === 'invalid_message');
   assert.throws(() => parseRequest(JSON.stringify({ type: 'relay-message', id: 'r1', childId: 'c', message })), (error: unknown) => error instanceof ProtocolError && error.code === 'invalid_message');
 });
+
+test('relay-restart parses with the child it restarts, and refuses one without a session', () => {
+  const child = { name: 'mate', kind: 'claude', harness: 'claude-code', paneId: 'w1:p3', tabId: 'w1:t3', cwd: '/work', depth: 1, session: { kind: 'id', value: 's1' } };
+  assert.deepEqual(parseRequest(JSON.stringify({ type: 'relay-restart', id: 'r1', parentId: 'p', childId: 'c', child, herdrSession: 'default', waitTimeoutMs: 30000 })), { type: 'relay-restart', id: 'r1', parentId: 'p', childId: 'c', child, herdrSession: 'default', waitTimeoutMs: 30000 });
+  // A pi child's model and provider ride along; a field this daemon does not know is dropped.
+  const pi = { ...child, kind: 'pi', harness: 'pi', launch: { harnessModel: 'example-model', provider: 'example-provider' }, extra: true };
+  assert.deepEqual((parseRequest(JSON.stringify({ type: 'relay-restart', id: 'r1', parentId: 'p', childId: 'c', child: pi })) as { child: unknown }).child, { ...child, kind: 'pi', harness: 'pi', launch: { harnessModel: 'example-model', provider: 'example-provider' } });
+  assert.throws(() => parseRequest(JSON.stringify({ type: 'relay-restart', id: 'r1', parentId: 'p', childId: 'c', child: { ...child, session: undefined } })), (error: unknown) => error instanceof ProtocolError && error.code === 'invalid_restart');
+  assert.throws(() => parseRequest(JSON.stringify({ type: 'relay-restart', id: 'r1', parentId: 'p', childId: 'c' })), (error: unknown) => error instanceof ProtocolError && error.code === 'invalid_restart');
+});

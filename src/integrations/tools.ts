@@ -437,7 +437,9 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
   if (name === RESTART_TOOL) {
     // Routed by the caller's identity and the records this daemon holds.
     const change = { via: optionalString(args['via']), model: optionalString(args['model']), keyFile: optionalString(args['key_file']), provider: optionalString(args['provider']), reads: checkReads(args['reads']) };
-    return runAgentRestart(ctx.client, ctx.parentId, caller, { ...(ctx.restart ?? {}), reset: (childId) => ctx.watcher.reset(childId) }, optionalString(args['target']), typeof args['wait_seconds'] === 'number' ? (args['wait_seconds'] as number) : undefined, change);
+    const remote = ctx.remote;
+    const relay = remote?.restart ? (host: string, ask: Parameters<NonNullable<typeof remote.restart>>[1]) => (remote.restart as NonNullable<typeof remote.restart>)(host, ask) : undefined;
+    return runAgentRestart(ctx.client, ctx.parentId, caller, { ...(ctx.restart ?? {}), reset: (childId) => ctx.watcher.reset(childId), ...(relay ? { relay } : {}) }, optionalString(args['target']), typeof args['wait_seconds'] === 'number' ? (args['wait_seconds'] as number) : undefined, change);
   }
 
   const record = readParent(ctx.parentId);

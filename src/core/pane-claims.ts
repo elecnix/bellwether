@@ -30,6 +30,9 @@ export function claimantOf(paneId: string): Claimant | undefined {
   return record ? { where: 'away', record } : undefined;
 }
 
+/** A machine's refusal of a claim, because someone else holds the pane there: not a lost connection. */
+export class ClaimRefused extends Error {}
+
 export type ClaimDecision = { kind: 'take' } | { kind: 'held'; childId: string } | { kind: 'refuse'; reason: string };
 
 /**

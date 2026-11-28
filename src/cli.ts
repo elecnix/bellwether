@@ -14,6 +14,7 @@ import { HerdrClient, resolveSocketPath } from './core/herdr-client.ts';
 import { bellwetherHome } from './core/paths.ts';
 import { emptyParent, listParents, readParent, saveParent } from './core/registry.ts';
 import { restartFailureLines, restartWaitLines } from './core/restart.ts';
+import { farRecordLines } from './core/remote.ts';
 import { goneSessionLines, herdrView } from './core/pane-fate.ts';
 import { PROMPT_NOTICE, isReportStatus } from './core/report.ts';
 import { HOOK_COMMAND, dialogFromHook } from './core/claude-hooks.ts';
@@ -254,6 +255,8 @@ async function doctor(): Promise<number> {
   failures += lostRestarts.length;
   // What each pending self-restart waits for, and why one gave up (issue #188).
   for (const line of restartWaitLines(listParents())) console.log(`  ${line}`);
+  // Each child whose machine holds no record of it while this registry does (issue #219).
+  for (const line of farRecordLines(listParents())) console.log(`  ${line}`);
   // Each session on this machine whose pane is gone, and the command that brings it back (issue #187).
   const view = panes ? await herdrView(herdr, panes) : undefined;
   if (view) {

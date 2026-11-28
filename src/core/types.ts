@@ -472,6 +472,13 @@ export interface ChildRecord {
    */
   awaitsResume?: string;
   /**
+   * The child's machine answered that it holds no record of this child, while
+   * this registry still does, and the record could not be restored there
+   * (issue #219). Messages to it are typed until then. Cleared once that
+   * machine holds it again.
+   */
+  farRecordLost?: { at: string; host: string; reason: string };
+  /**
    * For an adopted child that exited: the child id that now stands for its
    * session, because the machine that runs it holds the session under that id
    * rather than this one (issue #191).

@@ -171,6 +171,24 @@ export class ClaimHeldElsewhere extends Error {
  * session. That machine's daemon then offers the session its tools and takes
  * its messages under that id again.
  */
+/**
+ * The doctor lines for each live child whose machine holds no record of it
+ * while this registry does (issue #219): the two disagree, and messages to it
+ * are typed until they agree again.
+ */
+export function farRecordLines(parents: ParentRecord[]): string[] {
+  const lines: string[] = [];
+  for (const parent of parents) {
+    for (const child of parent.children) {
+      const lost = child.farRecordLost;
+      if (!lost || child.exitedAt) continue;
+      const fix = child.origin === 'adopt' ? `Run agent_adopt ${lost.host}:${child.paneId} to claim it there again.` : 'Stop it and resume its session with agent_spawn to register it there again.';
+      lines.push(`warn  far record: ${child.name} (child ${child.id} of ${parent.id}) on machine ${lost.host}: that machine has held no record of it since ${lost.at}, so messages to it are typed into its pane (${lost.reason}). ${fix}`);
+    }
+  }
+  return lines;
+}
+
 export async function reclaimRemote(remote: RemoteOps, parentId: string, child: ChildRecord): Promise<void> {
   const host = hostOf(child);
   if (!remote.claim) throw new Error(`this session holds no connection to machine ${host}`);

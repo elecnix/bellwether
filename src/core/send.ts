@@ -26,7 +26,10 @@ export type { InboxMessage } from '../daemon/protocol.ts';
  * pushed it, so nothing is typed, and the parent's daemon asks again once the
  * relay is back. Its `via` is then empty, because no adapter is known.
  */
-export type InboxAnswer = { delivered: true; via: string; unanswered?: string; inDoubt?: true } | { delivered: false; reason: string };
+export type InboxAnswer = ({ delivered: true; via: string; unanswered?: string; inDoubt?: true } | { delivered: false; reason: string }) & {
+  /** What the daemon repaired on the way, for the caller's reply, such as a claim restored on the child's machine (issue #219). */
+  note?: string;
+};
 
 /** How a push into a child's session behaves. */
 export interface InboxOptions {
@@ -194,10 +197,11 @@ export async function messageChild(input: MessageInput): Promise<MessageOutcome>
       const label = VIA_LABEL[answer.via] ?? answer.via;
       return {
         message,
-        text: `Delivered to ${child.name}'s session as message ${id}, through its ${label}; nothing was typed into its pane. An idle ${child.name} starts a turn on it, and a busy one takes it after the tool calls in flight, before its next model call. agent_list shows when its model has read it, and if ${child.name} exits first, the exit event says it never did.`,
+        text: `Delivered to ${child.name}'s session as message ${id}, through its ${label}; nothing was typed into its pane.${answer.note ? ` ${answer.note}` : ''} An idle ${child.name} starts a turn on it, and a busy one takes it after the tool calls in flight, before its next model call. agent_list shows when its model has read it, and if ${child.name} exits first, the exit event says it never did.`,
       };
     }
-    reason = answer.reason;
+    // A repair on the way, such as a claim restored on the child's machine, still goes in the reply (issue #219).
+    reason = answer.note ? `${answer.reason.replace(/\.$/, '')}. ${answer.note}` : answer.reason;
     // The fallback records a message of its own under the same id.
     forget(parentId, child.id, id);
   }

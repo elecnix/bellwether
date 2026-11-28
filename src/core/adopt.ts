@@ -11,7 +11,7 @@
 import type { HerdrClient, HerdrPane } from './herdr-client.ts';
 import { LOCAL_HOST } from './machine.ts';
 import { newChildId } from './outbox.ts';
-import { claimantOf, decideClaim, type PaneClaim } from './pane-claims.ts';
+import { ClaimRefused, claimantOf, decideClaim, type PaneClaim } from './pane-claims.ts';
 import { removeRelayRecord } from './relay-records.ts';
 import { readParent, updateChild, upsertChild, watcherOfPane } from './registry.ts';
 import { clearRetirement } from './retire.ts';
@@ -48,6 +48,10 @@ export interface AdoptResult {
   revived?: boolean;
   /** The id of that earlier child, when the pane's machine holds the session under another id instead, which stands for it from now on. */
   replaced?: string;
+  /** For a pane this parent already held on another machine: that machine had lost the claim, and holds it again (issue #219). */
+  restored?: boolean;
+  /** For a pane this parent already held on another machine: why that machine could not confirm the claim. */
+  unconfirmed?: string;
 }
 
 /** The claim that records an adopted child's pane on its machine, under the child id the parent holds. */
@@ -93,6 +97,35 @@ export function backInPane(entry: ChildRecord, pane: Pick<HerdrPane, 'agentStatu
   }
 }
 
+/**
+ * A pane this parent already holds. On another machine, the claim there is
+ * the same fact stored twice, and that machine may have lost it, as after a
+ * reboot: ask it again, so both records agree (issue #219).
+ */
+async function confirmHeld(parentId: string, child: ChildRecord, host: string, claim: AdoptOptions['claim']): Promise<AdoptResult> {
+  const held: AdoptResult = { child, link: herdrLink('pane', child.paneId), already: true };
+  if (host === LOCAL_HOST || !claim) return held;
+  let answer: Awaited<ReturnType<NonNullable<AdoptOptions['claim']>>>;
+  try {
+    answer = await claim(host, adoptionClaim(parentId, child));
+  } catch (error) {
+    const why = (error as Error).message.replace(/\.$/, '');
+    if (!(error instanceof ClaimRefused)) return { ...held, unconfirmed: why };
+    updateChild(parentId, child.id, (entry) => {
+      entry.farRecordLost = { at: entry.farRecordLost?.at ?? new Date().toISOString(), host, reason: why };
+    });
+    throw new Error(`Pane ${child.paneId} on machine ${host} is a child of this session as ${child.name}, but machine ${host} holds no record of that and refuses to take the claim back: ${why}.`);
+  }
+  if (answer.childId !== child.id) throw new Error(`Pane ${child.paneId} on machine ${host} is a child of this session as ${child.id}, but machine ${host} holds it for this session as child ${answer.childId}.`);
+  if (child.farRecordLost) {
+    updateChild(parentId, child.id, (entry) => {
+      delete entry.farRecordLost;
+    });
+  }
+  const current = readParent(parentId)?.children.find((entry) => entry.id === child.id) ?? child;
+  return { ...held, child: current, ...(answer.held ? {} : { restored: true }), ...(answer.session ? { session: answer.session } : {}), ...(answer.messages === undefined ? {} : { messages: answer.messages }) };
+}
+
 /** Where a pane sits, in the words an error uses. */
 function place(host: string): string {
   return host === LOCAL_HOST ? 'local' : `machine ${host}`;
@@ -116,7 +149,7 @@ export async function adoptPane(client: HerdrClient, parent: ParentRecord, optio
   if (host === LOCAL_HOST && pane.paneId === parent.paneId) throw new Error('A session cannot adopt its own pane.');
 
   const owner = watcherOfPane(host, pane.paneId);
-  if (owner && owner.parent.id === parent.id) return { child: owner.child, link: herdrLink('pane', pane.paneId), already: true };
+  if (owner && owner.parent.id === parent.id) return confirmHeld(parent.id, owner.child, host, options.claim);
   if (owner) throw new Error(`Pane ${pane.paneId} on ${place(host)} is already a child of ${owner.parent.id} as ${owner.child.name}, so this session cannot adopt it.`);
 
   // The pane's harness may have resumed the session of a child this parent adopted before.

@@ -1,1 +1,4 @@
+---
+prs: [305]
+---
 The watcher and `agent_stop` now close a workspace only when a tab Bellwether opened created it for that child. Before this change, a child kept `ownsWorkspace` from an earlier run wherever its next tab opened. That flag now goes. It drops for a run that herdr shows in another workspace, and for a tab that opens in one.

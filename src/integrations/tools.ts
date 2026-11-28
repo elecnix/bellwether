@@ -118,7 +118,7 @@ export const parentTools: ToolDefinition[] = [
     schema: {
       type: 'object',
       properties: {
-        target: { type: 'string', description: 'The pane id, or the herdr name of the live agent. Write machine:pane, as child-box:w1:p5, for a pane on a saved herdr machine.' },
+        target: { type: 'string', description: 'The pane id, as w1:p5 or w7R:p1, or the herdr name of the live agent. Write machine:pane, as child-box:w7R:p1, for a pane on a saved herdr machine.' },
         name: { type: 'string', description: 'The handle to use for the child. Defaults to its herdr name.' },
         machine: { type: 'string', description: 'A saved herdr machine, by label or id as `herdr machine list` shows it. Omit it for this machine. Bellwether reads the pane from that machine\'s herdr, and asks the Bellwether daemon there, over the SSH connection this machine\'s daemon holds, to record the adoption, so that machine needs Bellwether 0.1.6 or later. That machine never connects back.' },
         stuck_minutes: { type: 'number', description: 'How long the child may be quiet before it counts as stuck. Defaults to 10.' },
@@ -336,11 +336,6 @@ function resolve(record: ReturnType<typeof readParent>, child: string): ChildRec
 }
 
 /**
- * The machine and pane an adoption names. A pane id has one colon, as w1:p5,
- * so a target with two names its machine first, and so does one whose first
- * part is not a workspace id, as child-box:first-mate.
- */
-/**
  * The end of the adoption's sentence about a session that now reports: what a
  * message from agent_send does in it (issue #168). Unknown, as from a far
  * daemon that predates the answer, promises nothing.
@@ -366,14 +361,51 @@ export function adoptedReach(reach: SessionReach | undefined, host: string, mess
   return 'This daemon cannot see which Bellwether adapters are connected, so whether this child can call parent_report is unknown. Its status changes still start your turns.';
 }
 
-export function adoptTarget(target: string, machine?: string): { host: string; target: string } {
+/** A herdr workspace id: `w` and letters or digits, as w1, w32 or w7R once herdr has made more than a hundred workspaces (issue #233). */
+const WORKSPACE_ID = /^w[0-9A-Za-z]+$/;
+/** The pane half of a herdr pane id, as p1 or pB. */
+const PANE_PART = /^p[0-9A-Za-z]+$/;
+
+/** The machine and pane an adoption names, and the other way to read it, when there is one. */
+export interface AdoptTarget {
+  host: string;
+  target: string;
+  /** For a pane id on this machine, as w7R:p1: the agent its second half names on a saved machine its first half names. */
+  otherReading?: { host: string; target: string };
+}
+
+/**
+ * The machine and pane an adoption names. A pane id is a workspace id and a
+ * pane, as w1:p5 or w7R:p1, and reads as a pane on this machine, or on the
+ * machine the call names. A target with two colons names its machine first,
+ * as child-box:w7R:p1, and so does one whose halves are not a pane id, as
+ * child-box:first-mate. The shape decides, never a lookup: w7R:p1 is a pane
+ * id, and `otherReading` keeps the agent p1 on a machine labelled w7R, which
+ * the caller names only when this machine has no such pane and that machine
+ * is saved.
+ */
+export function adoptTarget(target: string, machine?: string): AdoptTarget {
   const colon = target.indexOf(':');
   const prefix = colon > 0 ? target.slice(0, colon) : '';
   const rest = colon > 0 ? target.slice(colon + 1) : '';
-  const prefixed = Boolean(prefix && rest) && (rest.includes(':') || !/^w\d+$/.test(prefix));
-  if (!prefixed) return { host: machine ?? LOCAL_HOST, target };
+  const paneId = Boolean(prefix && rest) && WORKSPACE_ID.test(prefix) && PANE_PART.test(rest);
+  const prefixed = Boolean(prefix && rest) && !paneId;
+  if (!prefixed) return { host: machine ?? LOCAL_HOST, target, ...(paneId && !machine ? { otherReading: { host: prefix, target: rest } } : {}) };
   if (machine && machine !== prefix) throw new Error(`agent_adopt names machine ${machine}, but its target ${target} names machine ${prefix}. Name one.`);
   return { host: prefix, target: rest };
+}
+
+/**
+ * The refusal for a pane id that this machine lacks while a saved machine
+ * carries its first half as a label: the target reads two ways, and the
+ * caller names which (issue #233).
+ */
+async function ambiguousTarget(ctx: ToolContext, given: string, parsed: AdoptTarget, error: Error): Promise<Error> {
+  const other = parsed.otherReading;
+  if (!other) return error;
+  const hosts = await (ctx.knownHosts ?? (() => knownHosts()))().catch(() => [] as string[]);
+  if (!hosts.includes(other.host)) return error;
+  return new Error(`${given} reads two ways: pane ${given} on this machine, which herdr does not show (${error.message.replace(/\.$/, '')}), or the agent ${other.target} on the saved machine ${other.host}. Name the machine to adopt there, with machine: "${other.host}" and target: "${other.target}", or ${other.host}:${other.target} with a pane id, as ${other.host}:w1:p1.`);
 }
 
 /** How long agent_stop waits for the retirement it starts before it answers without the outcome. */
@@ -543,7 +575,8 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
   if (name === 'agent_adopt') {
     const given = optionalString(args['target']);
     if (!given) throw new Error('agent_adopt needs a target: a pane id or a live agent name');
-    const { host, target } = adoptTarget(given, optionalString(args['machine']));
+    const parsed = adoptTarget(given, optionalString(args['machine']));
+    const { host, target } = parsed;
     let client: HerdrClient;
     try {
       client = await clientFor(ctx, host);
@@ -551,7 +584,9 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
       throw new Error(`Cannot adopt ${target} on machine ${host}: ${(error as Error).message}`);
     }
     const claim = ctx.remote?.claim?.bind(ctx.remote);
-    const { child, link, already, revived, from, replaced, restored, unconfirmed, inDoubt, session: farReach, messages: farMessages } = await adoptPane(client, record, { target, host, name: optionalString(args['name']), stuckMinutes: typeof args['stuck_minutes'] === 'number' ? (args['stuck_minutes'] as number) : undefined, ...(claim ? { claim } : {}) });
+    const { child, link, already, revived, from, replaced, restored, unconfirmed, inDoubt, session: farReach, messages: farMessages } = await adoptPane(client, record, { target, host, name: optionalString(args['name']), stuckMinutes: typeof args['stuck_minutes'] === 'number' ? (args['stuck_minutes'] as number) : undefined, ...(claim ? { claim } : {}) }).catch(async (error: unknown) => {
+      throw await ambiguousTarget(ctx, given, parsed, error as Error);
+    });
     if (already) {
       const held = `${child.name} in pane ${child.paneId} is already a child of this session.`;
       // Issue #219: the claim on the child's machine was asked for again.

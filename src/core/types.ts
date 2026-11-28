@@ -579,6 +579,13 @@ export interface ChildMessage {
    * and the field goes when that answer arrives.
    */
   relayInDoubt?: string;
+  /**
+   * For keystrokes: why it is not known whether herdr typed the message, after
+   * herdr's agent.prompt failed once the request had left (issue #234). The
+   * request may have typed the text before the failure, so the record keeps
+   * the message and the caller's error says so.
+   */
+  typedInDoubt?: string;
 }
 
 /** One raise of a child's ceiling, for the audit trail agent_list shows. */

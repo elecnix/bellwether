@@ -99,6 +99,8 @@ The child record keeps the newest 20 messages. Each entry records its id, its pa
 
 A session message counts as read once the child's model has it. Claude Code reports that when the transcript records the channel message, and pi reports it at `message_end`. Bellwether can't tell when a model reads typed input, and `agent_list` says so. Until then, the message shows as unread.
 
+An `agent_send` error always matches the child record (issue #234). When herdr's `agent.prompt` fails after herdr received the request, as on a timeout, herdr may have typed the text already. The record then keeps the message, and the error gives its id: read the pane with `agent_read` before you send it again. When the connection to herdr's socket fails, herdr never received the request, so the record marks the message as never delivered, and the error says that sending it again types it once.
+
 A child session that reconnects takes its unread message again, after a daemon hand-over or a restart of its server. Before it resends, the adapter checks the session's history, so the model never sees the same message twice.
 
 If a child exits before it reads a message, Bellwether raises an exit event identifying the message, and the record marks the message undelivered.

@@ -120,9 +120,14 @@ class ClaudePane {
     if (request.method === 'pane.list') return { result: { type: 'pane_list', panes: [{ pane_id: PANE }] } };
     const start = harnessStart(request);
     if (start) {
+      // The pane answers its own start, so the fake's default reports of a
+      // harness at its prompt never arrive. herdr detects the harness and
+      // reports the status its screen shows before the start's reply, which
+      // leaves no moment in which the two disagree (issue #183).
       this.launchArgs = start.args;
-      setTimeout(() => this.setStatus(this.screen === 'prompt' ? 'idle' : 'blocked'), 5);
-      return undefined;
+      this.fake.send({ event: 'pane_agent_detected', data: { pane_id: PANE, workspace_id: 'w1', agent: 'claude' } });
+      this.settle();
+      return { result: { type: 'ok' } };
     }
     if (request.method === 'agent.send_keys') {
       for (const key of request.params['keys'] as string[]) this.press(key);
@@ -145,7 +150,7 @@ class ClaudePane {
       const brief = this.launchArgs.find((arg) => arg.startsWith('@'))?.slice(1);
       if (brief && this.asksToRead(brief)) this.ask('outside-read');
       else this.screen = 'prompt';
-      setTimeout(() => this.setStatus(this.screen === 'prompt' ? 'idle' : 'blocked'), 5);
+      this.settle();
     } else if (this.screen === 'choice' && this.choice) {
       const count = options(this.choice).length;
       if (key === 'Down') this.choice.selected = Math.min(count - 1, this.choice.selected + 1);
@@ -157,9 +162,14 @@ class ClaudePane {
         this.choice = undefined;
         this.screen = 'prompt';
         // A No ends the turn, and Claude Code waits at its prompt.
-        setTimeout(() => this.setStatus('idle'), 5);
+        this.settle();
       }
     }
+  }
+
+  /** Report the status the screen shows: idle at the prompt, blocked on any question. */
+  private settle(): void {
+    this.setStatus(this.screen === 'prompt' ? 'idle' : 'blocked');
   }
 
   setStatus(status: string): void {

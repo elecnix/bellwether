@@ -79,7 +79,7 @@ That daemon answers who watches the pane, because its registry lists the childre
 
 An adoption from a third machine stops counting once herdr shows a different session in that pane, because herdr reused the pane id for another agent. An adoption that takes the pane over removes that claim, whether it comes from a parent on the pane's machine or from yet another machine. The parent that left the claim sees the new session through its own watcher: its child exits, and `relay-cleanup` removes whatever claim remains.
 
-The same goes for the parent that left the claim: when it adopts the pane again for the new session, the new session gets a new child id rather than the old one (issue #244).
+An adoption of the pane again by the parent whose claim went stale gives the new session a new child id, not the old one (issue #244).
 
 A child that a parent on another machine started holds its pane there while its own Bellwether server or extension stays connected to the daemon on that machine. Once its harness ends, the pane is free, even when the parent's `relay-cleanup` never reached that machine.
 

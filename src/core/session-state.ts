@@ -10,6 +10,7 @@ import path from 'node:path';
 import { executables, installCandidates, pathCandidates } from './binaries.ts';
 import { claudeConfigDir } from './transcript.ts';
 import { locateTranscript } from './harnesses/index.ts';
+import { bellwetherHome } from './paths.ts';
 import { BELLWETHER_VERSION } from './version.ts';
 import { findLeftBehind, type LeftBehind, type LeftBehindRequest } from './move-leftovers.ts';
 import { parsePiModelList, piModelOf, claudeVersionsOf, sha256, targetSessionLayout, type HarnessDirs, type HarnessProbe, type ModelPair, type MovableHarness } from './move-plan.ts';
@@ -253,6 +254,48 @@ export function backupPath(file: string, childId: string): string {
   return `${file}.bellwether-move-${childId.replace(/[^A-Za-z0-9._-]+/g, '-')}`;
 }
 
+/**
+ * The destination's own list of the files a crossing's imports plan to write
+ * for one child, and whether each was new there. It lands before the first
+ * file does, so a parent's daemon that stops before its mark lists the files
+ * still leaves a discard or a commit every file to settle.
+ */
+export function importListPath(childId: string): string {
+  return path.join(bellwetherHome(), 'move-imports', `${childId.replace(/[^A-Za-z0-9._-]+/g, '-')}.json`);
+}
+
+type ListedFile = { path: string; created: boolean };
+
+function readImportList(childId: string): ListedFile[] {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(importListPath(childId), 'utf8')) as { files?: unknown };
+    return Array.isArray(parsed.files) ? parsed.files.filter((file): file is ListedFile => typeof file?.path === 'string' && typeof file?.created === 'boolean') : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeImportList(childId: string, files: ListedFile[]): void {
+  const file = importListPath(childId);
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  const temp = `${file}.${process.pid}.tmp`;
+  const fd = fs.openSync(temp, 'w', 0o600);
+  try {
+    fs.writeSync(fd, `${JSON.stringify({ childId, files })}\n`);
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+  fs.renameSync(temp, file);
+}
+
+/** The files a settle covers: those the caller names, and those the destination listed, where its own word on `created` wins. */
+function settledFiles(request: SettleRequest): ListedFile[] {
+  const files = new Map(request.files.map((file) => [file.path, file]));
+  for (const file of readImportList(request.childId)) files.set(file.path, file);
+  return [...files.values()];
+}
+
 /** Whether `prefix` is the first part of `whole`. */
 function startsWith(whole: Buffer, prefix: Buffer): boolean {
   return prefix.length <= whole.length && whole.subarray(0, prefix.length).equals(prefix);
@@ -291,16 +334,21 @@ export function importSession(request: ImportRequest): ImportResult {
       throw new Error(`${file.target} already exists on ${os.hostname()} and holds content the moved session does not, so Bellwether refused to overwrite another conversation. Move that file aside, then move the child.`);
     }
   }
+  // List every file before writing any. A file an earlier import of this
+  // crossing listed keeps that import's word on whether it was new here.
+  const listed = new Map(readImportList(request.childId).map((file) => [file.path, file]));
+  for (const file of planned) {
+    if (!listed.has(file.target)) listed.set(file.target, { path: file.target, created: !fs.existsSync(file.target) && !fs.existsSync(backupPath(file.target, request.childId)) });
+  }
+  writeImportList(request.childId, [...listed.values()]);
   const written: WrittenFile[] = [];
   for (const file of planned) {
     fs.mkdirSync(path.dirname(file.target), { recursive: true, mode: 0o700 });
     const backup = backupPath(file.target, request.childId);
-    let created = true;
-    if (fs.existsSync(file.target)) {
-      created = false;
-      // A second import in one move keeps the first backup, the file as it was before the move.
-      if (!fs.existsSync(backup)) fs.copyFileSync(file.target, backup);
-    } else if (fs.existsSync(backup)) created = false;
+    const created = listed.get(file.target)?.created ?? true;
+    // Only a file that was here before the crossing has a backup, and a
+    // second import in one crossing keeps the first, the file as it was then.
+    if (!created && fs.existsSync(file.target) && !fs.existsSync(backup)) fs.copyFileSync(file.target, backup);
     const temp = `${file.target}.${process.pid}.tmp`;
     fs.writeFileSync(temp, file.data, { mode: 0o600 });
     fs.renameSync(temp, file.target);
@@ -315,11 +363,11 @@ export interface SettleRequest {
   files: { path: string; created: boolean }[];
 }
 
-/** Undo an import: remove the files it created, and put back the ones it replaced. */
+/** Undo an import: remove the files it created, and put back the ones it replaced, listed or named. */
 export function discardImport(request: SettleRequest): { removed: number; restored: number } {
   let removed = 0;
   let restored = 0;
-  for (const file of request.files) {
+  for (const file of settledFiles(request)) {
     const backup = backupPath(file.path, request.childId);
     if (fs.existsSync(backup)) {
       fs.renameSync(backup, file.path);
@@ -329,18 +377,20 @@ export function discardImport(request: SettleRequest): { removed: number; restor
       removed += 1;
     }
   }
+  fs.rmSync(importListPath(request.childId), { force: true });
   return { removed, restored };
 }
 
-/** Keep an import: the backups of the files it replaced go. */
+/** Keep an import: the backups of the files it replaced go, listed or named. */
 export function commitImport(request: SettleRequest): { removed: number } {
   let removed = 0;
-  for (const file of request.files) {
+  for (const file of settledFiles(request)) {
     const backup = backupPath(file.path, request.childId);
     if (fs.existsSync(backup)) {
       fs.rmSync(backup, { force: true });
       removed += 1;
     }
   }
+  fs.rmSync(importListPath(request.childId), { force: true });
   return { removed };
 }

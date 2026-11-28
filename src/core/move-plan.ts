@@ -136,16 +136,37 @@ export function claudeVersionsOf(content: string): string[] {
   return [...found];
 }
 
-/** Parse `pi --list-models`: a header row, then one row per model with the provider and model first. */
+/** The header row of pi's model table, which starts with the provider and model columns. */
+const PI_MODEL_HEADER = /^provider\s+model(\s|$)/;
+
+/** What pi prints in place of its table when no provider is set up, and still exits 0. */
+const PI_NO_MODELS = /^No models available\b/;
+
+/**
+ * Parse `pi --list-models`: a header row, then one row per model with the
+ * provider and model first. When pi has no provider it says so in a sentence
+ * instead of a table, and that reads as no pair. Any other output is not a
+ * model list, so the parse throws rather than read its words as a pair.
+ */
 export function parsePiModelList(text: string): ModelPair[] {
   const rows = text.split('\n').map((line) => line.trim()).filter(Boolean);
-  const pairs: ModelPair[] = [];
-  for (const row of rows) {
-    const [provider, model] = row.split(/\s+/);
-    if (!provider || !model || (provider === 'provider' && model === 'model')) continue;
-    pairs.push({ provider, model });
+  const header = rows.findIndex((row) => PI_MODEL_HEADER.test(row));
+  if (header < 0) {
+    if (rows.some((row) => PI_NO_MODELS.test(row))) return [];
+    throw new Error(rows.length ? `pi --list-models printed no model table: ${rows[0]}` : 'pi --list-models printed nothing');
   }
-  return pairs;
+  return rows.slice(header + 1).map((row) => {
+    const [provider, model] = row.split(/\s+/);
+    if (!provider || !model) throw new Error(`pi --list-models printed a row that is not a provider and a model: ${row}`);
+    return { provider, model };
+  });
+}
+
+/** How doctor words the pi models a machine offers: a count, no pair at all, or unknown with the reason. */
+export function describePiModels(models: ModelPair[] | undefined, error: string | undefined): string {
+  if (!models) return `pi models unknown (${error ?? 'not listed'})`;
+  if (!models.length) return 'pi offers no pair: pi --list-models lists no provider and model';
+  return `${models.length} pi model${models.length === 1 ? '' : 's'}`;
 }
 
 /**
@@ -263,7 +284,9 @@ export function moveRefusals(input: RefusalInput): string[] {
     const label = pairLabel(input.piModel);
     const file = input.targetModelsFile ?? '~/.pi/agent/models.json';
     if (input.targetModelsError) refusals.push(`Bellwether could not list pi's models on ${where} (${input.targetModelsError}), so it cannot tell whether ${label} exists there.`);
-    else if (input.targetModels && !input.targetModels.some((pair) => pair.provider === input.piModel?.provider && pair.model === input.piModel?.model)) {
+    else if (input.targetModels?.length === 0) {
+      refusals.push(`${input.childName} uses the pi provider and model ${label}, and ${where} offers no pi pair at all. Log pi in to a provider there with /login, or add provider ${input.piModel.provider} with model ${input.piModel.model} to ${file} on ${where}, with its key, then move the child.`);
+    } else if (input.targetModels && !input.targetModels.some((pair) => pair.provider === input.piModel?.provider && pair.model === input.piModel?.model)) {
       refusals.push(`${input.childName} uses the pi provider and model ${label}, which ${where} does not offer. pi needs both together: add provider ${input.piModel.provider} with model ${input.piModel.model} to ${file} on ${where}, with its key, then move the child.`);
     }
   }

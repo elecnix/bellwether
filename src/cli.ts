@@ -37,7 +37,7 @@ import { canConnect, daemonIsLive, startDaemon } from './daemon/server.ts';
 import type { ChildRecord, OutboxEntry } from './core/types.ts';
 import { LOCAL_HOST, hostOf, knownHosts } from './core/machine.ts';
 import { MOVE_CHECK_BUDGET_MS, MOVE_VERBS, moveEndpoints, serveMoveVerb, type MoveVerb } from './core/move-endpoint.ts';
-import { moveRefusals, pairLabel, type MovableHarness, type ModelPair } from './core/move-plan.ts';
+import { describePiModels, moveRefusals, pairLabel, type MovableHarness, type ModelPair } from './core/move-plan.ts';
 import type { ProbeResult } from './core/session-state.ts';
 
 interface Flags {
@@ -314,7 +314,7 @@ async function checkMoves(): Promise<void> {
       console.log(`  info  move ${machineLabel(host)}: no child can move there or from there until this is fixed: ${probe ?? 'no answer'}`);
       continue;
     }
-    const models = probe.piModels ? `${probe.piModels.length} pi models` : `pi models unknown (${probe.piModelsError ?? 'not listed'})`;
+    const models = describePiModels(probe.piModels, probe.piModelsError);
     console.log(`  info  move ${machineLabel(host)} (${probe.hostname}): ${harnessLine(probe, 'claude-code')}, ${harnessLine(probe, 'pi')}, ${models}, bellwether ${probe.bellwether}`);
   }
   for (const child of children) {

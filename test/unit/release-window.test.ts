@@ -82,3 +82,50 @@ test('a note under a published version stops the next release, though no pull re
   assert.equal(run.staged, false, `release-notes/0.2.0/z.md merged after 0.2.0 was published, and 0.3.0 staged. Log:\n${run.logs.join('\n')}`);
   assert.match(run.error ?? '', /release-notes\/0\.2\.0\/z\.md/);
 });
+
+// A note belongs to the version whose release commit carries every pull request it names. A note
+// that moves into a file after that release, as #206 moved the entries 0.1.7 to 0.1.9 had shipped,
+// names pull requests that shipped there, so it stays where it is. Ancestry comes from git, never
+// from a date, because a squash merge keeps the author's date and a rebase moves it.
+async function shippedThenPublished(t: test.TestContext) {
+  const w = await world(t);
+  await w.merge('Add A (#10)', { 'a.txt': 'a\n', 'release-notes/0.2.0/a-first.md': NOTE });
+  const run = await w.release('0.2.0');
+  assert.equal(run.staged, true, `precondition: 0.2.0 stages\n${run.error}`);
+  w.publish('0.2.0');
+  return w;
+}
+
+test('a note added after its version was published, naming a pull request that shipped in it, lets the next release stage', async (t) => {
+  const w = await shippedThenPublished(t);
+  await w.merge('Give each note a file (#21)', { 'release-notes/0.2.0/a.md': `---\nprs: [10]\n---\n${NOTE}` }, [NO_ENTRY_LABEL]);
+  const run = await w.release('0.3.0');
+  assert.equal(run.staged, true, `release-notes/0.2.0/a.md names #10, which shipped in 0.2.0, and 0.3.0 refused it:\n${run.error}`);
+});
+
+test('a note under a published version that names a pull request merged after that release stops the next release', async (t) => {
+  const w = await shippedThenPublished(t);
+  await w.merge('Add B (#22)', { 'b.txt': 'b\n', 'release-notes/0.3.0/b.md': NOTE });
+  await w.merge('Note for B (#23)', { 'release-notes/0.2.0/b.md': `---\nprs: [22]\n---\n${NOTE}` }, [NO_ENTRY_LABEL]);
+  const run = await w.release('0.3.0');
+  assert.equal(run.staged, false, `release-notes/0.2.0/b.md names #22, which merged after 0.2.0, and 0.3.0 staged. Log:\n${run.logs.join('\n')}`);
+  assert.match(run.error ?? '', /release-notes\/0\.2\.0\/b\.md/);
+  assert.match(run.error ?? '', /#22/);
+});
+
+test('a note under a published version that names one shipped pull request and one later one stops the next release', async (t) => {
+  const w = await shippedThenPublished(t);
+  await w.merge('Add C (#24)', { 'c.txt': 'c\n', 'release-notes/0.3.0/c.md': NOTE });
+  await w.merge('Notes (#25)', { 'release-notes/0.2.0/ac.md': `---\nprs: [10, 24]\n---\n${NOTE}` }, [NO_ENTRY_LABEL]);
+  const run = await w.release('0.3.0');
+  assert.equal(run.staged, false, `release-notes/0.2.0/ac.md names #24, which merged after 0.2.0, and 0.3.0 staged. Log:\n${run.logs.join('\n')}`);
+  assert.match(run.error ?? '', /release-notes\/0\.2\.0\/ac\.md/);
+});
+
+test('a note under a published version that names a pull request no commit on main carries stops the next release', async (t) => {
+  const w = await shippedThenPublished(t);
+  await w.merge('Notes (#26)', { 'release-notes/0.2.0/ghost.md': `---\nprs: [999]\n---\n${NOTE}` }, [NO_ENTRY_LABEL]);
+  const run = await w.release('0.3.0');
+  assert.equal(run.staged, false, `release-notes/0.2.0/ghost.md names #999, which no commit on main carries, and 0.3.0 staged. Log:\n${run.logs.join('\n')}`);
+  assert.match(run.error ?? '', /release-notes\/0\.2\.0\/ghost\.md/);
+});

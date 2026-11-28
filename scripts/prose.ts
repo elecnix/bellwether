@@ -24,7 +24,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { prBody } from './release.ts';
-import { BEHAVIORS, FEATURES } from '../src/daemon/features.ts';
+import { FEATURES } from '../src/daemon/features.ts';
+import { readNotes } from './release-notes.ts';
+
+// Each note as its file states it. A note that names no pull request lists
+// without a number here; the release reads it from the commit that added it.
+const BEHAVIORS = readNotes(path.resolve(import.meta.dirname, '..'));
 
 /** What the lint passes to Vale. A directory covers every page under it. */
 export const PROSE_PATHS = ['README.md', 'AGENTS.md', 'docs'] as const;
@@ -146,7 +151,7 @@ export const RELEASE_BODIES: Record<string, string> = {
   'release-body-protocol-moves.md': prBody('0.1.5', '0.1.4', { from: 3, to: 4 }, FEATURES, BEHAVIORS),
   'release-body-protocol-stays.md': prBody('0.1.6', '0.1.5', undefined, FEATURES, BEHAVIORS),
   'release-body-first-release.md': prBody('0.1.0', undefined, undefined, FEATURES, BEHAVIORS),
-  // One body per release that features.ts names, so every summary in both tables passes Vale.
+  // One body per release that features.ts or a note names, so every summary passes Vale.
   ...Object.fromEntries([...new Set([...FEATURES, ...BEHAVIORS].map((entry) => entry.version))].map((version) => [`release-body-features-${version}.md`, prBody(version, undefined, undefined, FEATURES, BEHAVIORS)])),
 };
 

@@ -9,6 +9,10 @@
 // against the release commits with `git merge-base --is-ancestor`. A daemon
 // from 0.1.5 on lists what it serves in its hello, which this table only
 // stands in for when a daemon is older than that.
+//
+// A change in behavior that adds nothing to the wire has no entry here: its
+// release note is a file of its own under release-notes/<version>/, which no
+// daemon reads (scripts/release-notes.ts, issue #182).
 
 import { harnesses } from '../core/harnesses/index.ts';
 import type { HarnessEntry } from '../core/harnesses/types.ts';
@@ -34,8 +38,9 @@ export interface Feature {
   summary: string;
   /**
    * The pull requests that brought it. The release script stops on a pull
-   * request merged since the last release that no entry names, so a feature
-   * from 0.1.8 on names its own.
+   * request merged since the last release that no entry and no note under
+   * release-notes/ names, so a feature from 0.1.8 on names its own, or its
+   * pull request adds a note.
    */
   prs?: readonly number[];
 }
@@ -128,56 +133,6 @@ const BASE: readonly Feature[] = [
   ...brought('request', 4, '0.1.7', {
     'relay-message': "The daemon on a child's machine puts a parent's message in that child's session, where herdr used to type it into the far pane.",
   }, [144]),
-];
-
-/**
- * A change in what a release does that adds nothing to the wire: a person
- * would want to read about it, and no client negotiates it. It sits apart from
- * FEATURES, which feeds the hello, `serves` and doctor, because a behavior has
- * no name an older daemon could refuse and no protocol a client could compare.
- */
-export interface Behavior {
-  /** The first release that behaves this way. */
-  version: string;
-  /** The pull requests that brought it, which the release script matches against what merged. */
-  prs: readonly number[];
-  /**
-   * One sentence for a person reading the release notes: what someone can now
-   * do, or what now happens. The release pull request lists it under its
-   * version, ahead of the protocol, so it passes the same Vale rules as the docs.
-   */
-  summary: string;
-}
-
-/**
- * Every change in behavior since 0.1.7, oldest first. A pull request that
- * changes nothing a person would read about, such as a test, a typo or a
- * dependency bump, carries the `release-note: none` label instead.
- */
-export const BEHAVIORS: readonly Behavior[] = [
-  { version: '0.1.7', prs: [137], summary: 'A resume that brings a prompt keeps the brief a child never read, and puts that brief ahead of the prompt.' },
-  { version: '0.1.7', prs: [147], summary: "A bare child starts behind `command`, so a shell function or alias of the harness's name no longer changes its launch, and the spawn answers Claude Code's channel question by its digit." },
-  { version: '0.1.7', prs: [148], summary: "A pi child that exits or stops on a fatal error at startup fails its spawn, and the error quotes pi's own line." },
-  { version: '0.1.7', prs: [151], summary: 'Retirement removes a child\'s worktree once its tab closes, and `agent_stop` retires the child it closes.' },
-  { version: '0.1.7', prs: [152], summary: 'An adopted session that runs a Bellwether adapter gains `parent_report` over the daemon connection it opened at its start.' },
-  { version: '0.1.7', prs: [153, 154], summary: "An alert can end with one line that counts the parent's other live children by state, sent only when it changed and at most once in 10 minutes." },
-  { version: '0.1.8', prs: [158], summary: 'A suggestion that a harness draws faint in its input box no longer reads as typed text: `agent_read` and `idle` events leave it out and say whether the box holds a suggestion, a draft or nothing.' },
-  { version: '0.1.8', prs: [161], summary: 'A dialog that dims the options it has not selected counts as a dialog again, so the parent hears `blocked` rather than `idle`, and the startup answerer can select a dimmed accepting option.' },
-  { version: '0.1.8', prs: [163], summary: "The spawn reads a startup dialog's options from the block under the dialog's own line, so a shell prompt that starts with `❯` above it never passes for the selected option." },
-  { version: '0.1.8', prs: [170], summary: "A claude, pi or omp child takes its brief as a message in its session once its startup dialogs close, and the spawn waits for the adapter's acknowledgement. The pane shows the task rather than a path. A harness that exits first fails the spawn with its line, and the record says whether the session took the brief or herdr typed it, with the reason." },
-  { version: '0.1.8', prs: [172], summary: "A parent's message to an adopted pi session enters the session through the extension it loaded, and the adoption's reply and a typed message's reason name each case where an adopted session takes no message." },
-  { version: '0.1.8', prs: [171], summary: 'A refusal for a missing session gives the `herdr integration install` command when herdr on the child\'s machine lacks the integration, and `agent_spawn` warns.' },
-  { version: '0.1.9', prs: [177], summary: "Doctor reads pi's models only from the model table. When pi has no provider, doctor says pi doesn't offer a pair, and other output makes the models unknown." },
-  { version: '0.1.9', prs: [178], summary: 'Doctor gives each SSH call of its move check 6 s, and reports a machine that does not answer in time as unknown.' },
-  { version: '0.1.9', prs: [179], summary: "Doctor's move line for each machine says whether herdr there has its claude and pi integrations, with the install command for a missing one." },
-  { version: '0.1.9', prs: [195], summary: "An adopted Claude Code session keeps `parent_report` after a resume: its server follows the session Claude Code shows now and says hello as that session. A session that started with the Bellwether channel takes a parent's message in its session, rather than typed into its pane." },
-  { version: '0.1.9', prs: [181], summary: "A spawn counts a brief taken once the child's model begins a turn on it or reads it, rather than when its adapter receives it. It sends the brief once more when the model doesn't begin a turn, and fails with `BriefNotTaken` when the second copy doesn't start one either." },
-  { version: '0.1.9', prs: [197], summary: "`agent_list` prints each child's newest brief and how it arrived, and names the record path `children[].briefs[].delivery`, where the delivery stays because each resume adds a brief of its own." },
-  { version: '0.1.9', prs: [201], summary: "A pi child on this machine with no pair from its caller or its parent starts on pi's saved default, passed as `--provider` and `--model`, rather than on the first entry of `enabledModels`. The reply mentions that entry only when it differs." },
-  { version: '0.1.9', prs: [192], summary: "The new tab of a restart opens before the old pane closes, so a session alone in its herdr workspace comes back in that workspace, or in a new one under the old label once herdr has closed it. When the start fails after the close, the record keeps `restartFailed`, a child's parent receives an `exited` event, and doctor prints the session and its last pane." },
-  { version: '0.1.9', prs: [196], summary: "A session's restart of itself waits at most 5 minutes for its turn to end. The daemon keeps the session's own events unread while it waits, so they don't start another turn, and the new session receives them. A second call and doctor report the pane, the status herdr gives for it and the events held. A wait that runs out closes nothing and records the cause as `restartStalled`." },
-  { version: '0.1.9', prs: [194], summary: "A daemon finds herdr through HERDR_BIN_PATH, its inherited PATH, the login shell's PATH and the usual install directories, so a daemon started over SSH no longer fails every herdr command with `spawn herdr ENOENT`. Doctor fails when the running daemon can't find herdr, and lists each place it looked." },
-  { version: '0.1.9', prs: [202], summary: "An input box with two typed lines now counts as a draft. `agent_read` shows the box, and an idle child with a draft reaches its parent as idle. A screen is a dialog only when a question stands above a solid selection marker with a numbered option beside it, or with an option beside it and a confirm or cancel hint under the list. A y/n question also counts." },
 ];
 
 /**

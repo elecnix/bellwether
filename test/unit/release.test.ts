@@ -4,7 +4,8 @@ import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { BEHAVIORS, FEATURES, type Behavior, type Feature } from '../../src/daemon/features.ts';
+import { FEATURES, type Feature } from '../../src/daemon/features.ts';
+import { readNotes, type Behavior } from '../../scripts/release-notes.ts';
 import { approvalNotice, behaviorLine, bumpFormula, compareVersions, featureLine, installNotice, NO_ENTRY_LABEL, prBody, unrecorded, type MergedPr, protocolOf, release, ReleaseError, SITE_TIMEOUT_MS, staleSiteMessage, type ReleaseDeps, type RunOptions, type RunResult } from '../../scripts/release.ts';
 import { bylineOpening, SITE_URL } from '../../scripts/site-version.ts';
 
@@ -35,8 +36,8 @@ interface World {
   site: string[];
   /** The feature table in the release tree's `src/daemon/features.ts`. */
   treeFeatures: Feature[];
-  /** The behavior table in the same file. */
-  treeBehaviors: Behavior[];
+  /** The release notes in the release tree, each with the pull request whose squash commit added it. */
+  treeNotes: Array<{ file: string; text: string; addedBy?: number }>;
   /** The pull requests merged on main since the previous release, oldest first. */
   merged: MergedPr[];
   /** What `vale sync` answers in the release worktree. */
@@ -63,7 +64,7 @@ async function harness(overrides: Partial<World> = {}) {
     formulaOnMain: FORMULA,
     site: ['0.1.4'],
     treeFeatures: [],
-    treeBehaviors: [],
+    treeNotes: [],
     merged: [],
     ...overrides,
   };
@@ -97,6 +98,9 @@ async function harness(overrides: Partial<World> = {}) {
     if (line === 'git show origin/main:package.json') return ok(JSON.stringify({ type: 'module', version: world.mainVersion }));
     if (line.startsWith('git log -1')) return ok('c0ffee\n');
     if (line.startsWith('git log --format=%H -S')) return ok('b0a5e00\n');
+    if (line.startsWith('git log --first-parent --diff-filter=A')) {
+      return ok(world.treeNotes.filter((note) => note.addedBy).reverse().map((note) => `\0Add a note (#${note.addedBy})\n\n${note.file}\n`).join(''));
+    }
     if (line.startsWith('git log --first-parent')) return ok(world.merged.map((pr) => `${pr.title} (#${pr.number})\n`).reverse().join(''));
     if (line.startsWith('gh pr view')) {
       const pr = world.merged.find((each) => String(each.number) === args[2])!;
@@ -109,7 +113,11 @@ async function harness(overrides: Partial<World> = {}) {
       const tree = args.find((arg) => arg.includes('release-'))!;
       await mkdir(path.join(tree, 'src/daemon'), { recursive: true });
       await writeFile(path.join(tree, 'src/daemon/protocol.ts'), 'export const DAEMON_PROTOCOL = 3;\n');
-      await writeFile(path.join(tree, 'src/daemon/features.ts'), `export const FEATURES = ${JSON.stringify(world.treeFeatures)};\nexport const BEHAVIORS = ${JSON.stringify(world.treeBehaviors)};\n`);
+      await writeFile(path.join(tree, 'src/daemon/features.ts'), `export const FEATURES = ${JSON.stringify(world.treeFeatures)};\n`);
+      for (const note of world.treeNotes) {
+        await mkdir(path.dirname(path.join(tree, note.file)), { recursive: true });
+        await writeFile(path.join(tree, note.file), note.text);
+      }
       await writeFile(path.join(tree, 'package.json'), JSON.stringify({ type: 'module', version: world.mainVersion }));
       await mkdir(path.join(tree, '.claude-plugin'), { recursive: true });
       await writeFile(path.join(tree, '.claude-plugin/plugin.json'), `${JSON.stringify({ name: 'bellwether', version: world.mainVersion }, null, 2)}\n`);
@@ -490,24 +498,33 @@ test('a site that cannot be read counts as stale, and the error says what the re
 // features.ts recorded only wire changes and nothing noticed the gap (#157).
 const MERGED: MergedPr = { number: 170, title: 'retire: the daemon removes a worktree', labels: [] };
 
-test('a release whose merged pull request has an entry under its version opens the pull request with that line', async () => {
-  const behavior: Behavior = { version: '0.1.4', prs: [170], summary: 'Retirement removes a child worktree.' };
-  const h = await harness({ merged: [MERGED], treeBehaviors: [behavior] });
+test('a release whose merged pull request added a note under its version opens the pull request with that line', async () => {
+  const h = await harness({ merged: [MERGED], treeNotes: [{ file: 'release-notes/0.1.4/retire-worktree.md', text: 'Retirement removes a child worktree.\n', addedBy: 170 }] });
   await release({ version: '0.1.4' }, h.deps);
   assert.ok(h.calls.some((call) => call === 'gh pr view 170 -R elecnix/bellwether --json number,title,labels'), h.calls.join('\n'));
-  assert.ok(h.bodies[0]!.includes(behaviorLine(behavior)), h.bodies[0]);
+  assert.ok(h.bodies[0]!.includes('- Retirement removes a child worktree. (#170)'), h.bodies[0]);
 });
 
-test('a release whose merged pull request has no entry stops before the gates, naming the pull request', async () => {
-  const h = await harness({ merged: [MERGED], treeBehaviors: [{ version: '0.1.3', prs: [170], summary: 'An entry under the release before.' }] });
+test('a note added later by another pull request covers the one its front matter names', async () => {
+  const h = await harness({ merged: [MERGED, { number: 171, title: 'notes: the line #170 forgot', labels: [NO_ENTRY_LABEL] }], treeNotes: [{ file: 'release-notes/0.1.4/retire-worktree.md', text: '---\nprs: [170]\n---\nRetirement removes a child worktree.\n', addedBy: 171 }] });
+  await release({ version: '0.1.4' }, h.deps);
+  assert.ok(h.bodies[0]!.includes('- Retirement removes a child worktree. (#170)'), h.bodies[0]);
+});
+
+test('a release whose merged pull request added no note stops before the gates, naming the pull request', async () => {
+  const h = await harness({ merged: [MERGED], treeNotes: [
+    { file: 'release-notes/0.1.3/retire-worktree.md', text: 'A note under the release before.\n', addedBy: 170 },
+    { file: 'release-notes/0.1.4/other.md', text: 'A note another pull request added.\n', addedBy: 171 },
+  ] });
   const error = await release({ version: '0.1.4' }, h.deps).then(() => undefined, (caught: unknown) => caught);
   assert.ok(error instanceof ReleaseError, String(error));
   assert.match(error.message, /#170 retire: the daemon removes a worktree/);
+  assert.ok(error.message.includes('release-notes/0.1.4/<name>.md'), 'the error says where the note goes');
   assert.ok(error.message.includes(NO_ENTRY_LABEL), 'the error says how to mark a pull request that needs no entry');
   for (const step of ['npm test', 'npm run typecheck', 'npm version', 'git push', 'gh pr create', 'npx -y npm@12 stage publish']) {
     assert.ok(!h.calls.some((call) => call.startsWith(step)), `${step} ran before the check stopped the release:\n${h.calls.join('\n')}`);
   }
-  const range = h.calls.find((call) => call.startsWith('git log --first-parent'))!;
+  const range = h.calls.find((call) => call.startsWith('git log --first-parent --format=%s'))!;
   assert.match(range, /b0a5e00\.\.HEAD$/, 'the range starts at the commit that set the previous version');
 });
 
@@ -534,7 +551,7 @@ test('the body for a mixed version lists what it does before what it adds to the
   assert.match(body, /^- Retirement removes a child worktree\. \(#170, #171\)$/m);
   assert.ok(body.indexOf(featureLine(feature)) > speaks, body);
   const wireOnly = prBody('0.1.4', '0.1.3', undefined, [feature], []);
-  assert.match(wireOnly, /doesn't record a change in behavior under 0\.1\.4/);
+  assert.match(wireOnly, /`release-notes\/0\.1\.4\/` is empty/);
 });
 
 /** The pull requests merged between the 0.1.6 and 0.1.7 release commits, with the label each would carry. */
@@ -558,5 +575,5 @@ test('the 0.1.7 table as it shipped would have stopped the release on its three 
   const asShipped = FEATURES.map(({ prs: _prs, ...feature }) => feature as Feature);
   const missing = unrecorded('0.1.7', MERGED_0_1_7, asShipped, []).map((pr) => pr.number);
   for (const number of [151, 152, 154]) assert.ok(missing.includes(number), `#${number} passes without an entry: ${missing.join(', ')}`);
-  assert.deepEqual(unrecorded('0.1.7', MERGED_0_1_7, FEATURES, BEHAVIORS), [], 'the table now records every 0.1.7 change');
+  assert.deepEqual(unrecorded('0.1.7', MERGED_0_1_7, FEATURES, readNotes(path.resolve(import.meta.dirname, '../..'))), [], 'the notes now record every 0.1.7 change');
 });

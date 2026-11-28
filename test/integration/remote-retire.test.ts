@@ -232,7 +232,7 @@ test("the destination daemon answers that the child is not its own, names the pa
   await parentDaemon(w, git);
   await until(() => Boolean(childOf('c-alone')?.retireIntent), 'the parent record to take the request', 20_000, () => w.logs);
   assert.equal(childOf('c-alone')?.retireIntent?.worktree, LEFT);
-  await until(() => inHome(w.childHome, () => listForwards()).length === 0, 'the child machine to drop its copy');
+  await until(() => inHome(w.childHome, () => listForwards()).length === 0, 'the child machine to drop its copy', 20_000, () => w.logs);
   assert.equal(inHome(w.childHome, () => readRelayRecord('c-alone'))?.retireRequest, undefined);
   const after = await doctorOn(w, w.childHome);
   assert.doesNotMatch(after, /retirement: child-c-alone/, after);

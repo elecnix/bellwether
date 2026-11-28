@@ -50,6 +50,9 @@ export interface RelayLinksOptions {
 
 /** What the daemon does with a report that arrived: take it, or refuse it for good. */
 /** What the parent's daemon makes of a relayed entry. A retirement request takes git's answers, so it settles later. */
+/** How long a link closed gracefully gives ssh to exit on its own before it is killed. */
+export const CLOSE_GRACE_MS = 2_000;
+
 export type AcceptRelayed = (host: string, report: RelayReport) => RelayOutcome | Promise<RelayOutcome>;
 export type RelayOutcome = { refused?: string; answer?: string };
 
@@ -188,7 +191,8 @@ export class RelayLinks {
     for (const [host, link] of this.links) {
       const want = wanted.get(host);
       if ((want && want.children.length > 0) || (this.pins.get(host) ?? 0) > 0) continue;
-      this.close(link, 'no child there needs it');
+      // Ended rather than killed: an acknowledgement written just before, such as the last one a drain waited for, still reaches the far daemon.
+      this.close(link, 'no child there needs it', true);
       this.links.delete(host);
       this.log(`relay: closed the connection to machine ${host}, which runs no child this daemon waits for`);
     }
@@ -571,7 +575,13 @@ export class RelayLinks {
     link.heartbeat = undefined;
   }
 
-  private close(link: Link, reason: string): void {
+  /**
+   * Close a link. A graceful close ends the connection's input instead of
+   * killing ssh, so each line already written, such as an acknowledgement,
+   * reaches the far daemon before the bridge there exits (issue #227). ssh
+   * gets `CLOSE_GRACE_MS` to leave on its own before it is killed.
+   */
+  private close(link: Link, reason: string, graceful = false): void {
     link.closing = true;
     this.stopHeartbeat(link);
     if (link.timer) clearTimeout(link.timer);
@@ -584,7 +594,17 @@ export class RelayLinks {
     for (const waiter of [...link.waiters]) waiter();
     const child = link.process;
     link.process = undefined;
-    if (child && child.exitCode === null) child.kill('SIGTERM');
+    if (!child || child.exitCode !== null) return;
+    if (!graceful || !child.stdin?.writable) {
+      child.kill('SIGTERM');
+      return;
+    }
+    child.stdin.end();
+    const kill = setTimeout(() => {
+      if (child.exitCode === null) child.kill('SIGTERM');
+    }, CLOSE_GRACE_MS);
+    kill.unref?.();
+    child.once('exit', () => clearTimeout(kill));
   }
 
   private remember(link: Link): void {

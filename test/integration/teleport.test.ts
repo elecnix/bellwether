@@ -70,7 +70,7 @@ function fakeSession(w: TwoMachines, take: boolean): { inbox: Inbox; pushes: Pus
 }
 
 function deps(w: TwoMachines, inbox: Inbox | undefined, inbound?: TeleportDeps['inbound']): TeleportDeps {
-  return { ...w.deps, inbox, by: 'parent mover', ...(inbound ? { inbound } : {}) };
+  return { ...w.deps, inbox, by: w.parentId, from: 'your parent', ...(inbound ? { inbound } : {}) };
 }
 
 function record(w: TwoMachines): ChildRecord | undefined {
@@ -125,7 +125,9 @@ test('a live child crosses to the other machine, resumes its session there, and 
   // The record says where it went, what it was told, and how Bellwether knows it runs.
   const entry = moved?.teleports?.at(-1);
   assert.equal(entry?.state, 'live');
-  assert.equal(entry?.by, 'parent mover');
+  assert.equal(entry?.by, w.parentId, 'the record keeps who asked by id, not the phrase the child reads');
+  assert.match(notice?.text ?? '', /at your parent's request, because it needs more memory/);
+  assert.doesNotMatch(notice?.text ?? '', /claude-code-|pi session/);
   assert.equal(entry?.reason, 'it needs more memory');
   assert.deepEqual(entry?.from, { host: LOCAL_HOST, cwd: hereCwd, paneId: 'w1:p3' });
   assert.deepEqual(entry?.to, { host: 'box', cwd: boxCwd, paneId: moved?.paneId });
@@ -346,4 +348,54 @@ test('agent_teleport through the tool list replies first with whether the child 
   assert.match(rest.join('\n'), /The worktree, the shell jobs and any file outside the session stayed on this machine/);
   assert.match(session.pushes[0]?.text ?? '', /because the old machine is going down/);
   assert.equal(record(w)?.host, 'box');
+});
+
+test('a first notice copy that never enters the session is sent again, and the copy the session takes is its first input, with nothing before it', async (t) => {
+  const w = await twoMachines(t);
+  harness(w.here, { claude: '2.1.300' });
+  harness(w.box, { claude: '2.1.300' });
+  claudeHere(w, dir(w.here.user, 'src', 'repo'));
+  const boxCwd = dir(w.box.user, 'repo');
+  // The adapter receives every push, but the first never reaches the model,
+  // as the real crossing saw: no read receipt and no turn for it.
+  const pushes: Push[] = [];
+  const entered: string[] = [];
+  const reads = new Map<string, string>();
+  const inbox: Inbox = async (_parentId, child, message) => {
+    pushes.push({ id: message.id, host: child.host ?? LOCAL_HOST, paneId: child.paneId, text: message.text, startsBefore: harnessStarts(w.box.herdr).length });
+    if (pushes.length > 1) {
+      setTimeout(() => {
+        entered.push(message.id);
+        reads.set(message.id, new Date().toISOString());
+        w.box.world.emit({ event: 'pane_agent_status_changed', data: { pane_id: child.paneId, agent_status: 'working' } });
+      }, 10).unref();
+    }
+    return { delivered: true, via: 'claude-channel' };
+  };
+  inbox.read = (_parentId, _childId, messageId, signal) =>
+    new Promise<string>((resolve, reject) => {
+      const timer = setInterval(() => {
+        const at = reads.get(messageId);
+        if (at) {
+          clearInterval(timer);
+          resolve(at);
+        }
+      }, 5);
+      signal.addEventListener('abort', () => {
+        clearInterval(timer);
+        reject(new Error('aborted'));
+      }, { once: true });
+    });
+  inbox.turnWaitMs = 300;
+
+  const result = await teleportChild(deps(w, inbox), w.parentId, { child: 'worker', machine: 'box', cwd: boxCwd });
+
+  assert.equal(pushes.length, 2, 'the notice went once more after the first copy was not taken');
+  assert.ok(pushes.every((push) => /teleported from/.test(push.text)), 'both copies are the notice');
+  // The property: the first input the session takes is the notice, and nothing entered before it.
+  assert.deepEqual(entered, [pushes[1]?.id]);
+  assert.equal(result.notice.message, pushes[1]?.id, 'the record names the copy the session took');
+  assert.ok(result.notice.takenAt);
+  assert.equal(record(w)?.teleports?.at(-1)?.alive.proof, 'took-notice');
+  assert.equal(typed(w), 0, 'neither copy was typed');
 });

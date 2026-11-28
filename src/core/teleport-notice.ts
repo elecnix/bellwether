@@ -17,8 +17,8 @@ export interface NoticeInput {
   to: NoticePlace;
   /** When the teleport was asked for. */
   at: string;
-  /** Who asked for it, as the agent knows them. */
-  by: string;
+  /** Who asked for it: the agent's parent, or the agent itself. */
+  requester: 'parent' | 'self';
   reason?: string;
   state: TeleportState;
 }
@@ -32,8 +32,8 @@ export function teleportNotice(input: NoticeInput): string {
   const before = input.state === 'stopped' ? 'You were stopped, and you' : 'You';
   const why = input.reason ? `, because ${input.reason.replace(/\.$/, '')}` : '';
   return [
-    `${before} were teleported from machine ${input.from.machine}, directory ${input.from.cwd}, to machine ${input.to.machine}, directory ${input.to.cwd}, at ${input.at}, by ${input.by}${why}.`,
+    `${before} were teleported from machine ${input.from.machine}, directory ${input.from.cwd}, to machine ${input.to.machine}, directory ${input.to.cwd}, at ${input.at}, at ${input.requester === 'self' ? 'your own' : "your parent's"} request${why}.`,
     '',
-    `Your conversation crossed. Your worktree, the shell jobs it ran and any file outside the session did not cross: ${input.by} prepared ${input.to.cwd}. A background command you started before the teleport will not report back. Check the state of ${input.to.cwd} before you rely on anything you did there.`,
+    `Your conversation crossed. Your worktree, the shell jobs you ran and any file outside the session did not cross: ${input.requester === 'self' ? `you prepared ${input.to.cwd} yourself before you asked` : `your parent prepared ${input.to.cwd} for you`}. A background command you started before the teleport will not report back. Check the state of ${input.to.cwd} before you rely on anything you did there.`,
   ].join('\n');
 }

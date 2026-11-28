@@ -25,7 +25,7 @@ import { moveChild } from '../core/move.ts';
 import { isMoving } from '../core/move-plan.ts';
 import { crossingState } from '../core/recover-crossing.ts';
 import { compareVersions } from '../core/move-plan.ts';
-import { teleportChild, teleportReply } from '../core/teleport.ts';
+import { requestSelfTeleport, teleportChild, teleportReply } from '../core/teleport.ts';
 import { predates } from '../daemon/relay-links.ts';
 import { routeLabel } from '../core/routes.ts';
 import { parseWorkspaces, releaseWorkspace, workspaceColumn, workspaceName } from '../core/workspace.ts';
@@ -193,18 +193,18 @@ export const parentTools: ToolDefinition[] = [
   },
   {
     name: 'agent_teleport',
-    description: 'Teleport a claude or pi child to another machine, live or stopped, keeping its child id, its name and its conversation. Bellwether does three things: it starts the child at the destination, in a directory that already exists there, resuming its session (copied and checked byte for byte, as agent_move does); it proves the child is alive; and it tells the child it was teleported, as the first message its session reads, naming both machines, both directories, who asked and why. The notice goes into the session and is never typed into a pane. You prepare the destination first: the folder, the worktree and any program the child needs. Bellwether never copies a worktree or creates a directory. A stopped child starts at the destination at once, which agent_move refuses. When the session takes the notice late or not at all, the child keeps running at the destination and the reply says it was not told. It refuses, before touching anything: a destination directory that does not exist; a destination harness older than the version that wrote the session; a destination with no inbound path for the notice, such as a machine whose Bellwether predates relay-message; an adopted child; a working or blocked child; and, unless you pass accept_loss, a child that would leave a background job or unpushed worktree work behind. Every other refusal of agent_move applies too. Parent sessions cannot teleport.',
+    description: 'Teleport a claude or pi child to another machine, live or stopped, keeping its child id, its name and its conversation. Bellwether does three things: it starts the child at the destination, in a directory that already exists there, resuming its session (copied and checked byte for byte, as agent_move does); it proves the child is alive; and it tells the child it was teleported, as the first message its session reads, naming both machines, both directories, who asked and why. The notice goes into the session and is never typed into a pane. You prepare the destination first: the folder, the worktree and any program the child needs. Bellwether never copies a worktree or creates a directory. A stopped child starts at the destination at once, which agent_move refuses. When the session takes the notice late or not at all, the child keeps running at the destination and the reply says it was not told. It refuses, before touching anything: a destination directory that does not exist; a destination harness older than the version that wrote the session; a destination with no inbound path for the notice, such as a machine whose Bellwether predates relay-message; an adopted child; a working or blocked child; and, unless you pass accept_loss, a child that would leave a background job or unpushed worktree work behind. Every other refusal of agent_move applies too. A child Bellwether started can teleport itself: leave out child, and the daemon replies first, waits for this turn to end within 5 minutes, then teleports it as its parent, and the notice says it asked. Parent sessions cannot teleport.',
     schema: {
       type: 'object',
       properties: {
-        child: { type: 'string', description: 'The child\'s name, its pane id, or the id agent_spawn returned.' },
+        child: { type: 'string', description: 'The child\'s name, its pane id, or the id agent_spawn returned. Omit it to teleport this session itself, when Bellwether started it as a child: the teleport then runs once this turn ends.' },
         machine: { type: 'string', description: 'The destination: a saved herdr machine by label or id, or local for this one. Omit it when exactly one other machine is known.' },
         cwd: { type: 'string', description: 'The directory the child resumes in at the destination, which must already exist there. Defaults to the directory it runs in now.' },
         kind: { type: 'string', enum: ['claude', 'pi'], description: 'The harness to run at the destination. Defaults to the child\'s own, and any other is refused.' },
         reason: { type: 'string', description: 'Why the child crosses. The child reads it in its notice, and the record and teleport.log keep it.' },
         accept_loss: { type: 'boolean', description: 'Teleport even though the refusal named work that would stay behind: background jobs, which end with the session, or worktree changes and commits that exist only on the source. The reply names each one again.' },
       },
-      required: ['child'],
+      required: [],
     },
   },
   {
@@ -501,6 +501,26 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
     return runAgentRestart(ctx.client, ctx.parentId, caller, { ...(ctx.restart ?? {}), reset: (childId) => ctx.watcher.reset(childId), ...(relay ? { relay } : {}) }, optionalString(args['target']), typeof args['wait_seconds'] === 'number' ? (args['wait_seconds'] as number) : undefined, change);
   }
 
+  if (name === 'agent_teleport' && !optionalString(args['child'])) {
+    // A child teleports itself: routed by the caller's identity, as a self-restart is (issue #226).
+    const remote = ctx.remote;
+    return requestSelfTeleport(
+      {
+        clientFor: (host) => clientFor(ctx, host),
+        endpointFor: ctx.endpointFor ?? moveEndpoints(),
+        knownHosts: ctx.knownHosts ?? (() => knownHosts()),
+        ...(remote ? { registerFor: (parentId: string) => (child, brief) => remote.register({ id: parentId }, child, brief), cleanupRemote: (child) => remote.cleanup(child) } : {}),
+        log: ctx.log,
+        ...(ctx.inbox ? { inbox: ctx.inbox } : {}),
+        inbound: async (host) => farInboundGap(host, ctx.relayState?.(host)),
+        from: 'Bellwether, at your own request',
+      },
+      caller,
+      { machine: optionalString(args['machine']), cwd: optionalString(args['cwd']), reason: optionalString(args['reason']), kind: optionalString(args['kind']) },
+      { ...(ctx.restart ?? {}) },
+    );
+  }
+
   const record = readParent(ctx.parentId);
   if (!record) throw new Error(`No Bellwether registry for ${ctx.parentId}. Start a session with the Bellwether extension loaded.`);
 
@@ -687,7 +707,8 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
           log: ctx.log,
           ...(ctx.inbox ? { inbox: ctx.inbox } : {}),
           inbound: async (host) => farInboundGap(host, ctx.relayState?.(host)),
-          by: senderName(record),
+          by: record.id,
+          from: senderName(record),
         },
         ctx.parentId,
         { child: target, machine: optionalString(args['machine']), cwd: optionalString(args['cwd']), kind: optionalString(args['kind']), reason: optionalString(args['reason']), acceptLoss: args['accept_loss'] === true },

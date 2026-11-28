@@ -93,7 +93,7 @@ async function world(t: test.TestContext, overrides: Partial<ChildRecord> = {}):
     parentId: parent.id,
     panes,
     watcher() {
-      const watcher = new Watcher({ client, parentId: parent.id, onEntries: () => {}, tickMs: 60_000, screenPollMs: 0, retireOps: git, retireBusyRetries: 0 });
+      const watcher = new Watcher({ client, clientFor: async () => client, parentId: parent.id, onEntries: () => {}, tickMs: 60_000, screenPollMs: 0, retireOps: git, retireBusyRetries: 0 });
       watchers.push(watcher);
       return watcher;
     },
@@ -645,4 +645,60 @@ test('a read declined just before retirement reaches the parent with the exit, a
   assert.equal(kept?.[0]?.outcome, 'declined');
   assert.equal(kept?.[0]?.path, '/srv/example-other/eslint.config.js');
   assert.equal(kept?.[0]?.told, true);
+});
+
+// A parent's stop of a moved child retires the worktree the child left on the
+// parent's machine, as the child's own request does (issue #243). The child's
+// host is the machine it moved to, so the stop must not treat the whole child
+// as out of bounds: the worktree it left here and its proofs are here.
+
+const FAR = '/far/x/feat-x';
+const movedAway = (): Partial<ChildRecord> => ({ host: 'hawthorne', cwd: FAR, departures: [{ host: 'local', at: new Date(Date.now() - 60_000).toISOString(), cwd: WORKTREE, verb: 'move' }], movedFrom: { host: 'local', at: new Date(Date.now() - 60_000).toISOString(), cwd: WORKTREE, verb: 'move' } });
+
+test("agent_stop of a moved child retires the worktree it left on the parent's machine, and names the one on the far machine (issue #243)", async (t) => {
+  const w = await world(t, movedAway());
+  w.git.merged.add(`${REPO}:feat/x`);
+  const watcher = w.watcher();
+  watcher.start();
+  await w.herdr.waitFor('events.subscribe');
+  const text = await stop(w, watcher, () => {
+    w.panes.delete(PANE);
+  });
+  const child = w.child();
+  assert.equal(child.retireIntent?.worktree, WORKTREE);
+  assert.equal(child.retireIntent?.movedAway, 'hawthorne');
+  assert.equal(child.retireIntent?.reason, 'agent_stop by the parent');
+  assert.equal(child.retireOutcome, 'removed');
+  assert.deepEqual(w.git.calls, [`worktree remove ${WORKTREE}`, 'branch -D feat/x']);
+  assert.ok(text.startsWith('Closed feat-x. Retired: removed worktree /work/x/feat-x and branch feat/x'), text);
+  assert.ok(text.includes(`${FAR}`) && text.includes('hawthorne'), `the stop names the worktree left on the far machine: ${text}`);
+  assert.equal(child.departures, undefined, 'the retired place leaves the list');
+});
+
+test('agent_stop of a moved child leaves the worktree it left here when its work is not safe, and says why (issue #243)', async (t) => {
+  const w = await world(t, movedAway());
+  w.git.unpushed.set(`${REPO}:feat/x`, 1);
+  const watcher = w.watcher();
+  watcher.start();
+  await w.herdr.waitFor('events.subscribe');
+  const text = await stop(w, watcher, () => {
+    w.panes.delete(PANE);
+  });
+  assert.equal(w.child().retireOutcome, 'refused');
+  assert.deepEqual(w.git.calls, []);
+  assert.match(text, /Retirement left worktree \/work\/x\/feat-x and branch feat\/x in place, because Bellwether could not prove the work merged/);
+});
+
+test('agent_stop of a child that only ever ran on another machine writes no intent here and names its worktree there (issue #243)', async (t) => {
+  const w = await world(t, { host: 'hawthorne', cwd: FAR });
+  const watcher = w.watcher();
+  watcher.start();
+  await w.herdr.waitFor('events.subscribe');
+  const text = await stop(w, watcher, () => {
+    w.panes.delete(PANE);
+  });
+  assert.equal(w.child().retireRequestedAt, undefined);
+  assert.equal(w.child().retireIntent, undefined);
+  assert.deepEqual(w.git.calls, []);
+  assert.ok(text.includes(FAR) && text.includes('hawthorne'), text);
 });

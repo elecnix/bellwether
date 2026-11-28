@@ -10,6 +10,7 @@ import test from 'node:test';
 import { channelEntry } from '../../src/core/mcp-config.ts';
 import { CLINE_OPT_IN_NOTE, clineDbPath, clineLastMessage, clineMcpSettings, clineOptedIn, clineProviderSettingsPath, clineSandboxNote, clineSessionState, clineSettingsDir, findClineSession, liveClineSession } from '../../src/core/harnesses/cline.ts';
 import { addClineSession, clineStore } from '../fixtures/cline-db.ts';
+import { stablePath } from '../../src/core/stable-path.ts';
 
 function scratch(t: test.TestContext): { dir: string; db: string; cwd: string } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bellwether-cline-'));
@@ -80,7 +81,7 @@ test("a child's MCP settings name one stdio server, Bellwether's, with the child
   const settings = clineMcpSettings('child-1', { BELLWETHER_CHILD: 'child-1' });
   const servers = Object.values(settings.mcpServers);
   assert.equal(servers.length, 1);
-  assert.deepEqual(servers[0]?.transport, { type: 'stdio', command: process.execPath, args: ['--disable-warning=ExperimentalWarning', channelEntry(), '--child', 'child-1'], env: { BELLWETHER_CHILD: 'child-1' } });
+  assert.deepEqual(servers[0]?.transport, { type: 'stdio', command: stablePath(process.execPath), args: ['--disable-warning=ExperimentalWarning', stablePath(channelEntry()), '--child', 'child-1'], env: { BELLWETHER_CHILD: 'child-1' } });
 });
 
 test('only -y or --yolo turns on benchmark mode, and each note names only what belongs to its launch', () => {

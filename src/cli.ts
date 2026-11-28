@@ -36,6 +36,7 @@ import { readMemory, runsOn } from './daemon/relay-links.ts';
 import type { RelayHostState } from './daemon/protocol.ts';
 import { describePiTools, guardlessPiCopies } from './core/pi-extension.ts';
 import { describeClaudeTools, describeToolSource, findAmbientServers } from './core/tool-source.ts';
+import { toolFileLines } from './core/tool-files.ts';
 import { DAEMON_ENTRY, lockPath, readLock } from './daemon/lock.ts';
 import { BELLWETHER_BUILD, BELLWETHER_BUILD_ID, BELLWETHER_VERSION, describeBuild } from './core/version.ts';
 import { canConnect, daemonIsLive, startDaemon } from './daemon/server.ts';
@@ -221,6 +222,8 @@ async function doctor(): Promise<number> {
   }
   failures += checkPackaging();
   failures += checkToolSources();
+  // Each tool file that names, or named, an install path an upgrade deleted (issue #266).
+  for (const line of toolFileLines()) console.log(`  ${line}`);
   failures += await checkRelay(daemonLive, daemonSocket);
   // The size of the home, and what the next prune would remove, before it becomes a problem.
   const connected = new Set(upgrade.sessions && 'sessions' in upgrade.sessions ? upgrade.sessions.sessions.map((session) => session.parentId) : []);

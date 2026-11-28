@@ -16,6 +16,11 @@
 //     crossing began and no longer runs on the source resumes there, from its
 //     session, which a crossing never changes. A child that was stopped stays
 //     stopped.
+//   - The crossing had opened a tab at the destination and typed the launch
+//     line there (the step `launching`): herdr reports a harness only once it
+//     loads, so a session can be on its way up there although no pane holds
+//     it yet. The undo closes that tab first, and changes nothing when it
+//     cannot, so the session never runs on both machines.
 //   - Either machine cannot be read: nothing changes, because rolling back a
 //     session that might run at the destination could run it twice. The mark
 //     stays for the next start, and doctor shows it.
@@ -84,6 +89,30 @@ async function holding(deps: CarryDeps, host: string, session: { kind: string; v
   }
 }
 
+/**
+ * Close the tab a crossing opened at the destination, which may hold a harness
+ * herdr has yet to report. A pane that is gone, or that now runs another
+ * session, is not the crossing's to close. Returns why it could not close the
+ * tab, or undefined once no pane of the crossing's is left there.
+ */
+async function closeOpened(deps: CarryDeps, host: string, target: NonNullable<Crossing['target']>): Promise<string | undefined> {
+  const paneId = target.paneId as string;
+  const session: HarnessSession | undefined = target.session ? { kind: target.session.kind === 'path' ? 'path' : 'id', value: target.session.value } : undefined;
+  const ours = (pane: HerdrPane): boolean => pane.paneId === paneId && (!target.tabId || pane.tabId === target.tabId) && (!pane.agentSessionId || (session !== undefined && holdsSession(pane, session)));
+  try {
+    const client = await deps.clientFor(host);
+    if (!(await client.paneList()).some(ours)) return undefined;
+    const fault = await (target.tabId ? client.tabClose(target.tabId) : client.paneClose(paneId)).then(
+      () => undefined,
+      (error: unknown) => (error as Error).message,
+    );
+    if ((await client.paneList()).some(ours)) return `its tab there, pane ${paneId}, did not close${fault ? `: ${fault}` : ''}`;
+    return undefined;
+  } catch (error) {
+    return `it could not be read: ${(error as Error).message}`;
+  }
+}
+
 async function recoverOne(deps: CarryDeps, parentId: string, childId: string, instance: string): Promise<Recovery | undefined> {
   // Read again under the lock: another start of this daemon may have finished it.
   const child = readParent(parentId)?.children.find((entry) => entry.id === childId);
@@ -114,7 +143,13 @@ async function recoverOne(deps: CarryDeps, parentId: string, childId: string, in
     return { childId, name: child.name, outcome: 'finished', detail: `the session runs in pane ${there.paneId} on ${where(crossing.to)}, so the ${verb} stands` };
   }
 
-  // 2. It does not run there: undo. Is the child still running on the source?
+  // 2. It does not run there: undo. A tab the crossing opened there goes
+  // first, since its harness may still come up.
+  if (crossing.target?.paneId) {
+    const left = await closeOpened(deps, crossing.to, crossing.target);
+    if (left) return { childId, name: child.name, outcome: 'unknown', detail: `the ${verb} had typed the launch line into a tab on ${where(crossing.to)}, and ${left}, so Bellwether changed nothing rather than run the session on both machines. It tries again when the daemon next starts.` };
+  }
+  // Is the child still running on the source?
   const source = crossing.source;
   const here = await holding(deps, crossing.from, source?.session);
   if (here === 'unreadable') return { childId, name: child.name, outcome: 'unknown', detail: `${where(crossing.from)} could not be read, so Bellwether cannot tell whether the session still runs there, and changed nothing. It tries again when the daemon next starts.` };

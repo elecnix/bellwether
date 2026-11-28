@@ -94,6 +94,12 @@ export interface ResumeOptions {
   /** Who sends the brief, as the child reads it. */
   from?: string;
   /**
+   * Called once the new tab exists and before the launch line goes into it.
+   * A crossing records the tab here, so a daemon that stops between the
+   * keystroke and herdr's report leaves the next one a tab it can close.
+   */
+  onTab?: (tab: { paneId: string; tabId?: string }) => void;
+  /**
    * A teleport's notice (issue #226). It is the resumed session's first
    * input: an unread brief rides behind it in the same message. It goes only
    * through the session, never typed, and a model that does not take it
@@ -265,6 +271,12 @@ export async function resumeChild(client: HerdrClient, parent: ParentRecord, tar
     opened = tab;
     tabId = tab.tabId ?? tab.paneId;
     if (!tab.paneId) throw new Error('herdr created no pane for the resumed tab');
+    if (options.onTab) {
+      options.onTab({ paneId: tab.paneId, ...(tab.tabId ? { tabId: tab.tabId } : {}) });
+      // The hook wrote the crossing's mark to the record, and the writes below must keep it.
+      const marked = readParent(parent.id)?.children.find((entry) => entry.id === child.id)?.moving;
+      if (marked) child.moving = marked;
+    }
     paneOpened(child, { paneId: tab.paneId, tabId: tab.tabId });
     child.workspaceId = tab.workspaceId;
     if (tab.workspaceLabel) child.workspaceLabel = tab.workspaceLabel;

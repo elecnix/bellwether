@@ -294,7 +294,7 @@ export function moveRefusals(input: RefusalInput): string[] {
 }
 
 /** How far a move got before something failed. */
-export type MoveStage = 'checked' | 'copied' | 'verified' | 'stopped' | 'recopied' | 'started';
+export type MoveStage = 'checked' | 'copied' | 'verified' | 'stopped' | 'recopied' | 'launching' | 'started';
 
 /** What to undo for a move that failed at a stage. */
 export interface RollbackPlan {
@@ -321,6 +321,9 @@ export function rollbackPlan(stage: MoveStage): RollbackPlan {
       return { discardTarget: true, restartSource: false, closeTarget: false };
     case 'stopped':
     case 'recopied':
+    // A start that fails at the destination closes its own tab there, so the
+    // carry has no tab to close until the start has answered.
+    case 'launching':
       return { discardTarget: true, restartSource: true, closeTarget: false };
     case 'started':
       return { discardTarget: true, restartSource: true, closeTarget: true };

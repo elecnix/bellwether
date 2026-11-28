@@ -121,15 +121,20 @@ export interface Crossing {
   /** The daemon process that runs the crossing. Another daemon that finds the mark knows the crossing stopped with it. */
   daemon?: string;
   /** The last step the crossing finished. */
-  stage?: 'checked' | 'copied' | 'verified' | 'stopped' | 'recopied' | 'started';
+  stage?: 'checked' | 'copied' | 'verified' | 'stopped' | 'recopied' | 'launching' | 'started';
   /** Whether the child ran when the crossing began. */
   state?: 'live' | 'stopped';
   /** The files the copy wrote at the destination, and whether each was new there. */
   files?: { path: string; created: boolean }[];
   /** Where the child ran before, as its record said. */
   source?: { cwd?: string; paneId: string; tabId?: string; workspaceId?: string; session?: { kind: string; value: string }; transcript?: string; exitedAt?: string };
-  /** Where it resumes, and the session it resumes there once the copy names it. */
-  target?: { cwd: string; session?: { kind: string; value: string } };
+  /**
+   * Where it resumes, and the session it resumes there once the copy names it.
+   * From the step `launching` on, it also names the tab the crossing opened at
+   * the destination, before the launch line goes into it, so a daemon that
+   * finds the crossing interrupted can close a harness herdr has yet to report.
+   */
+  target?: { cwd: string; session?: { kind: string; value: string }; paneId?: string; tabId?: string };
   /** The session file on the source, which the crossing never changes. */
   sourceFile?: string;
   reason?: string;

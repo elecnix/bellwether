@@ -10,9 +10,11 @@
 # EVERYSTATE_MEMORY sets the ceiling, 4G by default, in systemd's units
 # (K, M, G). On Linux with a systemd user session, the run gets a scope of its
 # own with no swap, so the kernel stops it at the ceiling before anything else
-# slows down. Elsewhere a watchdog reads the checker's resident size every half
-# second and stops it past the ceiling. EVERYSTATE_CAP=watchdog picks the
-# watchdog on Linux too.
+# slows down. Elsewhere a watchdog sums the resident size of the checker's whole
+# process tree every half second and stops the tree past the ceiling. The npm
+# `everystate` is a node launcher that runs the native binary as a child, and
+# the child holds the states, so the launcher's own size says nothing (issue
+# #263). EVERYSTATE_CAP=watchdog picks the watchdog on Linux too.
 set -u
 ES=${EVERYSTATE:-everystate}
 LIMIT=${EVERYSTATE_MEMORY:-4G}
@@ -44,13 +46,47 @@ if [ "${EVERYSTATE_CAP:-}" != watchdog ] && [ "$(uname -s)" = Linux ] && command
   exit "$code"
 fi
 
+# One line: the resident size in KiB of $1 and every process under it, then
+# their PIDs, so the caller stops exactly the processes it measured. ps lists
+# processes in no useful order, so the walk repeats until the tree stops
+# growing. The watchdog's own ps, awk and sleep are children of this shell, not
+# of the checker, so they never count.
+tree() {
+  ps -eo pid=,ppid=,rss= | awk -v root="$1" '
+    { parent[$1] = $2; rss[$1] = $3 }
+    END {
+      if (!(root in parent)) exit
+      tree[root] = 1
+      do {
+        grew = 0
+        for (p in parent) if (!(p in tree) && (parent[p] in tree)) { tree[p] = 1; grew = 1 }
+      } while (grew)
+      total = 0
+      list = ""
+      for (p in tree) { total += rss[p]; list = list " " p }
+      print total, list
+    }'
+}
+
+# Stop the checker and everything under it. A launcher killed alone leaves the
+# native binary running, with its memory, under init.
+# shellcheck disable=SC2329  # the traps below call it
+stop_tree() {
+  local total pids
+  read -r total pids < <(tree "$pid")
+  # shellcheck disable=SC2086  # one PID per word
+  kill "-$1" "$pid" $pids 2>/dev/null
+}
+
 "$ES" "$@" &
 pid=$!
-trap 'kill "$pid" 2>/dev/null' INT TERM EXIT
+trap 'stop_tree TERM' INT TERM
+trap 'stop_tree KILL' EXIT
 while kill -0 "$pid" 2>/dev/null; do
-  rss=$(ps -o rss= -p "$pid" 2>/dev/null | tr -d ' ')
-  if [ -n "$rss" ] && [ "$rss" -gt "$LIMIT_KIB" ]; then
-    kill -9 "$pid" 2>/dev/null
+  read -r total pids < <(tree "$pid")
+  if [ -n "${total:-}" ] && [ "$total" -gt "$LIMIT_KIB" ]; then
+    # shellcheck disable=SC2086  # one PID per word
+    kill -9 $pids 2>/dev/null
     wait "$pid" 2>/dev/null
     trap - INT TERM EXIT
     over

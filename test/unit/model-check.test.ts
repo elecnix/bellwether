@@ -5,7 +5,7 @@
 // not stop a run that grows past it, or when run-all.sh calls the checker
 // without check.sh.
 import assert from 'node:assert/strict';
-import { execFile } from 'node:child_process';
+import { execFile, spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -30,6 +30,43 @@ for (let i = 0; i < ${mib}; i++) globalThis.held.push(Buffer.alloc(1 << 20, 1));
 ${end}
 `, { mode: 0o755 });
   return file;
+}
+
+/**
+ * A stand-in for the npm launcher: a shell script that runs a child checker and waits for it, the way
+ * `bin/everystate.mjs` runs the native binary with `spawnSync`. The child grows to the given MiB, writes its PID to
+ * `child.pid` beside the launcher, and exits 0 after three seconds, so a watchdog that reads only the launcher's own
+ * resident size lets the run end with 0 (issue #263).
+ */
+function launcher(dir: string, mib: number, holdMs = 3000): { file: string; childPid: () => number } {
+  const child = path.join(dir, 'child.mjs');
+  const pidFile = path.join(dir, 'child.pid');
+  fs.writeFileSync(child, `import fs from 'node:fs';
+fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
+globalThis.held = [];
+for (let i = 0; i < ${mib}; i++) globalThis.held.push(Buffer.alloc(1 << 20, 1));
+setTimeout(() => process.exit(0), ${holdMs});
+`);
+  const file = path.join(dir, 'launcher');
+  fs.writeFileSync(file, `#!/usr/bin/env bash\n${JSON.stringify(process.execPath)} ${JSON.stringify(child)}\n`, { mode: 0o755 });
+  return { file, childPid: () => Number(fs.readFileSync(pidFile, 'utf8')) };
+}
+
+/**
+ * Whether `pid` still runs. A killed orphan stays a zombie until init reaps it, and a zombie holds no memory but
+ * still answers `kill(pid, 0)`, so `ps` decides: no line, or a state that starts with Z, means it stopped.
+ */
+function alive(pid: number): boolean {
+  const ps = spawnSync('ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8' });
+  const state = ps.stdout.trim();
+  return state !== '' && !state.startsWith('Z');
+}
+
+/** Wait up to five seconds for `pid` to stop, since SIGKILL lands after `kill` returns. */
+async function stops(pid: number): Promise<boolean> {
+  const deadline = Date.now() + 5_000;
+  while (alive(pid) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
+  return !alive(pid);
 }
 
 async function check(checker: string, env: Record<string, string>): Promise<{ code: number; stderr: string }> {
@@ -66,6 +103,27 @@ for (const cap of caps) {
     }
   });
 
+  test(`a launcher whose child grows past the ceiling is stopped, child and all (${cap})`, async (t) => {
+    if (cap === 'systemd') {
+      try {
+        await run('systemd-run', ['--user', '--scope', '--quiet', 'true']);
+      } catch {
+        t.skip('no systemd user session');
+        return;
+      }
+    }
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bw-model-'));
+    try {
+      const stand = launcher(dir, 400);
+      const result = await check(stand.file, { ...env, EVERYSTATE_MEMORY: '128M' });
+      assert.equal(result.code, 137, `the launcher's child grew to 400 MiB under a 128M ceiling, and the run ended ${result.code}:\n${result.stderr}`);
+      assert.match(result.stderr, /passed the memory ceiling of 128M/);
+      assert.equal(await stops(stand.childPid()), true, 'the child checker outlived the stop');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test(`a check under the ceiling keeps its own exit code (${cap})`, async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bw-model-'));
     try {
@@ -76,6 +134,25 @@ for (const cap of caps) {
     }
   });
 }
+
+test("a check stopped from outside stops the launcher's child too (watchdog)", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bw-model-'));
+  try {
+    const stand = launcher(dir, 8, 60_000);
+    const proc = spawn(path.join(model, 'check.sh'), ['Claims.tla'], { env: { ...process.env, EVERYSTATE: stand.file, EVERYSTATE_CAP: 'watchdog', EVERYSTATE_MEMORY: '512M' }, stdio: 'ignore' });
+    const exited = new Promise((resolve) => proc.once('exit', resolve));
+    const deadline = Date.now() + 10_000;
+    while (!fs.existsSync(path.join(dir, 'child.pid')) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
+    const child = stand.childPid();
+    proc.kill('SIGTERM');
+    await exited;
+    const survived = !(await stops(child));
+    if (survived) process.kill(child, 'SIGKILL');
+    assert.equal(survived, false, 'check.sh took SIGTERM and left the child checker running');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 test('a ceiling that is not a size is refused before the checker starts', async () => {
   const result = await check('/nonexistent/everystate', { EVERYSTATE_MEMORY: 'lots' });

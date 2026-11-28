@@ -1,0 +1,1 @@
+`agent_list` names how each exited child's last pane ended, and whether herdr removed its workspace. Doctor names each session on this machine that has lost its pane, with its folder, its last pane and the `bellwether resume` command. `agent_restart` refuses a session that already runs in a pane its record doesn't name.

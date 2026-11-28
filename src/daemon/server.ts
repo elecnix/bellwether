@@ -10,7 +10,9 @@ import path from 'node:path';
 import { DAEMON_PROTOCOL, MAX_DAEMON_FRAME_BYTES, MIN_CLIENT_PROTOCOL, ProtocolError, acceptsClientProtocol, formatReply, parseRequest, type DaemonReply, type ParentHello, type SessionInfo } from './protocol.ts';
 import { DRAIN_GRACE_MS, drainDecision } from './handover.ts';
 import { BELLWETHER_BUILD_ID, BELLWETHER_VERSION } from '../core/version.ts';
-import { listParents, readParent } from '../core/registry.ts';
+import { listParents, mutateParent, readParent } from '../core/registry.ts';
+import { HerdrClient } from '../core/herdr-client.ts';
+import { resumeSession } from '../core/session-resume.ts';
 import { ancestry } from '../core/ancestry.ts';
 import { PRUNE_DELAY_MS, PRUNE_EVERY_MS, pruneState } from '../core/hygiene.ts';
 import { defaultServiceFactory, parentIdOf, type ParentService, type ServiceFactory } from './service.ts';
@@ -407,8 +409,22 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
     for (const stop of paneWatches.get(socket) ?? []) stop();
     paneWatches.delete(socket);
     for (const [parentId, set] of subscribers) {
-      set.delete(socket);
-      if (set.size === 0) subscribers.delete(parentId);
+      if (!set.delete(socket)) continue;
+      if (set.size === 0) {
+        subscribers.delete(parentId);
+        leftDaemon(parentId);
+      }
+    }
+  };
+
+  /** The session's last connection closed: the record says when, so doctor can tell a session that left (issue #187). */
+  const leftDaemon = (parentId: string): void => {
+    try {
+      mutateParent(parentId, (entry) => {
+        entry.disconnectedAt = new Date(now()).toISOString();
+      });
+    } catch (error) {
+      log(`could not record that session ${parentId} left: ${(error as Error).message}`);
     }
   };
 
@@ -644,6 +660,24 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
         reply({ type: 'ancestry', id: request.id, answer: ancestry(request.agent, listParents(), { connected, watched: [...services.keys()] }) });
         return;
       }
+      if (request.type === 'resume') {
+        // `bellwether resume`: a session whose pane is gone, brought back from its record.
+        if (drainingSince !== undefined) {
+          reply({ type: 'result', id: request.id, error: 'the daemon is handing over to a newer one; run the resume again in a moment', retry: true });
+          return;
+        }
+        inFlight += 1;
+        try {
+          const text = await resumeSession(new HerdrClient({ socketPath: request.herdrSocket }), request.target, { log }, request.label ? { label: request.label } : {});
+          log(`resume ${request.target}: ${text.split('\n')[0]}`);
+          reply({ type: 'result', id: request.id, text });
+        } catch (error) {
+          reply({ type: 'result', id: request.id, error: (error as Error).message });
+        } finally {
+          inFlight -= 1;
+        }
+        return;
+      }
       if (request.type === 'report') {
         if (drainingSince !== undefined) {
           reply({ type: 'result', id: request.id, error: 'the daemon is handing over to a newer one; send the report again in a moment', retry: true });
@@ -746,6 +780,13 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
           return;
         }
         session = serviceFor(request.parent);
+        // The pane a session says hello from is where it runs now, even after a resume by hand (issue #187).
+        const hello = request.parent;
+        mutateParent(session.parentId, (entry) => {
+          if (hello.paneId) entry.paneId = hello.paneId;
+          if (hello.paneId && hello.workspaceId) entry.workspaceId = hello.workspaceId;
+          delete entry.disconnectedAt;
+        });
         const set = subscribers.get(session.parentId) ?? new Set<net.Socket>();
         set.add(socket);
         subscribers.set(session.parentId, set);
@@ -770,6 +811,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
           if (!remaining || remaining.size === 0) {
             session.service.stop();
             services.delete(session.parentId);
+            if (remaining) leftDaemon(session.parentId);
             subscribers.delete(session.parentId);
           }
         }

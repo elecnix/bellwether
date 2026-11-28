@@ -14,6 +14,7 @@ import { HerdrClient, resolveSocketPath } from './core/herdr-client.ts';
 import { bellwetherHome } from './core/paths.ts';
 import { emptyParent, listParents, readParent, saveParent } from './core/registry.ts';
 import { restartFailureLines, restartWaitLines } from './core/restart.ts';
+import { goneSessionLines, herdrView } from './core/pane-fate.ts';
 import { PROMPT_NOTICE, isReportStatus } from './core/report.ts';
 import { HOOK_COMMAND, dialogFromHook } from './core/claude-hooks.ts';
 import { farChildFiles, hostName } from './core/spawn.ts';
@@ -25,7 +26,7 @@ import { harnessFor, harnessNamed } from './core/harnesses/index.ts';
 import { daemonHerdrLine, describeUpgrade, farPairing, gatherUpgrade } from './daemon/upgrade-status.ts';
 import { describeState } from './core/hygiene.ts';
 import { HEARTBEAT_MISSES } from './core/ssh.ts';
-import { DaemonClient, REFUSED_EXIT, ReportRefused, daemonAncestry, drainDaemon, ensureDaemon, postReport, relayStatus } from './daemon/client.ts';
+import { DaemonClient, REFUSED_EXIT, ReportRefused, daemonAncestry, daemonResume, drainDaemon, ensureDaemon, postReport, relayStatus } from './daemon/client.ts';
 import { ancestry, type AncestryAnswer, type AncestryLevel } from './core/ancestry.ts';
 import { readMemory, runsOn } from './daemon/relay-links.ts';
 import type { RelayHostState } from './daemon/protocol.ts';
@@ -227,8 +228,10 @@ async function doctor(): Promise<number> {
     return 1;
   }
   console.log(`  ok    herdr socket: ${socket}`);
+  const herdr = new HerdrClient({ socketPath: socket });
+  let panes: Awaited<ReturnType<HerdrClient['paneList']>> | undefined;
   try {
-    const panes = await new HerdrClient({ socketPath: socket }).paneList();
+    panes = await herdr.paneList();
     console.log(`  ok    herdr api: ${panes.length} panes`);
   } catch (error) {
     console.log(`  fail  herdr api: ${String(error)}`);
@@ -251,6 +254,13 @@ async function doctor(): Promise<number> {
   failures += lostRestarts.length;
   // What each pending self-restart waits for, and why one gave up (issue #188).
   for (const line of restartWaitLines(listParents())) console.log(`  ${line}`);
+  // Each session on this machine whose pane is gone, and the command that brings it back (issue #187).
+  const view = panes ? await herdrView(herdr, panes) : undefined;
+  if (view) {
+    const here = hostName();
+    const gone = goneSessionLines(listParents(), view, { connected, now: Date.now(), isLocal: (record) => record.host === LOCAL_HOST || record.host === here });
+    for (const line of gone) console.log(`  ${line}`);
+  }
   await checkMoves(socket);
   return failures;
 }
@@ -404,7 +414,7 @@ async function main(argv: string[]): Promise<number> {
   }
 
   if (command === 'help' || command === '--help') {
-    console.log('Usage: bellwether <daemon|drain|spawn|watch|list|read|send|stop|move|report|parents|ancestry|doctor|version> [--debug]');
+    console.log('Usage: bellwether <daemon|drain|spawn|watch|list|read|send|stop|move|resume|report|parents|ancestry|doctor|version> [--debug]');
     console.log('  --debug                                  print the stack trace of a failure, as BELLWETHER_DEBUG=1 does');
     console.log('  daemon [--socket PATH]                   run the local daemon in the foreground');
     console.log('  drain  [--socket PATH]                   stop the running daemon once its calls finish, so the next session starts the installed one');
@@ -417,6 +427,7 @@ async function main(argv: string[]): Promise<number> {
     console.log('  send   CHILD [--text TEXT | --keys KEY,...]');
     console.log('  stop   CHILD [--force]');
     console.log('  move   CHILD [--machine M] [--cwd DIR] [--reason TEXT]  move a live claude or pi child to another machine, keeping its id and conversation');
+    console.log('  resume SESSION [--label L]               bring back a session whose pane is gone, from its record: a registry id, a session id or its last pane');
     console.log('  ancestry AGENT [--json] [--socket PATH]  the agent\'s ancestors, nearest first, and which still run; AGENT is <harness>:<session>, such as claude:<id> or pi:<id>');
     console.log('  report --child ID --status done|needs-input|progress --text TEXT [--parent ID] [--receipt ID]');
     console.log('  claude-hook --child ID                   a Claude Code child\'s Notification hook: the hook input on stdin, the dialog to the daemon, nothing on stdout');
@@ -461,6 +472,7 @@ async function main(argv: string[]): Promise<number> {
   }
 
   if (command === 'ancestry') return ancestryCommand(positional[0], flags);
+  if (command === 'resume') return resumeCommand(positional[0], flags);
   if (command === 'report') return report(rest);
   if (command === HOOK_COMMAND) return claudeHook(rest);
   if (command === 'relay-register') return farEnd(command, () => relayRegister(rest));
@@ -585,6 +597,22 @@ async function ancestryCommand(agent: string | undefined, flags: Flags): Promise
   answer.chain.forEach((level, index) => console.log(`${index === answer.nearestAlive ? 'alive' : 'up   '}  ${line(level)}`));
   console.log(`top    ${answer.top}`);
   return 0;
+}
+
+/**
+ * Bring back a session whose pane is gone, from its own record, through this
+ * machine's daemon (issue #187). The daemon opens the tab and starts the
+ * harness; this prints where the session landed, or why nothing opened.
+ */
+async function resumeCommand(target: string | undefined, flags: Flags): Promise<number> {
+  if (!target) throw new Error('resume needs a session: its registry id, its session id or the pane it last ran in. `bellwether doctor` lists each session whose pane is gone.');
+  try {
+    console.log(await daemonResume({ target, herdrSocket: resolveSocketPath({ socketPath: str(flags, 'herdr-socket'), session: str(flags, 'session') }), label: str(flags, 'label') }, { log: (message) => console.error('[bellwether]', message) }));
+    return 0;
+  } catch (error) {
+    console.error(`bellwether resume: ${(error as Error).message}`);
+    return REFUSED_EXIT;
+  }
 }
 
 /** How long `bellwether ancestry` waits for the daemon before it reads the files. */

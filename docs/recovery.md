@@ -99,7 +99,7 @@ Once herdr reports the pane gone, the daemon removes the worktree and the branch
    - GitHub shows a merged pull request whose head is the tip.
 
    A pull request closed without merging doesn't count as a proof.
-4. No process works inside the worktree.
+4. No live child stands in the worktree or in a folder inside it, under any parent on this machine, and no process works inside it. The registry protects the working directory of a child that has not exited, whatever the process table shows, and the refusal gives that child's name, id, pane and parent session.
 
 The removal runs `git worktree remove` without `--force`, so git itself refuses a worktree that holds changes.
 

@@ -349,7 +349,7 @@ test('a child asks to be retired through its own server, and the daemon records 
     const reply = (await client.callTool({ name: 'request_retirement', arguments: { reason: 'done' } })) as { content: { text: string }[]; isError?: boolean };
     assert.equal(reply.isError, undefined, reply.content[0]?.text);
     assert.match(reply.content[0]?.text ?? '', new RegExp(`^Retirement requested for finisher: ${worktree} on branch feat\\. Nothing has been removed\\.`));
-    assert.match(reply.content[0]?.text ?? '', /Passed now: the worktree is clean; no stash on the branch\./);
+    assert.match(reply.content[0]?.text ?? '', /Passed now: the worktree is clean; no stash on the branch; no other live child stands in it\./);
     assert.match(reply.content[0]?.text ?? '', /Failing now: branch feat has 2 commit\(s\) on no remote, is not merged into main/);
     const saved = JSON.parse(fs.readFileSync(registry, 'utf8')) as { children: { retireRequestedAt?: string; retireIntent?: { worktree: string; branch: string } }[] };
     assert.ok(saved.children[0]?.retireRequestedAt);

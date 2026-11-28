@@ -1,0 +1,1 @@
+A spawn counts a brief taken only when the child's adapter reports that its model read it. herdr reporting the pane `working` no longer counts, because a redraw or a hook while the brief is in flight reports the same status, and the record claimed a turn that never happened.

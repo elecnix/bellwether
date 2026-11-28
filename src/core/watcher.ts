@@ -29,8 +29,8 @@ import { isMoving } from './move-plan.ts';
 import type { AgentStatus, ChildEventKind, ChildMessage, ChildRecord, DialogDecision, OutboxEntry, PaneEnd, RelayHostState, ReportVia, SpoolReport } from './types.ts';
 import { backInPane } from './adopt.ts';
 import { parsePane, type HerdrPane } from './herdr-client.ts';
-import { ClaimRefused, claimantOf, decideClaim } from './pane-claims.ts';
-import { AuthorityConflict, acquiredBy, adoptionSettled, claimSettled, claimUnconfirmed, farRecordHeld, heldByAdoption, answersDialogs, awaitsReturn, checksStart, endsOnNewSession, replaced, settledCopy } from './authority.ts';
+import { ClaimRefused, FarPredates, claimantOf, decideClaim, type StartedHold } from './pane-claims.ts';
+import { AuthorityConflict, acquiredBy, adoptionSettled, claimSettled, claimUnconfirmed, farRecordHeld, farRecordLost, heldByAdoption, answersDialogs, awaitsReturn, checksStart, endsOnNewSession, replaced, settledCopy } from './authority.ts';
 import { removeRelayRecord } from './relay-records.ts';
 import { ClaimHeldElsewhere } from './remote.ts';
 import { releaseWorkspace } from './workspace.ts';
@@ -81,6 +81,11 @@ export interface WatcherOptions {
    * under another id.
    */
   reclaimRemote?: (child: ChildRecord) => Promise<void>;
+  /**
+   * Ask a started child's machine whether the child still holds its pane
+   * there, once the relay to it came back (issue #298).
+   */
+  confirmRemote?: (child: ChildRecord) => Promise<StartedHold>;
   /** Hear that a child came back without an event, so the daemon's relay links hold its machine open again. */
   childrenChanged?: () => void;
   /** How many times the cleanup looks again for a process leaving the worktree, and how long it waits. */
@@ -133,6 +138,7 @@ export class Watcher {
   private readonly retireFar: ReapDeps['retireFar'];
   private readonly cleanupRemote: ((child: ChildRecord) => Promise<void>) | undefined;
   private readonly reclaimRemote: ((child: ChildRecord) => Promise<void>) | undefined;
+  private readonly confirmRemote: ((child: ChildRecord) => Promise<StartedHold>) | undefined;
   private readonly childrenChanged: (() => void) | undefined;
   /** The cleanup on another machine that an exit started, which a child coming back waits for, so the cleanup cannot remove the claim made after it. */
   private readonly remoteCleanups = new Map<string, Promise<void>>();
@@ -193,6 +199,7 @@ export class Watcher {
     this.retireFar = options.retireFar;
     this.cleanupRemote = options.cleanupRemote;
     this.reclaimRemote = options.reclaimRemote;
+    this.confirmRemote = options.confirmRemote;
     this.childrenChanged = options.childrenChanged;
     this.retireBusy = { retries: options.retireBusyRetries, delayMs: options.retireBusyDelayMs };
     this.relayState = options.relayState;
@@ -1303,6 +1310,7 @@ export class Watcher {
   }
 
   private describeExit(child: ChildRecord, code: number | undefined, beforeStart = false): string {
+    if (child.paneEnd?.how === 'claim-lost' && !heldByAdoption(child)) return `${childLabel(child)} is not a child of this session any more: once the relay came back, machine ${hostOf(child)} no longer held pane ${child.paneId} for it: ${child.paneEnd.reason ?? 'it gave no reason'}. Bellwether stopped watching the pane.`;
     if (child.paneEnd?.how === 'claim-lost') return `${childLabel(child)} is not a child of this session any more: once the relay came back, machine ${hostOf(child)} no longer held this session's claim on pane ${child.paneId} and refused it: ${child.paneEnd.reason ?? 'it gave no reason'}. Bellwether stopped watching the pane.`;
     if (child.paneEnd?.how === 'adopt-refused') return `${childLabel(child)} is not a child of this session: machine ${hostOf(child)} refused the adoption Bellwether was not sure of: ${child.paneEnd.reason ?? 'it gave no reason'}. Bellwether stopped watching pane ${child.paneId}.`;
     if (child.paneEnd?.how === 'session-changed') return `${childLabel(child)} left its pane: herdr reports ${child.paneEnd.session ? `session ${child.paneEnd.session}` : 'another session'} in pane ${child.paneId} now, not ${child.session?.value ?? 'the adopted one'}, the session this parent adopted. Bellwether stopped watching the pane: adopt it again to watch the new session.`;
@@ -1458,7 +1466,7 @@ export class Watcher {
     const due = (host: string): boolean => (this.retryAt.get(host)?.at ?? 0) <= Date.now();
     const changed = [...byHost].some(([host, children]) => due(host) && this.links.get(host)?.key !== paneKey(children)) || [...this.links.keys()].some((host) => !byHost.has(host));
     for (const child of record?.children ?? []) if (child.adoptInDoubt && !child.exitedAt) void this.settleAdoption(child);
-    for (const child of record?.children ?? []) if (child.claimUnconfirmed && !child.adoptInDoubt && !child.exitedAt) void this.confirmClaim(child);
+    for (const child of record?.children ?? []) if (child.claimUnconfirmed && !child.adoptInDoubt && !child.exitedAt) void (heldByAdoption(child) ? this.confirmClaim(child) : this.confirmStarted(child));
     for (const child of record?.children ?? []) if (child.cleanupPending) void this.retryCleanup(child, false);
     if (changed) {
       await this.reconcileAndSubscribe();
@@ -1468,16 +1476,14 @@ export class Watcher {
   }
 
   /**
-   * The relay to a machine is up, after a first connection or a reconnect:
-   * confirm each claim this parent holds there by adoption (issue #257).
-   * While the relay was down, the watcher could not see the pane, and another
-   * parent may have taken the claim over. The pane's session may since have
-   * come back, so the record matches the pane again, and only that machine
-   * can say whether it still holds the claim for this child.
-   */
-  /**
-   * The relay to a machine came up: confirm the claims this parent holds
-   * there, and try once more each cleanup that failed there, expired or not.
+   * The relay to a machine came up, after a first connection or a reconnect:
+   * confirm each child this parent holds there, and try once more each
+   * cleanup that failed there, expired or not. While the relay was down, the
+   * watcher could not see the pane, and another parent may have taken it
+   * over. The pane's session may since have come back, so the record matches
+   * the pane again, and only that machine can say whether it still holds the
+   * pane for this child: by the claim an adoption left (issue #257), or by
+   * the started child's own adapter connection (issue #298).
    */
   relayUp(host: string): void {
     this.confirmClaims(host);
@@ -1539,9 +1545,73 @@ export class Watcher {
 
   confirmClaims(host: string): void {
     for (const child of readParent(this.parentId)?.children ?? []) {
-      if (hostOf(child) !== host || child.exitedAt || child.adoptInDoubt || !heldByAdoption(child)) continue;
+      if (hostOf(child) !== host || child.exitedAt || child.adoptInDoubt || !child.paneId) continue;
+      if (heldByAdoption(child)) {
+        this.doubtRetry.delete(child.id);
+        void this.confirmClaim(child);
+        continue;
+      }
+      // A start, a crossing or a restart in flight settles the pane itself, and its adapter may not have said hello yet.
+      if ((child.startingUntil && Date.parse(child.startingUntil) > Date.now()) || isMoving(child) || child.restartInDoubt) continue;
       this.doubtRetry.delete(child.id);
-      void this.confirmClaim(child);
+      void this.confirmStarted(child);
+    }
+  }
+
+  /**
+   * Ask a started child's machine whether the child still holds its pane
+   * there (issue #298). A child whose adapter is connected from the pane
+   * stays as it is. Another holder of the pane, or a session that left it,
+   * ends the child with the reason. A machine with no record of the child
+   * leaves `farRecordLost`. A machine that cannot tell, or no answer at all,
+   * leaves the child marked unconfirmed for doctor, and the tick asks again,
+   * up to once a minute. A machine whose Bellwether predates the request
+   * leaves the child as it is.
+   */
+  private async confirmStarted(child: ChildRecord): Promise<void> {
+    if (!this.confirmRemote || this.settling.has(child.id)) return;
+    const retry = this.doubtRetry.get(child.id);
+    if (retry && retry.at > Date.now()) return;
+    this.settling.add(child.id);
+    const host = hostOf(child);
+    try {
+      const hold = await this.confirmRemote(child);
+      // A child that came back elsewhere, or ended, while the question was out has an answer about a run that is over.
+      const current = readParent(this.parentId)?.children.find((entry) => entry.id === child.id);
+      if (!current || current.exitedAt || current.paneId !== child.paneId || hostOf(current) !== host) return;
+      if (hold.state === 'absent') throw new Error(hold.reason);
+      this.doubtRetry.delete(child.id);
+      if (hold.state === 'running') {
+        updateChild(this.parentId, child.id, (entry) => {
+          claimSettled(entry);
+          farRecordHeld(entry);
+        });
+        this.log(`machine ${host} confirmed that ${child.name} (child ${child.id}) still runs in pane ${child.paneId}`);
+      } else if (hold.state === 'unheld') {
+        updateChild(this.parentId, child.id, (entry) => {
+          claimSettled(entry);
+          farRecordLost(entry, { host, reason: hold.reason });
+        });
+        this.log(`machine ${host} holds no record of ${child.name} (child ${child.id}): ${hold.reason}`);
+      } else {
+        this.log(`machine ${host} no longer holds pane ${child.paneId} for ${child.name} (child ${child.id}): ${hold.reason}`);
+        this.endLostHold(current, 'claim-lost', hold.reason);
+      }
+    } catch (error) {
+      const reason = (error as Error).message.trim().replace(/\.$/, '');
+      if (error instanceof FarPredates) {
+        this.doubtRetry.delete(child.id);
+        this.log(`could not confirm that ${child.name} (child ${child.id}) still runs in pane ${child.paneId}, and leaves it as it is: ${reason}`);
+        return;
+      }
+      const delay = Math.min((retry?.delay ?? 500) * 2, 60_000);
+      this.doubtRetry.set(child.id, { at: Date.now() + delay, delay });
+      updateChild(this.parentId, child.id, (entry) => {
+        claimUnconfirmed(entry, { host, reason });
+      });
+      this.log(`could not confirm that ${child.name} (child ${child.id}) still runs in pane ${child.paneId} on machine ${host}: ${reason}`);
+    } finally {
+      this.settling.delete(child.id);
     }
   }
 
@@ -1586,10 +1656,15 @@ export class Watcher {
   /** End a child whose machine refused its claim, or holds the pane for this session under another id. */
   private endRefusedClaim(child: ChildRecord, error: ClaimRefused | ClaimHeldElsewhere, how: 'adopt-refused' | 'claim-lost'): void {
     const reason = error instanceof ClaimHeldElsewhere ? `it holds pane ${child.paneId} for this session as child ${error.childId}; adopt the pane again to watch it under that id` : error.message.trim().replace(/\.$/, '');
+    this.endLostHold(child, how, reason, error instanceof ClaimHeldElsewhere ? error.childId : undefined);
+  }
+
+  /** End a child whose machine no longer holds its pane for this parent, with the reason that machine gave. */
+  private endLostHold(child: ChildRecord, how: 'adopt-refused' | 'claim-lost', reason: string, replacedBy?: string): void {
     updateChild(this.parentId, child.id, (entry) => {
       adoptionSettled(entry);
       claimSettled(entry);
-      if (error instanceof ClaimHeldElsewhere) replaced(entry, error.childId);
+      if (replacedBy) replaced(entry, replacedBy);
     });
     this.markExited(settledCopy(child), undefined, undefined, how, { reason });
     this.dropLink(hostOf(child));

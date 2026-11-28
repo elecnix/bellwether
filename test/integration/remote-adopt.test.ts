@@ -16,7 +16,7 @@ import { pickMachine, type MachineProfile } from '../../src/core/machine.ts';
 import { emptyParent, readParent, saveParent, upsertChild } from '../../src/core/registry.ts';
 import { claimPane } from '../../src/core/pane-claims.ts';
 import { RELAY_SCHEMA, readRelayRecord, removeRelayRecord, saveRelayRecord } from '../../src/core/relay-records.ts';
-import { claimUnconfirmedLines, cleanupPendingLines, reclaimRemote, remoteOps } from '../../src/core/remote.ts';
+import { askStartedHold, claimUnconfirmedLines, cleanupPendingLines, reclaimRemote, remoteOps } from '../../src/core/remote.ts';
 import { RESTART_DEFER_MS } from '../../src/core/restart.ts';
 import type { ChildRecord, OutboxEntry } from '../../src/core/types.ts';
 import { Watcher } from '../../src/core/watcher.ts';
@@ -163,6 +163,7 @@ async function world(t: test.TestContext, options: { farDaemon?: (socketPath: st
     relayState: (host) => links.state(host),
     cleanupRemote: (record) => remote.cleanup(record),
     reclaimRemote: (record) => reclaimRemote(remote, PARENT_ID, record),
+    confirmRemote: (record) => askStartedHold(remote, PARENT_ID, record),
     childrenChanged: () => links.sync(),
     log: (line) => logs.push(`watcher: ${line}`),
     onEntries: (entries) => {
@@ -923,4 +924,153 @@ test('a relay-cleanup that keeps failing past the deadline stops retrying on the
   await w.ssh.drop();
   await until('the claim to leave child-box', () => !inHome(w.childHome, () => readRelayRecord(id)), 20_000, () => w.logs.slice(-6));
   await until('the record to keep nothing pending', () => child(w)?.cleanupPending === undefined, 5_000, () => child(w)?.cleanupPending);
+});
+
+// Issue #298, and NoPaneTwoParentsCurrent in model/Claims.tla. A child this
+// parent started on child-box holds its pane there only while its own adapter
+// stays connected to that machine's daemon from the pane (issue #244), so the
+// confirmation on each relay connection asks that daemon whether it still does.
+
+const STARTED_ID = 'kid-started';
+
+/** A child this parent started on child-box: relay-register there, as a real spawn runs it, then its own server says hello from the pane. */
+async function startFar(t: test.TestContext, w: World): Promise<{ spawned: ChildRecord; hello: () => Promise<DaemonClient> }> {
+  const at = new Date().toISOString();
+  const cwd = path.join(w.root, 'work');
+  fs.mkdirSync(cwd, { recursive: true });
+  const spawned: ChildRecord = { id: STARTED_ID, name: 'far-worker', kind: 'claude', harness: 'claude-code', paneId: PANE, tabId: 'w1:t1', workspaceId: 'w1', host: 'child-box', origin: 'spawn', cwd, startedAt: at, lastStatus: 'idle', statusChangedAt: at, lastBusyAt: at, session: { kind: 'id', value: SESSION }, depth: 1 };
+  await w.ctx.remote!.register(readParent(PARENT_ID)!, spawned, 'Fix the build.');
+  const hello = async (): Promise<DaemonClient> => {
+    const session = await DaemonClient.connect({ harness: 'claude-code', session: SESSION, cwd, host: 'child-box', paneId: PANE, workspaceId: 'w1', depth: 1, childId: spawned.id, herdrSocket: w.far.socketPath, accepts: ['message'] }, { home: w.childHome, socketPath: path.join(w.childHome, 'daemon.sock') });
+    t.after(() => session.close());
+    return session;
+  };
+  return { spawned, hello };
+}
+
+function started(): ChildRecord | undefined {
+  return readParent(PARENT_ID)?.children.find((entry) => entry.id === STARTED_ID);
+}
+
+function confirmations(w: World): number {
+  return w.logs.filter((line) => line.includes(`confirmed that far-worker (child ${STARTED_ID}) still runs in pane ${PANE}`)).length;
+}
+
+/** The relay and the herdr bridge to child-box both go down, as in an outage. */
+async function outage(w: World): Promise<void> {
+  w.ssh.plan(Array.from({ length: 10_000 }, () => 'refuse' as const));
+  w.setDown(true);
+  await w.ssh.drop();
+  await until('the relay to drop', () => w.links.state('child-box')?.status !== 'connected', 10_000, () => w.links.state('child-box'));
+}
+
+function back(w: World): void {
+  w.ssh.plan([]);
+  w.setDown(false);
+}
+
+// Trace: ResumeStart(f1, y), the relay drops, SessionChange(y, NoSession),
+// SessionChange(y, s1) by hand, LocalAdopt(l1, y), the relay comes back.
+test('a started child whose session ended during a relay outage, and whose pane a parent on that machine adopted, ends with the reason once the relay comes back', async (t) => {
+  const w = await world(t);
+  const { spawned, hello } = await startFar(t, w);
+  const session = await hello();
+  upsertChild(PARENT_ID, spawned);
+  w.links.sync();
+  await until('the first confirmation', () => confirmations(w) >= 1, 10_000, () => w.logs.slice(-6));
+
+  await outage(w);
+  // On child-box, unseen by this parent: the harness ends, so its adapter leaves, a person runs the same session by hand, and a parent there adopts the pane.
+  session.close();
+  const local = inHome(w.childHome, () => saveParent(emptyParent('pi', 'pane-parent', '/far', { paneId: 'w1:p2' })));
+  const farClient = new HerdrClient({ socketPath: w.far.socketPath });
+  const deadline = Date.now() + 5_000;
+  let adopted: string | undefined;
+  while (adopted === undefined) {
+    adopted = await inHomeAsync(w.childHome, () => runBellwetherTool({ client: farClient, clientFor: async () => farClient, parentId: local.id, watcher: new Watcher({ client: farClient, parentId: local.id, onEntries: () => {} }) }, 'agent_adopt', { target: PANE })).catch((error: Error) => {
+      if (Date.now() > deadline) throw error;
+      return undefined;
+    });
+    if (adopted === undefined) await delay(20);
+  }
+  assert.match(adopted, /^Adopted first-mate/, adopted);
+
+  back(w);
+  await until('the started child to end', () => started()?.exitedAt !== undefined, 20_000, () => w.logs.slice(-6));
+  const ended = started()!;
+  assert.equal(ended.paneEnd?.how, 'claim-lost');
+  assert.match(ended.paneEnd?.reason ?? '', new RegExp(`a child of ${local.id}, a parent on that machine`), ended.paneEnd?.reason);
+  await until('the exit event', () => w.published.some((entry) => entry.childId === STARTED_ID && entry.event === 'exited'), 5_000, () => w.published);
+  const exit = w.published.find((entry) => entry.childId === STARTED_ID && entry.event === 'exited')!;
+  assert.match(exit.text, new RegExp(`machine child-box no longer held pane ${PANE} for it`), exit.text);
+  const watchers = [
+    ...(readParent(PARENT_ID)?.children ?? []).filter((entry) => entry.paneId === PANE && !entry.exitedAt).map(() => PARENT_ID),
+    ...inHome(w.childHome, () => readParent(local.id)?.children ?? []).filter((entry) => entry.paneId === PANE && !entry.exitedAt).map(() => local.id),
+  ];
+  assert.deepEqual(watchers, [local.id], 'one parent watches the pane');
+});
+
+test('a started child whose pane runs another session after a relay outage ends with the reason once the relay comes back', async (t) => {
+  const w = await world(t);
+  const { spawned, hello } = await startFar(t, w);
+  const session = await hello();
+  upsertChild(PARENT_ID, spawned);
+  w.links.sync();
+  await until('the first confirmation', () => confirmations(w) >= 1, 10_000, () => w.logs.slice(-6));
+
+  await outage(w);
+  session.close();
+  w.pane.session = 'sess-two-0002';
+
+  back(w);
+  await until('the started child to end', () => started()?.exitedAt !== undefined, 20_000, () => w.logs.slice(-6));
+  const ended = started()!;
+  assert.equal(ended.paneEnd?.how, 'claim-lost');
+  assert.match(ended.paneEnd?.reason ?? '', new RegExp(`pane ${PANE} runs session sess-two-0002 now, not ${SESSION}`), ended.paneEnd?.reason);
+});
+
+test('a started child whose machine cannot say whether it still runs stays as it is, unconfirmed, doctor says so, and its adapter coming back confirms it', async (t) => {
+  const w = await world(t);
+  const { spawned, hello } = await startFar(t, w);
+  const session = await hello();
+  upsertChild(PARENT_ID, spawned);
+  w.links.sync();
+  await until('the first confirmation', () => confirmations(w) >= 1, 10_000, () => w.logs.slice(-6));
+
+  // The adapter leaves while the same session still runs in the pane: child-box cannot tell a harness run by hand from an adapter on its way back.
+  await outage(w);
+  session.close();
+  back(w);
+  await until('the started child to be unconfirmed', () => started()?.claimUnconfirmed !== undefined, 20_000, () => w.logs.slice(-6));
+  const record = started()!;
+  assert.equal(record.exitedAt, undefined, 'an unconfirmed child is not an exit');
+  assert.equal(record.claimUnconfirmed?.host, 'child-box');
+  assert.match(record.claimUnconfirmed?.reason ?? '', new RegExp(`session ${SESSION} runs in pane ${PANE}, but its adapter has not connected from it since it left at `), record.claimUnconfirmed?.reason);
+  const lines = claimUnconfirmedLines([readParent(PARENT_ID)!]);
+  assert.equal(lines.length, 1, lines.join('\n'));
+  assert.match(lines[0] ?? '', new RegExp(`^warn  unconfirmed claim: far-worker \\(child ${STARTED_ID} of ${PARENT_ID}\\) on machine child-box: since `));
+  assert.match(lines[0] ?? '', /Bellwether asks again, and the line goes once the child's adapter connects from the pane there again\.$/);
+
+  await hello();
+  await until('the started child to be confirmed again', () => started()?.claimUnconfirmed === undefined, 20_000, () => w.logs.slice(-6));
+  assert.equal(started()?.exitedAt, undefined);
+});
+
+test('a started child still running when the relay comes back stays as it is', async (t) => {
+  const w = await world(t);
+  const { spawned, hello } = await startFar(t, w);
+  await hello();
+  upsertChild(PARENT_ID, spawned);
+  w.links.sync();
+  await until('the first confirmation', () => confirmations(w) >= 1, 10_000, () => w.logs.slice(-6));
+
+  await outage(w);
+  back(w);
+  await until('the second confirmation', () => confirmations(w) >= 2, 20_000, () => w.logs.slice(-6));
+  const record = started()!;
+  assert.equal(record.exitedAt, undefined);
+  assert.equal(record.paneEnd, undefined);
+  assert.equal(record.claimUnconfirmed, undefined);
+  assert.equal(record.farRecordLost, undefined);
+  assert.deepEqual(claimUnconfirmedLines([readParent(PARENT_ID)!]), []);
 });

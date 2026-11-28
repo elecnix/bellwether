@@ -14,7 +14,9 @@
 //   origin         How the child came under its parent: spawn, resume or adopt.
 //   adoptInDoubt   An adoption on another machine whose answer the relay lost.
 //   claimUnconfirmed  The relay came back, and the child's machine has not
-//                  confirmed the claim this parent holds there (issue #257).
+//                  confirmed the claim this parent holds there (issue #257),
+//                  or that the child it started there still holds its pane
+//                  through its own adapter (issue #298).
 //   farRecordLost  The child's machine holds no record of it. With `contested`,
 //                  that machine holds the pane for someone else.
 //   replacedBy     The child id that now stands for this child's session.
@@ -51,7 +53,7 @@ export const AUTHORITY_FIELDS = {
   origin: 'how the child came under its parent: spawn, resume or adopt',
   adoptInDoubt: "an adoption on another machine whose answer the relay lost, so that machine's claim is unconfirmed",
   farRecordLost: "the child's machine holds no record of it; with contested, that machine holds its pane for someone else",
-  claimUnconfirmed: "the relay came back, and the child's machine has not confirmed it still holds the pane for this parent (issue #257)",
+  claimUnconfirmed: "the relay came back, and the child's machine has not confirmed it still holds the pane for this parent: an adoption's claim (issue #257), or a started child's adapter connected from the pane (issue #298)",
   replacedBy: "the child id that now stands for this child's session, on the machine that runs it",
 } as const satisfies { [K in keyof ChildRecord]?: string };
 

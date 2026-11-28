@@ -117,6 +117,16 @@ When that machine refuses the claim, or holds the pane for this parent under ano
 
 If that machine does not answer at all, as when its Bellwether predates `relay-adopt`, the child stays as it is and its record keeps `claimUnconfirmed`. The watcher asks again, up to once a minute. Until the machine answers, `bellwether doctor` prints a `warn` line for that child.
 
+A child the parent started on that machine has no claim there. It holds its pane only while its own adapter stays connected to that machine's daemon from the pane (issue #244). So each time the relay comes back up, the parent's daemon also sends `relay-confirm` for each child it started there (issue #298). The daemon there checks its adapter connections and what herdr shows in the pane:
+
+- When the child's adapter connects from the pane, the child stays as it is.
+- When another parent watches the pane, the child exits with the reason.
+- When the adapter left, and herdr reports an empty pane or another session there, the child exits with the reason.
+- When that machine lacks a record of the child, the parent's record keeps `farRecordLost`.
+- When the child's session runs in the pane without its adapter, or the daemon there started after the adapter left, the answer doesn't settle it. The record keeps `claimUnconfirmed`, `bellwether doctor` prints a `warn` line, and the watcher asks again until the adapter connects.
+
+A machine whose Bellwether predates `relay-confirm` leaves the child as it is.
+
 A `relay-cleanup` can fail at a child's exit, as when the relay is down (issue #258). The claim, or a started child's files, then remain on that machine, and the child's record keeps `cleanupPending`. The parent's watcher runs `relay-cleanup` again, waiting longer after each failure, up to a minute, for 5 minutes after the first failure. That is the same bound a deferred restart waits.
 
 Each time the relay to that machine comes up, the watcher tries once more, even after those 5 minutes. The child remains exited either way. Once the 5 minutes pass, `bellwether doctor` prints a `warn` line that lists what remains there and the command that removes it by hand. While a claim remains, a later run of the same session in that pane reports to a parent whose child exited.

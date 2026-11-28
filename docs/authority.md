@@ -22,7 +22,7 @@ Each child has one standing, read from its record:
 | adopted | The parent adopted a pane on its own machine. |
 | claimed | The parent adopted a pane on another machine, and its claim stands there. |
 | stale | The child's machine lost its record of the child, as after a reboot, and nobody else holds the pane there. |
-| unconfirmed | The relay lost the answer to an adoption on another machine, or the relay came back and that machine has not confirmed the claim since ([#257](https://github.com/elecnix/bellwether/issues/257)). |
+| unconfirmed | The relay lost the answer to an adoption on another machine. Or the relay came back, and since then that machine has not confirmed the claim ([#257](https://github.com/elecnix/bellwether/issues/257)), or that a started child still runs in its pane there ([#298](https://github.com/elecnix/bellwether/issues/298)). |
 | contested | The child's machine holds the pane for someone else: another parent, or this parent under another child id. |
 | replaced | The child's machine holds the session under another child id. |
 | freed | The child has no holding parent any longer. |

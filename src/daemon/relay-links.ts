@@ -27,7 +27,7 @@ import type { ChildRecord } from '../core/types.ts';
 import { DAEMON_PROTOCOL, MAX_DAEMON_FRAME_BYTES, formatRequest, type DaemonReply, type DaemonRequest, type InboxMessage, type RelayMessageAnswer, type RelayAdoptAnswer, type RelayHostState, type RelayReport } from './protocol.ts';
 import { featureNamed } from './features.ts';
 import { BRIEF_SESSION_WAIT_MS, type InboxAnswer, type InboxOptions } from '../core/send.ts';
-import { ClaimRefused, type PaneClaim } from '../core/pane-claims.ts';
+import { ClaimRefused, FarPredates, type PaneClaim, type StartedAsk, type StartedHold } from '../core/pane-claims.ts';
 import { STARTUP_TIMEOUT_MS } from '../core/spawn.ts';
 import { RelayAnswerLost } from '../core/relay-answer.ts';
 import type { RelayRetireAnswer, RelayRetireAsk } from '../core/retire.ts';
@@ -67,7 +67,7 @@ export type RelayOutcome = { refused?: string; answer?: string };
 
 interface PendingRead {
   /** The request type, so a far daemon that does not know it can be answered for the requests it refused. */
-  type: 'relay-read' | 'relay-adopt' | 'relay-message' | 'relay-message-again' | 'relay-restart' | 'relay-retire' | 'relay-free';
+  type: 'relay-read' | 'relay-adopt' | 'relay-confirm' | 'relay-message' | 'relay-message-again' | 'relay-restart' | 'relay-retire' | 'relay-free';
   resolve: (text: string) => void;
   reject: (error: Error) => void;
   timer: NodeJS.Timeout;
@@ -246,6 +246,20 @@ export class RelayLinks {
   }
 
   /**
+   * Ask the daemon on a started child's machine whether the child still holds
+   * its pane there (issue #298), over the open connection. A daemon there
+   * that predates the request is refused by name, as `FarPredates`.
+   */
+  async confirm(host: string, ask: StartedAsk): Promise<StartedHold> {
+    if (host === LOCAL_HOST) throw new Error('a child on this machine is watched here');
+    const text = await this.ask(host, 'relay-confirm', (id) => ({ type: 'relay-confirm', id, ...ask }));
+    const answer = JSON.parse(text) as { state?: unknown; reason?: unknown };
+    if (answer.state === 'running') return { state: 'running' };
+    if ((answer.state === 'held' || answer.state === 'ended' || answer.state === 'unheld' || answer.state === 'absent') && typeof answer.reason === 'string' && answer.reason) return { state: answer.state, reason: answer.reason };
+    throw new Error(`machine ${host} answered the confirmation without a state`);
+  }
+
+  /**
    * Hand a parent's message to the daemon on the child's machine, which puts
    * it in the child's session there, over the open connection. The answer
    * says whether that session took it. A daemon there that predates the
@@ -340,7 +354,7 @@ export class RelayLinks {
       return await new Promise<string>((resolve, reject) => {
         const timer = setTimeout(() => {
           link.reads.delete(id);
-          reject(new RelayAnswerLost(`machine ${host} did not answer ${type === 'relay-read' ? 'a read' : type === 'relay-adopt' ? 'an adoption' : type === 'relay-restart' ? 'a restart' : type === 'relay-retire' ? 'a retirement' : type === 'relay-free' ? 'a freeing' : 'a message'} within ${timeoutMs} ms`));
+          reject(new RelayAnswerLost(`machine ${host} did not answer ${type === 'relay-read' ? 'a read' : type === 'relay-adopt' ? 'an adoption' : type === 'relay-confirm' ? 'a confirmation' : type === 'relay-restart' ? 'a restart' : type === 'relay-retire' ? 'a retirement' : type === 'relay-free' ? 'a freeing' : 'a message'} within ${timeoutMs} ms`));
         }, timeoutMs);
         timer.unref?.();
         link.reads.set(id, { type, resolve, reject, timer });
@@ -601,7 +615,7 @@ export class RelayLinks {
         for (const [id, read] of refused) {
           link.reads.delete(id);
           clearTimeout(read.timer);
-          read.reject(new Error(predates(link.state, read.type)));
+          read.reject(new FarPredates(predates(link.state, read.type)));
         }
         return;
       }

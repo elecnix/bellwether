@@ -7,7 +7,7 @@ import { AuthorityConflict, heldByAdoption, judgeHolders, type PaneHolder } from
 import { LOCAL_HOST } from './machine.ts';
 import type { ChildRecord, ParentRecord } from './types.ts';
 import { watchersOfPane } from './registry.ts';
-import { RELAY_SCHEMA, listRelayRecords, removeRelayRecord, saveRelayRecord, type RelayRecord } from './relay-records.ts';
+import { RELAY_SCHEMA, listRelayRecords, readRelayRecord, removeRelayRecord, saveRelayRecord, type RelayRecord } from './relay-records.ts';
 
 /** What a parent on another machine asks for when it adopts a pane here. */
 export interface PaneClaim {
@@ -33,16 +33,88 @@ export type Claimant = { where: 'here'; parentId: string; childId: string; name:
  * in memory, because only a live connection proves the child still runs
  * there, and an adapter says hello again after every hand-over (issue #244).
  */
-const startedPanes = new Map<object, { childId: string; paneId: string }>();
+const startedPanes = new Map<object, StartedHello>();
+
+/** What a started child's adapter said in its hello: its child id, its pane, and the session and herdr it ran under. */
+interface StartedHello {
+  childId: string;
+  paneId: string;
+  session?: string;
+  herdrSocket?: string;
+}
+
+/**
+ * The started children whose last adapter connection closed while this
+ * daemon ran, by child id, with when (issue #298). A parent on another
+ * machine asks after a relay outage whether its child still runs here, and
+ * only this daemon saw the child leave. It lives in memory, as the
+ * connections do: a daemon that started since knows nothing of the child
+ * and says so.
+ */
+const startedLeft = new Map<string, StartedHello & { at: string }>();
 
 /** A child's adapter said hello from a pane, with the child id its start gave it. */
-export function childSaidHello(connection: object, childId: string, paneId: string): void {
-  startedPanes.set(connection, { childId, paneId });
+export function childSaidHello(connection: object, childId: string, paneId: string, ran: { session?: string; herdrSocket?: string } = {}): void {
+  startedPanes.set(connection, { childId, paneId, ...(ran.session ? { session: ran.session } : {}), ...(ran.herdrSocket ? { herdrSocket: ran.herdrSocket } : {}) });
+  startedLeft.delete(childId);
 }
 
 /** A connection that said hello closed. */
-export function childLeft(connection: object): void {
+export function childLeft(connection: object, now = new Date()): void {
+  const hello = startedPanes.get(connection);
   startedPanes.delete(connection);
+  if (!hello || [...startedPanes.values()].some((entry) => entry.childId === hello.childId)) return;
+  startedLeft.set(hello.childId, { ...hello, at: now.toISOString() });
+}
+
+/** What a parent on another machine asks about a child it started here. */
+export interface StartedAsk {
+  parentId: string;
+  childId: string;
+  paneId: string;
+}
+
+/**
+ * Whether a child a parent on another machine started still holds its pane
+ * here, the answer to `relay-confirm` (issue #298): `running` while its
+ * adapter is connected from the pane, `held` when another holder has the
+ * pane, `ended` when its adapter left and herdr shows the session it ran
+ * gone from the pane, `unheld` when this machine has no record of the
+ * child, and `absent` when this machine cannot tell, because the session
+ * still runs in the pane without the adapter, or this daemon never saw it.
+ */
+export type StartedHold = { state: 'running' } | { state: 'held' | 'ended' | 'unheld' | 'absent'; reason: string };
+
+/** The session herdr reports in a pane, or `gone` when the pane has no agent. */
+export type PaneSessionReader = (herdrSocket: string, paneId: string) => Promise<{ session?: string } | 'gone'>;
+
+/** Answer a parent on another machine that asks whether the child it started here still holds its pane. */
+export async function startedHold(ask: StartedAsk, readPane: PaneSessionReader): Promise<StartedHold> {
+  const pane = `pane ${ask.paneId}`;
+  const record = readRelayRecord(ask.childId);
+  if (!record || record.retiredAt || record.adopted || record.parentId !== ask.parentId) return { state: 'unheld', reason: `this machine holds no record of child ${ask.childId} for parent ${ask.parentId}` };
+  if ([...startedPanes.values()].some((entry) => entry.childId === ask.childId && entry.paneId === ask.paneId)) return { state: 'running' };
+  // The child's own adapter is not connected, so its relay record no longer holds the pane, and any other holder does.
+  let holder: Claimant | undefined;
+  try {
+    holder = claimantOf(ask.paneId);
+  } catch (error) {
+    if (!(error instanceof AuthorityConflict)) throw error;
+    return { state: 'held', reason: error.message.replace(/\.$/, '') };
+  }
+  if (holder?.where === 'here') return { state: 'held', reason: `${pane} is a child of ${holder.parentId}, a parent on that machine, as ${holder.name}` };
+  if (holder) return { state: 'held', reason: `${pane} is a child of ${holder.record.parentId}, a parent on another machine, as ${holder.record.name}` };
+  const left = startedLeft.get(ask.childId);
+  if (!left || left.paneId !== ask.paneId || !left.herdrSocket) return { state: 'absent', reason: `its adapter is not connected from ${pane}, and this machine's daemon has not seen it there since that daemon started` };
+  let seen: { session?: string } | 'gone';
+  try {
+    seen = await readPane(left.herdrSocket, ask.paneId);
+  } catch (error) {
+    return { state: 'absent', reason: `its adapter left ${pane} at ${left.at}, and herdr could not report the pane: ${(error as Error).message.replace(/\.$/, '')}` };
+  }
+  if (seen === 'gone' || !seen.session) return { state: 'ended', reason: `its adapter left ${pane} at ${left.at}, and herdr reports no agent there now` };
+  if (left.session && seen.session !== left.session) return { state: 'ended', reason: `its adapter left ${pane} at ${left.at}, and ${pane} runs session ${seen.session} now, not ${left.session}` };
+  return { state: 'absent', reason: `session ${seen.session} runs in ${pane}, but its adapter has not connected from it since it left at ${left.at}` };
 }
 
 function registrySource(found: { parent: ParentRecord; child: ChildRecord }): PaneHolder {
@@ -98,6 +170,9 @@ export function claimantOf(paneId: string): Claimant | undefined {
 
 /** A machine's refusal of a claim, because someone else holds the pane there: not a lost connection. */
 export class ClaimRefused extends Error {}
+
+/** A far machine whose Bellwether predates a request answered that it does not know it: an answer, not a lost connection. */
+export class FarPredates extends Error {}
 
 export type ClaimDecision = { kind: 'take' } | { kind: 'held'; childId: string } | { kind: 'refuse'; reason: string };
 

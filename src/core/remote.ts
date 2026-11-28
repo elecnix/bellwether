@@ -14,7 +14,7 @@ import { resolveMachine, type MachineResolver } from './machine.ts';
 import { describeFailure, runRemoteBellwether, type SshOptions } from './ssh.ts';
 import type { ChildRecord, ParentRecord } from './types.ts';
 import type { ToolSource } from './tool-source.ts';
-import type { PaneClaim } from './pane-claims.ts';
+import type { PaneClaim, StartedAsk, StartedHold } from './pane-claims.ts';
 import type { SessionReach } from './adopted-session.ts';
 import { adoptionClaim } from './adopt.ts';
 import { hostOf } from './machine.ts';
@@ -59,6 +59,8 @@ export interface RemoteOps {
   claim?(host: string, claim: PaneClaim): Promise<{ childId: string; held: boolean; session?: SessionReach; messages?: boolean }>;
   /** Ask the child's machine to restart the child there. Absent when the session holds no relay. */
   restart?(host: string, ask: RelayRestartAsk): Promise<RelayRestartAnswer>;
+  /** Ask a started child's machine whether the child still holds its pane there (issue #298). Absent when the session holds no relay. */
+  confirm?(host: string, ask: StartedAsk): Promise<StartedHold>;
   /** Ask a freed child's machine to write its record of the freeing (issue #262). Absent when the session holds no relay. */
   free?(host: string, ask: RelayFreeAsk): Promise<void>;
   /** Put a peer's message in a freed child's session on its machine, with the pair's token (issue #262). */
@@ -128,6 +130,8 @@ export interface RemoteReader {
   adopt?(host: string, claim: PaneClaim): Promise<{ childId: string; held: boolean; session?: SessionReach; messages?: boolean }>;
   /** Restart a child on its own machine, over the same connection. */
   restart?(host: string, ask: RelayRestartAsk): Promise<RelayRestartAnswer>;
+  /** Ask whether a started child still holds its pane on its machine, over the same connection. */
+  confirm?(host: string, ask: StartedAsk): Promise<StartedHold>;
   /** Record a freeing on the child's machine, over the same connection. */
   free?(host: string, ask: RelayFreeAsk): Promise<void>;
   /** A peer's message to a freed child there, over the same connection. */
@@ -160,6 +164,7 @@ export function remoteOps(resolve: MachineResolver = resolveMachine, options: Ss
       return reader.adopt(host, claim);
     },
     ...(reader?.restart ? { restart: (host: string, ask: RelayRestartAsk) => (reader.restart as NonNullable<RemoteReader['restart']>).call(reader, host, ask) } : {}),
+    ...(reader?.confirm ? { confirm: (host: string, ask: StartedAsk) => (reader.confirm as NonNullable<RemoteReader['confirm']>).call(reader, host, ask) } : {}),
     ...(reader?.free ? { free: (host: string, ask: RelayFreeAsk) => (reader.free as NonNullable<RemoteReader['free']>).call(reader, host, ask) } : {}),
     ...(reader?.message ? { peerMessage: (host: string, parentId: string, childId: string, message: InboxMessage, peer: { from: string; token: string }) => (reader.message as NonNullable<RemoteReader['message']>).call(reader, host, parentId, childId, message, { peer }) } : {}),
   };
@@ -205,8 +210,9 @@ export function farRecordLines(parents: ParentRecord[]): string[] {
 
 /**
  * The doctor lines for each live child whose machine could not confirm the
- * claim this parent holds there by adoption, once the relay came back (issue
- * #257). The watcher asks again, and the line goes once that machine answers.
+ * claim this parent holds there by adoption (issue #257), or that the child
+ * this parent started there still holds its pane (issue #298), once the relay
+ * came back. The watcher asks again, and the line goes once that machine answers.
  */
 export function claimUnconfirmedLines(parents: ParentRecord[]): string[] {
   const lines: string[] = [];
@@ -214,7 +220,8 @@ export function claimUnconfirmedLines(parents: ParentRecord[]): string[] {
     for (const child of parent.children) {
       const open = child.claimUnconfirmed;
       if (!open || child.exitedAt) continue;
-      lines.push(`warn  unconfirmed claim: ${child.name} (child ${child.id} of ${parent.id}) on machine ${open.host}: since ${open.at}, that machine has not confirmed it still holds pane ${child.paneId} for this child, so another parent may watch the pane (${open.reason}). Bellwether asks again; run agent_adopt ${open.host}:${child.paneId} to ask again.`);
+      const next = heldByAdoption(child) ? `Bellwether asks again; run agent_adopt ${open.host}:${child.paneId} to ask again.` : "Bellwether asks again, and the line goes once the child's adapter connects from the pane there again.";
+      lines.push(`warn  unconfirmed claim: ${child.name} (child ${child.id} of ${parent.id}) on machine ${open.host}: since ${open.at}, that machine has not confirmed it still holds pane ${child.paneId} for this child, so another parent may watch the pane (${open.reason}). ${next}`);
     }
   }
   return lines;
@@ -244,4 +251,11 @@ export async function reclaimRemote(remote: RemoteOps, parentId: string, child: 
   if (!remote.claim) throw new Error(`this session holds no connection to machine ${host}`);
   const answer = await remote.claim(host, adoptionClaim(parentId, child));
   if (answer.childId !== child.id) throw new ClaimHeldElsewhere(host, answer.childId, child.id);
+}
+
+/** Ask a started child's machine whether the child still holds its pane there (issue #298). */
+export async function askStartedHold(remote: RemoteOps, parentId: string, child: ChildRecord): Promise<StartedHold> {
+  const host = hostOf(child);
+  if (!remote.confirm) throw new Error(`this session holds no connection to machine ${host}`);
+  return remote.confirm(host, { parentId, childId: child.id, paneId: child.paneId });
 }

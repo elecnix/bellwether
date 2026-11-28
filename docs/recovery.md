@@ -181,7 +181,7 @@ Bellwether leaves a child it adopted, a detached HEAD and any main worktree in p
 
 On the child record, `retireOutcome` shows `removed`, `partial` or `refused`. After a removal, `retireProof` records the proof. After a refusal, `retireReason` states the failed check and what a person would do about it.
 
-`removed` means retirement removed every worktree the record knows of. `partial` means it removed at least one, and another is still there. A worktree here can fail the checks, and so can one on another machine, where that machine's daemon runs them. When the parent's daemon has no connection to a machine, the worktree there stays. Under `retireIntent.far` the record lists each worktree on another machine with its own outcome. The `retire.log` line lists those still in place under `stays`, and `retireReason` describes each worktree that stays.
+`removed` means retirement removed every worktree the record knows of. `partial` means it removed at least one, and another is still there. The daemon on each machine judges the worktrees there, and any of them can fail. When the parent's daemon has no connection to a machine, the worktree there stays. Under `retireIntent.far` the record lists each worktree on another machine with its own outcome. The `retire.log` line lists those still in place under `stays`, and `retireReason` describes each worktree that stays.
 
 Each outcome also goes to `~/.bellwether/retire.log` as one JSON line, and `agent_read` puts the line above the child's last message. After a restart mid-retirement, the daemon finishes the remaining steps. Resuming a child cancels its request. Bellwether refuses to resume a child whose retirement removed its worktree until the directory exists again.
 

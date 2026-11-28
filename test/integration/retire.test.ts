@@ -6,7 +6,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { spawnSync } from 'node:child_process';
 import { adoptedParentOf } from '../../src/core/adopted-session.ts';
+import { childLockPath } from '../../src/core/child-lock.ts';
 import { HerdrClient } from '../../src/core/herdr-client.ts';
 import { emptyParent, readParent, saveParent, updateChild } from '../../src/core/registry.ts';
 import { childOfCaller } from '../../src/core/report.ts';
@@ -309,6 +311,13 @@ test('a daemon restarted after the worktree is removed finishes the job, and doe
   watcher.stop();
   assert.deepEqual(w.git.calls, [`worktree remove ${WORKTREE}`]);
   assert.equal(w.child().retireOutcome, undefined);
+  // A daemon that dies mid-removal leaves the child lock behind, naming a process
+  // that no longer runs, and the next daemon takes it over (issue #211).
+  const dead = spawnSync(process.execPath, ['-e', '']).pid;
+  const lock = childLockPath('c-retire');
+  const held = JSON.parse(fs.readFileSync(lock, 'utf8')) as { purpose: string };
+  assert.match(held.purpose, /retirement of feat-x/, 'the first daemon held the child lock while it removed');
+  fs.writeFileSync(lock, `${JSON.stringify({ ...held, pid: dead })}\n`);
 
   delete w.git.override.deleteBranch;
   const second = w.watcher();

@@ -1,0 +1,1 @@
+A spawn counts a brief taken only when, for the same copy, the child's adapter reports that its model read it and herdr reports the pane `working`. Either sign used to be enough. A read shows only that the message entered the session, and a redraw or a hook while the brief is in flight reports `working` too, so the record could claim a turn that never happened.

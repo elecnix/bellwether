@@ -166,7 +166,8 @@ export interface ChildBrief {
  * How a brief reached its child (issue #162). `session` is a message the
  * child's own Bellwether adapter received, the same path agent_send takes,
  * and that its model then took (issue #176): the adapter's receipt proves the
- * transport, and only a turn or a read receipt proves the reader.
+ * transport, and the reader is proven by the adapter's read receipt together
+ * with a turn herdr reports.
  * `keystrokes` is the fallback, typed into the pane, with the reason the
  * session path was not taken. `launch` is the first prompt on the launch line
  * of a harness that takes no message in its session and whose own store
@@ -178,9 +179,11 @@ export interface BriefDelivery {
   via?: string;
   /** For the session path: when the adapter received the message that carried it. Transport, not reading. */
   receivedAt?: string;
-  /** For the session path: when the model took it, by the first fact only the model produces. */
+  /** For the session path: when the adapter reported the model read it. */
+  readAt?: string;
+  /** For the session path: when the model took it, the later of its read receipt and its first turn. */
   takenAt?: string;
-  /** For the session path: that fact, a turn herdr reported as `working` or a read receipt from the adapter. */
+  /** For the session path: `turn` once the adapter's read receipt and a `working` status both came for one copy. Before 0.1.10, either fact alone settled it: `turn` for the status, `read` for the receipt. */
   takenBy?: 'turn' | 'read';
   /** The message that carried the first copy, when the model took no turn on it and the brief went again. */
   resentFrom?: string;

@@ -55,14 +55,30 @@ export async function serveMoveVerb(verb: MoveVerb, request: unknown): Promise<u
 }
 
 /**
- * How long `bellwether doctor` waits for its move check, from listing the
- * machines to the last probe. A machine whose SSH does not connect would
- * otherwise hold doctor for ssh's own ten-second connect timeout, and
- * pi --list-models takes about two seconds on a busy machine. At the bound,
- * doctor stops every command the check started and names each machine that
- * did not answer.
+ * How long `bellwether doctor` waits for each SSH call of its move check. A
+ * probe of another machine is two calls: `bellwether help`, which proves the
+ * far end knows the move verbs, then `bellwether move-probe`, which runs
+ * pi --list-models there. One machine took 0.6 s for the first and 3.4 s for
+ * the second. A machine whose SSH does not connect would otherwise hold
+ * doctor for ssh's own ten-second connect timeout.
  */
-export const MOVE_CHECK_BUDGET_MS = 4_000;
+export const MOVE_CHECK_CALL_MS = 6_000;
+
+/**
+ * How long `bellwether doctor` waits for its whole move check, from listing
+ * the machines to the last probe: room for both calls of a probe. At the
+ * bound, doctor stops every command the check started and names each machine
+ * that did not answer, as unknown rather than as broken.
+ */
+export const MOVE_CHECK_BUDGET_MS = 2 * MOVE_CHECK_CALL_MS;
+
+/** A far machine that did not answer a call within its bound. It says nothing about whether the machine works. */
+export class RemoteTimeoutError extends Error {
+  override name = 'RemoteTimeoutError';
+}
+
+/** The code runRemoteBellwether gives a call that ran out of time, or that the caller's deadline stopped. */
+const TIMED_OUT = 124;
 
 /** Session bundles carry whole transcripts, so a reply may be far larger than a report. */
 const MOVE_MAX_BUFFER = 512 * 1024 * 1024;
@@ -75,6 +91,7 @@ export function remoteEndpoint(host: string, resolve: MachineResolver = resolveM
   let capable: Promise<void> | undefined;
   const ensureCapable = (target: string): Promise<void> => {
     capable ??= runRemoteBellwether(target, ['help'], options).then((result) => {
+      if (result.code === TIMED_OUT) throw new RemoteTimeoutError(describeFailure(target, result));
       if (result.code !== 0 && !result.stdout.includes('Usage: bellwether')) throw new Error(describeFailure(target, result));
       if (!result.stdout.includes('move-probe')) throw new Error(`bellwether on machine ${host} predates agent_move. ${releaseAdvice(target, { ...result, command: ['move-probe'] }) ?? ''}`.trimEnd());
     });
@@ -96,6 +113,7 @@ export function remoteEndpoint(host: string, resolve: MachineResolver = resolveM
     }
     if (reply?.ok) return reply.result as T;
     if (reply?.error) throw new Error(`bellwether ${verb} on machine ${host}: ${reply.error}`);
+    if (result.code === TIMED_OUT) throw new RemoteTimeoutError(describeFailure(profile.target, result));
     throw new Error(result.code === 0 ? `bellwether ${verb} on machine ${host} printed no reply: ${line || '(nothing)'}` : describeFailure(profile.target, result));
   };
   return {

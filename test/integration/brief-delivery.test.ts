@@ -163,7 +163,7 @@ test('a Claude Code child takes its brief through its channel after the startup 
   };
 
   const reply = await space.parent.tool('agent_spawn', { kind: 'claude', name: 'writer', cwd, prompt: BRIEF });
-  const id = /writer's Bellwether channel received its brief as message (m-[0-9a-f]{8}), and its model read it \d+(\.\d)? s later; nothing was typed into its pane\./.exec(reply)?.[1];
+  const id = /writer's Bellwether channel received its brief as message (m-[0-9a-f]{8}), and its model read it and began a turn on it \d+(\.\d)? s later; nothing was typed into its pane\./.exec(reply)?.[1];
   assert.ok(id, reply);
   const child = childNamed(space, 'writer');
   assert.ok(child);
@@ -173,7 +173,7 @@ test('a Claude Code child takes its brief through its channel after the startup 
   // The guard that fails if the brief turned back into a keystroke or an @ path.
   assert.deepEqual(prompted(space.fake, child.paneId), [], 'nothing typed into the pane of a child whose channel took its brief');
   assert.ok(!(space.world.panes.get(child.paneId)?.args ?? []).some((arg) => arg.startsWith('@')), 'the launch line carries no @ path');
-  assert.deepEqual(child.briefs?.[0]?.delivery && { path: child.briefs[0].delivery.path, via: child.briefs[0].delivery.via, message: child.briefs[0].delivery.message, takenBy: child.briefs[0].delivery.takenBy }, { path: 'session', via: 'claude-channel', message: id, takenBy: 'read' });
+  assert.deepEqual(child.briefs?.[0]?.delivery && { path: child.briefs[0].delivery.path, via: child.briefs[0].delivery.via, message: child.briefs[0].delivery.message, takenBy: child.briefs[0].delivery.takenBy }, { path: 'session', via: 'claude-channel', message: id, takenBy: 'turn' });
   const message = child.messages?.find((entry) => entry.id === id);
   assert.equal(message?.brief, 1);
   assert.equal(message?.path, 'session');
@@ -197,8 +197,8 @@ test("agent_list says how each child's newest brief arrived, and names the recor
   assert.match(list, /Each child's newest brief and how it arrived \(on the record, children\[\]\.briefs\[\]\.delivery\):/);
   assert.ok(list.includes(`plain: brief 1 at ${plain.briefs?.[0]?.at}, typed into its pane as message ${plain.briefs?.[0]?.delivery?.message}, because fake-agent is a test harness with no inbound path; Bellwether cannot tell when its model read it. The brief stays at ${plain.briefs?.[0]?.file}.`), list);
   const taken = listener.briefs?.[0]?.delivery;
-  assert.equal(taken?.takenBy, 'read');
-  assert.ok(list.includes(`listener: brief 1 at ${listener.briefs?.[0]?.at}, into its session through its Bellwether pi extension as message ${taken?.message}; its model read it at ${taken?.takenAt}.`), list);
+  assert.equal(taken?.takenBy, 'turn');
+  assert.ok(list.includes(`listener: brief 1 at ${listener.briefs?.[0]?.at}, into its session through its Bellwether pi extension as message ${taken?.message}; its model read it and began a turn on it at ${taken?.takenAt}.`), list);
 });
 
 test('a child with no adapter gets its brief typed, and the record says so with the reason', async (t) => {
@@ -262,7 +262,7 @@ test('a resume hands its brief to the session once, and an unread brief it carri
   };
   const reply = await space.parent.tool('agent_spawn', { resume: 'planner', prompt: 'Continue.' });
   assert.match(reply, /planner resumed session/);
-  assert.match(reply, /planner's Bellwether pi extension received its brief as message m-[0-9a-f]{8}, and its model read it/);
+  assert.match(reply, /planner's Bellwether pi extension received its brief as message m-[0-9a-f]{8}, and its model read it and began a turn on it/);
   // The resumed session reconnects, and takes one message: the new brief, which carries the unread one.
   assert.equal(pushes.length, 1, `one push, not a replay and a brief: ${JSON.stringify(pushes)}`);
   assert.equal(pushes[0]?.replay, false);
@@ -319,29 +319,34 @@ test('an adapter that acknowledges at once while its model reads the brief ten s
   assert.equal(pushes.length, 1, 'one push: the read came before the wait ran out, so nothing went again');
   const received = pushes[0]!.at;
   assert.ok(answered - received >= 9_500, `the spawn answered ${answered - received} ms after the receipt, not at it`);
-  assert.match(reply, /slow's Bellwether channel received its brief as message m-[0-9a-f]{8}, and its model read it (9|10|11)(\.\d)? s later; nothing was typed into its pane\./);
+  assert.match(reply, /slow's Bellwether channel received its brief as message m-[0-9a-f]{8}, and its model read it and began a turn on it (9|10|11)(\.\d)? s later; nothing was typed into its pane\./);
   const delivery = childNamed(space, 'slow')?.briefs?.[0]?.delivery;
   assert.equal(delivery?.path, 'session');
   assert.equal(delivery?.via, 'claude-channel');
-  assert.equal(delivery?.takenBy, 'read');
+  assert.equal(delivery?.takenBy, 'turn');
   assert.ok(delivery?.receivedAt && delivery.takenAt, JSON.stringify(delivery));
   assert.ok(Date.parse(delivery.takenAt) - Date.parse(delivery.receivedAt) >= 9_500, `the record keeps the receipt and the read apart: ${JSON.stringify(delivery)}`);
   assert.deepEqual(prompted(space.fake, childNamed(space, 'slow')?.paneId ?? ''), [], 'nothing typed');
 });
 
-test("a read receipt from the child's adapter counts as its model taking the brief", async (t) => {
-  const space = await room(t);
+// Issue #176 held closed: a read receipt says only that the message entered
+// the session, so on its own it is not the model taking the brief.
+test('a read receipt arrives and the model never begins a turn: the brief is not taken, and the resend and BriefNotTaken still fire', async (t) => {
+  const space = await room(t, { briefTurnWaitMs: 500 });
   const pushes: { id: string; text: string; replay: boolean; at: number }[] = [];
   space.world.onStart = (pane) => {
     const child = childInPane(space, pane);
-    if (child) void bareSession(t, space, child, 'pi', 'pi-message', pushes, () => ({ readAfterMs: 0 }));
+    // The adapter acknowledges and reports a read; herdr never reports a turn.
+    if (child) void bareSession(t, space, child, 'claude-code', 'claude-channel', pushes, () => ({ readAfterMs: 0 }));
   };
-  const reply = await space.parent.tool('agent_spawn', { kind: 'pi', name: 'reader', prompt: BRIEF });
-  assert.match(reply, /reader's Bellwether pi extension received its brief as message m-[0-9a-f]{8}, and its model read it \d+(\.\d)? s later; nothing was typed into its pane\./);
-  assert.equal(childNamed(space, 'reader')?.briefs?.[0]?.delivery?.takenBy, 'read');
+  const outcome = await space.parent.tool('agent_spawn', { kind: 'claude', name: 'unturned', prompt: BRIEF }).catch((error: Error) => error.message);
+  assert.equal(childNamed(space, 'unturned')?.briefs?.[0]?.delivery?.takenBy, undefined, `the brief settled as taken on a read with no turn: ${outcome}`);
+  assert.equal(pushes.length, 2, 'the resend fired');
+  assert.match(outcome, /BriefNotTaken: unturned's Bellwether channel received its brief twice/);
+  assert.deepEqual(space.fake.requests.filter((request) => request.method === 'agent.prompt'), [], 'nothing typed');
 });
 
-test('a model that does not read the first copy gets the brief once more, and the reply says so', async (t) => {
+test('a model that does not take the first copy gets the brief once more, and the reply says so', async (t) => {
   const space = await room(t, { briefTurnWaitMs: 1_000 });
   const pushes: { id: string; text: string; replay: boolean; at: number }[] = [];
   space.world.onStart = (pane) => {
@@ -353,11 +358,11 @@ test('a model that does not read the first copy gets the brief once more, and th
   assert.equal(pushes.length, 2, `the brief went twice: ${JSON.stringify(pushes)}`);
   assert.equal(pushes[1]?.text, pushes[0]?.text, 'the second copy is the same brief');
   const [first, second] = pushes;
-  assert.match(reply, new RegExp(`deaf's model did not read its brief within 1 s of its Bellwether channel receiving its brief as message ${first!.id}, so Bellwether sent the brief once more as message ${second!.id}, and its model read it`));
+  assert.match(reply, new RegExp(`deaf's model did not read its brief and begin a turn on it within 1 s of its Bellwether channel receiving its brief as message ${first!.id}, so Bellwether sent the brief once more as message ${second!.id}, and its model read it and began a turn on it`));
   const child = childNamed(space, 'deaf');
   assert.equal(child?.briefs?.[0]?.delivery?.message, second!.id);
   assert.equal(child?.briefs?.[0]?.delivery?.resentFrom, first!.id);
-  assert.match(child?.messages?.find((message) => message.id === first!.id)?.undelivered ?? '', new RegExp(`its model did not read it within 1 s, so brief 1 went again as message ${second!.id}`));
+  assert.match(child?.messages?.find((message) => message.id === first!.id)?.undelivered ?? '', new RegExp(`its model did not read it and begin a turn on it within 1 s, so brief 1 went again as message ${second!.id}`));
   assert.deepEqual(prompted(space.fake, child?.paneId ?? ''), [], 'nothing typed');
 });
 
@@ -369,7 +374,7 @@ test('a model that takes neither copy fails the spawn by name, and leaves no rec
     if (child) void bareSession(t, space, child, 'claude-code', 'claude-channel', pushes, () => undefined);
   };
   await assert.rejects(space.parent.tool('agent_spawn', { kind: 'claude', name: 'mute', prompt: BRIEF }), (error: Error) => {
-    assert.match(error.message, /BriefNotTaken: mute's Bellwether channel received its brief twice, as messages m-[0-9a-f]{8} and m-[0-9a-f]{8}, but its model read neither within 0\.5 s of each, so the spawn failed and its pane is closed\./);
+    assert.match(error.message, /BriefNotTaken: mute's Bellwether channel received its brief twice, as messages m-[0-9a-f]{8} and m-[0-9a-f]{8}, but its model did not read and begin a turn on either within 0\.5 s of each, so the spawn failed and its pane is closed\./);
     return true;
   });
   assert.equal(pushes.length, 2, 'one resend, not more');

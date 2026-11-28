@@ -260,11 +260,14 @@ test("a start's brief waits on the child's machine for its session, enters it ac
   // the start waits until Claude Code there records the message reaching its
   // model, and that read crosses the relay back.
   fs.appendFileSync(channel.transcript, `${JSON.stringify({ type: 'attachment', attachment: { type: 'queued_command', prompt: note.params.content, commandMode: 'prompt', origin: { kind: 'channel', server: 'bellwether' } } })}\n`);
+  // herdr there reports the turn Claude Code begins on it.
+  space.far.send({ event: 'pane_agent_status_changed', data: { pane_id: PANE, agent_status: 'working' } });
   const outcome = await handed;
   assert.equal(outcome.delivery.path, 'session', outcome.note);
   assert.equal(outcome.delivery.via, 'claude-channel');
-  assert.equal(outcome.delivery.takenBy, 'read', outcome.note);
-  assert.match(outcome.note, /Bellwether channel received its brief as message m-[0-9a-f]{8}, and its model read it/);
+  assert.equal(outcome.delivery.takenBy, 'turn', outcome.note);
+  assert.ok(outcome.delivery.readAt, outcome.note);
+  assert.match(outcome.note, /Bellwether channel received its brief as message m-[0-9a-f]{8}, and its model read it and began a turn on it/);
   // The guard that fails if the brief falls back to typing on the far machine.
   assert.deepEqual(typed(space.far), [], 'nothing typed into the far pane of a child whose channel took its brief');
   assert.equal(channel.notifications.filter((entry) => entry.method === 'notifications/claude/channel').length, 1, 'the hello replay did not hand the session a second copy');

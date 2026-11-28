@@ -168,6 +168,10 @@ const BASE: readonly Feature[] = [
   ...brought('argument', 4, '0.1.11', {
     'relay-report.retireAnswer': "A far retirement's answer waits in that machine's relay outbox until the parent's daemon writes it on the child's record.",
   }, [288]),
+  // A far daemon that predates it answers unknown_type, and the parent leaves its started child there as it is.
+  ...brought('request', 4, '0.1.11', {
+    'relay-confirm': "Each time the relay to a machine comes back, the parent's daemon asks the daemon there whether each child it started there still runs in its pane, and a child whose pane that machine no longer holds ends with the reason.",
+  }, [306]),
   // A daemon that predates it answers unknown_type, and `bellwether resume` names the release that brought it.
   ...brought('request', 4, '0.1.10', {
     resume: '`bellwether resume <session>` brings back a session that has lost its pane, from its own record, and reports the pane and tab it opened.',

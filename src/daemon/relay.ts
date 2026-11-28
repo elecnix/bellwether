@@ -8,6 +8,7 @@
 import { relayOutboxPath } from '../core/paths.ts';
 import { listForwards, newReportReceipt, retireAnswerReceipt, readRelayRecord, removeForward, removeRelayRecord, saveForward, updateRelayRecord, type ForwardEntry, type RelayRecord } from '../core/relay-records.ts';
 import type { RelayRestartAnswer } from '../core/restart.ts';
+import { relayRequestAnswered, relayRequestSaved } from '../core/requests.ts';
 import type { RelayRetireAnswer } from '../core/retire.ts';
 import type { ReportStatus, ReportVia } from '../core/types.ts';
 import { MAX_DAEMON_FRAME_BYTES, formatReply, type RelayReport } from './protocol.ts';
@@ -78,19 +79,11 @@ export class RelayOutbox {
     if (entry) {
       if (entry.retire) {
         // The relay record says whether a retirement still waits, for doctor.
-        updateRelayRecord(entry.childId, (record) => {
-          if (record.retireRequest?.receipt !== receipt) return;
-          if (refused) record.retireRequest.refused = refused;
-          else delete record.retireRequest;
-        });
+        updateRelayRecord(entry.childId, (record) => relayRequestAnswered(record, 'retireRequest', receipt, refused));
       }
       if (entry.teleport) {
         // And whether a teleport request still waits.
-        updateRelayRecord(entry.childId, (record) => {
-          if (record.teleportRequest?.receipt !== receipt) return;
-          if (refused) record.teleportRequest.refused = refused;
-          else delete record.teleportRequest;
-        });
+        updateRelayRecord(entry.childId, (record) => relayRequestAnswered(record, 'teleportRequest', receipt, refused));
       }
       if (refused) {
         saveForward({ ...entry, refused });
@@ -159,7 +152,7 @@ export class RelayOutbox {
     if (tooLong) throw new Error(`request_retirement's reason is too long to cross to the parent's machine: as one relay line the request takes more than the ${MAX_DAEMON_FRAME_BYTES} characters a line may carry. Nothing was saved. Give a shorter reason.`);
     saveForward(entry);
     updateRelayRecord(record.childId, (kept) => {
-      kept.retireRequest = { at, receipt: entry.receipt };
+      relayRequestSaved(kept, 'retireRequest', { at, receipt: entry.receipt });
     });
     this.settleRecord(entry.childId, false);
     const lead = `Not this machine's child: the daemon here holds no registry for ${record.name} (child ${record.childId}). Its record belongs to parent ${record.parentId}, whose daemon runs on another machine, so the request goes there, the way a report does.`;
@@ -207,7 +200,7 @@ export class RelayOutbox {
     if (tooLong) throw new Error(`agent_teleport's reason is too long to cross to the parent's machine: as one relay line the request takes more than the ${MAX_DAEMON_FRAME_BYTES} characters a line may carry. Nothing was saved. Give a shorter reason.`);
     saveForward(entry);
     updateRelayRecord(record.childId, (kept) => {
-      kept.teleportRequest = { at, receipt: entry.receipt, ...(request.machine ? { machine: request.machine } : {}) };
+      relayRequestSaved(kept, 'teleportRequest', { at, receipt: entry.receipt, ...(request.machine ? { machine: request.machine } : {}) });
     });
     this.settleRecord(entry.childId, false);
     const lead = `Not this machine's child: the daemon here holds no registry for ${record.name} (child ${record.childId}). Its record belongs to parent ${record.parentId}, whose daemon runs on another machine, so the request to teleport you to ${whereTo} goes there, the way a report does.`;

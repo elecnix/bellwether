@@ -24,6 +24,7 @@ import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { crossingLines, recoverCrossings } from '../../src/core/recover-crossing.ts';
 import { readParent, updateChild } from '../../src/core/registry.ts';
+import { crossingBegun } from '../../src/core/requests.ts';
 import { claudeProjectDir } from '../../src/core/transcript.ts';
 import type { ChildRecord } from '../../src/core/types.ts';
 import { DaemonClient } from '../../src/daemon/client.ts';
@@ -361,7 +362,7 @@ test('a daemon that stops after the copy reached the destination and before its 
   // a mark at the step "checked" with no files, from a daemon that is gone, and the copy on box.
   updateChild(w.parentId, 'child-worker', (entry) => {
     const now = new Date().toISOString();
-    entry.moving = { from: 'local', to: 'box', since: now, until: now, verb: 'move', daemon: 'a-daemon-that-stopped', stage: 'checked', state: 'live', source: { cwd: hereCwd, paneId: 'w1:p3', tabId: 'w1:t3', session: { kind: 'id', value: 'sess-1' } }, target: { cwd: boxCwd } };
+    crossingBegun(entry, { from: 'local', to: 'box', since: now, until: now, verb: 'move', daemon: 'a-daemon-that-stopped', stage: 'checked', state: 'live', source: { cwd: hereCwd, paneId: 'w1:p3', tabId: 'w1:t3', session: { kind: 'id', value: 'sess-1' } }, target: { cwd: boxCwd } });
   });
   const bundle = await w.deps.endpointFor('local').exportSession({ harness: 'claude-code', session: 'sess-1', cwd: hereCwd });
   await w.deps.endpointFor('box').importSession({ harness: 'claude-code', childId: 'child-worker', cwd: boxCwd, fileName: bundle.fileName, files: bundle.files });

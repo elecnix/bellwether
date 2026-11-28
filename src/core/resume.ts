@@ -14,6 +14,7 @@ import { LOCAL_HOST } from './machine.ts';
 import { newChildId } from './outbox.ts';
 import { readParent, recordDecisions, removeChild, updateChild, upsertChild } from './registry.ts';
 import { clearRetirement, retiredItsWorktree } from './retire.ts';
+import { keepCrossing } from './requests.ts';
 import { firstRun, holdEvents, releaseEvents, restoreRun, runAwaitsPane, runOpens, sessionSeen, snapshotRun, statusSeen } from './incarnation.ts';
 import { openReturnTab, returnPlacement, undoChildTab, type ChildTab } from './workspace.ts';
 import { STARTUP_HOLD_MS, STARTUP_TIMEOUT_MS, childArgs, childEnv, childStartFiles, herdrLink, nextLaunch, startHarness, type RegisterRemote } from './spawn.ts';
@@ -270,7 +271,7 @@ export async function resumeChild(client: HerdrClient, parent: ParentRecord, tar
       options.onTab({ paneId: tab.paneId, ...(tab.tabId ? { tabId: tab.tabId } : {}) });
       // The hook wrote the crossing's mark to the record, and the writes below must keep it.
       const marked = readParent(parent.id)?.children.find((entry) => entry.id === child.id)?.moving;
-      if (marked) child.moving = marked;
+      keepCrossing(child, marked);
     }
     runOpens(child, { paneId: tab.paneId, tabId: tab.tabId });
     child.workspaceId = tab.workspaceId;

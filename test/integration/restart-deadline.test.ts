@@ -11,6 +11,7 @@ import { HerdrClient } from '../../src/core/herdr-client.ts';
 import { bellwetherHome } from '../../src/core/paths.ts';
 import { emptyParent, listParents, mutateParent, readParent, saveParent } from '../../src/core/registry.ts';
 import { armPendingRestarts, restartWaitLines, type RestartHooks } from '../../src/core/restart.ts';
+import { requestLines, requestsInFlight } from '../../src/core/requests.ts';
 import { hostName } from '../../src/core/spawn.ts';
 import { runBellwetherTool, type ToolContext } from '../../src/integrations/tools.ts';
 import { Watcher } from '../../src/core/watcher.ts';
@@ -149,10 +150,12 @@ test('a request an older daemon left with no wait on its record is replaced by a
   const id = lead('w1:p1');
   rig.world.add({ pane_id: 'w1:p1', tab_id: 'w1:t1', agent: 'claude', name: 'lead', label: 'lead', agent_status: 'working', agent_session: LEAD_SESSION });
   mutateParent(id, (entry) => {
-    entry.restartRequestedAt = '2026-11-28T02:38:18.961Z';
+    // A request an older daemon wrote with no wait, which no transition of src/core/requests.ts writes.
+    (entry as { restartRequestedAt?: string }).restartRequestedAt = '2026-11-28T02:38:18.961Z';
   });
-  const doctor = restartWaitLines(listParents()).join('\n');
-  assert.match(doctor, /^warn +restart: session \S+ has a restart requested at 2026-11-28T02:38:18\.961Z that nothing waits on/m);
+  // The request has no wait, so its bound is the default one from its own time, long past: doctor fails it.
+  const doctor = requestLines(requestsInFlight(listParents())).join('\n');
+  assert.match(doctor, /^fail +request: restart of session \S+, requested since 2026-11-28T02:38:18\.961Z, outlived its bound 2026-11-28T02:43:18\.961Z\. Its owner, no daemon waits on it/m);
   const { tool, jobs } = context(id, rig, 300);
 
   const reply = await tool({}, { paneId: 'w1:p1' });
@@ -167,7 +170,8 @@ test('a pending restart re-armed with no pane on its record gives up at once and
   const rig = await herdr(t);
   const id = lead();
   mutateParent(id, (entry) => {
-    entry.restartRequestedAt = '2026-11-28T02:38:18.961Z';
+    // A request an older daemon wrote with no wait, which no transition of src/core/requests.ts writes.
+    (entry as { restartRequestedAt?: string }).restartRequestedAt = '2026-11-28T02:38:18.961Z';
   });
   const { hooks } = hooksFor(300);
 

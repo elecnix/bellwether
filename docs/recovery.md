@@ -61,7 +61,7 @@ The record also lists the children that were working and the messages delivered 
 
 Every request ends by its deadline, whatever it waits for (issue #220). An act refused after the turn ended, such as a pane that now runs another session, records `restartStalled` with the refusal, and `restart.log` records `outcome: refused`. A daemon that finds a request with no pane on its record gives up on it at once.
 
-An older daemon could leave a request with no wait on its record. The next call replaces that request. `bellwether doctor` prints a `warn` line for each restart that gave up, with its pane and request time, until the session restarts. It prints a `warn` line too for a request that nothing waits on.
+An older daemon could leave a request with no wait on its record. The next call replaces that request. `bellwether doctor` prints a `warn` line for each restart that gave up, with its pane and request time, until the session restarts. Each request still in flight gets a `request:` line with its deadline and the code that ends it, and a `fail` line once it passes that deadline. A request that nothing waits on also has a deadline: its own time plus the five-minute wait.
 
 That reply includes the new pane, the tab and the session id, so the caller can report them instead of "restart requested".
 

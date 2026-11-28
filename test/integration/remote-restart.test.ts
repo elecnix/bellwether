@@ -17,7 +17,7 @@ import test from 'node:test';
 import { HerdrClient } from '../../src/core/herdr-client.ts';
 import { pickMachine, type MachineProfile } from '../../src/core/machine.ts';
 import { emptyParent, listParents, readParent, saveParent, updateChild, upsertChild } from '../../src/core/registry.ts';
-import { restartWaitLines } from '../../src/core/restart.ts';
+import { requestLines, requestsInFlight } from '../../src/core/requests.ts';
 import { RELAY_SCHEMA, saveRelayRecord } from '../../src/core/relay-records.ts';
 import { remoteOps } from '../../src/core/remote.ts';
 import { claudeProjectDir } from '../../src/core/transcript.ts';
@@ -340,6 +340,6 @@ test('a child whose restart outcome is unknown is refused a second restart, and 
 
   await assert.rejects(space.parent.tool('agent_restart', { target: NAME }), /the outcome of the last restart of first-mate on machine child-box is unknown since .*, so a second restart could start the session twice/);
   assert.equal(calls(space.far, 'tab.create').length, 0, 'nothing opened there');
-  const lines = restartWaitLines(listParents());
-  assert.ok(lines.some((line) => /^warn  restart: first-mate \(child child-far of claude-code-the-parent\) on machine child-box: the answer to its restart at .* was lost with the connection, so the outcome is unknown/.test(line)), JSON.stringify(lines));
+  const lines = requestLines(requestsInFlight(listParents()));
+  assert.ok(lines.some((line) => /^info  request: restart of first-mate \(child child-far of claude-code-the-parent\), in-doubt since \S+, ends by \S+\. Owner: the relay link to child-box, which asks the daemon there for the answer it kept; the connection ended with: the connection to machine child-box ended: example/.test(line)), JSON.stringify(lines));
 });

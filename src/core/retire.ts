@@ -26,6 +26,7 @@ import { RelayAnswerLost } from './relay-answer.ts';
 import { listRelayRecords } from './relay-records.ts';
 import { childOfCaller } from './report.ts';
 import { listParents, readParent, updateChild } from './registry.ts';
+import type { InFlight } from './requests.ts';
 import type { CallerIdentity, ChildRecord, FarWorktree, LeftWorktree, ParentRecord, RetireIntent } from './types.ts';
 
 /** What git says about the worktree a path sits in. */
@@ -238,14 +239,27 @@ function recordFarRequest(parentId: string, child: ChildRecord, reason: string |
   ].join('\n');
 }
 
+/**
+ * The intent as it goes on the record: every worktree the child has on
+ * another machine is part of it, whichever path asked (issue #273). A path
+ * that leaves `far` out cannot produce a retirement that claims a removal
+ * while a far worktree stays, because this module is the intent's only writer
+ * and `conclude` reads `far` before it says `removed`.
+ */
+export function intentFor(child: ChildRecord, intent: RetireIntent): RetireIntent {
+  if (intent.far) return intent;
+  const far = farWorktrees(child);
+  return far.length ? { ...intent, far } : intent;
+}
+
 /** Write a fresh intent on the child record, clearing an earlier retirement's outcome. */
 function writeIntent(parentId: string, childId: string, intent: RetireIntent, gone: string[] = []): void {
   const now = new Date().toISOString();
   updateChild(parentId, childId, (entry) => {
     // A child resumed after an earlier retirement asks afresh.
     if (entry.retireOutcome) clearRetirement(entry);
-    entry.retireRequestedAt ??= now;
-    entry.retireIntent = intent;
+    writableRetirement(entry).retireRequestedAt ??= now;
+    writableRetirement(entry).retireIntent = intentFor(entry, intent);
     // A place whose directory is gone holds nothing to retire, so the list forgets it.
     for (const dir of gone) dropDeparture(entry, LOCAL_HOST, dir);
   });
@@ -354,8 +368,29 @@ export async function workChecks(ops: Pick<RetireOps, 'dirty' | 'stashes' | 'saf
   return { passed, failing };
 }
 
+/** The fields this module owns, which the ownership gate reads (step 5 of docs/design-matrix.md). */
+export const RETIREMENT_FIELDS = ['retireRequestedAt', 'retireIntent', 'retireStage', 'retiredAt', 'retireOutcome', 'retireReason', 'retireProof'] as const;
+type RetirementField = (typeof RETIREMENT_FIELDS)[number];
+
+/** The record as this module alone may write it. */
+function writableRetirement(child: ChildRecord): { -readonly [K in RetirementField]: ChildRecord[K] } {
+  return child as { -readonly [K in RetirementField]: ChildRecord[K] };
+}
+
+/**
+ * Keep on a record the request a child made before a crossing that failed: the
+ * resume that rolled it back cleared it, and a child that never left keeps
+ * its own (issue #226).
+ */
+export function keepRetirement(child: ChildRecord, original: Pick<ChildRecord, 'retireRequestedAt' | 'retireIntent'>): void {
+  const entry = writableRetirement(child);
+  if (original.retireRequestedAt) entry.retireRequestedAt = original.retireRequestedAt;
+  if (original.retireIntent) entry.retireIntent = original.retireIntent;
+}
+
 /** Drop every retirement field, for a child that is brought back. */
-export function clearRetirement(child: ChildRecord): void {
+export function clearRetirement(record: ChildRecord): void {
+  const child = writableRetirement(record);
   delete child.retireRequestedAt;
   delete child.retireIntent;
   delete child.retireStage;
@@ -467,6 +502,22 @@ export async function retireOnStop(parentId: string, child: ChildRecord, ops: Re
 export function retirementPending(child: ChildRecord): boolean {
   if (!child.retireRequestedAt) return false;
   return !child.retireOutcome || Boolean(child.retireIntent?.far?.some((entry) => !entry.outcome));
+}
+
+/** How long a retirement may stay unfinished once the pane is gone, before doctor fails it. The watcher runs it at the close, and a far answer comes back over the relay. */
+export const RETIRE_ACT_BOUND_MS = 60 * 60_000;
+
+/**
+ * A retirement in flight, for doctor: requested, and the pane it waited for is
+ * gone, with no outcome yet or a far machine's answer still out. Before the
+ * pane closes the request is the child's standing instruction, which
+ * `agent_list` shows; it begins to run when herdr reports the pane gone.
+ */
+export function retirementInFlight(child: ChildRecord, who: string): InFlight | undefined {
+  if (!retirementPending(child) || !child.exitedAt) return undefined;
+  const waiting = child.retireIntent?.far?.filter((entry) => !entry.outcome).map((entry) => `${entry.worktree} on ${entry.host}`) ?? [];
+  const owner = waiting.length && child.retireOutcome ? `the daemon on each far machine, whose answer for ${waiting.join(' and ')} waits in its relay outbox` : `the watcher's retirement, which runs once herdr no longer lists pane ${child.paneId || '(none)'}`;
+  return { kind: 'retire', who, phase: 'acted', since: child.exitedAt, until: new Date(Date.parse(child.exitedAt) + RETIRE_ACT_BOUND_MS).toISOString(), owner };
 }
 
 export interface ReapDeps {
@@ -627,7 +678,7 @@ async function reapHere(parentId: string, child: ChildRecord, intent: RetireInte
   // The outcome on the record comes last, so a daemon that stops part of the
   // way through finds the retirement still pending and finishes it.
   const first = await retireWorktree({ ...intent, ...(child.retireStage ? { stage: child.retireStage } : {}) }, recordOf(parentId, child.id, (entry, stage) => {
-    entry.retireStage = stage;
+    writableRetirement(entry).retireStage = stage;
   }), deps);
   if (first.outcome === 'skipped') {
     log(`retire ${child.name}: the child came back while the retirement checked ${intent.worktree}, so it stays`);
@@ -928,7 +979,8 @@ function standingIn(dir: string, except: string): string {
 /** Record the outcome on the child record first, then append the log line. */
 function finish(parentId: string, child: ChildRecord, outcome: 'removed' | 'partial' | 'refused', reason?: string, proof?: string, extra: Record<string, unknown> = {}): void {
   const at = new Date().toISOString();
-  updateChild(parentId, child.id, (entry) => {
+  updateChild(parentId, child.id, (record) => {
+    const entry = writableRetirement(record);
     entry.retiredAt = at;
     entry.retireOutcome = outcome;
     if (reason) entry.retireReason = reason;

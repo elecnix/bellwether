@@ -17,6 +17,8 @@ import { HerdrClient, resolveSocketPath } from './core/herdr-client.ts';
 import { bellwetherHome } from './core/paths.ts';
 import { emptyParent, listParents, readParent, saveParent } from './core/registry.ts';
 import { restartFailureLines, restartWaitLines } from './core/restart.ts';
+import { requestLines, requestsInFlight } from './core/requests.ts';
+import { retirementInFlight } from './core/retire.ts';
 import { teleportLines } from './core/teleport.ts';
 import { crossingLines } from './core/recover-crossing.ts';
 import { claimUnconfirmedLines, cleanupPendingLines, farRecordLines } from './core/remote.ts';
@@ -262,7 +264,11 @@ async function doctor(): Promise<number> {
   const lostRestarts = restartFailureLines(listParents());
   for (const line of lostRestarts) console.log(`  ${line}`);
   failures += lostRestarts.length;
-  // What each pending self-restart waits for, and why one gave up (issue #188).
+  // Every request in flight, with its bound and its owner, and a fail line for one that outlived its bound (step 4 of docs/design-matrix.md).
+  const requests = requestLines(requestsInFlight(listParents(), retirementInFlight));
+  for (const line of requests) console.log(`  ${line}`);
+  failures += requests.filter((line) => line.startsWith('fail')).length;
+  // Why a self-restart gave up without running (issue #188).
   for (const line of restartWaitLines(listParents())) console.log(`  ${line}`);
   // Who holds each live child, on which machine and by what evidence, and each pane whose sources of authority disagree (issue #279).
   const authority = authorityLines(listParents(), listRelayRecords());

@@ -44,6 +44,9 @@ function statusOf(pane: Record<string, unknown> | undefined, fallback: AgentStat
   return typeof value === 'string' && ['idle', 'working', 'blocked', 'done', 'unknown'].includes(value) ? (value as AgentStatus) : fallback;
 }
 
+/** How long an idle event waits for a far child's last message over the relay connection (issue #272). */
+const REMOTE_READ_MS = 5_000;
+
 export interface WatcherOptions {
   /** The parent's own herdr. */
   client: HerdrClient;
@@ -77,6 +80,12 @@ export interface WatcherOptions {
   retireBusyDelayMs?: number;
   /** How the daemon's connection to a remote child's machine stands, so a notice can say the parent is not hearing from it. */
   relayState?: (host: string) => RelayHostState | undefined;
+  /**
+   * Read a child's last message on its own machine, over the relay connection
+   * the daemon holds there, as agent_read does (issue #272). Without it, an
+   * idle event from a child on another machine says it cannot read the message.
+   */
+  remoteLastMessage?: (child: ChildRecord) => Promise<string | undefined>;
   /** How long after its start a child herdr has not seen run is checked for a harness that already ended. */
   startConfirmMs?: number;
 }
@@ -123,6 +132,7 @@ export class Watcher {
   private readonly doubtRetry = new Map<string, { at: number; delay: number }>();
   private readonly retireBusy: { retries?: number; delayMs?: number };
   private readonly relayState: ((host: string) => RelayHostState | undefined) | undefined;
+  private readonly remoteLastMessage: ((child: ChildRecord) => Promise<string | undefined>) | undefined;
   private readonly startConfirmMs: number;
   /** Children whose start was checked once in this process, so the check never repeats. */
   private readonly startChecked = new Set<string>();
@@ -173,6 +183,7 @@ export class Watcher {
     this.childrenChanged = options.childrenChanged;
     this.retireBusy = { retries: options.retireBusyRetries, delayMs: options.retireBusyDelayMs };
     this.relayState = options.relayState;
+    this.remoteLastMessage = options.remoteLastMessage;
     this.startConfirmMs = options.startConfirmMs ?? START_CONFIRM_MS;
     this.outbox = Outbox.load(this.parentId);
   }
@@ -1118,9 +1129,11 @@ export class Watcher {
    * is resolved lazily rather than only at spawn time.
    */
   private async transcriptFor(child: ChildRecord): Promise<string | undefined> {
-    if (child.transcript) return child.transcript;
-    // A remote child's transcript sits on its own machine's disk.
+    // A remote child's transcript sits on its own machine's disk. A child that
+    // moved away keeps the path of the one it left here, which ends before the
+    // move, so that path never stands for it (issue #272).
     if (hostOf(child) !== LOCAL_HOST) return undefined;
+    if (child.transcript) return child.transcript;
     // With the session known, a look is a file check, so it runs every pass.
     if (child.session) return this.recordTranscript(child, child.session.value);
     // Without it, a look costs a herdr call. A child whose harness reports no
@@ -1251,8 +1264,13 @@ export class Watcher {
     if (event === 'inactive') return `${childLabel(child)} has shown no activity for ${this.age(quietSince, now)}, and its status is ${child.lastStatus}.${this.awayWarning(child)}${this.relayWarning(child)} Last screen lines:\n${trim(await this.screenTail(child))}`;
     // The turn's own last message, never the last report: a report is an event
     // of its own, and the record keeps it after the turn it belonged to.
-    const text = (await this.lastMessage(child)) || trim(await this.screenTail(child));
-    return `${childLabel(child)} went idle after ${age}${silence(child)}:${text ? `\n${text}` : ' no message and no readable screen.'}`;
+    const last = await this.lastMessage(child);
+    if (last.text) return `${childLabel(child)} went idle after ${age}${silence(child)}:\n${last.text}`;
+    const screen = trim(await this.screenTail(child));
+    // A child on another machine whose message the relay could not fetch: say
+    // so, and label the screen, so an empty prompt never reads as its answer.
+    if (last.why) return `${childLabel(child)} went idle after ${age}${silence(child)}. ${last.why}${this.relayWarning(child)}${screen ? ` Last screen lines:\n${screen}` : ' Its screen shows nothing readable either.'}`;
+    return `${childLabel(child)} went idle after ${age}${silence(child)}:${screen ? `\n${screen}` : ' no message and no readable screen.'}`;
   }
 
   /** For a child whose machine's herdr the watcher cannot reach, one sentence that says it is unreachable, not exited. */
@@ -1305,12 +1323,37 @@ export class Watcher {
       .catch(() => '');
   }
 
-  /** The child's last assistant message, read from its transcript. */
-  private async lastMessage(child: ChildRecord): Promise<string | undefined> {
+  /**
+   * The child's last assistant message: from its transcript or store on this
+   * machine, or over the relay connection for a child on another machine
+   * (issue #272). `why` says, for a far child, why no message came back.
+   */
+  private async lastMessage(child: ChildRecord): Promise<{ text?: string; why?: string }> {
+    const host = hostOf(child);
+    if (host !== LOCAL_HOST) {
+      if (!this.remoteLastMessage) return { why: `Bellwether could not read its last message on machine ${host}, because this session holds no connection there.` };
+      // The read goes only over a connection that is open, and waits a bounded
+      // time: the watcher's pass serves every child, and a read that waited on
+      // a reconnect would hold back each event behind it.
+      const link = this.relayState?.(host);
+      if (this.relayState && link?.status !== 'connected') return { why: `Bellwether could not read its last message on machine ${host}, because its connection there is not open.` };
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const late = new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error(`no answer within ${REMOTE_READ_MS} ms`)), REMOTE_READ_MS);
+        });
+        const text = (await Promise.race([this.remoteLastMessage(child), late]))?.trim();
+        return text ? { text } : { why: `Bellwether could not read its last message on machine ${host}: that machine has no transcript message for it.` };
+      } catch (error) {
+        return { why: `Bellwether could not read its last message on machine ${host}: ${(error as Error).message}.` };
+      } finally {
+        clearTimeout(timer);
+      }
+    }
     const fromStore = harnessFor(child.kind)?.conversation.lastMessage;
-    if (fromStore) return fromStore(child);
+    if (fromStore) return { text: fromStore(child) };
     const transcript = await this.transcriptFor(child);
-    return transcript ? lastAssistantMessage(transcript) : undefined;
+    return { text: transcript ? lastAssistantMessage(transcript) : undefined };
   }
 
   private offer(child: ChildRecord, event: ChildEventKind, given: string, via?: ReportVia): void {

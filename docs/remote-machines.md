@@ -42,7 +42,7 @@ Each report moves through the following steps. Step one runs over SSH from the p
 
 4. The parent's daemon checks the parent and the child against its registry, including the child's host. It writes the report to the parent's spool once per receipt, then acknowledges it. Only after that acknowledgement does the child's machine delete its copy. If a connection drops between the two steps, the report arrives again on the next connection, and the parent's daemon drops the second copy. Each receipt lands once.
 
-`agent_read` on a remote child reads its transcript on that machine over the same connection, and it works after the child exits too.
+`agent_read` on a remote child reads its transcript on that machine over the same connection, and it works after the child exits too. An `idle` event from that child quotes its last message, read the same way. When the connection is down, or that machine has no message for the child, the event says Bellwether couldn't read the message and why, then gives the child's last screen lines under their own label. The watcher waits at most 5 seconds for that read, so one slow machine doesn't hold back the events of other children.
 
 When the machine is unreachable, the reply says so and returns the child's last report.
 

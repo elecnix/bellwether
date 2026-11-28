@@ -36,6 +36,7 @@ import { startFakeHerdr, type FakeHerdrOptions, harnessStarts, harnessStart } fr
 import { ABSENT_HOME, ENV_HARNESS_FILE, ENV_KIND, KEY_FILE, READY } from '../fixtures/far-env-harness.ts';
 import { installFakeSsh, type FakeSsh } from '../fixtures/fake-ssh.ts';
 import { LIVE_HOME } from '../fixtures/isolation.ts';
+import { paneReadAnswer } from '../fixtures/ghost-screens.ts';
 
 const CLI = path.resolve(import.meta.dirname, '../../src/cli.ts');
 const PARENT_ID = 'claude-code-the-parent';
@@ -953,4 +954,107 @@ test('doctor says nothing about the agent for a failing relay whose ssh had one'
   const down = await doctor(w);
   assert.match(down, /fail\s+relay child-box: reconnecting/);
   assert.doesNotMatch(down, /SSH_AUTH_SOCK/);
+});
+
+// An idle event from a child on another machine quotes the child's last
+// message, read over the relay connection the way agent_read reads it (issue
+// #272). The screen of a Claude Code child at rest is an empty prompt, so an
+// event that falls back to it quotes nothing, and has to say why instead.
+
+const EMPTY_PROMPT = '\u276f \n  \u23f5\u23f5 auto mode on (shift+tab to cycle)\n';
+
+/** A herdr on child-box that holds the child's pane, at rest on an empty prompt. */
+async function farHerdr(t: test.TestContext): Promise<{ herdr: Awaited<ReturnType<typeof startFakeHerdr>>; client: HerdrClient }> {
+  const agent = (status: string): Record<string, unknown> => ({ pane_id: 'w1:p5', workspace_id: 'w1', tab_id: 'w1:t5', agent: 'claude', agent_status: status, completion_seq: null, state_change_seq: 1 });
+  let status = 'working';
+  const herdr = await startFakeHerdr({
+    respond: (request) => {
+      if (request.method === 'pane.read') return { result: paneReadAnswer(request.params, EMPTY_PROMPT) };
+      if (request.method === 'agent.list') return { result: { type: 'agent_list', agents: [agent(status)] } };
+      if (request.method === 'agent.get') return { result: { type: 'agent_info', agent: agent(status) } };
+      if (request.method === 'session.snapshot') return { result: { type: 'session_snapshot', snapshot: { panes: [], agents: [agent(status)] } } };
+      if (request.method === 'pane.list') return { result: { type: 'pane_list', panes: [{ pane_id: 'w1:p5', tab_id: 'w1:t5' }] } };
+      return undefined;
+    },
+  });
+  t.after(() => herdr.stop());
+  const client = new HerdrClient({ socketPath: herdr.socketPath });
+  (herdr as unknown as { idle: () => void }).idle = () => {
+    status = 'idle';
+    herdr.send({ event: 'pane_agent_status_changed', data: { pane_id: 'w1:p5', workspace_id: 'w1', agent_status: 'idle', completion_seq: null, state_change_seq: 2 } });
+  };
+  return { herdr, client };
+}
+
+function farTranscript(w: World, cwd: string, session: string, text: string): void {
+  const dir = path.join(path.dirname(w.childHome), '.claude', 'projects', claudeProjectDir(cwd));
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, `${session}.jsonl`), `${JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text }] } })}\n`);
+}
+
+async function idleText(w: World, t: test.TestContext, relayLinks: RelayLinks): Promise<string> {
+  const { herdr, client } = await farHerdr(t);
+  const remote = remoteOps(machines, {}, relayLinks);
+  const idle: string[] = [];
+  const seen: string[] = [];
+  const watcher = inHome(w.parentHome, () => new Watcher({ client, clientFor: async () => client, parentId: PARENT_ID, limits: { idleMs: 40, blockedMs: 20, stuckMs: 60_000 }, tickMs: 15, screenPollMs: 0, remoteLastMessage: (child) => remote.lastMessage(child), relayState: (host) => relayLinks.state(host), onEntries: (list) => {
+    seen.push(...list.map((entry) => `${entry.event}: ${entry.text.slice(0, 80)}`));
+    idle.push(...list.filter((entry) => entry.event === 'idle').map((entry) => entry.text));
+  } }));
+  w.closers.push(() => watcher.stop());
+  watcher.start();
+  await herdr.waitFor('events.subscribe');
+  // Let the watcher read the child working before the turn ends, as it would in a live run.
+  await herdr.waitFor('session.snapshot');
+  await delay(200);
+  (herdr as unknown as { idle: () => void }).idle();
+  await until(() => idle.length > 0, 'the idle event', 15_000, () => ({ seen, record: inHome(w.parentHome, () => readParent(PARENT_ID)?.children.map((entry) => [entry.id, entry.lastStatus, entry.exitedAt, entry.paneEnd])) }));
+  return idle[0] as string;
+}
+
+test('an idle event from a child on another machine quotes its last message, read over the relay connection, not its empty prompt (issue #272)', async (t) => {
+  const w = world(t);
+  const session = '7f3c2a10-aaaa-bbbb-cccc-000000000272';
+  const cwd = '/work/far-idle';
+  farTranscript(w, cwd, session, 'the far turn ended with this answer');
+  parentHolds(w, 'c-idle', { cwd, session: { kind: 'id', value: session }, harnessSeenAt: new Date().toISOString() });
+  childHolds(w, 'c-idle');
+  const { links: relayLinks } = await parentDaemon(w);
+  await until(() => connected(relayLinks), 'the connection');
+
+  const text = await idleText(w, t, relayLinks);
+  assert.match(text, /the far turn ended with this answer/);
+  assert.doesNotMatch(text, /auto mode on/, `the event quoted the empty prompt: ${text}`);
+});
+
+test('an idle event from a child on another machine whose message cannot be read says so, and never offers the empty prompt as its message (issue #272)', async (t) => {
+  const w = world(t);
+  const session = '7f3c2a10-aaaa-bbbb-cccc-000000000273';
+  parentHolds(w, 'c-unread', { cwd: '/work/far-unread', session: { kind: 'id', value: session }, harnessSeenAt: new Date().toISOString() });
+  childHolds(w, 'c-unread');
+  w.ssh.plan(Array.from({ length: 10_000 }, () => 'refuse' as const));
+  const { links: relayLinks } = await parentDaemon(w);
+  await until(() => /refused/.test(relayLinks.state('child-box')?.lastError ?? ''), 'a refused connection');
+
+  const text = await idleText(w, t, relayLinks);
+  assert.match(text, /could not read its last message on machine child-box, because its connection there is not open/, text);
+  assert.match(text, /not hearing from machine child-box/, 'the event gives the connection state');
+  assert.doesNotMatch(text, /went idle after [^:]*:\n\u276f/, `the event offered the prompt as the message: ${text}`);
+});
+
+test('an idle event from a child that moved away never quotes the transcript it left on the parent\'s machine (issue #272)', async (t) => {
+  const w = world(t);
+  const session = '7f3c2a10-aaaa-bbbb-cccc-000000000274';
+  const cwd = '/work/far-moved';
+  farTranscript(w, cwd, session, 'the answer from after the move');
+  const stale = path.join(w.root, 'stale.jsonl');
+  fs.writeFileSync(stale, `${JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'STALE answer from before the move' }] } })}\n`);
+  parentHolds(w, 'c-moved-idle', { cwd, session: { kind: 'id', value: session }, transcript: stale, harnessSeenAt: new Date().toISOString() });
+  childHolds(w, 'c-moved-idle');
+  const { links: relayLinks } = await parentDaemon(w);
+  await until(() => connected(relayLinks), 'the connection');
+
+  const text = await idleText(w, t, relayLinks);
+  assert.doesNotMatch(text, /STALE/, text);
+  assert.match(text, /the answer from after the move/);
 });

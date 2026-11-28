@@ -172,6 +172,7 @@ export const BEHAVIORS: readonly Behavior[] = [
   { version: '0.1.9', prs: [179], summary: "Doctor's move line for each machine says whether herdr there has its claude and pi integrations, with the install command for a missing one." },
   { version: '0.1.9', prs: [181], summary: "A spawn counts a brief taken once the child's model begins a turn on it or reads it, rather than when its adapter receives it. It sends the brief once more when the model doesn't begin a turn, and fails with `BriefNotTaken` when the second copy doesn't start one either." },
   { version: '0.1.9', prs: [192], summary: "The new tab of a restart opens before the old pane closes, so a session alone in its herdr workspace comes back in that workspace, or in a new one under the old label once herdr has closed it. When the start fails after the close, the record keeps `restartFailed`, a child's parent receives an `exited` event, and doctor prints the session and its last pane." },
+  { version: '0.1.9', prs: [196], summary: "A session's restart of itself waits at most 5 minutes for its turn to end. The daemon keeps the session's own events unread while it waits, so they don't start another turn, and the new session receives them. A second call and doctor report the pane, the status herdr gives for it and the events held. A wait that runs out closes nothing and records the cause as `restartStalled`." },
 ];
 
 /**

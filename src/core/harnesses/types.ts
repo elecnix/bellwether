@@ -281,6 +281,13 @@ export interface HarnessEntry {
    * reply prints it at the moment the caller turns the flag on.
    */
   spawnNote?(child: Pick<ChildRecord, 'name' | 'kind' | 'store'>, args: string[]): string | undefined;
+  /**
+   * The pair the harness's own settings save as its default for a new session
+   * in `cwd` on this machine, which a spawn with no pair passes as flags
+   * (issue #189). `over` is what the harness would take without the flags,
+   * when that differs from the saved default.
+   */
+  savedPair?(cwd: string | undefined): { provider: string; id: string; setting: string; over?: string } | undefined;
   /** A line for the spawn reply about which model the child runs on. */
   modelNote?(child: Pick<ChildRecord, 'name' | 'kind' | 'model' | 'host' | 'cwd'>): string | undefined;
 }

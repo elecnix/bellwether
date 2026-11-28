@@ -139,6 +139,8 @@ export interface PiFallback {
   id?: string;
   /** Why pi lands there, naming the setting and the file that holds it. */
   reason: string;
+  /** The saved default, defaultProvider and defaultModel, where the settings set both, and the file or files that set them. */
+  saved?: { provider: string; id: string; where: string };
 }
 
 const THINKING_SUFFIX = /:(off|minimal|low|medium|high|xhigh|max)$/;
@@ -150,6 +152,20 @@ function readSettings(file: string): Record<string, unknown> | undefined {
   } catch {
     return undefined;
   }
+}
+
+/**
+ * pi's saved default for a new session in `cwd`, defaultProvider and
+ * defaultModel by the same precedence as piFallback, with the file that sets
+ * it. `over` describes what pi would take on its own when that is not the
+ * saved default: the first entry of an enabledModels list that leaves it out.
+ */
+export function piSavedDefault(cwd: string | undefined, agentDir: string = piAgentDir()): { provider: string; id: string; setting: string; over?: string } | undefined {
+  const fallback = piFallback(cwd, agentDir);
+  const saved = fallback.saved;
+  if (!saved) return undefined;
+  const same = fallback.provider === saved.provider && fallback.id === saved.id;
+  return { provider: saved.provider, id: saved.id, setting: saved.where, ...(same ? {} : { over: fallback.provider && fallback.id ? `${fallback.provider} / ${fallback.id}, ${fallback.reason}` : fallback.reason }) };
 }
 
 /**
@@ -172,16 +188,17 @@ export function piFallback(cwd: string | undefined, agentDir: string = piAgentDi
   const model = pick('defaultModel');
   const saved = typeof provider.value === 'string' && typeof model.value === 'string' && provider.value && model.value ? { provider: provider.value, id: model.value } : undefined;
   const savedWhere = provider.file === model.file ? provider.file : `${provider.file} and ${model.file}`;
+  const savedField = saved ? { saved: { ...saved, where: savedWhere } } : {};
   const enabled = pick('enabledModels');
   const scope = Array.isArray(enabled.value) ? enabled.value.filter((entry): entry is string => typeof entry === 'string' && entry.length > 0).map((entry) => entry.replace(THINKING_SUFFIX, '')) : [];
   if (scope.length) {
-    if (saved && scope.includes(`${saved.provider}/${saved.id}`)) return { ...saved, reason: `the saved default, defaultProvider and defaultModel in ${savedWhere}, which enabledModels in ${enabled.file} includes` };
+    if (saved && scope.includes(`${saved.provider}/${saved.id}`)) return { ...saved, ...savedField, reason: `the saved default, defaultProvider and defaultModel in ${savedWhere}, which enabledModels in ${enabled.file} includes` };
     const first = scope[0] as string;
     const slash = first.indexOf('/');
     const why = saved ? `the first entry of enabledModels in ${enabled.file}, because that list leaves out the saved default ${saved.provider} / ${saved.id}` : `the first entry of enabledModels in ${enabled.file}`;
-    if (slash > 0 && !/[*?[]/.test(first)) return { provider: first.slice(0, slash), id: first.slice(slash + 1), reason: why };
-    return { reason: `whatever model matches ${first}, ${why}` };
+    if (slash > 0 && !/[*?[]/.test(first)) return { provider: first.slice(0, slash), id: first.slice(slash + 1), ...savedField, reason: why };
+    return { ...savedField, reason: `whatever model matches ${first}, ${why}` };
   }
-  if (saved) return { ...saved, reason: `the saved default, defaultProvider and defaultModel in ${savedWhere}, provided that provider has auth` };
-  return { reason: `the first model it has an API key for, because neither ${userFile}${projectFile ? ` nor ${projectFile}` : ''} sets a default` };
+  if (saved) return { ...saved, ...savedField, reason: `the saved default, defaultProvider and defaultModel in ${savedWhere}, provided that provider has auth` };
+  return { ...savedField, reason: `the first model it has an API key for, because neither ${userFile}${projectFile ? ` nor ${projectFile}` : ''} sets a default` };
 }

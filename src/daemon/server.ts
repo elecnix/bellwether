@@ -36,6 +36,7 @@ import type { RosterChild } from '../core/roster.ts';
 import type { InboxMessage, MessageAckRequest, RelayHostState, RelayMessageAnswer, RelayMessageRequest, RelayReport, ServedTool } from './protocol.ts';
 import { BRIEF_SESSION_WAIT_MS, BRIEF_TURN_WAIT_MS, unreadSessionMessages, type Inbox, type InboxAnswer } from '../core/send.ts';
 import { updateChild } from '../core/registry.ts';
+import { repairToolFiles } from '../core/tool-files.ts';
 import { UnknownTool, servedTools, type ToolScope } from '../integrations/tools.ts';
 import { FEATURES } from './features.ts';
 import crypto from 'node:crypto';
@@ -164,6 +165,15 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
   const idleMs = options.idleMs ?? 5 * 60_000;
   const idleCheckMs = options.idleCheckMs ?? 30_000;
   const outbox = options.relayOutbox ?? new RelayOutbox({ log });
+  // A tool file written before an upgrade can name an install path the
+  // upgrade deleted, and this install's path takes its place (issue #266).
+  const repairTools = (childId?: string): void => {
+    try {
+      repairToolFiles({ ...(childId ? { childId } : {}), log });
+    } catch (error) {
+      log(`could not check the tool files${childId ? ` of child ${childId}` : ''}: ${(error as Error).message}`);
+    }
+  };
   const links = options.links ?? new RelayLinks({ log });
   const retireOps = options.retireOps ?? realRetireOps();
 
@@ -1105,6 +1115,8 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
         });
         // A child a parent on another machine started holds the pane it says hello from while it stays connected (issue #244).
         if (hello.childId && hello.paneId) childSaidHello(socket, hello.childId, hello.paneId);
+        // A brew upgrade with no hand-over leaves the daemon running, so each child's hello checks its own files again.
+        if (hello.childId) repairTools(hello.childId);
         const set = subscribers.get(session.parentId) ?? new Set<net.Socket>();
         set.add(socket);
         subscribers.set(session.parentId, set);
@@ -1197,6 +1209,8 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
   });
   fs.chmodSync(options.socketPath, 0o600);
   links.start(acceptRelayed);
+  // Every upgrade ends in a hand-over, so a new daemon checks every child's files once.
+  repairTools();
 
   return {
     socketPath: options.socketPath,

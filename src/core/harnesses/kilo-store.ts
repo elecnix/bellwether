@@ -29,6 +29,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { channelEntry, MCP_SERVER_NAME } from '../mcp-config.ts';
 import { mcpConfigPath, mcpDir } from '../paths.ts';
 import type { VersionProbe } from './types.ts';
+import { nodeCommand, stablePath } from '../stable-path.ts';
 
 /** The Kilo CLI major version the entry speaks. */
 export const KILO_MAJOR = 7;
@@ -145,7 +146,7 @@ export function kiloMcpConfig(childId: string, environment: Record<string, strin
   return {
     $schema: 'https://app.kilo.ai/config.json',
     mcp: {
-      [MCP_SERVER_NAME]: { type: 'local', command: [process.execPath, '--disable-warning=ExperimentalWarning', channelEntry(), '--child', childId], environment },
+      [MCP_SERVER_NAME]: { type: 'local', command: [nodeCommand(), '--disable-warning=ExperimentalWarning', stablePath(channelEntry()), '--child', childId], environment },
     },
   };
 }

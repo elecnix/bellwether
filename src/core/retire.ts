@@ -134,11 +134,11 @@ function leftHere(child: ChildRecord): string[] {
 /**
  * The worktrees a child has on machines other than this one: the one it runs
  * in there, then each one it left on another machine by a move. The daemon on
- * each machine retires them on this daemon's request (issue #242). An adopted
- * child has none that Bellwether answers for.
+ * each machine retires them on this daemon's request (issue #242). A child held
+ * by adoption has none that Bellwether answers for.
  */
 export function farWorktrees(child: ChildRecord): FarWorktree[] {
-  if (child.origin === 'adopt') return [];
+  if (heldByAdoption(child)) return [];
   const found: FarWorktree[] = [];
   const add = (host: string, worktree: string | undefined, runs: boolean): void => {
     if (!worktree || host === LOCAL_HOST || found.some((entry) => entry.host === host && path.resolve(entry.worktree) === path.resolve(worktree))) return;
@@ -433,7 +433,7 @@ export function retireLine(child: ChildRecord): string | undefined {
  * machine. The worktree it runs in there is not this daemon's to judge.
  */
 export async function retireOnStop(parentId: string, child: ChildRecord, ops: RetireOps): Promise<string | undefined> {
-  if (retirementPending(child) || child.origin === 'adopt') return undefined;
+  if (retirementPending(child) || heldByAdoption(child)) return undefined;
   const runsHere = hostOf(child) === LOCAL_HOST;
   const here = leftHere(child);
   if (runsHere && !child.cwd) return undefined;
@@ -536,7 +536,7 @@ async function reapLocked(parentId: string, childId: string, deps: ReapDeps, log
   };
 
   const intent = child.retireIntent;
-  if (child.origin === 'adopt') return refuse(`out of bounds: ${outOfBounds(child)}`);
+  if (heldByAdoption(child)) return refuse(`out of bounds: ${outOfBounds(child)}`);
   if (!intent || (!intent.worktree && !intent.far?.length)) return refuse(`no intent: the record of ${child.name} asks for retirement but names no worktree, so nothing was touched. Ask again from a live child.`);
   // A worktree on this machine for a child on another one is in bounds only when the child left it here by a move.
   if (intent.worktree && !leftBehindHere(child)) {

@@ -141,6 +141,18 @@ A moved child's current worktree stays on the other machine, and the answer tell
 
 Older Bellwether on the parent's machine takes the request as a `needs-input` report whose text asks the parent to close the child with `agent_stop`.
 
+## Teleporting itself from there
+
+A child on another machine that calls `agent_teleport` with no `child` reaches the daemon on its own machine, which keeps only its relay record. As with a retirement, the request waits in that machine's relay outbox. The parent's daemon collects it over its open connection ([#226](https://github.com/elecnix/bellwether/issues/226)). That daemon writes the request on the child's record, and it starts the wait in the parent's service. Once herdr on the child's machine reports the turn over, the parent's daemon teleports the child.
+
+Each answer starts with `Not this machine's child` and the parent's id, then gives one of three outcomes:
+
+- Taken: the answer adds the reply from the parent's daemon, which gives the destination machine and directory and says the next input there is the notice. A refusal comes back the same way, and nothing moves.
+- Waiting, when no connection from the parent's daemon is open: the child keeps running where it is. The request stays on disk under `teleportRequest` on the child's relay record, and `bellwether doctor` on that machine prints a `warn` line until the parent's daemon collects it.
+- An older Bellwether on the parent's machine takes the request as a `needs-input` report, and nothing moves. The answer tells the child to ask its parent.
+
+Its own machine refuses an adopted child's request, and nothing crosses.
+
 ## Connection state
 
 Backoff runs from 1 second to 5 minutes when the parent's daemon retries a connection that fails or drops. The first reply on each connection gives the version and build of the child's machine, and `bellwether doctor` prints both on the `relay` line for that machine. Machines on one version number but different builds then show different lines.

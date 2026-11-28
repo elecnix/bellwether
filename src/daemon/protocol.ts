@@ -47,6 +47,11 @@ export type { RelayHostState, RelayLinkStatus } from '../core/types.ts';
 //    daemon's relay-ack carries its `answer` for the child. A parent's daemon
 //    that predates it takes the entry as a needs-input report, whose text
 //    says so, and acknowledges it without an answer.
+//    Later still, without a bump: a child on another machine asks to be
+//    teleported, and its request travels the same way as a relay report that
+//    names `teleport` (issue #226). The parent's daemon writes the request on
+//    the child's record and answers it in the relay-ack; one that predates the
+//    field takes it as a needs-input report.
 //
 // Change the wire additively: a new request type, or a new optional field,
 // needs no bump, because a daemon answers a request it does not know with
@@ -629,6 +634,13 @@ export interface RelayReport {
    * field shows the parent what the child asked for.
    */
   retire?: { reason?: string };
+  /**
+   * Set on an entry that asks the parent's daemon to teleport the child, which
+   * runs on the machine the entry comes from, once its turn ends (issue #226).
+   * Its status and text read as a request for input, for a parent's daemon
+   * that predates the field.
+   */
+  teleport?: { machine?: string; cwd?: string; reason?: string };
 }
 
 

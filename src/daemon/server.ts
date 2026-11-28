@@ -21,7 +21,7 @@ import { RelayOutbox } from './relay.ts';
 import { RelayAnswerLost } from '../core/relay-answer.ts';
 import { learnRelayRestart, restartForRelay, type RelayRestartAnswer } from '../core/restart.ts';
 import { RelayLinks, relayInbox } from './relay-links.ts';
-import { LOCAL_HOST, hostOf } from '../core/machine.ts';
+import { LOCAL_HOST, hostOf, knownHosts } from '../core/machine.ts';
 import { acceptLocalReport, isReportStatus, localParentOf, routeReport, type ReportInput } from '../core/report.ts';
 import { readRelayRecord, updateRelayRecord } from '../core/relay-records.ts';
 import { claimPane } from '../core/pane-claims.ts';
@@ -29,6 +29,7 @@ import { adoptedInboxGap, adoptedParentOf, type SessionReach } from '../core/ado
 import { lastAssistantMessage } from '../core/transcript.ts';
 import { harnessFor, resolveTranscript } from '../core/harnesses/index.ts';
 import type { CallerIdentity, OutboxEntry } from '../core/types.ts';
+import { TeleportRefusedError, acceptTeleportFromAfar } from '../core/teleport.ts';
 import { RETIRE_TOOL, RetireRefused, realRetireOps, requestRetirementFromAfar, retirementPending, type RetireOps } from '../core/retire.ts';
 import type { RosterChild } from '../core/roster.ts';
 import type { InboxMessage, MessageAckRequest, RelayHostState, RelayMessageAnswer, RelayMessageRequest, RelayReport, ServedTool } from './protocol.ts';
@@ -746,6 +747,47 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
   };
 
   /**
+   * agent_teleport with no child, from a child whose record belongs to a
+   * parent on another machine (issue #226). As with a retirement, this daemon
+   * holds only the relay record, so the request waits in the relay outbox for
+   * the daemon that holds the record, which answers it. A child this daemon
+   * holds a parent record for teleports itself through its own session's tool.
+   */
+  const relayTeleport = async (args: Record<string, unknown>, caller: CallerIdentity): Promise<string | undefined> => {
+    const childId = caller.childId;
+    if (!childId || localParentOf(childId)) return undefined;
+    if (typeof args['child'] === 'string' && args['child'].trim()) return undefined;
+    const record = readRelayRecord(childId);
+    if (!record || record.retiredAt) return undefined;
+    if (record.adopted) return `${record.name} is an adopted child: Bellwether did not start it, so it cannot teleport itself. Teleporting an adopted child waits on https://github.com/elecnix/bellwether/issues/219. Nothing was recorded.`;
+    const field = (name: string): string | undefined => (typeof args[name] === 'string' && (args[name] as string).trim() ? (args[name] as string).trim() : undefined);
+    const machine = field('machine');
+    const cwd = field('cwd');
+    const reason = field('reason');
+    return outbox.teleport(record, { ...(machine ? { machine } : {}), ...(cwd ? { cwd } : {}), ...(reason ? { reason } : {}) });
+  };
+
+  /**
+   * A teleport request that crossed from the machine a child runs on. It goes
+   * on the child's record here, and the parent's connected service waits for
+   * the child's turn to end on that machine and teleports it. With no service
+   * of that parent connected, the next one that starts arms it. A refusal
+   * writes nothing and goes back as the answer.
+   */
+  const acceptTeleport = async (host: string, parentId: string, childId: string, request: { machine?: string; cwd?: string; reason?: string }): Promise<{ answer: string }> => {
+    try {
+      const answer = await acceptTeleportFromAfar(parentId, childId, request, () => knownHosts());
+      log(`teleport of child ${childId} requested from machine ${host} for parent ${parentId}`);
+      services.get(parentId)?.teleport?.(childId);
+      return { answer };
+    } catch (error) {
+      if (!(error instanceof TeleportRefusedError) && !(error instanceof Error)) throw error;
+      log(`teleport of child ${childId} from machine ${host} refused: ${(error as Error).message}`);
+      return { answer: (error as Error).message };
+    }
+  };
+
+  /**
    * A retirement request that crossed from the machine a child runs on. The
    * request settles on the child's record here, and a child that has already
    * exited is cleaned up at once by its parent's service, or by the next
@@ -778,6 +820,8 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
     if (hostOf(route.child) !== host && route.child.movedFrom?.host !== host) return { refused: `child ${report.childId} runs on machine ${hostOf(route.child)}, not ${host}` };
     // Not a report: the child asks from that machine to be retired.
     if (report.retire) return acceptRetire(host, route.parent.id, route.child.id, report.retire.reason);
+    // Not a report: the child asks from that machine to be teleported.
+    if (report.teleport) return acceptTeleport(host, route.parent.id, route.child.id, report.teleport);
     if (report.restartAnswer) {
       // Not a report: the answer of a restart this daemon asked for there, kept after a lost connection.
       log(learnRelayRestart(route.parent.id, route.child.id, host, report.restartAnswer.requestId, report.restartAnswer.answer, { log }));
@@ -1038,7 +1082,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
         }
         inFlight += 1;
         try {
-          const relayed = request.tool === 'parent_report' ? await relayCall(request.args, request.caller ?? {}, attached.get(socket)?.parent.session) : request.tool === RETIRE_TOOL ? await relayRetire(request.args, request.caller ?? {}) : undefined;
+          const relayed = request.tool === 'parent_report' ? await relayCall(request.args, request.caller ?? {}, attached.get(socket)?.parent.session) : request.tool === RETIRE_TOOL ? await relayRetire(request.args, request.caller ?? {}) : request.tool === 'agent_teleport' ? await relayTeleport(request.args, request.caller ?? {}) : undefined;
           const text = relayed ?? (await session.service.tool(request.tool, request.args, request.caller ?? {}));
           reply({ type: 'result', id: request.id, text });
           // A spawn or a stop may have added or removed the last child on a host.

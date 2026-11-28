@@ -31,7 +31,7 @@ After herdr reports the turn over, the daemon teleports the child as its parent 
 
 If the daemon stops during the wait, the request stays on the record, and the child's session arms it again when it reconnects.
 
-For a child whose parent runs on another machine, self-teleport is not available yet. That machine's daemon doesn't keep the child's record, so the request must cross the relay to the parent's daemon. Until then, the child asks its parent through `parent_report`.
+A child whose parent runs on another machine teleports itself the same way. Its machine's daemon doesn't keep its record, so the request crosses the relay to the parent's daemon, as a report does. The answer comes back to the child. [Children on another machine](remote-machines.md#teleporting-itself-from-there) lists the three replies a child can receive.
 
 ## Live and stopped children
 

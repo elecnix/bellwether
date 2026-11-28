@@ -1,0 +1,1 @@
+A child on another machine can teleport itself too. Its request goes through that machine's relay outbox to the parent's daemon, which teleports the child once its turn ends. Until that daemon collects the request, the child keeps running where it is, and `bellwether doctor` on that machine shows the request.

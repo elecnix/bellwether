@@ -83,6 +83,14 @@ export class RelayOutbox {
           else delete record.retireRequest;
         });
       }
+      if (entry.teleport) {
+        // And whether a teleport request still waits.
+        updateRelayRecord(entry.childId, (record) => {
+          if (record.teleportRequest?.receipt !== receipt) return;
+          if (refused) record.teleportRequest.refused = refused;
+          else delete record.teleportRequest;
+        });
+      }
       if (refused) {
         saveForward({ ...entry, refused });
         this.log(`relay: the parent's daemon refused report ${receipt}, kept in ${relayOutboxPath(receipt)}: ${refused}`);
@@ -182,6 +190,54 @@ export class RelayOutbox {
   }
 
   /**
+   * A child on this machine asked to be teleported, and this daemon holds no
+   * registry for it (issue #226). The request crosses as a retirement does:
+   * it waits in the outbox, the relay record says so, and each connected
+   * daemon of the child's parent answers it in its acknowledgement. The child
+   * keeps running here meanwhile, and nothing moves until that daemon takes it.
+   */
+  async teleport(record: RelayRecord, request: { machine?: string; cwd?: string; reason?: string }): Promise<string> {
+    const at = new Date(this.now()).toISOString();
+    const whereTo = `${request.machine ? `machine ${request.machine}` : 'another machine'}${request.cwd ? `, directory ${request.cwd}` : ''}`;
+    // A parent's daemon that predates `teleport` takes this as a report, so its text says what the child asked.
+    const text = `${record.name} asked to be teleported to ${whereTo}${request.reason ? ` (${request.reason})` : ''} from the machine it runs on, which does not hold its record. The parent's Bellwether predates a teleport request from another machine, so nothing moved. Teleport it with agent_teleport.`;
+    const entry: ForwardEntry = { receipt: newReportReceipt(), childId: record.childId, parentId: record.parentId, status: 'needs-input', text, at, teleport: { ...(request.machine ? { machine: request.machine } : {}), ...(request.cwd ? { cwd: request.cwd } : {}), ...(request.reason ? { reason: request.reason } : {}) } };
+    const tooLong = overLong(entry);
+    if (tooLong) throw new Error(`agent_teleport's reason is too long to cross to the parent's machine: as one relay line the request takes more than the ${MAX_DAEMON_FRAME_BYTES} characters a line may carry. Nothing was saved. Give a shorter reason.`);
+    saveForward(entry);
+    updateRelayRecord(record.childId, (kept) => {
+      kept.teleportRequest = { at, receipt: entry.receipt, ...(request.machine ? { machine: request.machine } : {}) };
+    });
+    this.settleRecord(entry.childId, false);
+    const lead = `Not this machine's child: the daemon here holds no registry for ${record.name} (child ${record.childId}). Its record belongs to parent ${record.parentId}, whose daemon runs on another machine, so the request to teleport you to ${whereTo} goes there, the way a report does.`;
+    const saved = `saved as ${entry.receipt} in ${relayOutboxPath(entry.receipt)}`;
+    const meanwhile = 'Until that daemon takes it, you keep running here as you are. Once it does, it teleports you when a turn ends, and your next input after that is the notice, on the destination. Do not ask again; `bellwether doctor` on this machine shows the request until then.';
+    const listeners = [...this.subscribers].filter((subscriber) => subscriber.parentIds.has(entry.parentId));
+    if (!listeners.length) {
+      this.log(`relay: kept the teleport request ${entry.receipt} of child ${entry.childId} for parent ${entry.parentId}, whose daemon is not connected`);
+      return `${lead} That daemon is not connected to this machine now. The request is ${saved}, and it goes to that daemon when it connects. ${meanwhile}`;
+    }
+    const outcome = new Promise<Outcome | undefined>((resolve) => {
+      const timer = setTimeout(() => {
+        this.acks.delete(entry.receipt);
+        resolve(undefined);
+      }, this.ackWaitMs);
+      timer.unref?.();
+      this.acks.set(entry.receipt, (result) => {
+        clearTimeout(timer);
+        resolve(result);
+      });
+    });
+    for (const listener of listeners) listener.send(toReport(entry));
+    this.log(`relay: sent the teleport request ${entry.receipt} of child ${entry.childId} to the daemon of parent ${entry.parentId}`);
+    const result = await outcome;
+    if (!result) return `${lead} That daemon has not acknowledged it yet. The request is ${saved}, and it goes again whenever that daemon reconnects, until it does. ${meanwhile}`;
+    if (result.refused) return `${lead} That daemon refused it: ${result.refused}. It stays in ${relayOutboxPath(entry.receipt)} and does not go again. Ask your parent with parent_report to teleport you.`;
+    if (!result.answer) return `${lead} That daemon took the request without an answer, because it predates a teleport request from another machine: it showed your parent a request for input, and nothing moves. Ask your parent with parent_report to teleport you.`;
+    return `${lead}\n${result.answer}`;
+  }
+
+  /**
    * The child's model read a parent's message that crossed from the parent's
    * machine. The read waits in the outbox as any report does, until the
    * parent's daemon acknowledges it, and goes to each connected one now.
@@ -214,7 +270,7 @@ export class RelayOutbox {
   private settleRecord(childId: string, forwarded: boolean): void {
     const pending = this.waiting().filter((entry) => entry.childId === childId);
     // A read, a restart answer or a retirement request waits like a report, but it is not one, so the count a person sees leaves it out.
-    const waiting = pending.filter((entry) => !entry.messageRead && !entry.restartAnswer && !entry.retire).length;
+    const waiting = pending.filter((entry) => !entry.messageRead && !entry.restartAnswer && !entry.retire && !entry.teleport).length;
     if (pending.length === 0 && readRelayRecord(childId)?.retiredAt) {
       removeRelayRecord(childId);
       this.log(`relay: removed the record of child ${childId}, which is gone and has no report left to collect`);
@@ -240,5 +296,5 @@ function overLong(entry: ForwardEntry): string | undefined {
 }
 
 function toReport(entry: ForwardEntry): RelayReport {
-  return { receipt: entry.receipt, childId: entry.childId, parentId: entry.parentId, status: entry.status, text: entry.text, at: entry.at, ...(entry.via ? { via: entry.via } : {}), ...(entry.toolOffered !== undefined ? { toolOffered: entry.toolOffered } : {}), ...(entry.messageRead ? { messageRead: entry.messageRead } : {}), ...(entry.restartAnswer ? { restartAnswer: entry.restartAnswer } : {}), ...(entry.retire ? { retire: entry.retire } : {}) };
+  return { receipt: entry.receipt, childId: entry.childId, parentId: entry.parentId, status: entry.status, text: entry.text, at: entry.at, ...(entry.via ? { via: entry.via } : {}), ...(entry.toolOffered !== undefined ? { toolOffered: entry.toolOffered } : {}), ...(entry.messageRead ? { messageRead: entry.messageRead } : {}), ...(entry.restartAnswer ? { restartAnswer: entry.restartAnswer } : {}), ...(entry.retire ? { retire: entry.retire } : {}), ...(entry.teleport ? { teleport: entry.teleport } : {}) };
 }

@@ -296,6 +296,60 @@ test('stage 3: a daemon killed after the destination started the session leaves 
   assert.deepEqual(moveLog(w).map((line) => [line['outcome'], line['recovered']]), [['moved', true]]);
 });
 
+/** A record no act works on that names no pane, no exit, no mark and no crossingFailed: nothing repairs it, and nothing tells a person where the session is. */
+function stranded(child: ChildRecord): boolean {
+  return !child.paneId && !child.exitedAt && !child.moving && !child.crossingFailed;
+}
+
+test('a recovery whose own daemon stops before the source tab opens leaves a record doctor names, not a stranded one', async (t) => {
+  let holdHere = false;
+  const w = await twoMachines(t, {}, { box: (request) => request.method === 'tab.create' || request.method === 'workspace.create', here: (request) => holdHere && (request.method === 'tab.create' || request.method === 'workspace.create') });
+  harness(w.here, { claude: '2.1.300' });
+  harness(w.box, { claude: '2.1.300' });
+  claudeHere(w, dir(w.here.user, 'src', 'repo'));
+  const boxCwd = dir(w.box.user, 'repo');
+  await interruptedMove(t, w, { on: 'box', methods: ['tab.create', 'workspace.create'] }, boxCwd);
+
+  // The recovery points the record at the source and opens a tab there, which herdr holds; its daemon dies then.
+  holdHere = true;
+  const seen = w.here.herdr.requests.length;
+  const second = await startCrossingDaemon(t, w);
+  await connectParent(t, w);
+  await until('the recovery to ask for a tab on the source', () => w.here.herdr.requests.slice(seen).some((request) => request.method === 'tab.create' || request.method === 'workspace.create'));
+  await kill(second);
+
+  const left = record(w) as ChildRecord;
+  assert.equal(stranded(left), false, `the record names a pane, an exit, a mark or crossingFailed: ${JSON.stringify({ paneId: left.paneId, exitedAt: left.exitedAt, moving: left.moving, crossingFailed: left.crossingFailed })}`);
+  assert.ok(left.exitedAt, 'with no pane, the record says the child is not running');
+  assert.match(crossingLines([readParent(w.parentId)!])[0] ?? '', /^fail  crossing: worker \(child child-worker\) runs on neither machine .*Bring it back with agent_spawn with resume worker/);
+});
+
+test('a rollback whose daemon stops before the source tab opens leaves a record doctor names, not a stranded one', async (t) => {
+  const w = await twoMachines(
+    t,
+    { box: (world, request) => (harnessStart(request) ? { error: { code: 'agent_start_failed', message: 'box would not start claude' } } : world.respond(request)) },
+    // The move creates no tab on the source, so the one it asks for is the rollback's.
+    { here: (request) => request.method === 'tab.create' || request.method === 'workspace.create' },
+  );
+  harness(w.here, { claude: '2.1.300' });
+  harness(w.box, { claude: '2.1.300' });
+  claudeHere(w, dir(w.here.user, 'src', 'repo'));
+  const boxCwd = dir(w.box.user, 'repo');
+
+  const first = await startCrossingDaemon(t, w);
+  const parent = await connectParent(t, w);
+  const move = parent.tool('agent_move', { child: 'worker', machine: 'box', cwd: boxCwd }).catch((error: Error) => error);
+  await until('the rollback to ask for a tab on the source', () => w.here.herdr.requests.some((request) => request.method === 'tab.create' || request.method === 'workspace.create'));
+  await kill(first);
+  await move;
+
+  const left = record(w) as ChildRecord;
+  assert.equal(left.moving, undefined, 'the rollback had put the original record back, with no mark');
+  assert.equal(stranded(left), false, `the record names a pane, an exit, a mark or crossingFailed: ${JSON.stringify({ paneId: left.paneId, exitedAt: left.exitedAt, crossingFailed: left.crossingFailed })}`);
+  assert.ok(left.exitedAt, 'with no pane, the record says the child is not running');
+  assert.match(crossingLines([readParent(w.parentId)!])[0] ?? '', /^fail  crossing: worker \(child child-worker\) runs on neither machine .*Bring it back with agent_spawn with resume worker/);
+});
+
 test('doctor fails on a child a crossing left on neither machine, and names the resume that brings it back', () => {
   const lines = crossingLines([{ children: [{ id: 'c1', name: 'worker', kind: 'claude', harness: 'claude-code', paneId: 'w1:p3', host: 'local', startedAt: '', lastStatus: 'done', statusChangedAt: '', lastBusyAt: '', depth: 1, exitedAt: '2026-11-28T04:00:00.000Z', crossingFailed: { at: '2026-11-28T04:00:00.000Z', verb: 'move', from: 'local', to: 'box', stage: 'stopped', error: 'the daemon running the move stopped after the child\'s tab closed, and resuming it on this machine failed: claude would not start', sourceFile: '/s/sess-1.jsonl', reopen: 'agent_spawn with resume worker, which resumes it on this machine from /s/sess-1.jsonl', interrupted: true } }] }]);
   assert.equal(lines.length, 1);

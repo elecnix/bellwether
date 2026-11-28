@@ -185,10 +185,14 @@ async function recoverOne(deps: CarryDeps, parentId: string, childId: string, in
     if (!restored || !source?.session) throw new Error('the record names no session to resume on the source');
     const client = await deps.clientFor(crossing.from);
     // The mark goes first, or the resume refuses a child that is being moved.
+    // crossingFailed takes its place until the resume names a pane on the
+    // source, so a daemon that stops in between leaves a record doctor names.
     updateChild(parentId, childId, (entry) => {
       delete entry.moving;
+      crossingFailed(entry, { at, verb, from: crossing.from, to: crossing.to, stage: crossing.stage ?? 'unknown', error: `the daemon running the ${verb} stopped after the child's tab closed, and the daemon that recovered it stopped too, before it resumed it on ${where(crossing.from)}`, ...(crossing.sourceFile ? { sourceFile: crossing.sourceFile } : {}), reopen, interrupted: true });
     });
-    const back = await resumeChild(client, readParent(parentId) ?? parent, { child: { ...restored, moving: undefined }, session: { kind: source.session.kind === 'path' ? 'path' : 'id', value: source.session.value } }, { registerRemote: deps.registerRemote, cleanupRemote: deps.cleanupRemote, startupTimeoutMs: deps.startupTimeoutMs, redrawMs: deps.redrawMs });
+    const marked = readParent(parentId)?.children.find((entry) => entry.id === childId) ?? { ...restored, moving: undefined };
+    const back = await resumeChild(client, readParent(parentId) ?? parent, { child: marked, session: { kind: source.session.kind === 'path' ? 'path' : 'id', value: source.session.value } }, { registerRemote: deps.registerRemote, cleanupRemote: deps.cleanupRemote, startupTimeoutMs: deps.startupTimeoutMs, redrawMs: deps.redrawMs });
     appendLog(crossing, { ...base, outcome: 'rolled-back', pane: back.child.paneId });
     return { childId, name: child.name, outcome: 'resumed', detail: `the daemon stopped after the child's tab closed and before it ran on ${where(crossing.to)}, so it resumed on ${where(crossing.from)} in pane ${back.child.paneId}, as the same child` };
   } catch (error) {

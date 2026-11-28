@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { harnessFor } from '../../src/core/harnesses/index.ts';
-import { missingIntegration, noSessionCause, noSessionWarning, withSessionCause } from '../../src/core/herdr-integration.ts';
+import { describeIntegrations, missingIntegration, noSessionCause, noSessionWarning, withSessionCause } from '../../src/core/herdr-integration.ts';
 import type { HerdrRequester } from '../../src/core/harnesses/types.ts';
 
 /** herdr answering integration.list with pi in the given state, or refusing the method. */
@@ -50,4 +50,13 @@ test('a refusal keeps its words, and gains the cause only when herdr confirms th
   assert.equal(await withSessionCause(refusal, herdr('current'), harnessFor('pi'), { name: 'worker', host: 'local' }), refusal);
   const caused = await withSessionCause(refusal, herdr('not_installed'), harnessFor('pi'), { name: 'worker', host: 'local' });
   assert.ok(caused.startsWith(`${refusal} herdr on this machine has no pi integration`), caused);
+});
+
+test('doctor names each integration a movable harness needs as present or missing, and says when herdr did not answer (issue #174)', () => {
+  const states = new Map([['claude', 'current'], ['pi', 'not_installed']]);
+  assert.equal(describeIntegrations(states, ['claude', 'pi'], 'example-box'), 'herdr claude integration present, herdr pi integration missing (run `herdr integration install pi` on machine example-box)');
+  assert.equal(describeIntegrations(new Map([['claude', 'outdated']]), ['claude', 'pi'], undefined), 'herdr claude integration present (outdated), herdr pi integration missing (run `herdr integration install pi` on this machine)');
+  // A state herdr reports that Bellwether does not know is quoted, not read as present or missing.
+  assert.equal(describeIntegrations(new Map([['pi', 'example-state']]), ['pi'], undefined), 'herdr pi integration example-state, as herdr reports it');
+  assert.equal(describeIntegrations(new Error('herdr integration.list timed out after 6000ms'), ['claude', 'pi'], undefined), 'herdr integrations unknown (herdr integration.list timed out after 6000ms)');
 });

@@ -39,6 +39,7 @@
     "test:lab": "node --disable-warning=ExperimentalWarning test/lab/scrub-environment.ts && node --test --test-concurrency=1 --import ./test/fixtures/isolation.ts --import ./test/lab/scrub-environment.ts --disable-warning=ExperimentalWarning \"test/lab/**/*.test.ts\"",
     "check:prose": "node --disable-warning=ExperimentalWarning scripts/prose.ts lint",
     "check:prose-coverage": "node --disable-warning=ExperimentalWarning scripts/prose.ts coverage",
+    "check:merged-work": "node --disable-warning=ExperimentalWarning scripts/merged-work.ts",
     "check:fixtures": "node --disable-warning=ExperimentalWarning scripts/fixture-identifiers.ts",
     "doctor": "node --disable-warning=ExperimentalWarning src/cli.ts doctor",
     "release": "node --disable-warning=ExperimentalWarning scripts/release.ts",

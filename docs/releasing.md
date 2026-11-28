@@ -78,6 +78,16 @@ A note stays under its version when its front matter lists each pull request it 
 
 A note with no `prs:` belongs to the pull request that added it. That pull request merged after the previous release, so leaving the front matter out never gets a note past the check.
 
+### A pull request that deletes another's record
+
+Suppose a commit has the current `main` as its parent but contains the tree of an older checkout. Its squash merge writes that older tree over `main`, which deletes every pull request merged since then. Nothing in CI fails. Each deleted feature took its tests with it, and what remains still compiles. `e16cc52`, the squash of [#289](https://github.com/elecnix/bellwether/pull/289), deleted three merged pull requests this way ([#296](https://github.com/elecnix/bellwether/issues/296)).
+
+The `merged-work` check fails a pull request whose diff against its merge base deletes a file under `release-notes/` or removes an entry from `FEATURES`. That diff starts at the merge base, so a branch behind `main` passes, and a note the pull request added itself never shows as deleted. Run `npm run check:merged-work -- --base origin/main` to get the same answer locally.
+
+To remove merged work on purpose, a person applies the `removes-merged-work` label and writes the reason in the description.
+
+The check reads only these two records. A reverted code change with no note or entry passes it, as does a deletion of something that has neither. It runs only on a pull request, so a commit pushed or merged outside one never meets it.
+
 ## A note is a file of its own
 
 A change in behavior adds one file, `release-notes/<version>/<name>.md`, in its own pull request. Its one paragraph says what someone can now do, or what now happens. Name it after the change, in lowercase letters, digits, dots and hyphens:

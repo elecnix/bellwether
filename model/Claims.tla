@@ -284,6 +284,12 @@ Next ==
 
 Spec == Init /\ [][Next]_vars
 
+\* State identity without the ghosts. The ghosts record the first id given and never steer
+\* the system, so a configuration whose invariant reads no ghost checks the same behaviours
+\* with this VIEW, in far fewer states. Since a resumed adopted child takes new sessions as a
+\* started child does (#256), the settled configurations need it to finish within 10G.
+NoGhosts == <<paneSession, children, relay, pending, nextId>>
+
 \* ---- Invariants ----
 
 LiveOn(x) == {c \in children : c.live /\ c.pane = x}

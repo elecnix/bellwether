@@ -38,6 +38,7 @@
 // The mid-turn rule: never restart a pane that is mid-turn unless the target
 // is the caller. For another target the actor waits for herdr to report idle
 // or done, with a bounded timeout, and refuses when the wait runs out.
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -59,10 +60,22 @@ import { watchStartup, type StartupWatch } from './startup-dialogs.ts';
 import { sessionFrom } from './transcript.ts';
 import { harnessFor, requireHarness, resolveTranscript } from './harnesses/index.ts';
 import type { ChildFiles } from './harnesses/types.ts';
-import { REGISTRY_SCHEMA, type CallerIdentity, type ChildRecord, type ChildRoute, type ChildSession, type DialogDecision, type ParentRecord, type RestartFailure, type RestartWait } from './types.ts';
+import { REGISTRY_SCHEMA, type CallerIdentity, type ChildRecord, type ChildRoute, type ChildSession, type DialogDecision, type ParentRecord, type RestartFailure, type RestartInDoubt, type RestartWait } from './types.ts';
 import { openChildTab, parseWorkspaces, returnPlacement, undoChildTab, type ChildTab, type TabRequest, type WorkspacePlacement } from './workspace.ts';
 
 export const RESTART_TOOL = 'agent_restart';
+
+/**
+ * A request sent over a relay connection whose answer never came back: the
+ * connection ended or the wait ran out after the request went out, so the far
+ * side may have acted on it (issue #211).
+ */
+export class RelayAnswerLost extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'RelayAnswerLost';
+  }
+}
 
 /** A restart the daemon refuses, with the reason a person can act on. */
 export class RestartRefused extends Error {
@@ -378,6 +391,8 @@ async function restartChildLocked(client: HerdrClient, parentId: string, childId
   if (!parent || !child) throw new RestartRefused(`child ${childId} is gone from the registry of ${parentId}, so there is nothing to restart.`);
   // A move closes and reopens the child itself, and outlasts the lock's stale age.
   if (isMoving(child)) throw new RestartRefused(`${child.name} (child ${child.id}) is being moved to ${child.moving?.to === LOCAL_HOST ? 'this machine' : `machine ${child.moving?.to}`}, since ${child.moving?.since}. Wait for the move to finish, then restart it.`);
+  // A lost answer leaves the far side's state unknown: the session may already run in a new pane there (issue #211).
+  if (child.restartInDoubt) throw new RestartRefused(`the outcome of the last restart of ${child.name} on machine ${child.restartInDoubt.host} is unknown since ${child.restartInDoubt.at}, so a second restart could start the session twice. The daemon there keeps its answer, and this daemon takes it when the connection to ${child.restartInDoubt.host} returns; restart it after that.`);
   if (child.origin === 'adopt') throw new RestartRefused(`${child.name} (child ${child.id}) was adopted, not started by Bellwether, so agent_restart will not close pane ${child.paneId}: it closes only panes Bellwether started.`);
   const session = sessionOf(child);
   if (!session) throw new RestartRefused(await withSessionCause(`${child.name} (child ${child.id}, pane ${child.paneId || 'none'}) has no recorded session, so agent_restart cannot reopen it. Resume it once with agent_spawn and resume, which records the session herdr reports.`, client, requireHarness(child.kind), child));
@@ -590,6 +605,7 @@ function markRestarted(entry: ChildRecord, back: { session: ChildSession; status
   applyLaunch(entry, back.launch);
   delete entry.startingUntil;
   delete entry.closing;
+  delete entry.restartInDoubt;
   delete entry.exitedAt;
   delete entry.exitCode;
   delete entry.paneEnd;
@@ -653,6 +669,8 @@ export interface RelayRestartAsk {
   childId: string;
   child: RelayRestartChild;
   waitTimeoutMs?: number;
+  /** Names the request, so the far daemon keeps its answer in the relay outbox too (issue #211). */
+  requestId?: string;
 }
 
 /** Ask the daemon on a child's machine to restart the child there, over the relay. */
@@ -662,9 +680,11 @@ export type RelayRestart = (host: string, ask: RelayRestartAsk) => Promise<Relay
  * Restart a child on another machine, from its parent's daemon (issue #190).
  * The daemon there holds the child's pane, its herdr and its start files, so
  * it does the act, as this daemon does for a child here, and answers with the
- * new pane. This daemon's record lets go of the old pane first, so its watcher
- * reads the close there as part of the restart, and takes the new pane from
- * the answer. A refusal there puts the record back as it was.
+ * new pane. This daemon's record marks the old pane as closing first, so its
+ * watcher reads the close there as part of the restart, and takes the new
+ * pane from the answer. A refusal there puts the record back as it was. A
+ * connection that ends after the request went out leaves the record in doubt,
+ * never claiming an outcome, until the far side's kept answer arrives.
  */
 async function restartRemoteChild(parent: ParentRecord, child: ChildRecord, session: HarnessSession, launch: NextLaunch, hooks: RestartHooks, options: RestartOptions): Promise<RestartOutcome> {
   const host = hostOf(child);
@@ -692,44 +712,84 @@ async function restartRemoteChild(parent: ParentRecord, child: ChildRecord, sess
     },
     ...(waitTimeoutMs === undefined ? {} : { waitTimeoutMs }),
   };
-  const held = { paneId: child.paneId, tabId: child.tabId, startingUntil: child.startingUntil };
+  const oldPane = child.paneId;
+  const oldTab = child.tabId;
+  const held = { startingUntil: child.startingUntil };
   const restore = (): void => {
     updateChild(parent.id, child.id, (entry) => {
-      entry.paneId = held.paneId;
-      if (held.tabId) entry.tabId = held.tabId;
-      else delete entry.tabId;
+      delete entry.closing;
       if (held.startingUntil) entry.startingUntil = held.startingUntil;
       else delete entry.startingUntil;
     });
   };
   // The hold covers the wait for a turn there, the startup dialogs and the start.
   const holdMs = (waitTimeoutMs ?? 0) + Math.max(STARTUP_HOLD_MS, (hooks.startupTimeoutMs ?? STARTUP_TIMEOUT_MS) + 15_000);
+  // The record keeps naming the old pane, marked as closing, so the watcher
+  // reads the close there as part of the restart, and a record left by a
+  // daemon that stops mid-restart names a real pane (issue #211). The mark
+  // outlasts the relay's own bound on the answer.
   updateChild(parent.id, child.id, (entry) => {
-    entry.paneId = '';
-    delete entry.tabId;
+    entry.closing = { pane: oldPane, ...(oldTab ? { tab: oldTab } : {}), until: new Date(Date.now() + holdMs + 2 * STARTUP_TIMEOUT_MS + CLOSING_HOLD_MS).toISOString() };
     entry.startingUntil = new Date(Date.now() + holdMs).toISOString();
   });
+  const requestId = `rs-${crypto.randomBytes(8).toString('hex')}`;
   let answer: RelayRestartAnswer;
   try {
-    answer = await hooks.relay(host, ask);
+    answer = await hooks.relay(host, { ...ask, requestId });
   } catch (error) {
-    restore();
-    throw refused((error as Error).message);
+    const message = (error as Error).message;
+    if (!(error instanceof RelayAnswerLost)) {
+      // The request never went out, so nothing there changed.
+      restore();
+      throw refused(message);
+    }
+    // The request went out and its answer did not come back. The far side may
+    // have closed the old pane and started the session in a new one, so the
+    // record claims neither until that side's kept answer arrives.
+    const doubt: RestartInDoubt = { host, requestId, at: new Date().toISOString(), oldPane, ...(oldTab ? { oldTab } : {}), error: message, launch: launchOnRecord(launch) };
+    updateChild(parent.id, child.id, (entry) => {
+      delete entry.closing;
+      delete entry.startingUntil;
+      entry.restartInDoubt = doubt;
+    });
+    hooks.log?.(`restart ${child.name} on machine ${host}: the answer was lost with the connection, so the outcome is unknown until ${host} hands over its kept answer: ${message}`);
+    logRestart({ outcome: 'unknown', target: 'child', host, parent: parent.id, child: child.id, name: child.name, oldPane, session: session.value, requestId, error: message });
+    throw new RestartRefused(`${child.name} runs on machine ${host}, and the connection to ${host} ended after the restart request went out and before its answer came back, so Bellwether does not know whether ${host} restarted it: ${message}. The daemon on ${host} keeps its answer, and this daemon takes it when the connection returns. Until then the record marks the outcome as unknown.`);
   }
-  if (answer.decisions?.length) recordDecisions(parent.id, child.id, answer.decisions);
+  return settleRemoteRestart(parent.id, child, host, session.value, launchOnRecord(launch), answer, hooks, { undo: restore, refused });
+}
+
+/** What a restart puts on the record about the route, without the route's launcher settings. */
+function launchOnRecord(launch: NextLaunch): RestartInDoubt['launch'] {
+  return { ...(launch.route ? { route: launch.route } : {}), ...(launch.harnessModel ? { harnessModel: launch.harnessModel } : {}), ...(launch.provider ? { provider: launch.provider } : {}) };
+}
+
+/**
+ * Put a far daemon's answer to a restart on the parent's record: the new pane,
+ * the failure after the old pane closed, or the refusal that changed nothing
+ * there. It serves the answer to the request and the answer kept in the relay
+ * outbox after a lost connection alike (issue #211).
+ */
+function settleRemoteRestart(parentId: string, child: ChildRecord, host: string, sessionValue: string, launch: RestartInDoubt['launch'], answer: RelayRestartAnswer, hooks: RestartHooks, how: { undo: () => void; refused: (reason: string) => RestartRefused; learned?: boolean }): RestartOutcome {
+  const learned = how.learned ? { learned: true } : {};
+  if (answer.decisions?.length) recordDecisions(parentId, child.id, answer.decisions);
   if (!answer.restarted) {
     if (!answer.failure) {
-      restore();
-      throw refused(answer.reason);
+      how.undo();
+      if (how.learned) logRestart({ outcome: 'refused', target: 'child', host, parent: parentId, child: child.id, name: child.name, session: sessionValue, error: answer.reason, ...learned });
+      throw how.refused(answer.reason);
     }
     const failure = answer.failure;
-    updateChild(parent.id, child.id, (entry) => markRestartFailed(entry, failure));
+    updateChild(parentId, child.id, (entry) => {
+      delete entry.restartInDoubt;
+      markRestartFailed(entry, failure);
+    });
     hooks.log?.(`restart ${child.name} on machine ${host} failed after closing ${failure.oldPane}: ${failure.error}`);
-    logRestart({ outcome: 'failed', target: 'child', host, parent: parent.id, child: child.id, name: child.name, oldPane: failure.oldPane, session: session.value, error: failure.error });
-    throw new RestartRefused(`${child.name} did not come back on machine ${host}: ${failure.error}. Its old pane ${failure.oldPane} there is closed, so it is gone; bring it back with agent_spawn and resume ${session.value}.`);
+    logRestart({ outcome: 'failed', target: 'child', host, parent: parentId, child: child.id, name: child.name, oldPane: failure.oldPane, session: sessionValue, error: failure.error, ...learned });
+    throw new RestartRefused(`${child.name} did not come back on machine ${host}: ${failure.error}. Its old pane ${failure.oldPane} there is closed, so it is gone; bring it back with agent_spawn and resume ${sessionValue}.`);
   }
   const { record, outcome } = answer;
-  updateChild(parent.id, child.id, (entry) => {
+  updateChild(parentId, child.id, (entry) => {
     entry.paneId = record.paneId;
     if (record.tabId) entry.tabId = record.tabId;
     else delete entry.tabId;
@@ -739,13 +799,39 @@ async function restartRemoteChild(parent: ParentRecord, child: ChildRecord, sess
     if (record.toolSource) entry.toolSource = record.toolSource;
     delete entry.reportPending;
     delete entry.restartRoute;
+    delete entry.restartInDoubt;
     // A remote child's transcript stays on its own machine's disk.
-    markRestarted(entry, { session: record.session ?? { kind: session.kind, value: session.value }, ...(record.lastStatus ? { status: record.lastStatus } : {}), launch });
+    markRestarted(entry, { session: record.session ?? { kind: child.session?.kind ?? 'id', value: sessionValue }, ...(record.lastStatus ? { status: record.lastStatus } : {}), launch });
   });
   hooks.reset?.(child.id);
-  hooks.log?.(`restart ${child.name} on machine ${host}: closed ${outcome.oldPane}, opened ${outcome.newPane} on session ${session.value}`);
-  logRestart({ outcome: 'restarted', target: 'child', host, parent: parent.id, child: child.id, name: child.name, oldPane: outcome.oldPane, newPane: outcome.newPane, ...(outcome.newTab ? { newTab: outcome.newTab } : {}), session: session.value, sessionMatched: outcome.sessionMatched, ...(outcome.waitedMs !== undefined ? { waitedMs: outcome.waitedMs } : {}) });
+  hooks.log?.(`restart ${child.name} on machine ${host}: closed ${outcome.oldPane}, opened ${outcome.newPane} on session ${sessionValue}${how.learned ? ', learned from the answer kept there' : ''}`);
+  logRestart({ outcome: 'restarted', target: 'child', host, parent: parentId, child: child.id, name: child.name, oldPane: outcome.oldPane, newPane: outcome.newPane, ...(outcome.newTab ? { newTab: outcome.newTab } : {}), session: sessionValue, sessionMatched: outcome.sessionMatched, ...(outcome.waitedMs !== undefined ? { waitedMs: outcome.waitedMs } : {}), ...learned });
   return { ...outcome, target: 'child', id: child.id, name: child.name, host, route: routeMove(child.route, launch) };
+}
+
+/**
+ * The answer a far daemon kept in its relay outbox for a restart whose
+ * answer was lost with the connection (issue #211). It settles the record
+ * only while the record is in doubt about that very request: an answer that
+ * already came back on the request, or one for an older request, changes
+ * nothing. Returns what it did, for the daemon's log.
+ */
+export function learnRelayRestart(parentId: string, childId: string, host: string, requestId: string, answer: RelayRestartAnswer, hooks: RestartHooks = {}): string {
+  const child = readParent(parentId)?.children.find((entry) => entry.id === childId);
+  const doubt = child?.restartInDoubt;
+  if (!child || !doubt || doubt.requestId !== requestId || doubt.host !== host) return `the answer of restart ${requestId} of child ${childId} from machine ${host} was already settled`;
+  const undo = (): void => {
+    updateChild(parentId, childId, (entry) => {
+      delete entry.restartInDoubt;
+    });
+  };
+  const refused = (reason: string): RestartRefused => new RestartRefused(reason);
+  try {
+    const outcome = settleRemoteRestart(parentId, child, host, child.session?.value ?? '', doubt.launch, answer, hooks, { undo, refused, learned: true });
+    return `child ${childId} came back on machine ${host} in pane ${outcome.newPane}, as the answer kept there says`;
+  } catch (error) {
+    return `child ${childId} on machine ${host}: ${(error as Error).message}`;
+  }
 }
 
 /** What a far daemon needs to restart a child here for a parent on another machine. */
@@ -894,7 +980,8 @@ export function restartFailureLines(parents: ParentRecord[]): string[] {
 
 /**
  * The `bellwether doctor` lines for each pending self-restart, saying what it
- * waits for, and for each one that gave up, saying what held it (issue #188).
+ * waits for, and for each one that gave up, saying what held it (issue #188),
+ * and for each restart on another machine whose answer was lost (issue #211).
  */
 export function restartWaitLines(parents: ParentRecord[]): string[] {
   const lines: string[] = [];
@@ -905,6 +992,8 @@ export function restartWaitLines(parents: ParentRecord[]): string[] {
       const who = `${child.name} (child ${child.id} of ${parent.id})`;
       if (child.restartRequestedAt) lines.push(`info  restart: ${restartWaitText(who, child.restartRequestedAt, child.restartWait, { messages: messagesSince(child, child.restartRequestedAt) })}`);
       else if (child.restartStalled) lines.push(`info  restart: ${who} gave up a restart at ${child.restartStalled.at}: ${child.restartStalled.reason}`);
+      const doubt = child.restartInDoubt;
+      if (doubt) lines.push(`warn  restart: ${who} on machine ${doubt.host}: the answer to its restart at ${doubt.at} was lost with the connection, so the outcome is unknown until the daemon there hands over the answer it kept (${doubt.error}). Its pane before the restart was ${doubt.oldPane || '(none)'}.`);
     }
   }
   return lines;

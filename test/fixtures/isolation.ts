@@ -9,6 +9,22 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 
+/** A test file that a `node --test` run started with no limit on the files at once. */
+export class UnboundedTestRun extends Error {
+  constructor() {
+    super(
+      'this test file runs under node --test without --test-concurrency, so Node starts one file per core but one at once, and every file starts daemons, fake machines and git. ' +
+        'Run npm run test:unit or npm run test:integration, which set the limit from BELLWETHER_TEST_CONCURRENCY, or pass --test-concurrency=2 to node --test.',
+    );
+    this.name = 'UnboundedTestRun';
+  }
+}
+
+// The runner hands each file's process its own --test-concurrency, and 0 when
+// nobody gave one, which Node reads as one file per core but one. A run in one
+// process (--test-isolation=none) starts no file processes, so it passes.
+if (process.env['NODE_TEST_CONTEXT']?.startsWith('child') && process.execArgv.includes('--test-concurrency=0')) throw new UnboundedTestRun();
+
 // Every process a test starts, from a CLI call through the fake ssh to a
 // detached daemon, loads the same sources again. Node's compile cache keeps
 // each module's compiled code, keyed by its content, so a changed source

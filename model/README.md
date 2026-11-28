@@ -13,6 +13,8 @@ npm install -g everystate     # or: brew install mattzcarey/tap/everystate
 
 `run-all.sh` runs one configuration per invariant and prints one line each: the exit code, then the invariant's name, the number of distinct states and the action names of the shortest trace. Exit `0` means the invariant holds at that bound, exit `12` means a reachable state breaks it. Set `EVERYSTATE` if the binary is somewhere else.
 
+`run-all.sh` runs each configuration through `check.sh`, which stops the checker once it passes a memory ceiling: 4G by default, or the size in `EVERYSTATE_MEMORY`. `everystate` keeps every state it has seen in memory, so a configuration with no bound on its states grows until the machine swaps. Run one configuration through `./check.sh` too, with the arguments `everystate` takes.
+
 ## What each file is
 
 | File | What it models |

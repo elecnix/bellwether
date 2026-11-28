@@ -158,6 +158,10 @@ const BASE: readonly Feature[] = [
   ...brought('request', 4, '0.1.10', {
     resume: '`bellwether resume <session>` brings back a session that has lost its pane, from its own record, and reports the pane and tab it opened.',
   }, [208]),
+  // A daemon that predates it does not list the tool, and the client refuses agent_teleport by name.
+  ...brought('tool', 4, '0.1.10', {
+    agent_teleport: "A parent moves a live or stopped child to another machine, and the child's first input there is a notice that gives where it came from and where it is now.",
+  }),
 ];
 
 /**

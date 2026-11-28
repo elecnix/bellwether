@@ -17,7 +17,10 @@ import { LOCAL_HOST } from '../../src/core/machine.ts';
 import { readParent, updateChild } from '../../src/core/registry.ts';
 import type { Inbox } from '../../src/core/send.ts';
 import { TeleportFailedError, TeleportRefusedError, teleportChild, teleportLogPath, type TeleportDeps } from '../../src/core/teleport.ts';
+import { remoteOps } from '../../src/core/remote.ts';
 import { claudeProjectDir } from '../../src/core/transcript.ts';
+import { Watcher } from '../../src/core/watcher.ts';
+import { runBellwetherTool } from '../../src/integrations/tools.ts';
 import type { ChildRecord } from '../../src/core/types.ts';
 import { harnessStart, harnessStarts } from '../fixtures/fake-herdr.ts';
 import { claudeHere, dir, harness, twoMachines, type TwoMachines } from '../fixtures/two-machines.ts';
@@ -321,4 +324,26 @@ test('contract 4: an adopted child is refused by name, with the issue that lifts
   assert.match(failure.message, /worker is an adopted child/);
   assert.match(failure.message, /issues\/219/);
   untouched(w);
+});
+
+test('agent_teleport through the tool list replies first with whether the child was told, then with what crossed and what stayed', async (t) => {
+  const w = await twoMachines(t);
+  harness(w.here, { claude: '2.1.300' });
+  harness(w.box, { claude: '2.1.300' });
+  claudeHere(w, dir(w.here.user, 'src', 'repo'), { stopped: true });
+  const boxCwd = dir(w.box.user, 'repo');
+  const session = fakeSession(w, true);
+  const watcher = new Watcher({ client: w.here.client, clientFor: w.deps.clientFor, parentId: w.parentId, onEntries: () => {} });
+  const resolve = async (label: string) => ({ id: label, label, target: label, session: 'default', enabled: true });
+  const reply = await runBellwetherTool(
+    { client: w.here.client, clientFor: w.deps.clientFor, parentId: w.parentId, watcher, remote: remoteOps(resolve), endpointFor: w.deps.endpointFor, knownHosts: w.deps.knownHosts, inbox: session.inbox },
+    'agent_teleport',
+    { child: 'worker', cwd: boxCwd, reason: 'the old machine is going down' },
+  );
+  const [first, ...rest] = reply.split('\n');
+  assert.match(first ?? '', /^worker teleported from this machine to machine box, as the same child child-worker, .* its model read the notice and began a turn on it/);
+  assert.match(rest.join('\n'), /worker was stopped on this machine, which agent_move refuses, and it runs now/);
+  assert.match(rest.join('\n'), /The worktree, the shell jobs and any file outside the session stayed on this machine/);
+  assert.match(session.pushes[0]?.text ?? '', /because the old machine is going down/);
+  assert.equal(record(w)?.host, 'box');
 });

@@ -9,6 +9,8 @@ bellwether move worker --machine hawthorne --cwd /home/me/Source/repo/main
 
 Leave out `machine` when the parent's machine knows exactly one other machine. Bellwether then picks that one. When `herdr machine list` shows more than one other machine, the call fails and names them. `local` names the parent's own machine. Leave out `cwd` when the child resumes in the directory it runs in now. That directory then has to exist on the other machine too.
 
+To carry a stopped child, or to tell the child where it went before its first turn, use [agent_teleport](teleporting.md).
+
 ## What it needs
 
 - Everything a [child on another machine](remote-machines.md) needs. Bellwether must run on both machines. The parent's machine also needs a saved herdr profile for the other one, and SSH to it with a key and no prompt. Bellwether on the other machine must also have the `move-*` commands, which `bellwether help` lists.

@@ -14,6 +14,7 @@ import { HerdrClient, resolveSocketPath } from './core/herdr-client.ts';
 import { bellwetherHome } from './core/paths.ts';
 import { emptyParent, listParents, readParent, saveParent } from './core/registry.ts';
 import { restartFailureLines, restartWaitLines } from './core/restart.ts';
+import { teleportLines } from './core/teleport.ts';
 import { farRecordLines } from './core/remote.ts';
 import { goneSessionLines, herdrView } from './core/pane-fate.ts';
 import { PROMPT_NOTICE, isReportStatus } from './core/report.ts';
@@ -257,6 +258,8 @@ async function doctor(): Promise<number> {
   for (const line of restartWaitLines(listParents())) console.log(`  ${line}`);
   // Each child whose machine holds no record of it while this registry does (issue #219).
   for (const line of farRecordLines(listParents())) console.log(`  ${line}`);
+  // A recent teleport, and a teleported child that has not read its notice (issue #226).
+  for (const line of teleportLines(listParents())) console.log(`  ${line}`);
   // Each session on this machine whose pane is gone, and the command that brings it back (issue #187).
   const view = panes ? await herdrView(herdr, panes) : undefined;
   if (view) {
@@ -417,7 +420,7 @@ async function main(argv: string[]): Promise<number> {
   }
 
   if (command === 'help' || command === '--help') {
-    console.log('Usage: bellwether <daemon|drain|spawn|watch|list|read|send|stop|move|resume|report|parents|ancestry|doctor|version> [--debug]');
+    console.log('Usage: bellwether <daemon|drain|spawn|watch|list|read|send|stop|move|teleport|resume|report|parents|ancestry|doctor|version> [--debug]');
     console.log('  --debug                                  print the stack trace of a failure, as BELLWETHER_DEBUG=1 does');
     console.log('  daemon [--socket PATH]                   run the local daemon in the foreground');
     console.log('  drain  [--socket PATH]                   stop the running daemon once its calls finish, so the next session starts the installed one');
@@ -552,12 +555,16 @@ async function main(argv: string[]): Promise<number> {
       const child = positional[0];
       if (!child) throw new Error('move needs a child');
       console.log(await daemon.tool('agent_move', { child, machine: str(flags, 'machine'), cwd: str(flags, 'cwd'), reason: str(flags, 'reason'), ...(flags['accept-loss'] === true ? { accept_loss: true } : {}) }));
+    } else if (command === 'teleport') {
+      const child = positional[0];
+      if (!child) throw new Error('teleport needs a child');
+      console.log(await daemon.tool('agent_teleport', { child, machine: str(flags, 'to') ?? str(flags, 'machine'), cwd: str(flags, 'cwd'), reason: str(flags, 'reason'), ...(flags['accept-loss'] === true ? { accept_loss: true } : {}) }));
     } else if (command === 'stop') {
       const child = positional[0];
       if (!child) throw new Error('stop needs a child');
       console.log(await daemon.tool('agent_stop', { child, force: flags['force'] === true }));
     } else {
-      console.log('Usage: bellwether <daemon|drain|spawn|watch|list|read|send|stop|move|report|parents|doctor|version>');
+      console.log('Usage: bellwether <daemon|drain|spawn|watch|list|read|send|stop|move|teleport|report|parents|doctor|version>');
       return 1;
     }
   } finally {

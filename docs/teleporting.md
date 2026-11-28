@@ -53,7 +53,7 @@ When the destination can't start the child, Bellwether removes the copy there. I
 
 Each child record keeps a `teleports` list, newest last. An entry gives the time, who asked and why, whether the child was live or stopped, the source and destination with their directories and panes, the session file and its size, how the notice arrived, and the proof that the child is alive. Bellwether writes one line per outcome to `teleport.log` in the Bellwether home.
 
-`bellwether doctor` prints an `info` line for a recent teleport. It prints a `warn` line for a notice the child hasn't read, or for a proof that stayed at `detected`, and a `fail` line for a child that failed to start on either machine.
+`bellwether doctor` prints an `info` line for a teleport in the last day. Until the child reads its notice, doctor prints a `warn` line instead, with the reason Bellwether recorded.
 
 ## Limits
 

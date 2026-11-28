@@ -8,7 +8,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { LOCAL_HOST } from '../../src/core/machine.ts';
 import { teleportNotice } from '../../src/core/teleport-notice.ts';
-import { teleportRefusals, teleportState, type TeleportRefusalInput } from '../../src/core/teleport-plan.ts';
+import { teleportRefusals, teleportState, type TeleportEntry, type TeleportRefusalInput } from '../../src/core/teleport-plan.ts';
+import { teleportLines } from '../../src/core/teleport.ts';
+import type { RelayHostState } from '../../src/core/types.ts';
+import { farInboundGap } from '../../src/integrations/tools.ts';
 
 function ready(extra: Partial<TeleportRefusalInput> = {}): TeleportRefusalInput {
   return {
@@ -103,4 +106,26 @@ test('the notice names both machines and both directories as a person would, and
   const stopped = teleportNotice({ from: { machine: 'alder', cwd: '/a' }, to: { machine: 'alder-2', cwd: '/b' }, at: '2026-11-28T03:40:00.000Z', by: 'parent p', state: 'stopped' });
   assert.match(stopped, /You were stopped/);
   assert.doesNotMatch(stopped, /because/, 'no reason given, none invented');
+});
+
+test('a far machine whose Bellwether predates relay-message has no inbound path, and one that is new enough, or not yet heard from, has one', () => {
+  const state = (farVersion?: string): RelayHostState => ({ host: 'hawthorne', status: 'connected', since: '2026-11-28T03:00:00.000Z', attempts: 0, children: [], ...(farVersion ? { farVersion } : {}) });
+  assert.match(farInboundGap('hawthorne', state('0.1.6')) ?? '', /machine hawthorne runs bellwether 0\.1\.6.*does not serve relay-message.*came with bellwether 0\.1\.7/);
+  assert.equal(farInboundGap('hawthorne', state('0.1.7')), undefined);
+  assert.equal(farInboundGap('hawthorne', state()), undefined, 'a machine not heard from yet answers the notice itself');
+  assert.equal(farInboundGap(LOCAL_HOST, undefined), undefined);
+});
+
+test('doctor warns about a teleported child that has not read its notice, and notes a recent one that did', () => {
+  const entry = (notice: TeleportEntry['notice'], at = '2026-11-28T03:40:00.000Z'): TeleportEntry => ({ at, by: 'parent p', state: 'live', from: { host: LOCAL_HOST, cwd: '/a' }, to: { host: 'hawthorne', cwd: '/b', paneId: 'w9:p1' }, sessionFile: '/b/s.jsonl', bytes: 10, notice, alive: { at, proof: notice.takenAt ? 'took-notice' : 'detected' } });
+  const child = (extra: object) => ({ id: 'c', name: 'worker', kind: 'claude', harness: 'claude-code', paneId: 'w9:p1', host: 'hawthorne', startedAt: '', lastStatus: 'idle' as const, statusChangedAt: '', lastBusyAt: '', depth: 1, ...extra });
+  const now = Date.parse('2026-11-28T04:00:00.000Z');
+  const [warn] = teleportLines([{ children: [child({ teleports: [entry({ message: 'm-1', undelivered: 'its session never connected' })] })] }], now);
+  assert.match(warn ?? '', /^warn  teleport: worker went from this machine \(\/a\) to machine hawthorne \(\/b\)/);
+  assert.match(warn ?? '', /its session never connected/);
+  // Read later, through the session's next hello: no warning.
+  const [late] = teleportLines([{ children: [child({ teleports: [entry({ message: 'm-1', undelivered: 'x' })], messages: [{ id: 'm-1', at: '', path: 'session', preview: '', readAt: '2026-11-28T03:50:00.000Z' }] })] }], now);
+  assert.match(late ?? '', /^info  teleport: .* read the notice at 2026-11-28T03:50:00\.000Z/);
+  assert.match(teleportLines([{ children: [child({ teleports: [entry({ takenAt: '2026-11-28T03:41:00.000Z' })] })] }], now)[0] ?? '', /^info  teleport/);
+  assert.deepEqual(teleportLines([{ children: [child({ teleports: [entry({ takenAt: 'x' }, '2026-11-20T00:00:00.000Z')] })] }], now), [], 'an old teleport that went well is not news');
 });

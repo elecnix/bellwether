@@ -8,15 +8,6 @@ import type { ChildRecord } from './types.ts';
 import { LOCAL_HOST } from './machine.ts';
 import { moveRefusals, type RefusalInput } from './move-plan.ts';
 
-// The child record's list of teleports. It moves into ChildRecord in types.ts
-// once that file is free of the other work in flight (issue #226).
-declare module './types.ts' {
-  interface ChildRecord {
-    /** Each teleport of this child, newest last. */
-    teleports?: TeleportEntry[];
-  }
-}
-
 /** Whether the agent ran when the teleport began. A stopped one has no tab to close. */
 export type TeleportState = 'live' | 'stopped';
 

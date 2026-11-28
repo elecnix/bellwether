@@ -22,6 +22,9 @@ import { RETIRE_TOOL, goneCwdLine, realRetireOps, requestRetirement, retireLine,
 import type { RemoteOps } from '../core/remote.ts';
 import { lastAssistantMessage } from '../core/transcript.ts';
 import { moveChild } from '../core/move.ts';
+import { compareVersions } from '../core/move-plan.ts';
+import { teleportChild, teleportReply } from '../core/teleport.ts';
+import { predates } from '../daemon/relay-links.ts';
 import { routeLabel } from '../core/routes.ts';
 import { parseWorkspaces, releaseWorkspace, workspaceColumn, workspaceName } from '../core/workspace.ts';
 import { moveEndpoints, type EndpointFor } from '../core/move-endpoint.ts';
@@ -182,6 +185,22 @@ export const parentTools: ToolDefinition[] = [
         kind: { type: 'string', enum: ['claude', 'pi'], description: 'The harness to run on the other machine. Defaults to the child\'s own, and any other is refused.' },
         reason: { type: 'string', description: 'Why the child moves, kept in move.log.' },
         accept_loss: { type: 'boolean', description: 'Move even though the refusal named work that would stay behind: background jobs, which end with the session, or worktree changes and commits that exist only on this machine. The reply names each one again.' },
+      },
+      required: ['child'],
+    },
+  },
+  {
+    name: 'agent_teleport',
+    description: 'Teleport a claude or pi child to another machine, live or stopped, keeping its child id, its name and its conversation. Bellwether does three things: it starts the child at the destination, in a directory that already exists there, resuming its session (copied and checked byte for byte, as agent_move does); it proves the child is alive; and it tells the child it was teleported, as the first message its session reads, naming both machines, both directories, who asked and why. The notice goes into the session and is never typed into a pane. You prepare the destination first: the folder, the worktree and any program the child needs. Bellwether never copies a worktree or creates a directory. A stopped child starts at the destination at once, which agent_move refuses. When the session takes the notice late or not at all, the child keeps running at the destination and the reply says it was not told. It refuses, before touching anything: a destination directory that does not exist; a destination harness older than the version that wrote the session; a destination with no inbound path for the notice, such as a machine whose Bellwether predates relay-message; an adopted child; a working or blocked child; and, unless you pass accept_loss, a child that would leave a background job or unpushed worktree work behind. Every other refusal of agent_move applies too. Parent sessions cannot teleport.',
+    schema: {
+      type: 'object',
+      properties: {
+        child: { type: 'string', description: 'The child\'s name, its pane id, or the id agent_spawn returned.' },
+        machine: { type: 'string', description: 'The destination: a saved herdr machine by label or id, or local for this one. Omit it when exactly one other machine is known.' },
+        cwd: { type: 'string', description: 'The directory the child resumes in at the destination, which must already exist there. Defaults to the directory it runs in now.' },
+        kind: { type: 'string', enum: ['claude', 'pi'], description: 'The harness to run at the destination. Defaults to the child\'s own, and any other is refused.' },
+        reason: { type: 'string', description: 'Why the child crosses. The child reads it in its notice, and the record and teleport.log keep it.' },
+        accept_loss: { type: 'boolean', description: 'Teleport even though the refusal named work that would stay behind: background jobs, which end with the session, or worktree changes and commits that exist only on the source. The reply names each one again.' },
       },
       required: ['child'],
     },
@@ -647,6 +666,33 @@ export async function runBellwetherTool(ctx: ToolContext, name: string, args: Re
     }
   }
 
+  if (name === 'agent_teleport') {
+    const target = optionalString(args['child']);
+    if (!target) throw new Error('agent_teleport needs a child');
+    const known = record.children.find((entry) => entry.id === target || entry.name === target || entry.paneId === target);
+    try {
+      const result = await teleportChild(
+        {
+          clientFor: (host) => clientFor(ctx, host),
+          endpointFor: ctx.endpointFor ?? moveEndpoints(),
+          knownHosts: ctx.knownHosts ?? (() => knownHosts()),
+          registerRemote: registrar(ctx, record),
+          cleanupRemote: remoteCleanup(ctx),
+          log: ctx.log,
+          ...(ctx.inbox ? { inbox: ctx.inbox } : {}),
+          inbound: async (host) => farInboundGap(host, ctx.relayState?.(host)),
+          by: senderName(record),
+        },
+        ctx.parentId,
+        { child: target, machine: optionalString(args['machine']), cwd: optionalString(args['cwd']), kind: optionalString(args['kind']), reason: optionalString(args['reason']), acceptLoss: args['accept_loss'] === true },
+      );
+      return teleportReply(result).join('\n');
+    } finally {
+      // The child's old pane and its classifier state belong to the machine it left, or to the start that failed.
+      if (known) ctx.watcher.reset(known.id);
+    }
+  }
+
   const target = optionalString(args['child']);
   if (!target) throw new Error(`${name} needs a child`);
   const child = resolve(record, target);
@@ -843,4 +889,17 @@ function repeatedBriefNote(child: ChildRecord, brief: NextBrief | undefined): st
   const original = child.briefs?.find((entry) => entry.n === first)?.file ?? brief.repeats.file;
   const how = brief.reused ? `Bellwether handed that brief over again, from ${brief.brief.file}` : `Bellwether put that brief ahead of your prompt in ${brief.brief.file}`;
   return `${child.name} had not read the brief it started on: its record shows no report and no finished turn since. ${how}. Its first brief stays at ${original}.`;
+}
+
+/**
+ * Why the daemon on another machine cannot put a teleport's notice into the
+ * child's session there, as the relay connection to it last reported: a
+ * Bellwether that predates relay-message. A machine with no connection yet
+ * says nothing here, and its answer to the notice itself decides.
+ */
+export function farInboundGap(host: string, state: RelayHostState | undefined): string | undefined {
+  if (host === LOCAL_HOST || !state?.farVersion) return undefined;
+  const since = featureNamed('relay-message')?.version;
+  if (since && (compareVersions(state.farVersion, since) ?? 0) < 0) return predates(state, 'relay-message');
+  return undefined;
 }

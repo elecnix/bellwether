@@ -51,7 +51,7 @@ function brought(kind: Feature['kind'], protocol: number, version: string, summa
 }
 
 /** The pull request that brought freeing (issue #262). */
-const PR_FREE = 0;
+const PR_FREE = 282;
 
 const BASE: readonly Feature[] = [
   // In 0.1.3 or earlier, on protocol 2, the oldest a daemon serves.

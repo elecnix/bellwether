@@ -41,6 +41,8 @@ import { processInfoOf } from './start-check.ts';
 import { teleportState, type TeleportRefusalInput, type TeleportState } from './teleport-plan.ts';
 import type { ChildRecord, Crossing } from './types.ts';
 import { crossingFailed, relocated, runEnds, viewOf } from './incarnation.ts';
+import { crossingBegun, crossingEnded, crossingStep } from './requests.ts';
+import { keepRetirement } from './retire.ts';
 
 /** How long the watcher ignores the old pane's close. Longer than any carry: two copies, a stop and a start. */
 export const MOVE_WINDOW_MS = 15 * 60_000;
@@ -323,11 +325,11 @@ export async function carryChild(deps: CarryDeps, parentId: string, request: Car
     // crossing got, so it can finish or undo it (recover.ts).
     const mark = (change: Partial<Crossing>): void => {
       updateChild(parentId, child.id, (record) => {
-        if (record.moving?.daemon === DAEMON_INSTANCE) record.moving = { ...record.moving, ...change };
+        crossingStep(record, DAEMON_INSTANCE, change);
       });
     };
     updateChild(parentId, child.id, (record) => {
-      record.moving = {
+      crossingBegun(record, {
         from: source,
         to: target,
         since: askedAt.toISOString(),
@@ -341,7 +343,7 @@ export async function carryChild(deps: CarryDeps, parentId: string, request: Car
         sourceFile: bundle.sourceFile,
         by,
         ...(request.reason ? { reason: request.reason } : {}),
-      };
+      });
     });
 
     try {
@@ -440,16 +442,13 @@ export async function carryChild(deps: CarryDeps, parentId: string, request: Car
           const back = await resumeChild(sourceClient, parent, { child: restored, session: resumable }, { registerRemote: deps.registerRemote, cleanupRemote: deps.cleanupRemote, startupTimeoutMs: deps.startupTimeoutMs, redrawMs: deps.redrawMs });
           restoredPane = back.child.paneId;
           // A resume clears a retirement request, and a child that never left keeps its own.
-          updateChild(parentId, child.id, (record) => {
-            if (original.retireRequestedAt) record.retireRequestedAt = original.retireRequestedAt;
-            if (original.retireIntent) record.retireIntent = original.retireIntent;
-          });
+          updateChild(parentId, child.id, (record) => keepRetirement(record, original));
         } catch (fault) {
           rollbackError = (fault as Error).message;
         }
       }
       updateChild(parentId, child.id, (record) => {
-        delete record.moving;
+        crossingEnded(record, { ran: false, reason: `the ${verb} failed after the step "${stage}": ${failure.replace(/\.$/, '')}` });
         // A child that runs on neither machine says so until it runs again.
         if (rollbackError) crossingFailed(record, { at: new Date().toISOString(), verb, from: source, to: target, stage, error: `${failure.replace(/\.$/, '')}; starting it again on ${where(source)} failed too: ${rollbackError}`, sourceFile: bundle.sourceFile, reopen });
       });
@@ -471,7 +470,7 @@ export async function carryChild(deps: CarryDeps, parentId: string, request: Car
     else await deps.cleanupRemote?.(viewOf(child, { host: source })).catch((error: unknown) => log(`${verb}: could not remove ${child.name}'s files on ${where(source)}: ${(error as Error).message}`));
     const doneAt = new Date().toISOString();
     updateChild(parentId, child.id, (record) => {
-      delete record.moving;
+      crossingEnded(record, { ran: true });
       recordDeparture(record, { host: source, at: doneAt, ...(child.cwd ? { cwd: child.cwd } : {}), verb, ...(request.reason ? { reason: request.reason } : {}) });
     });
     const outcome = policy.outcome(notice);

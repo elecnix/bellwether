@@ -252,14 +252,42 @@ With this step, the decision that [#256](https://github.com/elecnix/bellwether/i
 
 Every write to these fields and every comparison of `origin` now goes through that module, and `test/unit/authority-owner.test.ts` fails on either anywhere else. Its decision table, given in [authority](authority.md), covers typing into the pane as the message act of `agent_send`.
 
-### Steps 4 and 5: requests and retirement
+### Step 4, the requests family
 
-`relay-links.ts` stops writing `teleportRequest`, and `recover-crossing.ts` stops writing `moving`, each through the module that defines the request. `carry.ts` stops writing `retireIntent` and `retireRequestedAt` and calls `retire.ts`, which already contains every other write to the retirement fields.
+Only `src/core/requests.ts` writes these fields now. `test/unit/requests-owner.test.ts` fails on a write anywhere else.
+
+The fields are `restartRequestedAt`, `restartWait`, `restartRoute`, `restartStalled`, `restartedAt`, `teleportRequest`, `teleportStalled` and `moving`, plus `retireRequest` and `teleportRequest` on a relay record.
+
+A request is in one of seven phases:
+
+| Phase | Means | Bound |
+|---|---|---|
+| requested | Recorded, and no daemon waits on it | its time plus `RESTART_DEFER_MS` |
+| waiting | A daemon waits for the session's turn to end | `restartWait.until` or `teleportRequest.wait.until` |
+| acted | The act took the request and has not answered | `ACT_BOUND_MS` from the take, or the crossing's `until` |
+| answered | The act ran | none |
+| stalled | The bound passed, or the act refused | none |
+| failed | The act closed the pane and the session did not come back | none |
+| in doubt | The connection dropped before the far machine's answer arrived | its time plus `IN_DOUBT_BOUND_MS` |
+
+A transition into waiting takes the bound as an argument, so the typecheck refuses a request without one. `bellwether doctor` prints each request in flight with its bound and its owner, and fails any request that runs past its bound.
+
+### Step 5, the retirement family
+
+`carry.ts` now calls `keepRetirement` in `retire.ts`, so `retire.ts` is the only writer of `retireRequestedAt`, `retireIntent`, `retireStage`, `retiredAt`, `retireOutcome`, `retireReason` and `retireProof`. `test/unit/retirement-owner.test.ts` fails on a write anywhere else. Every intent passes through `intentFor`, which adds each worktree the child has on another machine, so each intent lists all of them ([#273](https://github.com/elecnix/bellwether/issues/273)).
+
+## Is any cell above the diagonal left?
+
+Yes. With the five families owned, `scripts/design-matrix.ts` still finds one coupled set. Fields that no family owns now hold it together.
+
+- **Their fields no longer couple anything.** Each of those fields has one writer. Give each field outside the five families a writer of its own, and the script doesn't find a coupled set. On `origin/main` before steps 4 and 5, the same routing leaves a set of nine modules, bound by `moving`, `retireRequestedAt` and `retireIntent`.
+- **What still couples.** Twelve fields, each of which must have one writer before the set breaks up: `workspaceId`, `workspaceLabel`, `ownsWorkspace`, `statusChangedAt`, `lastBusyAt`, `turnNotified`, `completionSeq`, `transcript`, `transcriptMissing`, `toolSource`, `startedAt` and `agentName`. Spawn, resume, restart, adopt, carry, recover-crossing, teleport and the watcher each write some of them, and the incarnation and listing modules read them.
+- **The earlier verdict was too strong.** It said that once the five families had their writers, no coupled set remained, and that the turn bookkeeping does not affect triangularity. The script measures otherwise. The script behind the first verdict isn't in the repository, so the two may differ in what they count.
+
+The next step is a sixth owner, for where a run lands (`workspaceId`, `workspaceLabel`, `ownsWorkspace`) and for what a turn leaves behind (`statusChangedAt`, `lastBusyAt`, `turnNotified`, `completionSeq`, `transcript`, `transcriptMissing`), with `toolSource`, `startedAt` and `agentName` alongside.
 
 ## Reproducing the matrix
 
-The cells come from a script. As it walks `src/`, the script maps each file to its design parameter and records its runtime imports and its field reads and writes, as Method describes them.
+`node scripts/design-matrix.ts` rebuilds the matrix. As it walks `src/`, it maps each file to its design parameter, then records its runtime imports and its field reads and writes, as Method describes them. A write that an ownership gate exempts as another kind of object does not count. It prints the coupled sets and the fields more than one of their members writes.
 
-Next it finds the strongly connected sets of the resulting graph, and repeats with each family's fields routed to an owner.
-
-The script is not in the repository. The ownership gate in step 1 replaces it with a check that CI runs, one family at a time.
+`--route field,field` gives each named field an owner of its own, to show which fields still couple. `--edges` lists every edge inside a set with its reason.

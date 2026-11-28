@@ -15,6 +15,7 @@ import { bellwetherHome } from '../../src/core/paths.ts';
 import { emptyParent, listParents, readParent, saveParent, updateChild, upsertChild } from '../../src/core/registry.ts';
 import { acceptLocalReport } from '../../src/core/report.ts';
 import { restartWaitLines, type RestartHooks } from '../../src/core/restart.ts';
+import { requestLines, requestsInFlight } from '../../src/core/requests.ts';
 import { hostName } from '../../src/core/spawn.ts';
 import type { ChildRecord, OutboxEntry } from '../../src/core/types.ts';
 import { DaemonClient } from '../../src/daemon/client.ts';
@@ -121,8 +122,8 @@ test('a session that never ends a turn gives up its restart within the bound, na
   assert.match(second, /^This session has a restart pending since \S+\. It waits for pane w1:p1 to end its turn, and herdr reports it working since \S+\./);
   assert.match(second, /1 of its children is working: worker\./);
   assert.match(second, /At \S+ it reads the pane from herdr once more: idle restarts it, and anything else gives up and says why\./);
-  const pending = restartWaitLines(listParents());
-  assert.match(pending[0] ?? '', /^info +restart: session .* has a restart pending since .*waits for pane w1:p1/);
+  const pending = requestLines(requestsInFlight(listParents()));
+  assert.match(pending[0] ?? '', /^info +request: restart of session \S+, waiting since \S+, ends by \S+\. Owner: the daemon's deferred restart, waiting for pane w1:p1 to end its turn \(herdr reports it working since/);
 
   await jobs.get(`parent:${id}`);
   const record = readParent(id);

@@ -36,6 +36,7 @@ import { bellwetherHome } from './paths.ts';
 import { readParent, updateChild } from './registry.ts';
 import { holdsSession, resumeChild, type HarnessSession } from './resume.ts';
 import type { ChildRecord, Crossing, ParentRecord } from './types.ts';
+import { crossingEnded, withoutCrossing } from './requests.ts';
 import { crossingFailed, relocated, releaseEvents, runContinues, runEnds, runStarts, viewOf } from './incarnation.ts';
 
 /** What a recovery did with one crossing, for the daemon log and the tests. */
@@ -137,7 +138,7 @@ async function recoverOne(deps: CarryDeps, parentId: string, childId: string, in
       else delete entry.workspaceId;
       delete entry.transcript;
       recordDeparture(entry, { host: crossing.from, at, ...(crossing.source?.cwd ? { cwd: crossing.source.cwd } : {}), verb, ...(crossing.reason ? { reason: crossing.reason } : {}) });
-      delete entry.moving;
+      crossingEnded(entry, { ran: true });
     });
     appendLog(crossing, { ...base, outcome: verb === 'teleport' ? 'teleported-untold' : 'moved', pane: there.paneId, ...(verb === 'teleport' ? { undelivered: 'the daemon that ran the teleport stopped before it saw the notice taken' } : {}) });
     return { childId, name: child.name, outcome: 'finished', detail: `the session runs in pane ${there.paneId} on ${where(crossing.to)}, so the ${verb} stands` };
@@ -171,7 +172,7 @@ async function recoverOne(deps: CarryDeps, parentId: string, childId: string, in
 
   if (here || crossing.state === 'stopped') {
     updateChild(parentId, childId, (entry) => {
-      delete entry.moving;
+      crossingEnded(entry, { ran: false, reason: `the daemon that ran the ${verb} stopped part of the way, and the daemon that recovered it undid it, so nothing moved. Ask again once the child is idle.` });
     });
     appendLog(crossing, { ...base, outcome: 'abandoned' });
     return { childId, name: child.name, outcome: 'undone', detail: here ? `the session still runs in pane ${here.paneId} on ${where(crossing.from)}, so the copy on ${where(crossing.to)} was removed and nothing else changed` : `the child was stopped before the ${verb} and stays stopped on ${where(crossing.from)}, and the copy on ${where(crossing.to)} was removed` };
@@ -188,17 +189,17 @@ async function recoverOne(deps: CarryDeps, parentId: string, childId: string, in
     // crossingFailed takes its place until the resume names a pane on the
     // source, so a daemon that stops in between leaves a record doctor names.
     updateChild(parentId, childId, (entry) => {
-      delete entry.moving;
+      crossingEnded(entry, { ran: false, reason: `the daemon that ran the ${verb} stopped part of the way, and the child runs on neither machine until it is resumed` });
       crossingFailed(entry, { at, verb, from: crossing.from, to: crossing.to, stage: crossing.stage ?? 'unknown', error: `the daemon running the ${verb} stopped after the child's tab closed, and the daemon that recovered it stopped too, before it resumed it on ${where(crossing.from)}`, ...(crossing.sourceFile ? { sourceFile: crossing.sourceFile } : {}), reopen, interrupted: true });
     });
-    const marked = readParent(parentId)?.children.find((entry) => entry.id === childId) ?? { ...restored, moving: undefined };
+    const marked = readParent(parentId)?.children.find((entry) => entry.id === childId) ?? withoutCrossing(restored);
     const back = await resumeChild(client, readParent(parentId) ?? parent, { child: marked, session: { kind: source.session.kind === 'path' ? 'path' : 'id', value: source.session.value } }, { registerRemote: deps.registerRemote, cleanupRemote: deps.cleanupRemote, startupTimeoutMs: deps.startupTimeoutMs, redrawMs: deps.redrawMs });
     appendLog(crossing, { ...base, outcome: 'rolled-back', pane: back.child.paneId });
     return { childId, name: child.name, outcome: 'resumed', detail: `the daemon stopped after the child's tab closed and before it ran on ${where(crossing.to)}, so it resumed on ${where(crossing.from)} in pane ${back.child.paneId}, as the same child` };
   } catch (error) {
     const message = (error as Error).message;
     updateChild(parentId, childId, (entry) => {
-      delete entry.moving;
+      crossingEnded(entry, { ran: false, reason: `the daemon that ran the ${verb} stopped part of the way, and the child runs on neither machine until it is resumed` });
       crossingFailed(entry, { at, verb, from: crossing.from, to: crossing.to, stage: crossing.stage ?? 'unknown', error: `the daemon running the ${verb} stopped after the child's tab closed, and resuming it on ${where(crossing.from)} failed: ${message}`, ...(crossing.sourceFile ? { sourceFile: crossing.sourceFile } : {}), reopen, interrupted: true });
     });
     appendLog(crossing, { ...base, outcome: 'stranded', rollbackError: message });

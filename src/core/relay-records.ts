@@ -62,13 +62,13 @@ export interface RelayRecord {
    * goes once that daemon takes the request. `bellwether doctor` on this
    * machine prints a line for it while it waits, and for a refusal.
    */
-  retireRequest?: { at: string; receipt: string; refused?: string };
+  readonly retireRequest?: { at: string; receipt: string; refused?: string };
   /**
    * A teleport the child asked for here, which waits in the relay outbox for
    * the parent's daemon that holds its record (issue #226). It goes once that
    * daemon takes the request, and `bellwether doctor` here shows it until then.
    */
-  teleportRequest?: { at: string; receipt: string; machine?: string; refused?: string };
+  readonly teleportRequest?: { at: string; receipt: string; machine?: string; refused?: string };
   /**
    * Set once the child's parent freed it (issue #262). The record stays, for
    * the relay link that still carries the pair's messages, but its reports,

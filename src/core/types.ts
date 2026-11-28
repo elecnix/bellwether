@@ -143,12 +143,12 @@ export interface Crossing {
 
 /** A teleport a child asked for itself, as the record keeps it while the child's turn ends. */
 export interface TeleportRequestRecord {
-  at: string;
-  machine: string;
-  cwd?: string;
-  reason?: string;
-  /** What the request waits for: the child's pane to end its turn, until a bound. */
-  wait?: RestartWait;
+  readonly at: string;
+  readonly machine: string;
+  readonly cwd?: string;
+  readonly reason?: string;
+  /** What the request waits for: the child's pane to end its turn, until a bound. Written only by `src/core/requests.ts`. */
+  readonly wait?: RestartWait;
 }
 
 /** A crossing that left the child running nowhere (issue #226). */
@@ -189,13 +189,15 @@ export interface RestartFailure {
  * never end one, so the wait gives up at `until` (issue #188).
  */
 export interface RestartWait {
-  /** When the wait gives up. */
-  until: string;
+  /** When the wait gives up, or once the act took the request, when the act must have answered. Written only by `src/core/requests.ts`. */
+  readonly until: string;
   /** The pane whose turn it waits on. */
-  paneId: string;
+  readonly paneId: string;
   /** The status herdr last reported for that pane, and since when. */
-  status?: string;
-  statusSince?: string;
+  readonly status?: string;
+  readonly statusSince?: string;
+  /** When the act took the request, once the turn ended. */
+  readonly acting?: string;
 }
 
 /** A self-restart that gave up because its session never ended a turn in time. */
@@ -518,22 +520,22 @@ export interface ChildRecord {
    * restarted it. The deferral is on the record, not in a timer, so a daemon
    * that stops mid-wait finishes it on its next start.
    */
-  restartRequestedAt?: string;
+  readonly restartRequestedAt?: string;
   /**
    * What a requested restart changes about the route: `via` names a route, or
    * `none` to leave one, with the tier or model, key file and pi provider.
    * Absent, the restart keeps the route on the record. It sits on the record
    * with the request, so a daemon that stops mid-wait keeps it.
    */
-  restartRoute?: { via?: string; model?: string; keyFile?: string; provider?: string; reads?: string[] };
+  readonly restartRoute?: { via?: string; model?: string; keyFile?: string; provider?: string; reads?: string[] };
   /** When the daemon last restarted the child in a new tab, on the same session. */
-  restartedAt?: string;
+  readonly restartedAt?: string;
   /** Set when a restart closed the child's pane and could not start it again (issue #185). A later restart or resume clears it. */
   readonly restartFailed?: RestartFailure;
   /** What a pending self-restart waits for, while `restartRequestedAt` is set (issue #188). */
-  restartWait?: RestartWait;
+  readonly restartWait?: RestartWait;
   /** Why the last self-restart gave up without acting, until the next request (issue #188). */
-  restartStalled?: RestartStall;
+  readonly restartStalled?: RestartStall;
   /**
    * Set while agent_move carries the child to another machine. The watcher
    * ignores the close of the child's old pane while it is set, so the parent
@@ -541,7 +543,7 @@ export interface ChildRecord {
    * than a flag, so a daemon that stops mid-move cannot silence the child for
    * good.
    */
-  moving?: Crossing;
+  readonly moving?: Crossing;
   /**
    * Set when a move or a teleport stopped the child and could not start it on
    * either machine, or when a crossing that a stopped daemon left half done
@@ -549,9 +551,9 @@ export interface ChildRecord {
    */
   readonly crossingFailed?: CrossingFailure;
   /** A teleport this child asked for itself, which waits for its turn to end (issue #226). */
-  teleportRequest?: TeleportRequestRecord;
+  readonly teleportRequest?: TeleportRequestRecord;
   /** Why the last teleport the child asked for itself did not run, until its next request. */
-  teleportStalled?: RestartStall & { machine?: string };
+  readonly teleportStalled?: RestartStall & { machine?: string };
   /**
    * The place the child last moved away from: the newest entry of
    * `departures`. A daemon from before issue #241 reads only this field, so
@@ -646,13 +648,13 @@ export interface ChildRecord {
    * reports the pane gone. Every retirement field is optional, so an older
    * record loads unchanged.
    */
-  retireRequestedAt?: string;
+  readonly retireRequestedAt?: string;
   /** What the child asked to have removed, as the daemon read it while the child was alive. */
-  retireIntent?: RetireIntent;
+  readonly retireIntent?: RetireIntent;
   /** How far the cleanup got, so a daemon restarted part of the way through skips what is done. */
-  retireStage?: 'worktree-removed' | 'branch-deleted';
+  readonly retireStage?: 'worktree-removed' | 'branch-deleted';
   /** When the cleanup finished, whichever way. */
-  retiredAt?: string;
+  readonly retiredAt?: string;
   /**
    * `removed` only when nothing the record knows of stays in place. `partial`
    * when a worktree was removed but another one stays: one the child left
@@ -660,15 +662,15 @@ export interface ChildRecord {
    * refused it or has not answered (issues #273, #242). `refused` when
    * nothing was removed.
    */
-  retireOutcome?: 'removed' | 'partial' | 'refused';
+  readonly retireOutcome?: 'removed' | 'partial' | 'refused';
   /** For a refusal: the condition that failed, and what a person would do about it. For a partial retirement: what stays. */
-  retireReason?: string;
+  readonly retireReason?: string;
   /**
    * For a removal: the proof that the work exists elsewhere, such as the
    * default branch containing it. Optional and additive: an older record
    * loads unchanged, and an older daemon ignores it.
    */
-  retireProof?: string;
+  readonly retireProof?: string;
 }
 
 /**
@@ -881,15 +883,15 @@ export interface ParentRecord {
   /** How far into the child spool this parent has read, so a restart resumes. */
   spoolOffset?: number;
   /** Set when the session asked to be restarted, and cleared once it was. */
-  restartRequestedAt?: string;
+  readonly restartRequestedAt?: string;
   /** When the daemon last started a new pane for this session. */
-  restartedAt?: string;
+  readonly restartedAt?: string;
   /** Set when a restart closed this session's pane and could not start it again (issue #185). The session's return clears it. */
   restartFailed?: RestartFailure;
   /** What a pending self-restart waits for, while `restartRequestedAt` is set (issue #188). */
-  restartWait?: RestartWait;
+  readonly restartWait?: RestartWait;
   /** Why the last self-restart gave up without acting, until the next request (issue #188). */
-  restartStalled?: RestartStall;
+  readonly restartStalled?: RestartStall;
   /** When the session's last connection to the daemon closed, cleared by its next hello (issue #187). */
   disconnectedAt?: string;
   /** The herdr tab label the session last ran under, which a restart or a resume gives its new tab. */

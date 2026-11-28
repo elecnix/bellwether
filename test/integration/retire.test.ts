@@ -12,7 +12,7 @@ import { childLockPath } from '../../src/core/child-lock.ts';
 import { HerdrClient } from '../../src/core/herdr-client.ts';
 import { emptyParent, readParent, saveParent, updateChild } from '../../src/core/registry.ts';
 import { childOfCaller } from '../../src/core/report.ts';
-import { RETIRE_TOOL, retireLogPath } from '../../src/core/retire.ts';
+import { RETIRE_TOOL, keepRetirement, retireLogPath } from '../../src/core/retire.ts';
 import { Watcher } from '../../src/core/watcher.ts';
 import type { ChildRecord, DialogDecision } from '../../src/core/types.ts';
 import { runBellwetherTool, toolsFor, type ToolContext } from '../../src/integrations/tools.ts';
@@ -286,8 +286,7 @@ test('the main worktree of a repository is never removed, whoever asks', async (
 
   // A record written by hand to point the cleanup at the main worktree.
   updateChild(w.parentId, 'c-retire', (entry) => {
-    entry.retireRequestedAt = new Date().toISOString();
-    entry.retireIntent = { worktree: MAIN, repo: REPO, branch: 'main', head: 'abc123def456' };
+    keepRetirement(entry, { retireRequestedAt: new Date().toISOString(), retireIntent: { worktree: MAIN, repo: REPO, branch: 'main', head: 'abc123def456' } });
     runEnds(entry, { at: new Date().toISOString() });
   });
   w.panes.clear();
@@ -360,8 +359,7 @@ test('an adopted child and a child on another host are out of bounds', async (t)
 
   // A record that asks anyway is refused by the cleanup, with nothing touched.
   updateChild(adopted.parentId, 'c-retire', (entry) => {
-    entry.retireRequestedAt = new Date().toISOString();
-    entry.retireIntent = { worktree: WORKTREE, repo: REPO, branch: 'feat/x', head: 'abc123def456' };
+    keepRetirement(entry, { retireRequestedAt: new Date().toISOString(), retireIntent: { worktree: WORKTREE, repo: REPO, branch: 'feat/x', head: 'abc123def456' } });
     runEnds(entry, { at: new Date().toISOString() });
   });
   adopted.git.merged.add(`${REPO}:feat/x`);

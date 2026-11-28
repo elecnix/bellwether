@@ -21,7 +21,7 @@ import { runEnds } from '../../src/core/incarnation.ts';
 import { RelayAnswerLost } from '../../src/core/relay-answer.ts';
 import { emptyParent, readParent, saveParent, updateChild, upsertChild } from '../../src/core/registry.ts';
 import { RELAY_SCHEMA, listForwards, saveRelayRecord } from '../../src/core/relay-records.ts';
-import { reapChild } from '../../src/core/retire.ts';
+import { keepRetirement, reapChild } from '../../src/core/retire.ts';
 import type { ChildRecord } from '../../src/core/types.ts';
 import { DaemonClient } from '../../src/daemon/client.ts';
 import { RelayLinks } from '../../src/daemon/relay-links.ts';
@@ -217,8 +217,7 @@ test('a far worktree on a machine that cannot answer is refused with its machine
   // A daemon with no relay at all refuses the same way.
   farChild(w, 'c-alone', { cwd: w.far });
   updateChild(PARENT_ID, 'c-alone', (entry) => {
-    entry.retireRequestedAt = new Date().toISOString();
-    entry.retireIntent = { reason: 'merged', far: [{ host: 'child-box', worktree: w.far, runs: true }] };
+    keepRetirement(entry, { retireRequestedAt: new Date().toISOString(), retireIntent: { reason: 'merged', far: [{ host: 'child-box', worktree: w.far, runs: true }] } });
     runEnds(entry, { at: new Date().toISOString() });
   });
   const alone = await reapChild(PARENT_ID, 'c-alone', { ops: local, paneOrTabLive: async () => false, busyRetries: 0 });

@@ -474,6 +474,9 @@ test('a move whose rollback also fails leaves the child stranded on the source, 
   assert.equal(stranded?.cwd, hereCwd);
   assert.ok(stranded?.exitedAt, 'the child is recorded as not running');
   assert.equal(stranded?.moving, undefined);
+  // The record says it runs on neither machine, with the resume that brings it back, until it runs again.
+  assert.equal(stranded?.crossingFailed?.stage, 'stopped');
+  assert.match(stranded?.crossingFailed?.reopen ?? '', /^agent_spawn with resume worker, which resumes it on this machine from /);
   assert.equal(stranded?.session?.value, 'sess-1');
   assert.equal(fs.readFileSync(source.file, 'utf8'), TRANSCRIPT, 'the session on the source is untouched');
   assert.equal(fs.existsSync(path.join(w.box.claude, 'projects', claudeProjectDir(fs.realpathSync(boxCwd)), 'sess-1.jsonl')), false, 'the copy on the target is removed');
@@ -482,7 +485,7 @@ test('a move whose rollback also fails leaves the child stranded on the source, 
   assert.match(String(line?.['rollbackError']), /here would not start claude/);
   const watcher = new Watcher({ client: w.here.client, clientFor: w.deps.clientFor, parentId: w.parentId, onEntries: () => {} });
   const listed = await runBellwetherTool({ client: w.here.client, clientFor: w.deps.clientFor, parentId: w.parentId, watcher }, 'agent_list', {});
-  assert.match(listed, /^worker\tclaude\tbare\texited\t.*\tlocal\t/m);
+  assert.match(listed, /^worker\tclaude\tbare\texited, on neither machine since a crossing failed\t.*\tlocal\t/m);
 
   // The named recovery: once the source can start it, the same child comes back on its own session.
   sourceStarts = true;
@@ -491,6 +494,7 @@ test('a move whose rollback also fails leaves the child stranded on the source, 
   assert.equal(resumed.child.id, 'child-worker');
   assert.equal(resumed.child.host, LOCAL_HOST);
   assert.equal(record(w)?.exitedAt, undefined);
+  assert.equal(record(w)?.crossingFailed, undefined, 'a resume clears the failure');
   const args = startArgs(w.here).at(-1);
   assert.deepEqual(args?.slice(args.indexOf('--resume'), args.indexOf('--resume') + 2), ['--resume', 'sess-1']);
 });

@@ -84,24 +84,24 @@ export function inHome<T>(home: string, fn: () => T): T {
   }
 }
 
-async function machine(t: test.TestContext, root: string, name: string, workspace: string, respond?: Respond): Promise<Machine> {
+async function machine(t: test.TestContext, root: string, name: string, workspace: string, respond?: Respond, hold?: (request: RecordedRequest) => boolean): Promise<Machine> {
   const user = path.join(root, name);
   const home = path.join(user, '.bellwether');
   fs.mkdirSync(home, { recursive: true });
   const world = fakeWorld(workspace);
-  const herdr = await startFakeHerdr({ respond: (request) => respond?.(world, request) ?? world.respond(request) });
+  const herdr = await startFakeHerdr({ respond: (request) => respond?.(world, request) ?? world.respond(request), ...(hold ? { hold } : {}) });
   world.emit = (frame) => herdr.send(frame);
   t.after(() => herdr.stop());
   return { user, home, claude: path.join(user, '.claude'), pi: path.join(user, '.pi', 'agent'), herdr, world, client: new HerdrClient({ socketPath: herdr.socketPath }) };
 }
 
 /** This machine and `box`, joined by the fake ssh, with a parent on this machine. */
-export async function twoMachines(t: test.TestContext, respond: { here?: Respond; box?: Respond } = {}): Promise<TwoMachines> {
+export async function twoMachines(t: test.TestContext, respond: { here?: Respond; box?: Respond } = {}, hold: { here?: (request: RecordedRequest) => boolean; box?: (request: RecordedRequest) => boolean } = {}): Promise<TwoMachines> {
   // Under /tmp, because macOS caps a Unix socket path at 104 bytes.
   const root = fs.mkdtempSync('/tmp/bw-two-');
   assert.ok(!root.startsWith(LIVE_HOME));
-  const here = await machine(t, root, 'here', 'w1', respond.here);
-  const box = await machine(t, root, 'box', 'w9', respond.box);
+  const here = await machine(t, root, 'here', 'w1', respond.here, hold.here);
+  const box = await machine(t, root, 'box', 'w9', respond.box, hold.box);
   const ssh = installFakeSsh(t, root, { box: { home: box.home, userHome: box.user } });
   const bin = path.join(root, 'harness-bin');
   fs.mkdirSync(bin, { recursive: true });

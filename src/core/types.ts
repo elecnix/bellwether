@@ -104,6 +104,57 @@ export interface RestartInDoubt {
   launch: { route?: ChildRoute; harnessModel?: string; provider?: string };
 }
 
+/**
+ * A move or a teleport under way, on the child record. Besides the window
+ * that keeps the watcher, a restart and a resume off the child, it carries
+ * what a daemon that starts after the crossing daemon stopped needs to finish
+ * or undo it: which daemon runs it, how far it got, the files it wrote at the
+ * destination, and where the child ran before.
+ */
+export interface Crossing {
+  from: string;
+  to: string;
+  since: string;
+  until: string;
+  /** `move` or `teleport`. Absent on a mark written before 0.1.10. */
+  verb?: 'move' | 'teleport';
+  /** The daemon process that runs the crossing. Another daemon that finds the mark knows the crossing stopped with it. */
+  daemon?: string;
+  /** The last step the crossing finished. */
+  stage?: 'checked' | 'copied' | 'verified' | 'stopped' | 'recopied' | 'started';
+  /** Whether the child ran when the crossing began. */
+  state?: 'live' | 'stopped';
+  /** The files the copy wrote at the destination, and whether each was new there. */
+  files?: { path: string; created: boolean }[];
+  /** Where the child ran before, as its record said. */
+  source?: { cwd?: string; paneId: string; tabId?: string; workspaceId?: string; session?: { kind: string; value: string }; transcript?: string; exitedAt?: string };
+  /** Where it resumes, and the session it resumes there once the copy names it. */
+  target?: { cwd: string; session?: { kind: string; value: string } };
+  /** The session file on the source, which the crossing never changes. */
+  sourceFile?: string;
+  reason?: string;
+  by?: string;
+}
+
+/** A crossing that left the child running nowhere (issue #226). */
+export interface CrossingFailure {
+  at: string;
+  verb: 'move' | 'teleport';
+  from: string;
+  to: string;
+  /** The last step the crossing finished. */
+  stage: string;
+  error: string;
+  /** The session file on the source, intact. */
+  sourceFile?: string;
+  /** How to bring the child back. */
+  reopen: string;
+  /** True when a daemon stopped in the middle of the crossing, rather than the crossing failing on its own. */
+  interrupted?: boolean;
+  /** Set once the parent has received the event about it. */
+  told?: boolean;
+}
+
 export interface RestartFailure {
   at: string;
   /** The pane the session last ran in, now closed. */
@@ -436,7 +487,13 @@ export interface ChildRecord {
    * than a flag, so a daemon that stops mid-move cannot silence the child for
    * good.
    */
-  moving?: { from: string; to: string; since: string; until: string };
+  moving?: Crossing;
+  /**
+   * Set when a move or a teleport stopped the child and could not start it on
+   * either machine, or when a crossing that a stopped daemon left half done
+   * could not be undone. A later resume clears it.
+   */
+  crossingFailed?: CrossingFailure;
   /**
    * The machine the child last moved away from, and when. The parent's daemon
    * keeps collecting from that machine until it has drained it once since the

@@ -214,6 +214,7 @@ export async function resumeChild(client: HerdrClient, parent: ParentRecord, tar
   child.resumedAt = now;
   // A child that failed to come back from a restart is back now.
   delete child.restartFailed;
+  delete child.crossingFailed;
   // The brief this start hands over carries an unread one. A session message
   // that carried that one is not offered again when the session reconnects,
   // so the child takes the task once.

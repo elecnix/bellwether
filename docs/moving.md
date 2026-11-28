@@ -74,7 +74,23 @@ Each outcome in `move.log` says how far the move got:
 | `rolled-back` | The target couldn't start the child. Bellwether removed the copy and started the child again on the source. | the source, in a new pane |
 | `stranded` | The target couldn't start the child, and the restart on the source failed too. | nowhere. Call `agent_spawn` with `resume` to start it on the source, from the session named in the reply. |
 
-If the daemon stops in the middle of a move, the child record keeps `moving`. The watcher ignores the old pane for at most 15 minutes. After that, it reports the child as it finds it. To see which machine the record names, call `agent_list`. To start the child there, call `agent_spawn` with `resume`.
+## While a move runs
+
+From the moment a move marks the child until it runs on the target, the child is unreachable, not exited. `agent_list` shows `moving to <machine> since <time>` in its state column, and `bellwether doctor` prints an `info  crossing:` line for it. The window lasts about two minutes at worst. It covers the copy and its check, up to 30 s for Claude Code's startup dialogs, and up to 30 s more for the child's session to connect. A teleport adds its notice, two copies at 20 s each. `MOVE_WINDOW_MS`, 15 minutes, bounds it.
+
+A child left `stranded` keeps `crossingFailed` on its record, with the step, the error, the session file on the source and the resume that brings it back. `agent_list` adds `on neither machine since a crossing failed` to its state, and `bellwether doctor` prints a `fail` line until the child runs again.
+
+## Recovering a move after the daemon stops
+
+The mark on the child record names the daemon process that runs the move, the last step it finished, the files it copied and where the child ran before. A daemon that starts and finds a mark from another daemon process finishes or undoes that move. It goes by what the two machines show, because the old daemon may have stopped between an act and the mark for it:
+
+| What the machines show | What the next daemon does | `move.log` |
+| -- | -- | -- |
+| The target runs the session. | It points the record at the target and keeps the copy. | `moved`, with `recovered: true` |
+| The target doesn't run it, and the source still does. | It removes the copy and changes nothing else. | `abandoned`, with `recovered: true` |
+| Neither runs it, and the child ran when the move began. | It removes the copy and resumes the child on the source, from its session there. | `rolled-back`, or `stranded` with `crossingFailed` when that resume fails |
+| Neither runs it, and the child had stopped before the move began. | It removes the copy and leaves the child stopped. | `abandoned`, with `recovered: true` |
+| Bellwether can't read one of the machines. | It doesn't change anything, so it never runs the session twice, and it tries again at its next start. Once the window has passed, doctor prints a `warn` line. | nothing yet |
 
 ## Trying a move across two machines
 

@@ -47,6 +47,8 @@ Bellwether checks every condition below before it changes anything on either mac
 
 ## Recovering from a failed start
 
+A daemon that stops in the middle of a teleport leaves a mark on the record, and the next daemon finishes or undoes the teleport, as [moving.md](moving.md#recovering-a-move-after-the-daemon-stops) describes. When it finishes one, the record keeps the notice as undelivered, because the daemon that sent it stopped before it saw the notice taken.
+
 When the destination can't start the child, Bellwether removes the copy there. It restarts a live child on its source, from the session still there. A stopped child keeps its record as it was and stays stopped.
 
 ## The record

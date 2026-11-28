@@ -3,9 +3,11 @@
 // adapters used to run in-process; the daemon now runs it once for every
 // client of the session, and tests pass a fake in its place.
 import { HerdrClient } from '../core/herdr-client.ts';
-import { machineClients } from '../core/machine.ts';
+import { knownHosts, machineClients } from '../core/machine.ts';
 import { reclaimRemote, remoteOps } from '../core/remote.ts';
 import { armPendingRestarts, type RestartHooks } from '../core/restart.ts';
+import { recoverCrossings } from '../core/recover-crossing.ts';
+import { moveEndpoints } from '../core/move-endpoint.ts';
 import { emptyParent, mutateParent, parentId, readParent, saveParent } from '../core/registry.ts';
 import { Watcher } from '../core/watcher.ts';
 import { runBellwetherTool, type ToolContext } from '../integrations/tools.ts';
@@ -101,6 +103,10 @@ export function createHerdrService(parent: ParentHello, id: string, deps: Servic
   watcher.start();
   // Finish a restart a daemon stopped part of the way through.
   armPendingRestarts(client, record, restart);
+  // Finish or undo a move or a teleport a stopped daemon left half done (issue #226).
+  void recoverCrossings({ clientFor, endpointFor: moveEndpoints(), knownHosts: () => knownHosts(), registerRemote: (child, brief) => remote.register({ id: record.id }, child, brief), cleanupRemote: (child) => remote.cleanup(child), log: deps.log }, record.id).then((done) => {
+    for (const recovery of done) if (recovery.outcome !== 'unknown') watcher.reset(recovery.childId);
+  });
   // A session whose restart failed is connected again, so it came back by hand.
   if (readParent(record.id)?.restartFailed) {
     mutateParent(record.id, (entry) => {

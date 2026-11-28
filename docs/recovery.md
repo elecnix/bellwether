@@ -33,7 +33,7 @@ The reply to such a resume gives the path of the file with the first brief. Any 
 
 ## Restarting an agent
 
-`agent_restart` restarts a session and keeps it. Its harness, session id and working directory stay the same, and the conversation continues in a new process. It takes an optional target, and with no target it restarts the session that called it. A target is a child's name, id or pane, or another session by its parent id, session id or pane. Either way the old pane closes before the new one starts, so one process holds the session at a time and you have no old pane to close.
+`agent_restart` restarts a session and keeps it. Its harness, session id and working directory stay the same, and the conversation continues in a new process. It takes an optional target, and with no target it restarts the session that called it. A target is a child's name, id or pane, or another session by its parent id, session id or pane. Either way the new tab opens first and the harness starts in it only after the old pane closes, so one process holds the session at a time and you have no old pane to close. A session alone in its herdr workspace keeps that workspace, because herdr closes a workspace with its last pane and the new tab is already in it. When herdr closes the workspace anyway, the session comes back in a new workspace under the old label.
 
 Children come back in a new tab under the same child id, so their history, receipts and retire state continue. Bellwether closes the child's tab first, but only a pane Bellwether started, and only once the child is idle or done. Before anything closes, the record releases the pane, so the close counts as part of the restart. Without that step, a watcher would read it as the child exiting on its own.
 
@@ -54,6 +54,8 @@ Meanwhile, the daemon waits for herdr to report the caller idle or done, and onl
 Killing its own caller mid-call would leave a tool with nowhere to send its answer. Anyone watching would see nothing happen. When a daemon stops during the wait, it runs the request again as soon as the session's service starts next.
 
 That reply includes the new pane, the tab and the session id, so the caller can report them instead of "restart requested".
+
+A restart can close the old pane and then fail to start the session, which leaves the session gone. The record keeps `restartFailed`, with the time, the last pane, its workspace, the error and how to bring the session back. A child's parent receives one `exited` event that says the child did not come back from a restart. `bellwether doctor` prints a `fail` line for each such session, naming it and its last pane, until a restart, a resume or the session's own return clears it. The line in `~/.bellwether/restart.log` records `outcome: failed`.
 
 The daemon refuses a restart when:
 

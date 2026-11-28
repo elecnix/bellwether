@@ -129,7 +129,8 @@ export interface TabRequest {
  */
 export async function openChildTab(client: HerdrClient, placement: WorkspacePlacement, tab: TabRequest, signal?: AbortSignal): Promise<ChildTab> {
   if (placement.mode !== 'new') {
-    const opened = await client.tabCreate({ workspaceId: placement.workspaceId, cwd: tab.cwd, label: tab.label, env: tab.env, focus: tab.focus }, signal);
+    const create = () => client.tabCreate({ workspaceId: placement.workspaceId, cwd: tab.cwd, label: tab.label, env: tab.env, focus: tab.focus }, signal);
+    const opened = placement.workspaceId ? await inWorkspaceTurn(client, placement.workspaceId, create) : await create();
     const label = placement.mode === 'existing' ? placement.label : undefined;
     return { ...opened, workspaceId: placement.workspaceId, ...(label ? { workspaceLabel: label } : {}) };
   }
@@ -138,6 +139,22 @@ export async function openChildTab(client: HerdrClient, placement: WorkspacePlac
   const result: ChildTab = { tabId: created.tabId, paneId: created.paneId, workspaceId: created.workspaceId, workspaceLabel: created.label ?? placement.label, ownsWorkspace: true };
   if (created.tabId) await client.tabRename(created.tabId, tab.label, signal).catch(() => {});
   return result;
+}
+
+/**
+ * Open the tab of a child that comes back to a workspace Bellwether made for
+ * it: a resume, a restart or a move. When herdr closed that workspace after
+ * returnPlacement listed it, the child gets a new one under the same label:
+ * a child that comes back somewhere is worth more than a tidy layout (issue
+ * #185), and releaseWorkspace may have closed it in that gap (issue #211).
+ */
+export async function openReturnTab(client: HerdrClient, placement: WorkspacePlacement, tab: TabRequest, label: string, signal?: AbortSignal): Promise<ChildTab> {
+  try {
+    return await openChildTab(client, placement, tab, signal);
+  } catch (error) {
+    if (placement.mode === 'new' || !(error instanceof HerdrApiError) || error.code !== 'workspace_not_found') throw error;
+    return openChildTab(client, { mode: 'new', label: placement.mode === 'existing' ? (placement.label ?? label) : label }, tab, signal);
+  }
 }
 
 /**
@@ -169,6 +186,31 @@ export async function returnPlacement(client: HerdrClient, child: { name: string
   return { mode: 'new', label: child.workspaceLabel || child.name };
 }
 
+/**
+ * The turn each workspace takes, keyed by the herdr server and the workspace
+ * id. herdr offers no close that refuses a workspace holding a tab, so
+ * releaseWorkspace's tab list and its close take one turn, and each tab
+ * Bellwether opens in an existing workspace takes a turn too (issue #211).
+ * A tab then either opens first, and the list shows it, or opens after the
+ * close and finds the workspace gone. The machine has one daemon, so a map in
+ * memory holds every turn: a chain of promises, with no timer and no file.
+ * A tab that a person opens, or a daemon on another machine, takes no turn.
+ */
+const workspaceTurns = new Map<string, Promise<unknown>>();
+
+export async function inWorkspaceTurn<T>(client: HerdrClient, workspaceId: string, work: () => Promise<T>): Promise<T> {
+  const key = `${client.socketPath}\u0000${workspaceId}`;
+  const before = workspaceTurns.get(key) ?? Promise.resolve();
+  const mine = before.catch(() => undefined).then(work);
+  const settled = mine.catch(() => undefined);
+  workspaceTurns.set(key, settled);
+  try {
+    return await mine;
+  } finally {
+    if (workspaceTurns.get(key) === settled) workspaceTurns.delete(key);
+  }
+}
+
 /** What became of a child's workspace once the child left it. */
 export type WorkspaceRelease = 'closed' | 'kept' | 'gone' | 'not-ours';
 
@@ -182,16 +224,22 @@ export type WorkspaceRelease = 'closed' | 'kept' | 'gone' | 'not-ours';
  */
 export async function releaseWorkspace(client: HerdrClient, child: { workspaceId?: string; ownsWorkspace?: boolean }, signal?: AbortSignal): Promise<WorkspaceRelease> {
   if (!child.ownsWorkspace || !child.workspaceId) return 'not-ours';
+  const workspaceId = child.workspaceId;
+  // The tab list and the close take one turn, so no tab Bellwether opens lands between them.
+  return inWorkspaceTurn(client, workspaceId, () => closeIfEmpty(client, workspaceId, signal));
+}
+
+async function closeIfEmpty(client: HerdrClient, workspaceId: string, signal?: AbortSignal): Promise<WorkspaceRelease> {
   let tabs: Record<string, unknown>[];
   try {
-    tabs = await client.tabList(child.workspaceId, signal);
+    tabs = await client.tabList(workspaceId, signal);
   } catch (error) {
     if (error instanceof HerdrApiError && error.code === 'workspace_not_found') return 'gone';
     throw error;
   }
   if (tabs.length) return 'kept';
   try {
-    await client.workspaceClose(child.workspaceId, signal);
+    await client.workspaceClose(workspaceId, signal);
   } catch (error) {
     if (error instanceof HerdrApiError && error.code === 'workspace_not_found') return 'gone';
     throw error;

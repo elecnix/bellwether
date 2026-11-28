@@ -12,7 +12,7 @@ import { LOCAL_HOST } from './machine.ts';
 import { newChildId } from './outbox.ts';
 import { readParent, recordDecisions, removeChild, updateChild, upsertChild } from './registry.ts';
 import { clearRetirement } from './retire.ts';
-import { openChildTab, returnPlacement, undoChildTab, type ChildTab } from './workspace.ts';
+import { openReturnTab, returnPlacement, undoChildTab, type ChildTab } from './workspace.ts';
 import { STARTUP_HOLD_MS, STARTUP_TIMEOUT_MS, childArgs, childEnv, childStartFiles, herdrLink, nextLaunch, startHarness, type RegisterRemote } from './spawn.ts';
 import { agentKinds, harnessFor, harnessNamed, requireHarness, type HarnessSession } from './harnesses/index.ts';
 import { routeLaunch } from './routes.ts';
@@ -258,7 +258,7 @@ export async function resumeChild(client: HerdrClient, parent: ParentRecord, tar
     registered = there;
     if (files.toolSource) child.toolSource = files.toolSource;
     const placement = await returnPlacement(client, child, fallback, signal);
-    const tab = await openChildTab(client, placement, { cwd: child.cwd, label: child.name, env: { ...childEnv(parent, child, files.piExtension), ...files.env }, focus: options.focus ?? false }, signal);
+    const tab = await openReturnTab(client, placement, { cwd: child.cwd, label: child.name, env: { ...childEnv(parent, child, files.piExtension), ...files.env }, focus: options.focus ?? false }, child.workspaceLabel || child.name, signal);
     opened = tab;
     tabId = tab.tabId ?? tab.paneId;
     if (!tab.paneId) throw new Error('herdr created no pane for the resumed tab');
